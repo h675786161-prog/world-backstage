@@ -23,6 +23,14 @@ test('interaction polish includes grouped settings, outside close and undo', () 
     assert.match(styleSource, /wb-panel-in/);
 });
 
+test('module switches keep stable brightness and do not replay the panel entrance', () => {
+    assert.match(uiSource, /panelEntrancePending = !isOpen/);
+    assert.match(uiSource, /animatePanelEntrance \? 'is-opening' : ''/);
+    assert.match(styleSource, /\.wb-panel-scrim\.is-opening/);
+    assert.match(styleSource, /\.wb-panel-scrim\.is-opening \.wb-window/);
+    assert.doesNotMatch(styleSource, /@keyframes wb-view-in\s*\{[^}]*opacity:/s);
+});
+
 test('mobile navigation exposes all six views without horizontal overflow', () => {
     assert.match(styleSource, /repeat\(6, minmax\(0, 1fr\)\)/);
     assert.match(styleSource, /\.wb-calendar-page \{/);

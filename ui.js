@@ -1159,6 +1159,7 @@ export function createWorldBackstageUI({
     let toastTimer = null;
     let closeTimer = null;
     let closing = false;
+    let panelEntrancePending = false;
     let memorySearchTimer = null;
     let memoryFilter = 'active';
     let memoryQuery = '';
@@ -1201,6 +1202,7 @@ export function createWorldBackstageUI({
     function open() {
         window.clearTimeout(closeTimer);
         closing = false;
+        panelEntrancePending = !isOpen;
         isOpen = true;
         render();
     }
@@ -1226,6 +1228,7 @@ export function createWorldBackstageUI({
 
     function render() {
         const viewChanged = activeView !== renderedView;
+        const animatePanelEntrance = Boolean(isOpen && panelEntrancePending);
         const previousContent = root.querySelector('.wb-view-content');
         if (previousContent) viewScrollTop.set(renderedView, previousContent.scrollTop);
         const previousSettings = root.querySelector('.wb-settings-popover');
@@ -1350,13 +1353,13 @@ export function createWorldBackstageUI({
             </div>
 
             ${isOpen ? `
-                <div class="wb-panel-scrim" data-wb-action="close-panel">
+                <div class="wb-panel-scrim ${animatePanelEntrance ? 'is-opening' : ''}" data-wb-action="close-panel">
                     <section class="wb-window" role="dialog" aria-modal="true" aria-label="世界背面">
                         <header class="wb-window-header">
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.1</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.2</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1450,6 +1453,7 @@ export function createWorldBackstageUI({
                 </div>
             ` : ''}
         `;
+        panelEntrancePending = false;
 
         const currentContent = root.querySelector('.wb-view-content');
         if (currentContent) currentContent.scrollTop = viewScrollTop.get(activeView) || 0;

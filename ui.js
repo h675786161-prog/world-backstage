@@ -1359,7 +1359,7 @@ export function createWorldBackstageUI({
         });
         if (activeView === 'archive') content = renderArchiveView(state, outcomes);
 
-        root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'} ${settingsOpen ? 'has-settings-open' : ''}`;
+        root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'}`;
         root.innerHTML = `
             <button class="wb-world-orb ${isOpen ? 'is-open' : ''} ${orbProcessing ? 'is-processing' : ''}" type="button"
                 style="${orbStyles.orb}" data-wb-action="toggle-panel"
@@ -1395,7 +1395,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.6</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.7</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1552,7 +1552,7 @@ export function createWorldBackstageUI({
 
     root.addEventListener('pointerdown', event => {
         const orb = event.target.closest('.wb-world-orb');
-        if (!orb || event.button !== 0 || isOpen) return;
+        if (!orb || event.button !== 0) return;
         const rect = orb.getBoundingClientRect();
         orbDrag = {
             pointerId: event.pointerId,

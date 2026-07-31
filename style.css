@@ -2735,6 +2735,7 @@
     }
 
     .wb-world-orb {
+        z-index: 2147483647 !important;
         right: max(10px, env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px)) !important;
         bottom: max(10px, calc(6px + env(safe-area-inset-bottom, 0px))) !important;
         display: block !important;
@@ -2758,14 +2759,14 @@
 
     #world-backstage-root .wb-world-orb.is-open {
         bottom: max(62px, calc(56px + env(safe-area-inset-bottom, 0px))) !important;
-        opacity: 0.72;
-        pointer-events: auto;
-        transform: scale(0.82);
-    }
-
-    #world-backstage-root.has-settings-open .wb-world-orb.is-open {
-        opacity: 0 !important;
-        pointer-events: none !important;
+        border-color: var(--wb-accent) !important;
+        background: var(--wb-panel-strong) !important;
+        opacity: 0.94 !important;
+        pointer-events: auto !important;
+        box-shadow:
+            0 7px 18px rgba(0, 0, 0, 0.28),
+            0 0 0 2px color-mix(in srgb, var(--wb-accent) 18%, transparent);
+        transform: scale(0.92);
     }
 
     .wb-orb-caption {

@@ -59,7 +59,10 @@ test('mobile shell adapts to dynamic viewports, safe areas and competing overlay
     assert.match(styleSource, /max-height:\s*none\s*!important/);
     assert.match(styleSource, /\.wb-world-orb:not\(\.is-open\)/);
     assert.match(styleSource, /\.wb-world-orb\.is-open/);
-    assert.match(styleSource, /\.has-settings-open \.wb-world-orb\.is-open/);
+    assert.match(styleSource, /z-index:\s*2147483647\s*!important/);
+    assert.match(styleSource, /opacity:\s*0\.94\s*!important/);
+    assert.doesNotMatch(styleSource, /\.has-settings-open \.wb-world-orb/);
+    assert.match(uiSource, /if \(!orb \|\| event\.button !== 0\) return/);
 });
 
 test('memory progress reports unindexed assistant responses', () => {

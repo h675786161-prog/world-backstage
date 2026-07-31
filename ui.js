@@ -705,7 +705,7 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
     if (!person) return '';
     return `
         <div class="wb-drawer-scrim" data-wb-action="close-person">
-            <aside class="wb-person-drawer">
+            <div class="wb-person-drawer" role="dialog" aria-modal="true" aria-label="人物详情">
                 <button class="wb-drawer-close" type="button" data-wb-action="close-person">×</button>
                 ${renderPersonAvatar(person, 'is-feature')}
                 <span class="wb-drawer-overline">LIVING TRACE</span>
@@ -753,7 +753,7 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                         <p>这段幕后信息不会直接成为任何角色的记忆，只能通过行动与痕迹进入正文。</p>
                     </div>
                 </div>
-            </aside>
+            </div>
         </div>
     `;
 }
@@ -1395,7 +1395,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.8</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.9</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>

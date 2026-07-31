@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     customProxyBase,
+    extractCompletionFinishReason,
     extractCompletionText,
     normalizeCustomApiUrl,
     requestCustomCompletion,
@@ -93,6 +94,30 @@ test('completion text extraction supports string and array content', () => {
         }),
         'ab',
     );
+    assert.equal(
+        extractCompletionFinishReason({ choices: [{ finish_reason: 'length' }] }),
+        'length',
+    );
+});
+
+test('custom API reports completions cut off by the output limit', async () => {
+    await assert.rejects(
+        () => requestCustomCompletion({
+            customApiUrl: 'https://example.test/v1',
+            customApiKey: 'plugin-secret',
+            customApiModel: 'plugin-model',
+            customApiTransport: 'direct',
+        }, [{ role: 'user', content: 'test' }], {
+            fetchImpl: async () => response({
+                choices: [{
+                    finish_reason: 'MAX_TOKENS',
+                    message: { content: '{"elapsed_minutes":8' },
+                }],
+            }),
+            timeoutMs: 0,
+        }),
+        /输出达到长度上限.*MAX_TOKENS/,
+    );
 });
 
 test('custom API errors are surfaced and never fall back silently', async () => {
@@ -119,7 +144,9 @@ test('custom API errors are surfaced and never fall back silently', async () => 
 test('failed simulation requests retry the same operation without hiding the final error', async () => {
     let calls = 0;
     const retries = [];
-    const result = await runWithRetries(async () => {
+    const attempts = [];
+    const result = await runWithRetries(async attempt => {
+        attempts.push(attempt);
         calls += 1;
         if (calls < 3) throw new Error(`temporary-${calls}`);
         return 'valid-json';
@@ -132,6 +159,7 @@ test('failed simulation requests retry the same operation without hiding the fin
 
     assert.equal(result, 'valid-json');
     assert.equal(calls, 3);
+    assert.deepEqual(attempts, [0, 1, 2]);
     assert.deepEqual(retries, [1, 2]);
 
     await assert.rejects(

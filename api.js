@@ -66,6 +66,15 @@ export function extractCompletionText(payload) {
     );
 }
 
+export function extractCompletionFinishReason(payload) {
+    return cleanText(
+        payload?.choices?.[0]?.finish_reason
+        || payload?.choices?.[0]?.finishReason
+        || payload?.finish_reason
+        || payload?.finishReason,
+    );
+}
+
 async function readResponse(response) {
     const text = await response.text();
     let data = null;
@@ -203,6 +212,10 @@ export async function requestCustomCompletion(settings, messages, {
     }
 
     const completion = extractCompletionText(data);
+    const finishReason = extractCompletionFinishReason(data);
+    if (/length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason)) {
+        throw new Error(`独立 API 输出达到长度上限（${finishReason}），需要提高输出额度后重试`);
+    }
     if (!completion) {
         throw new Error('独立 API 返回成功，但没有可读取的正文');
     }

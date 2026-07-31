@@ -446,6 +446,29 @@ function describeError(error) {
     return message.slice(0, 420);
 }
 
+function retryJsonPrompt(prompt, attempt) {
+    if (!(attempt > 0)) return prompt;
+    return `${prompt}\n\n<json_retry>\n这是第 ${attempt} 次格式重试。上一次返回无法解析或达到输出上限。请重新生成一个完整、严格、闭合的 JSON 对象；不要沿用被截断的句子，不要代码围栏或解释。优先省略没有变化的可选条目，绝不能省略结尾括号。\n</json_retry>`;
+}
+
+function retryTokenBudget(base, attempt) {
+    return Math.min(6000, Math.max(64, Number(base) || 2200) + Math.max(0, attempt) * 1200);
+}
+
+function unreadableJsonError(raw, subject = '模型') {
+    const text = String(raw || '').trim();
+    if (!text) return new Error(`${subject}没有返回可读取的 JSON 状态`);
+    const compact = text.replace(/\s+/g, ' ');
+    const beginning = compact.slice(0, 90);
+    const ending = compact.length > 140 ? compact.slice(-70) : '';
+    const likelyTruncated = /^[\[{]/.test(compact) && !/[}\]]\s*(?:```)?$/.test(compact);
+    const detail = ending ? `开头：${beginning}；结尾：${ending}` : beginning;
+    return new Error(
+        `${subject}返回的 JSON ${likelyTruncated ? '没有闭合，疑似被输出上限截断' : '格式无效'}`
+        + `（${text.length} 字符）：${detail}`,
+    );
+}
+
 function attachBranchData(message, swipeId, data) {
     if (!message || typeof message !== 'object') return;
     message.extra ||= {};
@@ -907,26 +930,21 @@ async function runSimulationForMessage(messageId, {
         attemptedAt: new Date().toISOString(),
     });
     try {
-        const payload = await runWithRetries(async () => {
-            const raw = await backgroundSimulation(prompt, {
-                maxTokens: settings.autoSimulationMode === 'deep'
-                    ? 3000
-                    : settings.autoSimulationMode === 'light'
-                        ? 1600
-                        : 2200,
-                temperature: settings.autoSimulationMode === 'deep' ? 0.28 : 0.18,
+        const baseMaxTokens = settings.autoSimulationMode === 'deep'
+            ? 3000
+            : settings.autoSimulationMode === 'light'
+                ? 1600
+                : 2200;
+        const payload = await runWithRetries(async attempt => {
+            const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
+                maxTokens: retryTokenBudget(baseMaxTokens, attempt),
+                temperature: attempt > 0
+                    ? 0.08
+                    : settings.autoSimulationMode === 'deep' ? 0.28 : 0.18,
             });
             const parsed = extractJsonObject(raw);
             if (parsed) return parsed;
-            const preview = String(raw || '')
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 120);
-            throw new Error(
-                preview
-                    ? `模型有返回，但不是可读取的 JSON：${preview}`
-                    : '模型没有返回可读取的 JSON 状态',
-            );
+            throw unreadableJsonError(raw);
         }, {
             retries: settings.autoRetryCount,
             shouldRetry: error => !(
@@ -1531,19 +1549,14 @@ async function scanHistoryArchive({
                 messages: batch.messages,
                 userName: context?.name1 || '',
             });
-            const payload = await runWithRetries(async () => {
-                const raw = await backgroundSimulation(prompt, {
-                    maxTokens: 3200,
-                    temperature: 0.1,
+            const payload = await runWithRetries(async attempt => {
+                const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
+                    maxTokens: retryTokenBudget(3200, attempt),
+                    temperature: attempt > 0 ? 0.05 : 0.1,
                 });
                 const parsed = extractJsonObject(raw);
                 if (parsed) return parsed;
-                const preview = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 120);
-                throw new Error(
-                    preview
-                        ? `记忆整理返回的不是可读取 JSON：${preview}`
-                        : '记忆整理接口没有返回可读取内容',
-                );
+                throw unreadableJsonError(raw, '记忆整理模型');
             }, {
                 retries: getSettings().autoRetryCount,
                 shouldRetry: error => !(

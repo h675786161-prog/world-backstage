@@ -452,5 +452,13 @@ test('能从带说明或代码围栏的返回中提取唯一 JSON 对象', () =>
         extractJsonObject('结算如下：{"elapsed_minutes":0,"world":{"title":"静夜"}} 完毕'),
         { elapsed_minutes: 0, world: { title: '静夜' } },
     );
+    assert.deepEqual(
+        extractJsonObject('{"elapsed_minutes":8,"world":{"title":"雨夜\n保险柜",},}'),
+        { elapsed_minutes: 8, world: { title: '雨夜\n保险柜' } },
+    );
+    assert.equal(
+        extractJsonObject('{"elapsed_minutes":8,"world":{"title":"被截断'),
+        null,
+    );
     assert.equal(extractJsonObject('没有结构化内容'), null);
 });

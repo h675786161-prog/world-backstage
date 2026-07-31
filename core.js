@@ -2162,6 +2162,91 @@ export function buildSimulationPrompt(state, {
     ].join('\n');
 }
 
+function escapeJsonControlCharacters(candidate) {
+    let output = '';
+    let inString = false;
+    let escaped = false;
+    for (const char of candidate) {
+        if (!inString) {
+            if (char === '"') inString = true;
+            output += char;
+            continue;
+        }
+        if (escaped) {
+            output += char;
+            escaped = false;
+            continue;
+        }
+        if (char === '\\') {
+            output += char;
+            escaped = true;
+            continue;
+        }
+        if (char === '"') {
+            output += char;
+            inString = false;
+            continue;
+        }
+        if (char === '\n') {
+            output += '\\n';
+            continue;
+        }
+        if (char === '\r') {
+            output += '\\r';
+            continue;
+        }
+        if (char === '\t') {
+            output += '\\t';
+            continue;
+        }
+        const code = char.charCodeAt(0);
+        output += code < 0x20
+            ? `\\u${code.toString(16).padStart(4, '0')}`
+            : char;
+    }
+    return output;
+}
+
+function removeJsonTrailingCommas(candidate) {
+    let output = '';
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < candidate.length; index += 1) {
+        const char = candidate[index];
+        if (inString) {
+            output += char;
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            output += char;
+            continue;
+        }
+        if (char === ',') {
+            let next = index + 1;
+            while (next < candidate.length && /\s/.test(candidate[next])) next += 1;
+            if (candidate[next] === '}' || candidate[next] === ']') continue;
+        }
+        output += char;
+    }
+    return output;
+}
+
+function parseJsonCandidate(candidate) {
+    const repaired = removeJsonTrailingCommas(escapeJsonControlCharacters(candidate));
+    for (const value of repaired === candidate ? [candidate] : [candidate, repaired]) {
+        try {
+            return JSON.parse(value);
+        } catch {
+            // Try the next conservative repair, if one exists.
+        }
+    }
+    return null;
+}
+
 export function extractJsonObject(rawText) {
     const raw = asString(rawText, '', 200000)
         .replace(/^```(?:json)?\s*/i, '')
@@ -2169,11 +2254,8 @@ export function extractJsonObject(rawText) {
         .trim();
     if (!raw) return null;
 
-    try {
-        return JSON.parse(raw);
-    } catch {
-        // Continue with a balanced-brace scan.
-    }
+    const direct = parseJsonCandidate(raw);
+    if (direct) return direct;
 
     let start = -1;
     let depth = 0;
@@ -2203,11 +2285,9 @@ export function extractJsonObject(rawText) {
         } else if (char === '}') {
             depth -= 1;
             if (depth === 0 && start >= 0) {
-                try {
-                    return JSON.parse(raw.slice(start, index + 1));
-                } catch {
-                    start = -1;
-                }
+                const parsed = parseJsonCandidate(raw.slice(start, index + 1));
+                if (parsed) return parsed;
+                start = -1;
             }
         }
     }

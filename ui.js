@@ -1357,7 +1357,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.3</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.4</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>

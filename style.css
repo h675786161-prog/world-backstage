@@ -1162,10 +1162,6 @@
     margin: 3px 0 0;
 }
 
-.wb-person-row .wb-inner-voice span {
-    display: none;
-}
-
 .wb-person-row .wb-inner-voice p {
     display: -webkit-box;
     overflow: hidden;
@@ -1307,15 +1303,8 @@
     content: "";
 }
 
-.wb-inner-voice span {
-    color: var(--wb-accent);
-    font-size: 7px;
-    font-weight: 600;
-    letter-spacing: 0.15em;
-}
-
 .wb-inner-voice p {
-    margin: 6px 0 0;
+    margin: 0;
     color: var(--wb-text-soft);
     font-family: "Noto Serif SC", "Songti SC", serif;
     font-size: 10px;
@@ -2734,7 +2723,6 @@
     font-size: calc(10px + var(--wb-reading-bump)) !important;
 }
 
-#world-backstage-root .wb-inner-voice span,
 #world-backstage-root .wb-drawer-section > span {
     font-size: calc(8px + var(--wb-reading-bump)) !important;
 }

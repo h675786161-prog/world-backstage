@@ -106,10 +106,8 @@ function renderPersonAvatar(person, size = '') {
 
 export function renderInnerVoice(person, worldMinute, compact = false) {
     if (!person.innerVoice) return '';
-    const time = formatWorldMinute(person.innerVoiceAt ?? worldMinute);
     return `
         <blockquote class="wb-inner-voice ${compact ? 'is-compact' : ''}">
-            <span>${escapeHtml(time.time)}</span>
             <p>“${escapeHtml(person.innerVoice)}”</p>
         </blockquote>
     `;
@@ -1359,7 +1357,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.2</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.3</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>

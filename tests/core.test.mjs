@@ -163,7 +163,7 @@ test('预定事件使用明确到期时刻', () => {
     }, start + 95).events[0].status, 'ready');
 });
 
-test('第一视角独白保留时间戳，只进入后台结算而不注入正文', () => {
+test('第一视角独白底层保留生成时刻，只进入后台结算而不注入正文', () => {
     let state = createInitialState({ worldName: '雾港', day: 2, hour: 14, minute: 10 });
     const voiceAt = state.clock.absoluteMinute;
     const secret = '我得赶在潮声停下以前，把那封信藏进灯塔。';
@@ -230,7 +230,9 @@ test('第一视角独白从模型结果到分支快照与幕后界面完整落�
 
     assert.equal(person.innerVoice, secret);
     assert.equal(snapshot.meta.swipeId, 1);
-    assert.equal(renderPersonCard(person, 'backstage', restored.clock.absoluteMinute).includes(secret), true);
+    const backstageCard = renderPersonCard(person, 'backstage', restored.clock.absoluteMinute);
+    assert.equal(backstageCard.includes(secret), true);
+    assert.equal(backstageCard.includes('22:20'), false);
     assert.equal(renderPersonCard(person, 'known', restored.clock.absoluteMinute).includes(secret), false);
     assert.equal(buildInjectionPackage(restored, {
         enabled: true,

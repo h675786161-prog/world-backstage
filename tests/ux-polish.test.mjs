@@ -21,6 +21,10 @@ test('interaction polish includes grouped settings, outside close and undo', () 
     assert.match(uiSource, /data-wb-action="undo-manual"/);
     assert.match(indexSource, /function undoManualChange/);
     assert.match(styleSource, /wb-panel-in/);
+    assert.match(uiSource, /<div class="wb-person-drawer" role="dialog"/);
+    assert.doesNotMatch(uiSource, /<aside/);
+    assert.match(styleSource, /#world-backstage-root \.wb-drawer-scrim > \.wb-person-drawer/);
+    assert.match(styleSource, /#world-backstage-root \.wb-drawer-scrim > \.wb-event-form/);
 });
 
 test('module switches keep stable brightness and do not replay the panel entrance', () => {

@@ -2797,6 +2797,38 @@
         border-radius: 18px 18px 0 0;
         padding-bottom: max(23px, env(safe-area-inset-bottom));
     }
+
+    #world-backstage-root .wb-drawer-scrim > .wb-person-drawer {
+        position: relative !important;
+        display: block !important;
+        width: 100% !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: 88dvh !important;
+        overflow: auto !important;
+        transform: none !important;
+        clip-path: none !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        contain: layout paint;
+    }
+
+    #world-backstage-root .wb-drawer-scrim > .wb-event-form {
+        position: relative !important;
+        display: grid !important;
+        width: 100% !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: 88dvh !important;
+        overflow: auto !important;
+        transform: none !important;
+        clip-path: none !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        contain: layout paint;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {

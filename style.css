@@ -22,6 +22,8 @@
     --wb-visual-inset-top: 0px;
     --wb-visual-inset-right: 0px;
     --wb-visual-inset-left: 0px;
+    --wb-visual-width: 100vw;
+    --wb-visual-height: 100vh;
     position: fixed;
     inset: 0;
     z-index: 2147483647 !important;
@@ -1519,7 +1521,19 @@
     font-size: 8px;
 }
 
-.wb-settings-popover {
+.wb-settings-layer {
+    position: fixed;
+    z-index: 20;
+    top: 50%;
+    left: 50%;
+    width: min(1180px, calc(100vw - 48px));
+    height: min(760px, calc(100vh - 48px));
+    min-height: 560px;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+}
+
+.wb-settings-layer > .wb-settings-popover {
     position: absolute;
     z-index: 10;
     top: 72px;
@@ -1534,6 +1548,7 @@
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
     scrollbar-width: thin;
     pointer-events: auto;
+    display: block;
 }
 
 .wb-popover-heading,
@@ -1916,6 +1931,7 @@
 
 .wb-world-orb {
     position: fixed;
+    z-index: 30;
     right: 24px;
     bottom: 24px;
     width: 52px;
@@ -2400,6 +2416,12 @@
         min-height: 0;
     }
 
+    .wb-settings-layer {
+        width: calc(100vw - 24px);
+        height: calc(100vh - 24px);
+        min-height: 0;
+    }
+
     .wb-window-header {
         grid-template-columns: minmax(150px, 1fr) auto auto;
         gap: 12px;
@@ -2650,20 +2672,36 @@
         gap: 11px;
     }
 
-    #world-backstage-root > .wb-settings-popover {
+    #world-backstage-root .wb-settings-layer {
         position: fixed !important;
         z-index: 2147483646 !important;
-        top: max(
-            8px,
-            env(safe-area-inset-top, 0px),
-            var(--wb-visual-inset-top, 0px),
-            clamp(12px, 2dvh, 20px)
-        ) !important;
-        right: max(8px, env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px)) !important;
-        bottom: max(8px, env(safe-area-inset-bottom, 0px)) !important;
-        left: max(8px, env(safe-area-inset-left, 0px), var(--wb-visual-inset-left, 0px)) !important;
-        width: auto !important;
-        height: auto !important;
+        top: var(--wb-visual-inset-top, 0px) !important;
+        right: auto !important;
+        bottom: auto !important;
+        left: var(--wb-visual-inset-left, 0px) !important;
+        width: var(--wb-visual-width, 100dvw) !important;
+        height: var(--wb-visual-height, 100dvh) !important;
+        min-height: 0 !important;
+        max-width: none !important;
+        max-height: none !important;
+        padding:
+            max(8px, env(safe-area-inset-top, 0px))
+            max(8px, env(safe-area-inset-right, 0px))
+            max(8px, env(safe-area-inset-bottom, 0px))
+            max(8px, env(safe-area-inset-left, 0px)) !important;
+        transform: none !important;
+        pointer-events: none !important;
+        isolation: isolate;
+    }
+
+    #world-backstage-root .wb-settings-layer > .wb-settings-popover {
+        position: relative !important;
+        z-index: 1 !important;
+        inset: auto !important;
+        display: block !important;
+        width: 100% !important;
+        height: 100% !important;
+        min-width: 0 !important;
         min-height: 0 !important;
         max-width: none !important;
         max-height: none !important;
@@ -2675,10 +2713,10 @@
         clip-path: none !important;
         transform: none !important;
         pointer-events: auto !important;
-        isolation: isolate;
+        contain: layout paint;
     }
 
-    #world-backstage-root > .wb-settings-popover > .wb-popover-heading {
+    #world-backstage-root .wb-settings-layer > .wb-settings-popover > .wb-popover-heading {
         position: sticky;
         z-index: 3;
         top: -18px;
@@ -2697,10 +2735,37 @@
     }
 
     .wb-world-orb {
-        right: max(12px, env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px));
-        bottom: max(12px, calc(8px + env(safe-area-inset-bottom, 0px)));
-        width: clamp(36px, 10vmin, 42px);
-        height: clamp(36px, 10vmin, 42px);
+        right: max(10px, env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px)) !important;
+        bottom: max(10px, calc(6px + env(safe-area-inset-bottom, 0px))) !important;
+        display: block !important;
+        width: clamp(34px, 9vmin, 38px) !important;
+        height: clamp(34px, 9vmin, 38px) !important;
+        min-width: clamp(34px, 9vmin, 38px) !important;
+        min-height: clamp(34px, 9vmin, 38px) !important;
+        max-width: clamp(34px, 9vmin, 38px) !important;
+        max-height: clamp(34px, 9vmin, 38px) !important;
+        padding: 0 !important;
+        border-radius: 50% !important;
+        visibility: visible !important;
+        appearance: none !important;
+    }
+
+    #world-backstage-root .wb-world-orb:not(.is-open) {
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        transform: none;
+    }
+
+    #world-backstage-root .wb-world-orb.is-open {
+        bottom: max(62px, calc(56px + env(safe-area-inset-bottom, 0px))) !important;
+        opacity: 0.72;
+        pointer-events: auto;
+        transform: scale(0.82);
+    }
+
+    #world-backstage-root.has-settings-open .wb-world-orb.is-open {
+        opacity: 0 !important;
+        pointer-events: none !important;
     }
 
     .wb-orb-caption {

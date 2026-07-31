@@ -42,19 +42,24 @@ test('mobile shell adapts to dynamic viewports, safe areas and competing overlay
     assert.match(styleSource, /height:\s*100dvh/);
     assert.match(styleSource, /env\(safe-area-inset-top/);
     assert.match(styleSource, /var\(--wb-visual-inset-top/);
+    assert.match(styleSource, /var\(--wb-visual-height/);
     assert.match(styleSource, /clamp\(12px, 2dvh, 20px\)/);
     assert.match(styleSource, /\.wb-view-content::\-webkit-scrollbar-thumb/);
-    assert.match(styleSource, /width:\s*clamp\(36px, 10vmin, 42px\)/);
+    assert.match(styleSource, /width:\s*clamp\(34px, 9vmin, 38px\)\s*!important/);
     assert.match(styleSource, /max-height:\s*520px\) and \(pointer:\s*coarse\)/);
     assert.match(uiSource, /window\.visualViewport\?\.addEventListener\('resize'/);
     assert.match(uiSource, /window\.visualViewport\?\.removeEventListener\('resize'/);
     assert.match(uiSource, /function responsiveOrbSize/);
     assert.match(uiSource, /function visualViewportBounds/);
-    assert.match(uiSource, /function usesMobileSheetLayout/);
-    assert.match(uiSource, /function placeSettingsForViewport/);
-    assert.match(uiSource, /root\.appendChild\(settingsPanel\)/);
-    assert.match(styleSource, /#world-backstage-root > \.wb-settings-popover/);
+    assert.match(uiSource, /class="wb-settings-layer"/);
+    assert.match(uiSource, /<div class="wb-settings-popover" role="dialog"/);
+    assert.doesNotMatch(uiSource, /<aside class="wb-settings-popover"/);
+    assert.doesNotMatch(uiSource, /root\.appendChild\(settingsPanel\)/);
+    assert.match(styleSource, /#world-backstage-root \.wb-settings-layer > \.wb-settings-popover/);
     assert.match(styleSource, /max-height:\s*none\s*!important/);
+    assert.match(styleSource, /\.wb-world-orb:not\(\.is-open\)/);
+    assert.match(styleSource, /\.wb-world-orb\.is-open/);
+    assert.match(styleSource, /\.has-settings-open \.wb-world-orb\.is-open/);
 });
 
 test('memory progress reports unindexed assistant responses', () => {

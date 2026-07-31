@@ -339,7 +339,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
     const groupOpen = id => openGroups.has(id) ? 'open' : '';
 
     return `
-        <aside class="wb-settings-popover" aria-label="世界背面设置">
+        <div class="wb-settings-popover" role="dialog" aria-modal="true" aria-label="世界背面设置">
             <div class="wb-popover-heading">
                 <div><span>OBSERVATION</span><h3>观测设置</h3></div>
                 <button type="button" data-wb-action="toggle-settings" aria-label="关闭设置">×</button>
@@ -650,7 +650,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
             </div>
                 </div>
             </details>
-        </aside>
+        </div>
     `;
 }
 
@@ -1118,7 +1118,7 @@ function responsiveOrbSize(
 ) {
     const shortestSide = Math.min(viewportWidth, viewportHeight);
     if (shortestSide > 680) return 52;
-    return Math.round(Math.max(36, Math.min(42, shortestSide * 0.1)));
+    return Math.round(Math.max(34, Math.min(38, shortestSide * 0.09)));
 }
 
 function clampOrbPosition(position) {
@@ -1170,31 +1170,15 @@ export function createWorldBackstageUI({
     function syncVisualViewportInsets() {
         const viewport = window.visualViewport;
         const viewportWidth = Number(viewport?.width || window.innerWidth || 0);
+        const viewportHeight = Number(viewport?.height || window.innerHeight || 0);
         const offsetLeft = Math.max(0, Number(viewport?.offsetLeft || 0));
         const offsetTop = Math.max(0, Number(viewport?.offsetTop || 0));
         const right = Math.max(0, Number(window.innerWidth || 0) - viewportWidth - offsetLeft);
         root.style.setProperty('--wb-visual-inset-top', `${Math.round(offsetTop)}px`);
         root.style.setProperty('--wb-visual-inset-right', `${Math.round(right)}px`);
         root.style.setProperty('--wb-visual-inset-left', `${Math.round(offsetLeft)}px`);
-    }
-
-    function usesMobileSheetLayout() {
-        return window.matchMedia?.(
-            '(max-width: 680px), (max-height: 520px) and (pointer: coarse)',
-        ).matches ?? window.innerWidth <= 680;
-    }
-
-    function placeSettingsForViewport() {
-        const settingsPanel = root.querySelector('.wb-settings-popover');
-        if (!settingsPanel) return;
-        if (usesMobileSheetLayout()) {
-            if (settingsPanel.parentElement !== root) root.appendChild(settingsPanel);
-            return;
-        }
-        const windowPanel = root.querySelector('.wb-window');
-        if (windowPanel && settingsPanel.parentElement !== windowPanel) {
-            windowPanel.appendChild(settingsPanel);
-        }
+        root.style.setProperty('--wb-visual-width', `${Math.round(viewportWidth)}px`);
+        root.style.setProperty('--wb-visual-height', `${Math.round(viewportHeight)}px`);
     }
     syncVisualViewportInsets();
 
@@ -1375,7 +1359,7 @@ export function createWorldBackstageUI({
         });
         if (activeView === 'archive') content = renderArchiveView(state, outcomes);
 
-        root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'}`;
+        root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'} ${settingsOpen ? 'has-settings-open' : ''}`;
         root.innerHTML = `
             <button class="wb-world-orb ${isOpen ? 'is-open' : ''} ${orbProcessing ? 'is-processing' : ''}" type="button"
                 style="${orbStyles.orb}" data-wb-action="toggle-panel"
@@ -1411,7 +1395,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.5</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.6</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1485,8 +1469,12 @@ export function createWorldBackstageUI({
                             </div>
                         </div>
 
-                        ${settingsOpen ? renderSettings(state, settings, syncStatus, openSettingsGroups) : ''}
                     </section>
+                    ${settingsOpen ? `
+                        <div class="wb-settings-layer">
+                            ${renderSettings(state, settings, syncStatus, openSettingsGroups)}
+                        </div>
+                    ` : ''}
                 </div>
             ` : ''}
 
@@ -1506,7 +1494,6 @@ export function createWorldBackstageUI({
             ` : ''}
         `;
         panelEntrancePending = false;
-        placeSettingsForViewport();
 
         const currentContent = root.querySelector('.wb-view-content');
         if (currentContent) currentContent.scrollTop = viewScrollTop.get(activeView) || 0;
@@ -1840,7 +1827,6 @@ export function createWorldBackstageUI({
     };
     const onResize = () => {
         syncVisualViewportInsets();
-        placeSettingsForViewport();
         if (getSettings().orbPosition) render();
     };
     document.addEventListener('keydown', onKeydown);

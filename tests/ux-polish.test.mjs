@@ -36,6 +36,27 @@ test('mobile navigation exposes all six views without horizontal overflow', () =
     assert.match(styleSource, /\.wb-calendar-page \{/);
 });
 
+test('mobile shell adapts to dynamic viewports, safe areas and competing overlays', () => {
+    assert.match(styleSource, /z-index:\s*2147483647\s*!important/);
+    assert.match(styleSource, /width:\s*100dvw/);
+    assert.match(styleSource, /height:\s*100dvh/);
+    assert.match(styleSource, /env\(safe-area-inset-top/);
+    assert.match(styleSource, /var\(--wb-visual-inset-top/);
+    assert.match(styleSource, /clamp\(12px, 2dvh, 20px\)/);
+    assert.match(styleSource, /\.wb-view-content::\-webkit-scrollbar-thumb/);
+    assert.match(styleSource, /width:\s*clamp\(36px, 10vmin, 42px\)/);
+    assert.match(styleSource, /max-height:\s*520px\) and \(pointer:\s*coarse\)/);
+    assert.match(uiSource, /window\.visualViewport\?\.addEventListener\('resize'/);
+    assert.match(uiSource, /window\.visualViewport\?\.removeEventListener\('resize'/);
+    assert.match(uiSource, /function responsiveOrbSize/);
+    assert.match(uiSource, /function visualViewportBounds/);
+    assert.match(uiSource, /function usesMobileSheetLayout/);
+    assert.match(uiSource, /function placeSettingsForViewport/);
+    assert.match(uiSource, /root\.appendChild\(settingsPanel\)/);
+    assert.match(styleSource, /#world-backstage-root > \.wb-settings-popover/);
+    assert.match(styleSource, /max-height:\s*none\s*!important/);
+});
+
 test('memory progress reports unindexed assistant responses', () => {
     assert.match(indexSource, /pendingAssistantResponses: unindexedAssistantCount\(\)/);
     assert.match(uiSource, /pendingAssistantResponses/);

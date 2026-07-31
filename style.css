@@ -19,9 +19,12 @@
     --wb-radius: 22px;
     --wb-font: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
     --wb-reading-bump: 1px;
+    --wb-visual-inset-top: 0px;
+    --wb-visual-inset-right: 0px;
+    --wb-visual-inset-left: 0px;
     position: fixed;
     inset: 0;
-    z-index: 100500;
+    z-index: 2147483647 !important;
     color: var(--wb-text);
     font-family: var(--wb-font);
     pointer-events: none;
@@ -94,6 +97,7 @@
         radial-gradient(circle at 84% 80%, rgba(57, 109, 130, 0.1), transparent 32%),
         rgba(3, 6, 15, 0.48);
     backdrop-filter: blur(5px);
+    overscroll-behavior: contain;
     pointer-events: auto;
 }
 
@@ -681,6 +685,22 @@
     padding: 22px 26px 28px;
     scrollbar-color: var(--wb-line-strong) transparent;
     scrollbar-width: thin;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+.wb-view-content::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+
+.wb-view-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.wb-view-content::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: var(--wb-line-strong);
 }
 
 .wb-view-content.is-entering {
@@ -1513,6 +1533,7 @@
     background: var(--wb-panel-strong);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
     scrollbar-width: thin;
+    pointer-events: auto;
 }
 
 .wb-popover-heading,
@@ -1928,13 +1949,13 @@
 }
 
 .wb-orb-halo {
-    inset: -9px;
+    inset: -17%;
     border: 1px solid color-mix(in srgb, var(--wb-accent) 20%, transparent);
     animation: wb-breathe 3.2s ease-in-out infinite;
 }
 
 .wb-orb-ring {
-    inset: 15px 8px;
+    inset: 29% 15%;
     border: 1px solid var(--wb-accent);
     opacity: 0.58;
 }
@@ -1967,7 +1988,7 @@
 }
 
 .wb-orb-core {
-    inset: 21px;
+    inset: 40%;
     background: var(--wb-accent);
     box-shadow: 0 0 14px var(--wb-accent);
 }
@@ -2403,7 +2424,7 @@
     }
 }
 
-@media (max-width: 680px) {
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
     .wb-panel-scrim {
         padding: 0;
         background: var(--wb-bg);
@@ -2411,7 +2432,19 @@
 
     .wb-window {
         width: 100vw;
+        width: 100dvw;
+        max-width: 100%;
+        height: 100vh;
         height: 100dvh;
+        min-height: 100vh;
+        min-height: 100dvh;
+        padding-top: max(
+            env(safe-area-inset-top, 0px),
+            var(--wb-visual-inset-top, 0px),
+            clamp(12px, 2dvh, 20px)
+        );
+        padding-right: max(env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px));
+        padding-left: max(env(safe-area-inset-left, 0px), var(--wb-visual-inset-left, 0px));
         border: 0;
         border-radius: 0;
     }
@@ -2419,8 +2452,8 @@
     .wb-window-header {
         height: 66px;
         grid-template-columns: minmax(0, 1fr) auto auto;
-        gap: 8px;
-        padding: 0 12px;
+        gap: clamp(4px, 2vw, 8px);
+        padding: 0 clamp(8px, 3vw, 12px);
     }
 
     .wb-calendar-page {
@@ -2439,12 +2472,13 @@
     }
 
     .wb-brand {
-        gap: 9px;
+        gap: clamp(5px, 2vw, 9px);
+        overflow: hidden;
     }
 
     .wb-brand-mark {
-        width: 29px;
-        height: 29px;
+        width: clamp(25px, 8vw, 29px);
+        height: clamp(25px, 8vw, 29px);
     }
 
     .wb-brand-mark .wb-orbit {
@@ -2456,7 +2490,10 @@
     }
 
     .wb-brand h1 {
-        font-size: 17px;
+        overflow: hidden;
+        font-size: clamp(14px, 4.8vw, 17px);
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .wb-brand p,
@@ -2465,12 +2502,12 @@
     }
 
     .wb-header-actions {
-        gap: 6px;
+        gap: clamp(2px, 1.5vw, 6px);
     }
 
     .wb-round-action {
-        width: 31px;
-        height: 31px;
+        width: clamp(28px, 8vw, 31px);
+        height: clamp(28px, 8vw, 31px);
     }
 
     .wb-window-body {
@@ -2613,13 +2650,42 @@
         gap: 11px;
     }
 
-    .wb-settings-popover {
-        position: fixed;
-        top: 8px;
-        right: 8px;
-        bottom: 8px;
-        width: calc(100vw - 16px);
-        max-height: none;
+    #world-backstage-root > .wb-settings-popover {
+        position: fixed !important;
+        z-index: 2147483646 !important;
+        top: max(
+            8px,
+            env(safe-area-inset-top, 0px),
+            var(--wb-visual-inset-top, 0px),
+            clamp(12px, 2dvh, 20px)
+        ) !important;
+        right: max(8px, env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px)) !important;
+        bottom: max(8px, env(safe-area-inset-bottom, 0px)) !important;
+        left: max(8px, env(safe-area-inset-left, 0px), var(--wb-visual-inset-left, 0px)) !important;
+        width: auto !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-width: none !important;
+        max-height: none !important;
+        overflow: auto !important;
+        border-radius: clamp(12px, 4vw, 18px) !important;
+        background: var(--wb-panel-strong) !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        clip-path: none !important;
+        transform: none !important;
+        pointer-events: auto !important;
+        isolation: isolate;
+    }
+
+    #world-backstage-root > .wb-settings-popover > .wb-popover-heading {
+        position: sticky;
+        z-index: 3;
+        top: -18px;
+        margin: -18px -18px 14px;
+        padding: 18px 18px 12px;
+        border-bottom: 1px solid var(--wb-line);
+        background: var(--wb-panel-strong);
     }
 
     .wb-clock-fields {
@@ -2631,10 +2697,10 @@
     }
 
     .wb-world-orb {
-        right: 14px;
-        bottom: calc(14px + env(safe-area-inset-bottom));
-        width: 48px;
-        height: 48px;
+        right: max(12px, env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px));
+        bottom: max(12px, calc(8px + env(safe-area-inset-bottom, 0px)));
+        width: clamp(36px, 10vmin, 42px);
+        height: clamp(36px, 10vmin, 42px);
     }
 
     .wb-orb-caption {

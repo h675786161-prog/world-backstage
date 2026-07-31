@@ -1103,6 +1103,24 @@ function renderArchiveView(state, outcomes) {
     `;
 }
 
+function visualViewportBounds() {
+    const viewport = window.visualViewport;
+    const left = Math.max(0, Number(viewport?.offsetLeft || 0));
+    const top = Math.max(0, Number(viewport?.offsetTop || 0));
+    const width = Math.max(0, Number(viewport?.width || window.innerWidth || 0));
+    const height = Math.max(0, Number(viewport?.height || window.innerHeight || 0));
+    return { left, top, width, height, right: left + width, bottom: top + height };
+}
+
+function responsiveOrbSize(
+    viewportWidth = window.innerWidth,
+    viewportHeight = window.innerHeight,
+) {
+    const shortestSide = Math.min(viewportWidth, viewportHeight);
+    if (shortestSide > 680) return 52;
+    return Math.round(Math.max(36, Math.min(42, shortestSide * 0.1)));
+}
+
 function clampOrbPosition(position) {
     if (
         !position
@@ -1112,11 +1130,16 @@ function clampOrbPosition(position) {
     ) {
         return null;
     }
-    const size = window.innerWidth <= 680 ? 48 : 52;
+    const viewport = visualViewportBounds();
+    const size = responsiveOrbSize(viewport.width, viewport.height);
     const margin = 10;
+    const minX = viewport.left + margin;
+    const minY = viewport.top + margin;
+    const maxX = Math.max(minX, viewport.right - size - margin);
+    const maxY = Math.max(minY, viewport.bottom - size - margin);
     return {
-        x: Math.min(window.innerWidth - size - margin, Math.max(margin, Number(position.x))),
-        y: Math.min(window.innerHeight - size - margin, Math.max(margin, Number(position.y))),
+        x: Math.min(maxX, Math.max(minX, Number(position.x))),
+        y: Math.min(maxY, Math.max(minY, Number(position.y))),
         size,
     };
 }
@@ -1143,6 +1166,37 @@ export function createWorldBackstageUI({
     const root = document.createElement('div');
     root.id = 'world-backstage-root';
     document.body.appendChild(root);
+
+    function syncVisualViewportInsets() {
+        const viewport = window.visualViewport;
+        const viewportWidth = Number(viewport?.width || window.innerWidth || 0);
+        const offsetLeft = Math.max(0, Number(viewport?.offsetLeft || 0));
+        const offsetTop = Math.max(0, Number(viewport?.offsetTop || 0));
+        const right = Math.max(0, Number(window.innerWidth || 0) - viewportWidth - offsetLeft);
+        root.style.setProperty('--wb-visual-inset-top', `${Math.round(offsetTop)}px`);
+        root.style.setProperty('--wb-visual-inset-right', `${Math.round(right)}px`);
+        root.style.setProperty('--wb-visual-inset-left', `${Math.round(offsetLeft)}px`);
+    }
+
+    function usesMobileSheetLayout() {
+        return window.matchMedia?.(
+            '(max-width: 680px), (max-height: 520px) and (pointer: coarse)',
+        ).matches ?? window.innerWidth <= 680;
+    }
+
+    function placeSettingsForViewport() {
+        const settingsPanel = root.querySelector('.wb-settings-popover');
+        if (!settingsPanel) return;
+        if (usesMobileSheetLayout()) {
+            if (settingsPanel.parentElement !== root) root.appendChild(settingsPanel);
+            return;
+        }
+        const windowPanel = root.querySelector('.wb-window');
+        if (windowPanel && settingsPanel.parentElement !== windowPanel) {
+            windowPanel.appendChild(settingsPanel);
+        }
+    }
+    syncVisualViewportInsets();
 
     let activeView = 'now';
     let renderedView = activeView;
@@ -1357,7 +1411,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.4</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.5</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1452,6 +1506,7 @@ export function createWorldBackstageUI({
             ` : ''}
         `;
         panelEntrancePending = false;
+        placeSettingsForViewport();
 
         const currentContent = root.querySelector('.wb-view-content');
         if (currentContent) currentContent.scrollTop = viewScrollTop.get(activeView) || 0;
@@ -1549,11 +1604,12 @@ export function createWorldBackstageUI({
         orbDrag = null;
         if (!completed.moved) return;
 
-        const orbSize = window.innerWidth <= 680 ? 48 : 52;
+        const viewport = visualViewportBounds();
+        const orbSize = responsiveOrbSize(viewport.width, viewport.height);
         const margin = 12;
-        const snappedX = completed.x + orbSize / 2 < window.innerWidth / 2
-            ? margin
-            : window.innerWidth - orbSize - margin;
+        const snappedX = completed.x + orbSize / 2 < viewport.left + viewport.width / 2
+            ? viewport.left + margin
+            : viewport.right - orbSize - margin;
         const placed = positionOrbElements(snappedX, completed.y);
         suppressOrbClick = true;
         window.setTimeout(() => {
@@ -1783,10 +1839,14 @@ export function createWorldBackstageUI({
         render();
     };
     const onResize = () => {
+        syncVisualViewportInsets();
+        placeSettingsForViewport();
         if (getSettings().orbPosition) render();
     };
     document.addEventListener('keydown', onKeydown);
     window.addEventListener('resize', onResize);
+    window.visualViewport?.addEventListener('resize', syncVisualViewportInsets);
+    window.visualViewport?.addEventListener('scroll', syncVisualViewportInsets);
 
     render();
     return {
@@ -1801,6 +1861,8 @@ export function createWorldBackstageUI({
             window.clearTimeout(closeTimer);
             document.removeEventListener('keydown', onKeydown);
             window.removeEventListener('resize', onResize);
+            window.visualViewport?.removeEventListener('resize', syncVisualViewportInsets);
+            window.visualViewport?.removeEventListener('scroll', syncVisualViewportInsets);
             root.remove();
         },
     };

@@ -1361,7 +1361,7 @@ export function createWorldBackstageUI({
 
         root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'}`;
         root.innerHTML = `
-            <button class="wb-world-orb ${isOpen ? 'is-open' : ''} ${orbProcessing ? 'is-processing' : ''}" type="button"
+            <button class="wb-world-orb ${isOpen ? 'is-open' : ''} ${orbProcessing ? 'is-processing' : ''} ${settings.orbPosition ? 'has-custom-position' : ''}" type="button"
                 style="${orbStyles.orb}" data-wb-action="toggle-panel"
                 aria-label="${isOpen ? '收起世界背面' : '打开世界背面'}">
                 <span class="wb-orb-halo"></span>
@@ -1395,7 +1395,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.7</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.8</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1554,6 +1554,11 @@ export function createWorldBackstageUI({
         const orb = event.target.closest('.wb-world-orb');
         if (!orb || event.button !== 0) return;
         const rect = orb.getBoundingClientRect();
+        orb.style.setProperty('left', `${rect.left}px`, 'important');
+        orb.style.setProperty('top', `${rect.top}px`, 'important');
+        orb.style.setProperty('right', 'auto', 'important');
+        orb.style.setProperty('bottom', 'auto', 'important');
+        orb.classList.add('has-custom-position');
         orbDrag = {
             pointerId: event.pointerId,
             startX: event.clientX,

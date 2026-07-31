@@ -63,6 +63,10 @@ test('mobile shell adapts to dynamic viewports, safe areas and competing overlay
     assert.match(styleSource, /opacity:\s*0\.94\s*!important/);
     assert.doesNotMatch(styleSource, /\.has-settings-open \.wb-world-orb/);
     assert.match(uiSource, /if \(!orb \|\| event\.button !== 0\) return/);
+    assert.match(uiSource, /settings\.orbPosition \? 'has-custom-position'/);
+    assert.match(styleSource, /top:\s*clamp\(180px, 52dvh, calc\(100dvh - 180px\)\)\s*!important/);
+    assert.match(styleSource, /\.wb-world-orb\.has-custom-position/);
+    assert.match(indexSource, /if \(previousSettingsVersion < 8\) settings\.orbPosition = null/);
 });
 
 test('memory progress reports unindexed assistant responses', () => {

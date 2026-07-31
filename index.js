@@ -26,7 +26,7 @@ import { createWorldBackstageUI } from './ui.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 7,
+    settingsVersion: 8,
     enabled: true,
     promptInjection: true,
     autoSync: true,
@@ -134,6 +134,7 @@ function getSettings() {
         ? Number(settings.contextTurns)
         : 5;
     if (previousSettingsVersion < 4) settings.contextTurns = 5;
+    if (previousSettingsVersion < 8) settings.orbPosition = null;
     if (previousSettingsVersion < 5) {
         settings.autoSimulationMode = previous?.autoSync === false ? 'manual' : 'balanced';
     }
@@ -160,7 +161,7 @@ function getSettings() {
     settings.customSimulationInstruction = String(
         settings.customSimulationInstruction || '',
     ).trim().slice(0, 1000);
-    settings.settingsVersion = 7;
+    settings.settingsVersion = 8;
     if (!['explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'explicit';
     }
@@ -177,7 +178,7 @@ function getSettings() {
     );
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 7) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 8) context.saveSettingsDebounced?.();
     return settings;
 }
 

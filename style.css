@@ -2736,8 +2736,6 @@
 
     .wb-world-orb {
         z-index: 2147483647 !important;
-        right: max(10px, env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px)) !important;
-        bottom: max(10px, calc(6px + env(safe-area-inset-bottom, 0px))) !important;
         display: block !important;
         width: clamp(34px, 9vmin, 38px) !important;
         height: clamp(34px, 9vmin, 38px) !important;
@@ -2751,6 +2749,18 @@
         appearance: none !important;
     }
 
+    #world-backstage-root .wb-world-orb:not(.has-custom-position) {
+        top: clamp(180px, 52dvh, calc(100dvh - 180px)) !important;
+        right: max(10px, env(safe-area-inset-right, 0px), var(--wb-visual-inset-right, 0px)) !important;
+        bottom: auto !important;
+        left: auto !important;
+    }
+
+    #world-backstage-root .wb-world-orb.has-custom-position {
+        right: auto !important;
+        bottom: auto !important;
+    }
+
     #world-backstage-root .wb-world-orb:not(.is-open) {
         opacity: 1 !important;
         pointer-events: auto !important;
@@ -2758,7 +2768,6 @@
     }
 
     #world-backstage-root .wb-world-orb.is-open {
-        bottom: max(62px, calc(56px + env(safe-area-inset-bottom, 0px))) !important;
         border-color: var(--wb-accent) !important;
         background: var(--wb-panel-strong) !important;
         opacity: 0.94 !important;

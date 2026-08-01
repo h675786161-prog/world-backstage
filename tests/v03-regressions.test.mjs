@@ -39,5 +39,8 @@ test('legacy people records receive new defaults during migration', () => {
 
     const migrated = trimState(oldState);
     assert.equal(migrated.people[0].longTermGoal, '');
+    assert.equal(migrated.people[0].personalityAnchor, '');
+    assert.equal(migrated.people[0].speakingStyle, '');
+    assert.equal(migrated.people[0].behaviorBoundaries, '');
     assert.equal(migrated.people[0].isUser, false);
 });

@@ -7,6 +7,7 @@ import {
     advanceWorldClock,
     applySimulationResult,
     buildInjectionPackage,
+    buildPersonObservationPrompt,
     buildSimulationPrompt,
     createInitialState,
     createSnapshot,
@@ -472,6 +473,46 @@ test('玩家内心默认关闭，NPC独白与长期目标仍可保存', () => {
         people_upsert: [{ id: 'laobai', name: '老白', long_term_goal: '' }],
     });
     assert.equal(next.people.find(person => person.name === '老白').longTermGoal, '保护同福客栈众人的安全');
+});
+
+test('人物约束会进入推演与观测提示，并且普通推演不能擅自改写', () => {
+    const anchored = applySimulationResult(createInitialState({ worldName: '七侠镇' }), {
+        elapsed_minutes: 0,
+        people_upsert: [{
+            id: 'laobai',
+            name: '老白',
+            personality_anchor: '胆小谨慎，但遇到同伴受伤会挡在前面。',
+            speaking_style: '语气随和，紧张时会结巴。',
+            behavior_boundaries: '不会无缘无故背叛客栈，也不会知道未被告知的幕后秘密。',
+            action: '擦拭桌面',
+            intent: '确认门窗已经锁好',
+        }],
+    });
+
+    const updated = applySimulationResult(anchored, {
+        elapsed_minutes: 0,
+        people_upsert: [{
+            id: 'laobai',
+            name: '老白',
+            personality_anchor: '冷酷无情',
+            speaking_style: '官腔',
+            behavior_boundaries: '没有边界',
+            action: '检查后门',
+        }],
+    });
+    const person = updated.people.find(item => item.id === 'laobai');
+
+    assert.equal(person.personalityAnchor, '胆小谨慎，但遇到同伴受伤会挡在前面。');
+    assert.equal(person.speakingStyle, '语气随和，紧张时会结巴。');
+    assert.equal(person.behaviorBoundaries, '不会无缘无故背叛客栈，也不会知道未被告知的幕后秘密。');
+
+    const simulationPrompt = buildSimulationPrompt(updated);
+    const observationPrompt = buildPersonObservationPrompt(updated, person);
+    for (const text of [person.personalityAnchor, person.speakingStyle, person.behaviorBoundaries]) {
+        assert.equal(simulationPrompt.includes(text), true);
+        assert.equal(observationPrompt.includes(text), true);
+    }
+    assert.match(simulationPrompt, /不得在 people_upsert 中重写/);
 });
 
 test('快照恢复产生互不污染的重抽分支', () => {

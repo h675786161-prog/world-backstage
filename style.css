@@ -19,6 +19,7 @@
     --wb-radius: 22px;
     --wb-font: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
     --wb-reading-bump: 1px;
+    --wb-reading-leading: 0.08;
     --wb-visual-inset-top: 0px;
     --wb-visual-inset-right: 0px;
     --wb-visual-inset-left: 0px;
@@ -34,14 +35,17 @@
 
 #world-backstage-root.wb-size-compact {
     --wb-reading-bump: 0px;
+    --wb-reading-leading: 0;
 }
 
 #world-backstage-root.wb-size-comfortable {
-    --wb-reading-bump: 1px;
+    --wb-reading-bump: 2px;
+    --wb-reading-leading: 0.08;
 }
 
 #world-backstage-root.wb-size-large {
-    --wb-reading-bump: 2px;
+    --wb-reading-bump: 6px;
+    --wb-reading-leading: 0.24;
 }
 
 #world-backstage-root.theme-day {
@@ -540,24 +544,75 @@
     box-shadow: 0 0 9px currentColor;
 }
 
-.wb-side-sync {
+#world-backstage-root .wb-side-sync {
     margin-top: auto;
-    padding: 9px 4px;
-    border: 1px solid var(--wb-line) !important;
-    border-radius: 10px;
-    background: transparent;
-    color: var(--wb-text-faint);
-    font-size: 10px;
+    min-height: 40px;
+    padding: 8px 10px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 28%, var(--wb-line)) !important;
+    border-radius: 12px;
+    background:
+        linear-gradient(135deg, color-mix(in srgb, var(--wb-accent-soft) 72%, transparent), transparent),
+        var(--wb-panel-faint);
+    color: var(--wb-text-soft);
     cursor: pointer;
 }
 
-.wb-side-sync:hover {
-    color: var(--wb-text);
+.wb-live-status.is-cancelling {
+    border-color: color-mix(in srgb, var(--wb-amber) 48%, transparent);
+    color: var(--wb-amber);
 }
 
-.wb-side-sync:disabled {
+.wb-live-status.is-cancelling > i {
+    border-radius: 2px;
+    animation: none;
+    box-shadow: 0 0 8px currentColor;
+}
+
+#world-backstage-root .wb-side-sync:hover {
+    border-color: color-mix(in srgb, var(--wb-accent) 58%, var(--wb-line)) !important;
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-side-sync:disabled {
     cursor: wait;
     opacity: 0.55;
+}
+
+#world-backstage-root .wb-sim-action {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    font-family: var(--wb-font) !important;
+    font-weight: 600;
+    letter-spacing: 0.025em;
+    white-space: nowrap;
+    transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+#world-backstage-root .wb-sim-action > i {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+    border: 1.5px solid currentColor;
+    border-left-color: transparent;
+    border-radius: 50%;
+    opacity: 0.78;
+}
+
+#world-backstage-root .wb-sim-action.is-cancel {
+    border-color: color-mix(in srgb, var(--wb-danger) 48%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-danger) 10%, var(--wb-panel-faint)) !important;
+    color: var(--wb-danger) !important;
+}
+
+#world-backstage-root .wb-sim-action.is-cancel > i {
+    width: 9px;
+    height: 9px;
+    border: 0;
+    border-radius: 2px;
+    background: currentColor;
+    opacity: 0.88;
 }
 
 .wb-content-column {
@@ -769,14 +824,14 @@
     background: currentColor;
 }
 
-.wb-window-footer > button {
+#world-backstage-root .wb-window-footer > button {
     flex: 0 0 auto;
-    padding: 8px 12px;
-    border: 1px solid var(--wb-line) !important;
-    border-radius: 9px;
+    min-height: 34px;
+    padding: 7px 13px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 34%, var(--wb-line)) !important;
+    border-radius: 10px;
     background: var(--wb-accent-soft);
     color: var(--wb-text-soft);
-    font-size: 10px;
     cursor: pointer;
 }
 
@@ -1200,16 +1255,55 @@
     color: var(--wb-text-faint);
 }
 
-.wb-person-edit-button {
+#world-backstage-root .wb-person-edit-button {
+    appearance: none !important;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
     align-self: flex-start;
-    margin-top: 7px;
-    padding: 6px 9px;
-    border: 1px solid var(--wb-line) !important;
-    border-radius: 9px;
-    background: var(--wb-panel-faint);
-    color: var(--wb-text-soft);
-    font-size: 9px;
+    gap: 5px;
+    min-width: 0 !important;
+    min-height: 28px !important;
+    margin-top: 8px;
+    padding: 0 10px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line)) !important;
+    border-radius: 999px !important;
+    outline: none;
+    background:
+        linear-gradient(135deg, color-mix(in srgb, var(--wb-accent-soft) 68%, transparent), transparent),
+        var(--wb-panel-faint) !important;
+    box-shadow: none !important;
+    color: var(--wb-text-soft) !important;
+    font-family: var(--wb-font) !important;
+    font-size: 9px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.04em;
+    line-height: 1 !important;
+    text-shadow: none !important;
+    white-space: nowrap;
     cursor: pointer;
+    transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+#world-backstage-root .wb-person-edit-button::before {
+    width: 11px;
+    height: 11px;
+    content: "";
+    opacity: 0.72;
+    background: currentColor;
+    clip-path: polygon(12% 70%, 12% 90%, 32% 90%, 89% 33%, 68% 12%);
+}
+
+#world-backstage-root .wb-person-edit-button:hover,
+#world-backstage-root .wb-person-edit-button:focus-visible {
+    border-color: color-mix(in srgb, var(--wb-accent) 55%, var(--wb-line)) !important;
+    background: var(--wb-accent-soft) !important;
+    color: var(--wb-accent) !important;
+    transform: translateY(-1px);
+}
+
+#world-backstage-root .wb-person-edit-button:active {
+    transform: translateY(0) scale(0.98) !important;
 }
 
 .wb-person-editor-actions {
@@ -2136,7 +2230,7 @@
 .wb-orb-halo {
     inset: -17%;
     border: 1px solid color-mix(in srgb, var(--wb-accent) 20%, transparent);
-    animation: wb-breathe 3.2s ease-in-out infinite;
+    animation: wb-breathe 5.6s ease-in-out infinite;
 }
 
 .wb-orb-ring {
@@ -2161,15 +2255,15 @@
 }
 
 .wb-world-orb.is-processing .wb-orb-ring.ring-one {
-    animation: wb-orb-spin-one 1.15s linear infinite;
+    animation: wb-orb-spin-one 4.8s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
 }
 
 .wb-world-orb.is-processing .wb-orb-ring.ring-two {
-    animation: wb-orb-spin-two 1.7s linear infinite;
+    animation: wb-orb-spin-two 6.2s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
 }
 
 .wb-world-orb.is-processing .wb-orb-core {
-    animation: wb-processing-core 0.9s ease-in-out infinite;
+    animation: wb-processing-core 2.6s ease-in-out infinite;
 }
 
 .wb-orb-core {
@@ -2257,6 +2351,287 @@
     border-radius: 17px;
     background: var(--wb-panel-strong);
     box-shadow: var(--wb-shadow);
+}
+
+#world-backstage-root .wb-person-editor {
+    width: min(540px, calc(100vw - 40px));
+    gap: 14px;
+    padding: 24px;
+    background:
+        radial-gradient(circle at 100% 0, color-mix(in srgb, var(--wb-accent-soft) 76%, transparent), transparent 34%),
+        linear-gradient(155deg, var(--wb-panel-faint), transparent 42%),
+        var(--wb-panel-strong);
+    scrollbar-width: thin;
+}
+
+#world-backstage-root .wb-person-editor .wb-form-heading {
+    margin: -4px 0 1px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--wb-line);
+}
+
+#world-backstage-root .wb-person-editor .wb-form-heading span {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--wb-accent);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+}
+
+#world-backstage-root .wb-person-editor .wb-form-heading h3 {
+    font-size: 20px;
+}
+
+#world-backstage-root .wb-character-anchor-fields {
+    display: grid;
+    gap: 12px;
+    margin: 1px 0;
+    padding: 15px;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 28%, var(--wb-line));
+    border-radius: 14px;
+    background:
+        linear-gradient(145deg, color-mix(in srgb, var(--wb-accent-soft) 34%, transparent), transparent 52%),
+        var(--wb-panel-faint);
+}
+
+#world-backstage-root .wb-character-anchor-fields legend {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 0 7px;
+    color: var(--wb-text);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+#world-backstage-root .wb-character-anchor-fields legend small {
+    color: var(--wb-text-faint);
+    font-size: 8px;
+    font-weight: 400;
+}
+
+#world-backstage-root .wb-character-anchor-fields > label {
+    display: grid;
+    gap: 7px;
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-character-anchor-fields textarea::placeholder {
+    color: color-mix(in srgb, var(--wb-text-faint) 72%, transparent);
+}
+
+#world-backstage-root .wb-drawer-section.is-character-anchor {
+    border-left-color: color-mix(in srgb, var(--wb-accent) 72%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-accent-soft) 34%, var(--wb-panel-faint));
+}
+
+#world-backstage-root .wb-worldbook-import {
+    display: grid;
+    gap: 10px;
+}
+
+#world-backstage-root .wb-worldbook-import > label:first-child {
+    display: grid;
+    gap: 6px;
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-worldbook-import select {
+    width: 100%;
+    min-height: 38px;
+    padding: 0 11px;
+    border: 1px solid var(--wb-line-strong);
+    border-radius: 10px;
+    background: var(--wb-panel);
+    color: var(--wb-text);
+}
+
+#world-backstage-root .wb-worldbook-import > button {
+    min-height: 38px;
+    border: 1px solid var(--wb-line-strong);
+    border-radius: 10px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+    font-family: var(--wb-font);
+}
+
+#world-backstage-root .wb-worldbook-import > p {
+    margin: 0;
+    color: var(--wb-text-faint);
+    font-size: 8px;
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-worldbook-status {
+    padding: 9px 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 9px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    line-height: 1.45;
+}
+
+#world-backstage-root .wb-worldbook-status.is-success {
+    border-color: color-mix(in srgb, var(--wb-jade) 30%, var(--wb-line));
+    color: var(--wb-jade);
+}
+
+#world-backstage-root .wb-worldbook-status.is-error {
+    border-color: color-mix(in srgb, var(--wb-danger) 38%, var(--wb-line));
+    color: var(--wb-danger);
+}
+
+#world-backstage-root .wb-worldbook-entry-list {
+    display: grid;
+    gap: 7px;
+    max-height: 310px;
+    padding: 2px;
+    overflow: auto;
+    scrollbar-width: thin;
+}
+
+#world-backstage-root .wb-worldbook-entry {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 9px;
+    align-items: start;
+    padding: 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--wb-panel) 72%, transparent);
+    cursor: pointer;
+    transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+#world-backstage-root .wb-worldbook-entry:has(input:checked) {
+    border-color: color-mix(in srgb, var(--wb-accent) 56%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-accent-soft) 40%, var(--wb-panel));
+}
+
+#world-backstage-root .wb-worldbook-entry input {
+    margin-top: 3px;
+    accent-color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-worldbook-entry span {
+    min-width: 0;
+}
+
+#world-backstage-root .wb-worldbook-entry strong,
+#world-backstage-root .wb-worldbook-entry small {
+    display: block;
+}
+
+#world-backstage-root .wb-worldbook-entry strong {
+    color: var(--wb-text);
+    font-size: 10px;
+}
+
+#world-backstage-root .wb-worldbook-entry small {
+    margin-top: 3px;
+    color: var(--wb-text-faint);
+    font-size: 8px;
+}
+
+#world-backstage-root .wb-worldbook-entry p {
+    margin: 7px 0 0;
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-worldbook-entry.is-disabled-entry {
+    opacity: 0.68;
+}
+
+#world-backstage-root .wb-person-editor > label,
+#world-backstage-root .wb-person-editor .wb-form-grid label {
+    gap: 7px;
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+#world-backstage-root .wb-person-editor input:not([type="checkbox"]),
+#world-backstage-root .wb-person-editor textarea,
+#world-backstage-root .wb-person-editor select {
+    margin-top: 0;
+    border-color: color-mix(in srgb, var(--wb-line-strong) 72%, transparent);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--wb-panel) 92%, transparent);
+    color: var(--wb-text);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: normal;
+    line-height: 1.55;
+    transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+}
+
+#world-backstage-root .wb-person-editor input:not([type="checkbox"]),
+#world-backstage-root .wb-person-editor select {
+    height: 40px;
+    padding: 0 12px;
+}
+
+#world-backstage-root .wb-person-editor textarea {
+    min-height: 68px;
+    padding: 10px 12px;
+}
+
+#world-backstage-root .wb-person-editor input:focus,
+#world-backstage-root .wb-person-editor textarea:focus,
+#world-backstage-root .wb-person-editor select:focus {
+    border-color: color-mix(in srgb, var(--wb-accent) 72%, var(--wb-line)) !important;
+    background: var(--wb-panel);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent-soft) 58%, transparent);
+}
+
+#world-backstage-root .wb-person-editor .wb-memory-editor-flags {
+    gap: 8px;
+    padding: 11px 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 11px;
+    background: var(--wb-panel-faint);
+}
+
+#world-backstage-root .wb-person-editor .wb-memory-editor-flags label {
+    min-height: 26px;
+    padding: 0 8px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--wb-panel) 72%, transparent);
+}
+
+#world-backstage-root .wb-person-editor .wb-form-note {
+    border-style: solid;
+    border-color: color-mix(in srgb, var(--wb-jade) 24%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-jade) 5%, var(--wb-panel-faint));
+    color: var(--wb-text-faint);
+    line-height: 1.6;
+}
+
+#world-backstage-root .wb-person-editor .wb-person-editor-actions {
+    position: sticky;
+    z-index: 2;
+    bottom: -24px;
+    margin: 2px -24px -24px;
+    padding: 14px 24px max(14px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--wb-line);
+    background: color-mix(in srgb, var(--wb-panel-strong) 94%, transparent);
+    backdrop-filter: blur(14px);
+}
+
+#world-backstage-root .wb-person-editor .wb-person-editor-actions button {
+    min-height: 38px;
+    font-family: var(--wb-font);
+    font-size: 10px;
+    font-weight: 600;
 }
 
 .wb-settings-group {
@@ -2387,10 +2762,13 @@
 }
 
 .wb-drawer-section > strong {
+    min-width: 0;
     color: var(--wb-text-soft);
     font-size: 10px;
     font-weight: 400;
     line-height: 1.7;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .wb-knowledge-boundary {
@@ -2559,19 +2937,19 @@
 }
 
 @keyframes wb-orb-spin-one {
-    from { transform: rotate(20deg); }
-    to { transform: rotate(380deg); }
+    from { transform: rotate(20deg) scale(0.98); opacity: 0.46; }
+    to { transform: rotate(112deg) scale(1.02); opacity: 0.72; }
 }
 
 @keyframes wb-orb-spin-two {
-    from { transform: rotate(79deg); }
-    to { transform: rotate(-281deg); }
+    from { transform: rotate(79deg) scale(1.02); opacity: 0.62; }
+    to { transform: rotate(-18deg) scale(0.97); opacity: 0.38; }
 }
 
 @keyframes wb-processing-core {
     0%,
-    100% { opacity: 0.58; transform: scale(0.78); }
-    50% { opacity: 1; transform: scale(1.18); }
+    100% { opacity: 0.68; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.08); }
 }
 
 @media (max-width: 920px) {
@@ -3012,7 +3390,8 @@
         height: auto !important;
         min-height: 0 !important;
         max-height: min(88dvh, calc(var(--wb-visual-height, 100dvh) - 12px)) !important;
-        overflow: auto !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
         margin: 0 !important;
         overscroll-behavior: contain;
         -webkit-overflow-scrolling: touch;
@@ -3022,6 +3401,34 @@
         opacity: 1 !important;
         pointer-events: auto !important;
         contain: layout paint;
+    }
+
+    #world-backstage-root .wb-person-drawer > * {
+        max-width: 100%;
+    }
+
+    #world-backstage-root .wb-person-drawer .wb-drawer-close {
+        z-index: 5;
+        top: 14px;
+        right: max(14px, env(safe-area-inset-right, 0px));
+        width: 34px;
+        height: 34px;
+        border: 1px solid var(--wb-line-strong) !important;
+        border-radius: 50%;
+        background: var(--wb-panel-strong) !important;
+        color: var(--wb-text-soft) !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+    }
+
+    #world-backstage-root .wb-person-drawer .wb-drawer-section {
+        grid-template-columns: minmax(64px, 24%) minmax(0, 1fr);
+    }
+
+    #world-backstage-root .wb-person-drawer .wb-drawer-section > strong {
+        min-width: 0;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
 
     #world-backstage-root .wb-drawer-scrim > .wb-event-form {
@@ -3066,6 +3473,7 @@
 #world-backstage-root .wb-brand p,
 #world-backstage-root .wb-view-intro p {
     font-size: calc(11px + var(--wb-reading-bump)) !important;
+    line-height: calc(1.55 + var(--wb-reading-leading));
 }
 
 #world-backstage-root .wb-live-status,
@@ -3073,6 +3481,36 @@
 #world-backstage-root .wb-observer-switch button,
 #world-backstage-root .wb-sync-copy strong,
 #world-backstage-root .wb-window-footer > button {
+    font-size: calc(10px + var(--wb-reading-bump)) !important;
+}
+
+#world-backstage-root .wb-settings-group > summary > span,
+#world-backstage-root .wb-api-form label,
+#world-backstage-root .wb-history-settings label,
+#world-backstage-root .wb-event-form > label,
+#world-backstage-root .wb-form-grid label,
+#world-backstage-root .wb-custom-instruction,
+#world-backstage-root .wb-number-setting {
+    font-size: calc(10px + var(--wb-reading-bump)) !important;
+}
+
+#world-backstage-root .wb-settings-group > summary > small,
+#world-backstage-root .wb-setting-block p,
+#world-backstage-root .wb-form-note,
+#world-backstage-root .wb-connection-card > small {
+    font-size: calc(8px + var(--wb-reading-bump)) !important;
+    line-height: calc(1.5 + var(--wb-reading-leading));
+}
+
+#world-backstage-root .wb-setting-block input,
+#world-backstage-root .wb-setting-block textarea,
+#world-backstage-root .wb-setting-block select,
+#world-backstage-root .wb-event-form input,
+#world-backstage-root .wb-event-form textarea,
+#world-backstage-root .wb-event-form select,
+#world-backstage-root .wb-api-form input,
+#world-backstage-root .wb-api-form select,
+#world-backstage-root .wb-api-form textarea {
     font-size: calc(10px + var(--wb-reading-bump)) !important;
 }
 
@@ -3089,6 +3527,17 @@
 #world-backstage-root .wb-option-row button,
 #world-backstage-root .wb-setting-actions button {
     font-size: calc(9px + var(--wb-reading-bump)) !important;
+}
+
+#world-backstage-root .wb-setting-toggle span,
+#world-backstage-root .wb-event-card p,
+#world-backstage-root .wb-person-action,
+#world-backstage-root .wb-person-thread strong,
+#world-backstage-root .wb-person-card > p,
+#world-backstage-root .wb-inner-voice p,
+#world-backstage-root .wb-drawer-section strong,
+#world-backstage-root .wb-knowledge-boundary p {
+    line-height: calc(1.55 + var(--wb-reading-leading));
 }
 
 #world-backstage-root .wb-person-name-line strong {
@@ -3120,12 +3569,18 @@
 }
 
 #world-backstage-root.wb-size-large .wb-person-card {
-    padding: 20px;
+    padding: 22px;
 }
 
 #world-backstage-root.wb-size-large .wb-person-row {
     gap: 13px;
     padding: 12px;
+}
+
+#world-backstage-root.wb-size-large .wb-setting-block,
+#world-backstage-root.wb-size-large .wb-api-form,
+#world-backstage-root.wb-size-large .wb-history-settings {
+    padding: 15px;
 }
 
 .wb-api-form,

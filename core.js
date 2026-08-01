@@ -1,7 +1,7 @@
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 export const MINUTES_PER_DAY = 24 * 60;
 
 const TERMINAL_EVENT_STATES = new Set(['resolved', 'cancelled', 'missed']);
@@ -31,6 +31,9 @@ const LIMITS = Object.freeze({
     text: 800,
     innerVoice: 240,
     longTermGoal: 360,
+    personalityAnchor: 600,
+    speakingStyle: 360,
+    behaviorBoundaries: 500,
     storySummaries: 72,
     clues: 180,
     memoryFacts: 240,
@@ -527,6 +530,29 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         '',
         LIMITS.longTermGoal,
     );
+    // These are author-owned character anchors. A routine simulation may use
+    // them as constraints, but must never silently rewrite an existing card.
+    const personalityAnchor = asString(
+        existing
+            ? existing.personalityAnchor
+            : (raw?.personality_anchor ?? raw?.personalityAnchor),
+        '',
+        LIMITS.personalityAnchor,
+    );
+    const speakingStyle = asString(
+        existing
+            ? existing.speakingStyle
+            : (raw?.speaking_style ?? raw?.speakingStyle),
+        '',
+        LIMITS.speakingStyle,
+    );
+    const behaviorBoundaries = asString(
+        existing
+            ? existing.behaviorBoundaries
+            : (raw?.behavior_boundaries ?? raw?.behaviorBoundaries),
+        '',
+        LIMITS.behaviorBoundaries,
+    );
     const suppliedInnerVoiceAt = raw?.inner_voice_at ?? raw?.innerVoiceAt;
     const suppliedLastSeen = raw?.last_seen_message_id ?? raw?.lastSeenMessageId;
     const suppliedLastSeenNumber = Number(suppliedLastSeen);
@@ -565,6 +591,9 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         action: asString(raw?.action, existing?.action || '当前行动待确认', 280),
         intent: asString(raw?.intent, existing?.intent || '短期意图待确认', 320),
         longTermGoal: longTermGoal || asString(existing?.longTermGoal, '', LIMITS.longTermGoal),
+        personalityAnchor,
+        speakingStyle,
+        behaviorBoundaries,
         simulationEnabled: Boolean(
             raw?.simulation_enabled
             ?? raw?.simulationEnabled
@@ -585,6 +614,11 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         source: ['foreground', 'background', 'manual'].includes(raw?.source)
             ? raw.source
             : (existing?.source || 'background'),
+        worldbookRef: asString(
+            existing?.worldbookRef ?? raw?.worldbookRef ?? raw?.worldbook_ref,
+            '',
+            180,
+        ),
         lastSeenMessageId: hasSuppliedLastSeen
             ? suppliedLastSeenNumber
             : (
@@ -1694,13 +1728,20 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
 export function buildHistoryIndexPrompt(state, {
     messages = [],
     userName = '',
+    compact = false,
 } = {}) {
+    const compactMode = Boolean(compact);
     const normalizedMessages = asArray(messages)
         .map(message => ({
             id: asInteger(message?.id, 0, 0),
             swipe: asInteger(message?.swipe, 0, 0),
             role: message?.role === 'user' ? 'user' : 'assistant',
-            content: modelText(message?.content, message?.role === 'user' ? 4000 : 7000),
+            content: modelText(
+                message?.content,
+                compactMode
+                    ? (message?.role === 'user' ? 2400 : 4200)
+                    : (message?.role === 'user' ? 4000 : 7000),
+            ),
         }))
         .filter(message => message.content);
     const startMessageId = normalizedMessages[0]?.id ?? 0;
@@ -1712,17 +1753,20 @@ export function buildHistoryIndexPrompt(state, {
         ))
         .join('\n');
     const existing = selectRelevantStoryMemory(state, sourceText, {
-        maximumFacts: 32,
-        maximumClues: 24,
-        maximumSummaries: 6,
+        maximumFacts: compactMode ? 14 : 32,
+        maximumClues: compactMode ? 10 : 24,
+        maximumSummaries: compactMode ? 3 : 6,
     });
+    const outputLimits = compactMode
+        ? '极简重试：memory_digest.text 不超过240字，chapter_summary.summary 不超过160字；facts_upsert 最多3条，clues_upsert 最多2条；没有变化的数组必须返回空数组。'
+        : '输出应紧凑：memory_digest.text 约300—600字，chapter_summary.summary 约160—320字；facts_upsert 最多8条，clues_upsert 最多6条。';
 
     return [
         '你是“世界背面”的历史档案员。你只整理已经发生的聊天记录，不续写、不推演未来、不修改世界时间。',
         '',
         '任务：',
         '1. 为这一批正文写一段忠实、紧凑的阶段摘要，保留关系变化、承诺、冲突、重要物品与未完成的问题。',
-        '2. 重写 memory_digest：把旧持续摘要与本批真正持久的重要变化合并，删除已经失效的说法，控制在约600—1200字；这不是逐轮流水账。',
+        '2. 重写 memory_digest：把旧持续摘要与本批真正持久的重要变化合并，删除已经失效的说法；这不是逐轮流水账。',
         '3. facts_upsert 只记录正文明确成立、未来仍有用的长期事实，例如身份、关系、承诺、能力限制、重要物品归属和已经揭示的真相。临时位置、普通动作、气氛不算长期事实。',
         '4. 每类事实使用稳定 key（例如“人物:老白:真实身份”）。同一 key 出现新值时保留 key 并提交新 value；插件会把旧版本标为 superseded。真假仍无法判断时用 status=disputed，不要强行覆盖。',
         '5. 只提取真正可能在后文产生呼应的伏笔。普通环境描写、一次性动作和已经当场解释完的事实不要当作伏笔。',
@@ -1731,6 +1775,7 @@ export function buildHistoryIndexPrompt(state, {
         '8. 不得把玩家未明说的想法写成事实。玩家角色名：'
             + `${modelText(userName, 80) || '未提供'}。`,
         '9. 只返回一个合法 JSON 对象，不要代码围栏和解释。',
+        `10. ${outputLimits}`,
         '',
         `本批范围：消息 ${startMessageId}—${endMessageId}`,
         '本批正文：',
@@ -1744,9 +1789,6 @@ export function buildHistoryIndexPrompt(state, {
             memory_digest: {
                 text: '',
                 through_message_id: endMessageId,
-                people: [],
-                locations: [],
-                tags: [],
             },
             chapter_summary: {
                 id: `summary_${startMessageId}_${endMessageId}`,
@@ -1754,29 +1796,16 @@ export function buildHistoryIndexPrompt(state, {
                 summary: '',
                 start_message_id: startMessageId,
                 end_message_id: endMessageId,
-                people: [],
-                locations: [],
-                tags: [],
             },
             facts_upsert: [{
-                id: '',
                 key: '',
                 subject: '',
                 predicate: '',
                 value: '',
                 source_message_id: startMessageId,
-                source_swipe_id: 0,
                 source_excerpt: '',
-                people: [],
-                locations: [],
-                tags: [],
-                status: 'active',
-                confidence: 'high',
-                importance: 2,
-                visibility: 'known',
             }],
             facts_invalidate: [{
-                id: '',
                 key: '',
                 reason: '',
             }],
@@ -1785,14 +1814,8 @@ export function buildHistoryIndexPrompt(state, {
                 title: '',
                 text: '',
                 source_message_id: startMessageId,
-                source_swipe_id: 0,
                 source_excerpt: '',
-                people: [],
-                locations: [],
-                tags: [],
                 status: 'open',
-                importance: 1,
-                visibility: 'hidden',
             }],
             clues_resolve: [{
                 id: '',
@@ -1935,6 +1958,9 @@ export function buildPersonObservationPrompt(state, person, {
             action: person?.action,
             intent: person?.intent,
             long_term_goal: person?.longTermGoal,
+            personality_anchor: person?.personalityAnchor,
+            speaking_style: person?.speakingStyle,
+            behavior_boundaries: person?.behaviorBoundaries,
             inner_voice: person?.innerVoice,
             knowledge: person?.knowledge,
         }),
@@ -1995,6 +2021,9 @@ export function compactStateForModel(state, {
                 action: modelText(person.action, 180),
                 intent: modelText(person.intent, 180),
                 long_term_goal: modelText(person.longTermGoal, 220),
+                personality_anchor: modelText(person.personalityAnchor, LIMITS.personalityAnchor),
+                speaking_style: modelText(person.speakingStyle, LIMITS.speakingStyle),
+                behavior_boundaries: modelText(person.behaviorBoundaries, LIMITS.behaviorBoundaries),
                 inner_voice: isUser && !includeUserInnerVoice
                     ? ''
                     : modelText(person.innerVoice, 160),
@@ -2114,6 +2143,7 @@ export function buildSimulationPrompt(state, {
         '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
         '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在她的处境/目标/情绪有真实变化时更新。不要让所有人物每轮集体独白。',
+        '人物状态中的 personality_anchor、speaking_style 与 behavior_boundaries 是用户维护的角色约束：必须遵守，不得在 people_upsert 中重写，也不得用本轮临时情绪覆盖稳定人格。',
         `7. ${userVoiceRule}`,
         '8. long_term_goal 是人物较稳定的长期方向；只有目标真正建立、完成、放弃或转向时才更新，不能把本轮动作重复填进去。',
         '9. inner_voice 是幕后观测信息，不得当作主角已知事实，也不得写入 deliveries_confirmed。',

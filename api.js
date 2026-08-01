@@ -8,13 +8,16 @@ export async function runWithRetries(operation, {
     wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
     onRetry = null,
     shouldRetry = () => true,
+    signal = null,
 } = {}) {
     const maximumRetries = Math.min(5, Math.max(0, Number.parseInt(retries, 10) || 0));
     let attempt = 0;
     while (true) {
         try {
+            if (signal?.aborted) throw cancellationError();
             return await operation(attempt);
         } catch (error) {
+            if (signal?.aborted || isAbortError(error)) throw cancellationError();
             if (attempt >= maximumRetries || !shouldRetry(error, attempt)) throw error;
             attempt += 1;
             const milliseconds = Math.min(
@@ -27,8 +30,39 @@ export async function runWithRetries(operation, {
                 delayMs: milliseconds,
                 error,
             });
-            if (milliseconds > 0) await wait(milliseconds);
+            if (milliseconds > 0) await waitForRetry(wait, milliseconds, signal);
         }
+    }
+}
+
+function cancellationError() {
+    const error = new Error('推演已由用户取消');
+    error.name = 'AbortError';
+    return error;
+}
+
+export function isAbortError(error) {
+    return error?.name === 'AbortError'
+        || /aborted|aborterror|已由用户取消|用户取消/i.test(String(error?.message || error || ''));
+}
+
+async function waitForRetry(wait, milliseconds, signal) {
+    if (!signal) {
+        await wait(milliseconds);
+        return;
+    }
+    if (signal.aborted) throw cancellationError();
+    let abort;
+    try {
+        await Promise.race([
+            wait(milliseconds),
+            new Promise((_, reject) => {
+                abort = () => reject(cancellationError());
+                signal.addEventListener('abort', abort, { once: true });
+            }),
+        ]);
+    } finally {
+        if (abort) signal.removeEventListener('abort', abort);
     }
 }
 
@@ -50,23 +84,41 @@ export function normalizeCustomModelsUrl(value) {
 
 function contentText(value) {
     if (typeof value === 'string') return value;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return contentText(value.text ?? value.value ?? value.content ?? '');
+    }
     if (!Array.isArray(value)) return '';
     return value
         .map(part => (
             typeof part === 'string'
                 ? part
-                : part?.text ?? part?.content ?? ''
+                : contentText(part?.text ?? part?.value ?? part?.content ?? '')
         ))
         .filter(Boolean)
         .join('');
+}
+
+function responsesApiText(payload) {
+    if (!Array.isArray(payload?.output)) return '';
+    return payload.output
+        .map(item => contentText(item?.content ?? item?.text ?? ''))
+        .filter(Boolean)
+        .join('');
+}
+
+function isDeepSeekV4Model(model) {
+    return /(?:^|[\/_-])deepseek[-_]?v?4(?:[\/_-]|$)/i.test(String(model || ''));
 }
 
 export function extractCompletionText(payload) {
     const choice = payload?.choices?.[0];
     return cleanText(
         contentText(choice?.message?.content)
+        || contentText(choice?.message?.output_text)
         || choice?.text
         || payload?.output_text
+        || responsesApiText(payload)
+        || contentText(payload?.content)
         || payload?.response,
     );
 }
@@ -241,6 +293,13 @@ export async function requestCustomCompletion(settings, messages, {
         max_tokens: Math.max(64, Number.parseInt(maxTokens, 10) || 2200),
         stream: false,
     };
+    const useDeepSeekV4Compatibility = isDeepSeekV4Model(model);
+    if (useDeepSeekV4Compatibility) {
+        // DeepSeek V4 defaults to thinking mode. Structured background work does
+        // not need hidden reasoning, and it can otherwise consume the completion
+        // budget before message.content is produced.
+        body.thinking = { type: 'disabled' };
+    }
 
     let target = apiUrl;
     let headers = {
@@ -253,9 +312,10 @@ export async function requestCustomCompletion(settings, messages, {
         target = '/api/backends/chat-completions/generate';
         headers = headersFrom(getRequestHeaders);
         payload = {
-            chat_completion_source: 'openai',
+            chat_completion_source: useDeepSeekV4Compatibility ? 'deepseek' : 'openai',
             reverse_proxy: customProxyBase(settings.customApiUrl),
             proxy_password: apiKey,
+            include_reasoning: false,
             ...body,
         };
     }
@@ -278,6 +338,14 @@ export async function requestCustomCompletion(settings, messages, {
     const { text, data } = await readResponse(response);
     if (!response.ok || data?.error) {
         const detail = errorDetail(data, text);
+        if (/no message generated|empty (?:message|response)|no content/i.test(detail)) {
+            throw new Error(
+                '独立 API 没有返回最终正文（No message generated）。'
+                + (useDeepSeekV4Compatibility
+                    ? '插件已请求关闭 DS4 思考；若仍为空，通常是中转站未转发该参数或接口输出额度耗尽'
+                    : '请检查模型输出额度或改用能稳定返回正文的模型'),
+            );
+        }
         throw new Error(`独立 API 返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`);
     }
 
@@ -287,7 +355,10 @@ export async function requestCustomCompletion(settings, messages, {
         if (/length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason)) {
             throw new Error(`独立 API 输出达到长度上限（${finishReason}），且没有返回可恢复的正文`);
         }
-        throw new Error('独立 API 返回成功，但没有可读取的正文');
+        throw new Error(
+            '独立 API 返回成功，但没有可读取的最终正文。'
+            + (useDeepSeekV4Compatibility ? 'DS4 思考可能占满了中转站的输出额度' : ''),
+        );
     }
     // Some OpenAI-compatible providers report MAX_TOKENS even when the JSON body is
     // already complete. Preserve non-empty output and let the JSON parser decide;

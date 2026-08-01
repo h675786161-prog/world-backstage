@@ -136,6 +136,56 @@ test('completion text extraction supports string and array content', () => {
         extractCompletionFinishReason({ choices: [{ finish_reason: 'length' }] }),
         'length',
     );
+    assert.equal(
+        extractCompletionText({
+            output: [{ content: [{ type: 'output_text', text: { value: 'responses-text' } }] }],
+        }),
+        'responses-text',
+    );
+    assert.equal(
+        extractCompletionText({ choices: [{ message: { output_text: 'message-output' } }] }),
+        'message-output',
+    );
+});
+
+test('DeepSeek V4 disables thinking and uses the tavern DeepSeek proxy path', async () => {
+    let proxyRequest = null;
+    const result = await requestCustomCompletion({
+        customApiUrl: 'https://example.test/v1',
+        customApiKey: 'deepseek-secret',
+        customApiModel: 'deepseek-v4-flash',
+        customApiTransport: 'proxy',
+    }, [{ role: 'user', content: 'return json' }], {
+        fetchImpl: async (url, options) => {
+            proxyRequest = { url, body: JSON.parse(options.body) };
+            return response({ choices: [{ message: { content: '{"ok":true}' } }] });
+        },
+        getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }),
+        timeoutMs: 0,
+    });
+
+    assert.equal(result, '{"ok":true}');
+    assert.equal(proxyRequest.url, '/api/backends/chat-completions/generate');
+    assert.equal(proxyRequest.body.chat_completion_source, 'deepseek');
+    assert.equal(proxyRequest.body.include_reasoning, false);
+    assert.deepEqual(proxyRequest.body.thinking, { type: 'disabled' });
+});
+
+test('DeepSeek V4 direct mode also requests non-thinking output', async () => {
+    let requestBody = null;
+    await requestCustomCompletion({
+        customApiUrl: 'https://example.test/v1',
+        customApiKey: 'deepseek-secret',
+        customApiModel: 'deepseek-v4-flash',
+        customApiTransport: 'direct',
+    }, [{ role: 'user', content: 'return json' }], {
+        fetchImpl: async (_url, options) => {
+            requestBody = JSON.parse(options.body);
+            return response({ choices: [{ message: { content: '{"ok":true}' } }] });
+        },
+        timeoutMs: 0,
+    });
+    assert.deepEqual(requestBody.thinking, { type: 'disabled' });
 });
 
 test('custom API preserves non-empty output when provider reports its token limit', async () => {
@@ -237,4 +287,47 @@ test('failed simulation requests retry the same operation without hiding the fin
         /invalid key/,
     );
     assert.equal(deterministicCalls, 1);
+});
+
+test('user cancellation aborts the active request and never retries it', async () => {
+    const requestController = new AbortController();
+    let requestCalls = 0;
+    const request = requestCustomCompletion({
+        customApiUrl: 'https://example.com/v1',
+        customApiKey: 'secret',
+        customApiModel: 'test-model',
+        customApiTransport: 'direct',
+    }, [{ role: 'user', content: 'simulate' }], {
+        signal: requestController.signal,
+        timeoutMs: 0,
+        fetchImpl: async (_url, options) => {
+            requestCalls += 1;
+            return await new Promise((_resolve, reject) => {
+                options.signal.addEventListener('abort', () => {
+                    const error = new Error('aborted');
+                    error.name = 'AbortError';
+                    reject(error);
+                }, { once: true });
+            });
+        },
+    });
+    requestController.abort();
+    await assert.rejects(request, error => error?.name === 'AbortError');
+    assert.equal(requestCalls, 1);
+
+    const retryController = new AbortController();
+    let retryCalls = 0;
+    await assert.rejects(
+        () => runWithRetries(async () => {
+            retryCalls += 1;
+            throw new Error('temporary');
+        }, {
+            retries: 3,
+            delayMs: 1000,
+            signal: retryController.signal,
+            onRetry: () => retryController.abort(),
+        }),
+        error => error?.name === 'AbortError' && /取消/.test(error.message),
+    );
+    assert.equal(retryCalls, 1);
 });

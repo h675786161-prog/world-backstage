@@ -288,6 +288,7 @@ function syncPhaseLabel(phase) {
         idle: '等待正文',
         queued: '排队中',
         running: '推演中',
+        cancelling: '正在停止',
         success: '推演完成',
         error: '推演失败',
         pending: '等待推演',
@@ -355,6 +356,9 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
         ? syncStatus.availableModels
         : [];
     const modelPull = syncStatus?.modelPull || { phase: 'idle', message: '' };
+    const worldbook = syncStatus?.worldbook || { books: [], entries: [], phase: 'idle' };
+    const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
+    const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
     const historyPercent = memory.total > 0
         ? Math.min(100, Math.round((Number(memory.processed) || 0) / memory.total * 100))
         : 0;
@@ -515,14 +519,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                 </label>
             </div>
             <div class="wb-setting-toggle">
-                <div><strong>暂停自动推演</strong><span>新正文继续累计；手动同步仍可使用</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="simulationPaused"
-                        ${settings.simulationPaused ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-            <div class="wb-setting-toggle">
                 <div><strong>推演结果注入正文</strong><span>关闭后后台世界照常运行，只是不参与主对话生成</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="worldPromptInjection"
@@ -634,6 +630,43 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                 <p>严格模式下，没有明确几点或经过多少分钟/小时/天，世界时钟就保持不动。</p>
             </div>
 
+                </div>
+            </details>
+
+            <details class="wb-settings-group" data-settings-group="worldbook" ${groupOpen('worldbook')}>
+                <summary><span>世界书人物</span><small>手动读取、预览与选择</small></summary>
+                <div class="wb-settings-group-body">
+                    <form class="wb-worldbook-import" data-wb-form="worldbook">
+                        <label>选择世界书
+                            <select name="bookName" ${worldbookBooks.length ? '' : 'disabled'}>
+                                ${worldbookBooks.length
+                                    ? worldbookBooks.map(book => `<option value="${escapeAttr(book)}"
+                                        ${book === worldbook.bookName ? 'selected' : ''}>${escapeHtml(book)}</option>`).join('')
+                                    : '<option value="">酒馆当前没有可读取的世界书</option>'}
+                            </select>
+                        </label>
+                        <button type="button" data-wb-action="scan-worldbook"
+                            ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
+                            ${worldbook.phase === 'running' ? '正在读取…' : '读取条目预览'}
+                        </button>
+                        <p>插件只在你点击时读取一次，不会每轮扫描世界书，也不会自动把所有条目当成 NPC。</p>
+                        ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
+                        ${worldbookEntries.length ? `
+                            <div class="wb-worldbook-entry-list">
+                                ${worldbookEntries.map(entry => `
+                                    <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''}">
+                                        <input type="checkbox" name="entryIds" value="${escapeAttr(entry.uid)}">
+                                        <span>
+                                            <strong>${escapeHtml(entry.name)}</strong>
+                                            <small>${entry.disabled ? '世界书中已停用 · ' : ''}${escapeHtml((entry.keys || []).join('、') || `UID ${entry.uid}`)}</small>
+                                            <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? '…' : ''}</p>
+                                        </span>
+                                    </label>
+                                `).join('')}
+                            </div>
+                            <button class="wb-primary-button" type="submit">导入勾选人物</button>
+                        ` : ''}
+                    </form>
                 </div>
             </details>
 
@@ -809,6 +842,15 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                 ${person.longTermGoal ? `
                     <div class="wb-drawer-section"><span>长期目标</span><strong>${escapeHtml(person.longTermGoal)}</strong></div>
                 ` : ''}
+                ${person.personalityAnchor ? `
+                    <div class="wb-drawer-section is-character-anchor"><span>人格锚点</span><strong>${escapeHtml(person.personalityAnchor)}</strong></div>
+                ` : ''}
+                ${person.speakingStyle ? `
+                    <div class="wb-drawer-section is-character-anchor"><span>说话习惯</span><strong>${escapeHtml(person.speakingStyle)}</strong></div>
+                ` : ''}
+                ${person.behaviorBoundaries ? `
+                    <div class="wb-drawer-section is-character-anchor"><span>行为边界</span><strong>${escapeHtml(person.behaviorBoundaries)}</strong></div>
+                ` : ''}
                 ${person.trace ? `
                     <div class="wb-drawer-section"><span>最近轨迹</span><strong>${escapeHtml(person.trace)}</strong></div>
                 ` : ''}
@@ -948,6 +990,15 @@ function renderPersonEditorModal(state, editor) {
                 <label>正在做<textarea name="action" maxlength="280" rows="2">${escapeHtml(person?.action || '')}</textarea></label>
                 <label>短期意图<textarea name="intent" maxlength="320" rows="2">${escapeHtml(person?.intent || '')}</textarea></label>
                 <label>长期目标<textarea name="longTermGoal" maxlength="420" rows="3">${escapeHtml(person?.longTermGoal || '')}</textarea></label>
+                <fieldset class="wb-character-anchor-fields">
+                    <legend><span>角色约束</span><small>推演与即时观测都会遵守，AI 不会自动改写</small></legend>
+                    <label>人格锚点<textarea name="personalityAnchor" maxlength="600" rows="3"
+                        placeholder="例如：外冷内热，警惕权威；重视承诺，但不轻易示弱。">${escapeHtml(person?.personalityAnchor || '')}</textarea></label>
+                    <label>说话习惯<textarea name="speakingStyle" maxlength="360" rows="2"
+                        placeholder="例如：句子简短，很少使用感叹号；紧张时会转移话题。">${escapeHtml(person?.speakingStyle || '')}</textarea></label>
+                    <label>行为边界<textarea name="behaviorBoundaries" maxlength="500" rows="3"
+                        placeholder="例如：不会无证据背叛同伴；不替玩家做决定；不知道的幕后信息不得说出口。">${escapeHtml(person?.behaviorBoundaries || '')}</textarea></label>
+                </fieldset>
                 <div class="wb-form-grid">
                     <label>知识边界
                         <select name="knowledge">
@@ -1532,6 +1583,7 @@ export function createWorldBackstageUI({
         const state = getState();
         const settings = getSettings();
         const syncStatus = getSyncStatus();
+        const canCancelSimulation = Boolean(syncStatus.canCancelSimulation);
         const memoryPhase = syncStatus.memory?.phase;
         if (['running', 'error'].includes(memoryPhase)) openSettingsGroups.add('memory');
         const memoryTakesFocus = ['running', 'error'].includes(memoryPhase);
@@ -1539,9 +1591,6 @@ export function createWorldBackstageUI({
         const displayPhaseLabel = memoryTakesFocus
             ? (memoryPhase === 'error' ? '记忆失败' : '整理记忆中')
             : syncPhaseLabel(syncStatus.phase);
-        const busyLabel = memoryPhase === 'running'
-            ? syncStatus.memory?.message || '正在整理长期记忆'
-            : syncStatus.message || '世界背面正在安静推演';
         const theme = themeFor(state, settings);
         const clock = formatWorldCalendar(state);
         const orbStyles = orbInlineStyles(settings.orbPosition);
@@ -1576,7 +1625,7 @@ export function createWorldBackstageUI({
         );
         const pendingDeliveries = state.events.filter(event => event.delivery?.state === 'pending').length;
         const orbProcessing = (
-            ['queued', 'running'].includes(syncStatus.phase)
+            ['queued', 'running', 'cancelling'].includes(syncStatus.phase)
             || syncStatus.memory?.phase === 'running'
         );
         const needsAttention = (
@@ -1634,7 +1683,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.6.0</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.7.0</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1677,8 +1726,11 @@ export function createWorldBackstageUI({
                                         <i></i><span><small>${view.eyebrow}</small><strong>${view.label}</strong></span>
                                     </button>
                                 `).join('')}
-                                <button class="wb-side-sync" type="button" data-wb-action="manual-sync"
-                                    ${busy ? 'disabled' : ''}>${busy ? '推演中…' : '↻ 推演'}</button>
+                                <button class="wb-side-sync wb-sim-action ${canCancelSimulation ? 'is-cancel' : ''}"
+                                    type="button" data-wb-action="${canCancelSimulation ? 'cancel-simulation' : 'manual-sync'}"
+                                    ${busy && !canCancelSimulation ? 'disabled' : ''}>
+                                    <i aria-hidden="true"></i><span>${canCancelSimulation ? '停止推演' : '推演世界'}</span>
+                                </button>
                             </nav>
 
                             <div class="wb-content-column">
@@ -1701,8 +1753,10 @@ export function createWorldBackstageUI({
                                         <span>AI回复：只触发推演，不自动计时</span><i></i>
                                         <span>独白：仅幕后可见</span>
                                     </div>
-                                    <button type="button" data-wb-action="manual-sync" ${busy ? 'disabled' : ''}>
-                                        ${busy ? '世界推演中…' : '↻ 推演最新正文'}
+                                    <button class="wb-sim-action ${canCancelSimulation ? 'is-cancel' : ''}" type="button"
+                                        data-wb-action="${canCancelSimulation ? 'cancel-simulation' : 'manual-sync'}"
+                                        ${busy && !canCancelSimulation ? 'disabled' : ''}>
+                                        <i aria-hidden="true"></i><span>${canCancelSimulation ? '停止本次推演' : '推演最新正文'}</span>
                                     </button>
                                 </footer>
                             </div>
@@ -1725,7 +1779,6 @@ export function createWorldBackstageUI({
                 observation: personObservation,
                 busy,
             }) : ''}
-            ${busy ? `<div class="wb-busy-pill" role="status" aria-live="polite"><i></i>${escapeHtml(busyLabel)}</div>` : ''}
             ${toast ? `<div class="wb-toast" role="${root.dataset.toastTone === 'error' ? 'alert' : 'status'}" aria-live="polite">${escapeHtml(toast)}</div>` : ''}
             ${syncStatus.manualUndo?.available ? `
                 <div class="wb-undo-toast" role="status">
@@ -2016,6 +2069,14 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'scan-worldbook') {
+            const form = target.closest('[data-wb-form="worldbook"]');
+            await invokeAction('scan-worldbook', {
+                bookName: form?.elements?.bookName?.value || '',
+            });
+            render();
+            return;
+        }
         if (action === 'toggle-event-delivery') {
             await invokeAction('toggle-event-delivery', {
                 eventId: target.dataset.eventId || '',
@@ -2156,12 +2217,22 @@ export function createWorldBackstageUI({
                 action: data.action || '',
                 intent: data.intent || '',
                 longTermGoal: data.longTermGoal || '',
+                personalityAnchor: data.personalityAnchor || '',
+                speakingStyle: data.speakingStyle || '',
+                behaviorBoundaries: data.behaviorBoundaries || '',
                 knowledge: data.knowledge || 'backstage',
                 relevance: data.relevance || 2,
                 simulationEnabled: form.elements.simulationEnabled?.checked || false,
                 locked: form.elements.locked?.checked || false,
             });
             if (completed) personEditor = null;
+        }
+        if (form.dataset.wbForm === 'worldbook') {
+            const formData = new FormData(form);
+            await invokeAction('import-worldbook-people', {
+                bookName: String(formData.get('bookName') || ''),
+                entryIds: formData.getAll('entryIds').map(String),
+            });
         }
         render();
     });

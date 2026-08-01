@@ -352,4 +352,80 @@ test('history prompts request all four memory layers', () => {
     assert.equal(prompt.includes('chapter_summary'), true);
     assert.equal(prompt.includes('facts_upsert'), true);
     assert.equal(prompt.includes('clues_upsert'), true);
+
+    const compactPrompt = buildHistoryIndexPrompt(createInitialState(), {
+        messages: [{ id: 1, role: 'assistant', content: 'A promise is made.' }],
+        compact: true,
+    });
+    assert.match(compactPrompt, /极简重试/);
+    assert.match(compactPrompt, /不超过240字/);
+    assert.match(compactPrompt, /facts_upsert 最多3条/);
+    assert.equal(compactPrompt.length < prompt.length + 300, true);
+});
+
+test('more than 200 turns remain bounded and still recall recent character facts', () => {
+    let state = createInitialState({ worldName: '长篇压力测试' });
+    for (let turn = 0; turn < 220; turn += 1) {
+        const personIndex = turn % 18;
+        state = applySimulationResult(state, {
+            elapsed_minutes: turn % 10 === 0 ? 1 : 0,
+            people_upsert: [{
+                id: `npc-${personIndex}`,
+                name: `人物${personIndex}`,
+                action: `处理第${turn}轮留下的事务`,
+                intent: `保持线索${turn % 9}连续`,
+                source: 'background',
+            }],
+            events_create: [{
+                id: `event-${turn}`,
+                title: `后台事件${turn}`,
+                place: `地点${turn % 12}`,
+                summary: `人物${personIndex}推进了线索${turn % 9}`,
+                clock_mode: 'condition',
+                visibility: 'hidden',
+            }],
+        }, {
+            messageId: turn * 2 + 1,
+            backgroundNpcBudget: 4,
+            narrativeText: `第${turn}轮正文`,
+        });
+        state = applyHistoryIndexResult(state, {
+            chapter_summary: {
+                id: `summary-${turn}`,
+                title: `阶段${turn}`,
+                summary: `人物${personIndex}在地点${turn % 12}处理了线索${turn % 9}`,
+            },
+            facts_upsert: [{
+                id: `fact-${turn}`,
+                key: `turn:${turn}:fact`,
+                subject: `人物${personIndex}`,
+                predicate: '经历',
+                value: `完成第${turn}轮的可持续事实`,
+                importance: turn === 219 ? 3 : 1,
+                visibility: 'known',
+            }],
+            clues_upsert: [{
+                id: `clue-${turn}`,
+                title: `线索${turn}`,
+                text: `人物${personIndex}记得第${turn}轮的细节`,
+                people: [`人物${personIndex}`],
+                tags: [`线索${turn % 9}`],
+            }],
+        }, {
+            startMessageId: turn * 2,
+            endMessageId: turn * 2 + 1,
+        });
+    }
+
+    assert.equal(state.people.length, 18);
+    assert.equal(state.events.length <= 96, true);
+    assert.equal(state.storyMemory.facts.length <= 240, true);
+    assert.equal(state.storyMemory.clues.length <= 180, true);
+    assert.equal(state.storyMemory.summaries.length <= 72, true);
+    assert.equal(state.audit.length <= 40, true);
+    const prompt = buildSimulationPrompt(state, {
+        narrativeTurns: [{ role: 'assistant', content: '人物3再次提起线索3。', messageId: 441 }],
+    });
+    assert.equal(prompt.includes('人物3'), true);
+    assert.equal(prompt.length < 80000, true);
 });

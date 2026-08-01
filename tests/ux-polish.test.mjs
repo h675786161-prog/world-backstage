@@ -18,13 +18,20 @@ test('long memory UI uses filtering, search and progressive loading', () => {
     assert.match(uiSource, /delete-memory-item/);
 });
 
-test('independent modules, pause, NPC editor and observation cache are exposed', () => {
+test('independent modules, cancellable simulation, NPC editor and observation cache are exposed', () => {
     assert.match(uiSource, /data-wb-setting="worldSimulationEnabled"/);
     assert.match(uiSource, /data-wb-setting="worldPromptInjection"/);
     assert.match(uiSource, /data-wb-setting="memorySystemEnabled"/);
     assert.match(uiSource, /data-wb-setting="memoryPromptInjection"/);
-    assert.match(uiSource, /data-wb-setting="simulationPaused"/);
+    assert.match(uiSource, /data-wb-action="\$\{canCancelSimulation \? 'cancel-simulation' : 'manual-sync'\}"/);
+    assert.match(indexSource, /function cancelActiveSimulation/);
+    assert.match(indexSource, /settings\.autoSimulationMode = 'manual'/);
+    assert.doesNotMatch(uiSource, /data-wb-setting="simulationPaused"/);
     assert.match(uiSource, /添加后台 NPC/);
+    assert.match(uiSource, /name="personalityAnchor"/);
+    assert.match(uiSource, /name="speakingStyle"/);
+    assert.match(uiSource, /name="behaviorBoundaries"/);
+    assert.match(styleSource, /wb-character-anchor-fields/);
     assert.match(indexSource, /personObservations/);
     assert.match(indexSource, /personObservationCacheKey/);
     assert.match(indexSource, /回复为空或生成失败，已跳过推演与记忆写入/);
@@ -101,4 +108,16 @@ test('transparent summary, model pull and observation delivery controls are expo
     assert.match(uiSource, /data-wb-action="queue-person-observation"/);
     assert.match(indexSource, /function simulationSummary/);
     assert.match(indexSource, /function queuePersonObservation/);
+});
+
+test('worldbook NPC bridge is explicit, selective and never scans on every turn', () => {
+    assert.match(uiSource, /data-wb-action="scan-worldbook"/);
+    assert.match(uiSource, /data-wb-form="worldbook"/);
+    assert.match(uiSource, /name="entryIds"/);
+    assert.match(uiSource, /导入勾选人物/);
+    assert.match(indexSource, /getWorldInfoNames/);
+    assert.match(indexSource, /loadWorldInfo/);
+    assert.match(indexSource, /function importWorldbookPeople/);
+    assert.match(styleSource, /wb-worldbook-entry-list/);
+    assert.doesNotMatch(indexSource, /queueSimulation[\s\S]{0,400}scanWorldbook/);
 });

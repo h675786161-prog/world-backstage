@@ -71,6 +71,7 @@ const runtime = {
     simulationChain: Promise.resolve(),
     simulationCount: 0,
     activeSimulation: null,
+    activeHistoryScan: null,
     inBackgroundGeneration: false,
     activeChatToken: '',
     queuedSimulations: new Map(),
@@ -240,7 +241,7 @@ function importWorldbookPeople(bookName, entryIds = []) {
 }
 
 function toast(message, tone = 'info') {
-    runtime.ui?.notify(message, tone === 'error' ? 'error' : 'normal');
+    runtime.ui?.notify(message, tone);
     if (!globalThis.toastr) return;
     const method = ['success', 'warning', 'error', 'info'].includes(tone) ? tone : 'info';
     globalThis.toastr[method](message, '世界背面', { preventDuplicates: true });
@@ -880,13 +881,8 @@ function narrativeContext(messageId, maximumTurns = 3) {
 function currentTurnPresentPersonIds() {
     const latest = latestAssistantEntry();
     if (!latest) return [];
-    const narrative = narrativeContext(latest.index, 1);
-    const text = narrative.turns.map(turn => turn.content).join('\n');
     return getState().people
-        .filter(person => (
-            Number(person.lastSeenMessageId) === Number(latest.index)
-            || (person.name && text.includes(person.name))
-        ))
+        .filter(person => Number(person.presentInSceneMessageId) === Number(latest.index))
         .map(person => person.id);
 }
 
@@ -1291,7 +1287,11 @@ async function runSimulationForMessage(messageId, {
             throw error;
         }
 
-        const applicablePayload = settings.memorySystemEnabled
+        // Settings may have changed while the API request was in flight. The
+        // commit decision must use the current switch value, not the snapshot
+        // captured when generation started.
+        const memoryEnabledAtCommit = getSettings().memorySystemEnabled;
+        const applicablePayload = memoryEnabledAtCommit
             ? payload
             : {
                 ...payload,
@@ -1963,6 +1963,8 @@ async function scanHistoryArchive({
         total: chatLength,
         message: automatic ? '正在自动整理新增记忆' : '正在建立历史档案',
     };
+    const controller = new AbortController();
+    runtime.activeHistoryScan = controller;
     setBusy(true);
     runtime.ui?.render();
 
@@ -1975,6 +1977,11 @@ async function scanHistoryArchive({
             ? Math.max(1, Number.parseInt(maximumBatches, 10) || 1)
             : Number.POSITIVE_INFINITY;
         while (cursor < chatLength && completedBatches < batchLimit) {
+            if (!getSettings().memorySystemEnabled || controller.signal.aborted) {
+                const error = new Error('记忆系统已关闭，本次整理已停止');
+                error.name = 'AbortError';
+                throw error;
+            }
             if (currentChatToken() !== chatToken) {
                 throw new Error('扫描期间切换了聊天，本次已在上一个完成批次处停止');
             }
@@ -2007,6 +2014,7 @@ async function scanHistoryArchive({
                     const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                         maxTokens: retryTokenBudget(historyBaseTokens, attempt),
                         temperature: attempt > 0 ? 0.05 : 0.1,
+                        signal: controller.signal,
                     });
                     const parsed = extractJsonObject(raw);
                     if (parsed) return parsed;
@@ -2021,6 +2029,7 @@ async function scanHistoryArchive({
                         runtime.historyProgress.message = `记忆整理失败，正在用紧凑格式重试 ${attempt}/${total}`;
                         runtime.ui?.render();
                     },
+                    signal: controller.signal,
                 });
             } catch (error) {
                 const assistantTurns = batch.messages.filter(message => message.role === 'assistant').length;
@@ -2034,6 +2043,11 @@ async function scanHistoryArchive({
                     runtime.ui?.render();
                     continue;
                 }
+                throw error;
+            }
+            if (!getSettings().memorySystemEnabled || controller.signal.aborted) {
+                const error = new Error('记忆系统已关闭，本次整理已停止');
+                error.name = 'AbortError';
                 throw error;
             }
             state = applyHistoryIndexResult(state, payload, {
@@ -2085,6 +2099,15 @@ async function scanHistoryArchive({
         }
         return true;
     } catch (error) {
+        if (error?.name === 'AbortError') {
+            runtime.historyProgress = {
+                ...runtime.historyProgress,
+                phase: 'idle',
+                message: '记忆整理已停止，未提交正在生成的批次',
+            };
+            runtime.ui?.render();
+            return false;
+        }
         runtime.historyProgress = {
             ...runtime.historyProgress,
             phase: 'error',
@@ -2093,6 +2116,7 @@ async function scanHistoryArchive({
         runtime.ui?.render();
         throw error;
     } finally {
+        if (runtime.activeHistoryScan === controller) runtime.activeHistoryScan = null;
         setBusy(false);
     }
 }
@@ -2123,15 +2147,26 @@ function cachedPersonObservation(personId) {
     if (!person) return null;
     const cached = getStore().personObservations?.[personObservationCacheKey(state, person)];
     if (!cached) return null;
+    const queuedEvent = cached.queuedEventId
+        ? state.events.find(event => event.id === cached.queuedEventId)
+        : null;
+    const revealState = queuedEvent?.delivery?.state === 'delivered'
+        ? 'delivered'
+        : queuedEvent?.delivery?.state === 'expired'
+            ? 'expired'
+            : (
+                queuedEvent
+                && (cached.revealEnabled ?? (
+                    queuedEvent.delivery?.manualQueued
+                    || queuedEvent.delivery?.state === 'pending'
+                ))
+            )
+                ? 'enabled'
+                : 'off';
     return {
         ...cached,
-        queued: Boolean(
-            cached.queuedEventId
-            && state.events.some(event => (
-                event.id === cached.queuedEventId
-                && event.delivery?.manualQueued
-            )),
-        ),
+        queued: revealState === 'enabled',
+        revealState,
     };
 }
 
@@ -2144,7 +2179,33 @@ function queuePersonObservation(personId) {
     const observation = store.personObservations?.[cacheKey];
     if (!observation?.text) throw new Error('请先生成一次人物观测');
     const existing = state.events.find(event => event.id === observation.queuedEventId);
-    if (existing?.delivery?.manualQueued) return cachedPersonObservation(personId);
+    if (existing?.delivery?.state === 'delivered') {
+        throw new Error('这段观测已经由正文自然承接，无法撤回');
+    }
+
+    if (existing) {
+        const enabled = !['delivered', 'expired', 'none'].includes(existing.delivery?.state)
+            && (observation.revealEnabled ?? (
+                existing.delivery?.manualQueued
+                || existing.delivery?.state === 'pending'
+            ));
+        const next = clone(state);
+        const event = next.events.find(item => item.id === existing.id);
+        event.delivery ||= { state: 'none' };
+        event.delivery.manualQueued = !enabled;
+        event.delivery.state = enabled ? 'none' : 'pending';
+        if (!enabled) event.delivery.attempts = 0;
+        observation.revealEnabled = !enabled;
+        store.personObservations[cacheKey] = observation;
+        commitManualState(
+            next,
+            enabled
+                ? `已将 ${person.name} 的幕后观测撤回为仅观看。`
+                : `已允许 ${person.name} 的幕后观测在合适时自然显露。`,
+        );
+        saveStore(store);
+        return cachedPersonObservation(personId);
+    }
 
     const previousIds = new Set(state.events.map(event => event.id));
     const next = addManualEvent(state, {
@@ -2161,9 +2222,10 @@ function queuePersonObservation(personId) {
         delivery_route: observation.text,
     });
     const created = next.events.find(event => !previousIds.has(event.id));
-    if (!created) throw new Error('没有成功建立下一轮显露事件');
-    commitManualState(next, `已把 ${person.name} 的这段镜头外片段安排到下一轮显露。`);
+    if (!created) throw new Error('没有成功建立自然显露候选');
+    commitManualState(next, `已允许 ${person.name} 的幕后观测在合适时自然显露。`);
     observation.queuedEventId = created.id;
+    observation.revealEnabled = true;
     store.personObservations[cacheKey] = observation;
     saveStore(store);
     return cachedPersonObservation(personId);
@@ -2249,6 +2311,13 @@ async function handleUiAction(action, payload = {}) {
         const context = getContext();
         const settings = getSettings();
         Object.assign(settings, payload);
+        if (payload.memorySystemEnabled === false) {
+            if (runtime.autoMemoryTimer !== null) {
+                window.clearTimeout(runtime.autoMemoryTimer);
+                runtime.autoMemoryTimer = null;
+            }
+            runtime.activeHistoryScan?.abort();
+        }
         context.extensionSettings[MODULE_ID] = settings;
         saveSettings();
         refreshInjection();

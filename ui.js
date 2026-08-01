@@ -16,6 +16,15 @@ const VIEWS = [
     { id: 'archive', label: '纪事', eyebrow: 'ARCHIVE' },
 ];
 
+const TOAST_FACES = {
+    success: '(｡•̀ᴗ-)✧',
+    busy: '( •̀ ω •́ )',
+    info: '( •ᴗ• )',
+    normal: '( •ᴗ• )',
+    warning: '(・_・;)',
+    error: '(；′⌒`)',
+};
+
 function escapeHtml(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -861,18 +870,29 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                             <i></i><div><strong>知识边界</strong><p>角色所知视角不会读取她的幕后独白。</p></div>
                         </div>
                     `}
-                <div class="wb-person-observation">
+                <div class="wb-person-observation ${observation?.personId === person.id ? 'has-result' : ''}">
+                    ${observation?.personId === person.id ? `
+                        <article>
+                            <span>幕后观测 · ${escapeHtml(formatWorldMinute(observation.worldMinute).time)}</span>
+                            <p>${escapeHtml(observation.text)}</p>
+                        </article>
+                    ` : ''}
                     ${canObserve ? `
-                        <button type="button" data-wb-action="observe-person"
-                            data-person-id="${escapeAttr(person.id)}"
-                            data-force="${observation?.personId === person.id ? 'true' : 'false'}"
-                            ${busy ? 'disabled' : ''}>
-                            ${busy
-                                ? '正在看……'
-                                : observation?.personId === person.id
-                                    ? '刷新这次观测'
-                                    : `看看 ${escapeHtml(person.name)} 在做什么`}
-                        </button>
+                        <div class="wb-observation-primary">
+                            ${observation?.personId === person.id
+                                ? '<span>已保存在当前正文与世界状态下</span>'
+                                : '<span>不推进时间，也不会直接写入正文</span>'}
+                            <button type="button" data-wb-action="observe-person"
+                                data-person-id="${escapeAttr(person.id)}"
+                                data-force="${observation?.personId === person.id ? 'true' : 'false'}"
+                                ${busy ? 'disabled' : ''}>
+                                ${busy
+                                    ? '正在观测……'
+                                    : observation?.personId === person.id
+                                        ? '重新观测'
+                                        : `看看 ${escapeHtml(person.name)} 在做什么`}
+                            </button>
+                        </div>
                     ` : `
                         <p>${person.isUser
                             ? '玩家角色不使用镜头外人物观测。'
@@ -880,27 +900,29 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                                 ? '切回幕后视角后可以观测镜头外人物。'
                                 : '这个人物正在本轮镜头中，无需另行观测。'}</p>
                     `}
-                    ${observation?.personId === person.id ? `
-                        <article>
-                            <span>${escapeHtml(formatWorldMinute(observation.worldMinute).time)}</span>
-                            <p>${escapeHtml(observation.text)}</p>
-                            <div class="wb-observation-actions">
-                                <small>当前只是保存的幕后观测，不会改动正文、时间或记忆。</small>
-                                <button type="button" data-wb-action="queue-person-observation"
-                                    data-person-id="${escapeAttr(person.id)}"
-                                    ${observation.queued ? 'disabled' : ''}>
-                                    ${observation.queued ? '✓ 已安排下一轮显露' : '安排到下一轮显露'}
-                                </button>
-                            </div>
-                        </article>
-                    ` : ''}
                 </div>
-                <div class="wb-knowledge-boundary">
+                <div class="wb-knowledge-boundary wb-observation-boundary ${observation?.queued ? 'is-enabled' : ''} ${observation?.revealState === 'delivered' ? 'is-delivered' : ''}">
                     <i></i>
                     <div>
-                        <strong>知识边界</strong>
-                        <p>默认只观看、不推进世界；只有你主动安排后，它才会作为下一轮的自然显露候选。</p>
+                        <strong>${observation?.revealState === 'delivered' ? '已经显露' : '自然显露'}</strong>
+                        <p>${observation?.revealState === 'delivered'
+                            ? '这段观测已经被后续正文自然承接；关闭观测窗口不会删除已经生成的正文。'
+                            : observation?.revealState === 'expired'
+                                ? '此前没有遇到合适的显露时机，已停止继续提供；你可以重新开启。'
+                                : observation?.queued
+                                    ? '已允许：这段观测会在后续语境合适时作为正文候选；不会强行插入，也不保证紧接下一轮出现。'
+                                    : '默认关闭：仅供幕后观看，不进入正文、不推进时间，也不修改记忆。'}</p>
                     </div>
+                    ${observation?.personId === person.id ? `
+                        <button type="button" role="switch"
+                            aria-checked="${observation.queued || observation.revealState === 'delivered' ? 'true' : 'false'}"
+                            aria-label="允许这段观测自然显露"
+                            data-wb-action="queue-person-observation"
+                            data-person-id="${escapeAttr(person.id)}"
+                            ${observation.revealState === 'delivered' ? 'disabled' : ''}>
+                            <span></span>
+                        </button>
+                    ` : ''}
                 </div>
             </div>
         </div>
@@ -1102,20 +1124,20 @@ function memoryItemMatches(item, query) {
 function renderMemoryActions(kind, item) {
     return `
         <div class="wb-memory-card-actions">
-            <button type="button" data-wb-action="open-memory-editor"
+            <button class="is-edit" type="button" data-wb-action="open-memory-editor"
                 data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
                 ${item.locked ? 'disabled' : ''}>编辑</button>
             <button type="button" data-wb-action="toggle-memory-flag"
                 data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
-                data-memory-field="important" class="${item.important ? 'is-active' : ''}">
-                ${item.important ? '★ 重要' : '☆ 重要'}
+                data-memory-field="important" class="is-important ${item.important ? 'is-active' : ''}">
+                ${item.important ? '已标为重要' : '标为重要'}
             </button>
             <button type="button" data-wb-action="toggle-memory-flag"
                 data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
-                data-memory-field="locked" class="${item.locked ? 'is-active' : ''}">
-                ${item.locked ? '🔒 已锁定' : '锁定'}
+                data-memory-field="locked" class="is-lock ${item.locked ? 'is-active' : ''}">
+                ${item.locked ? '已锁定' : '锁定'}
             </button>
-            <button type="button" data-wb-action="delete-memory-item"
+            <button class="is-delete" type="button" data-wb-action="delete-memory-item"
                 data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
                 ${item.locked ? 'disabled' : ''}>删除</button>
         </div>
@@ -1248,11 +1270,6 @@ function renderMemoryView(state, observerMode, {
                                 ${fact.invalidationReason
                                     ? `<div class="wb-memory-fact-note">${escapeHtml(fact.invalidationReason)}</div>`
                                     : ''}
-                                <div class="wb-clue-tags">
-                                    ${(fact.people || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
-                                    ${(fact.locations || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
-                                    ${(fact.tags || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
-                                </div>
                                 ${renderMemoryActions('fact', fact)}
                             </article>
                         `).join('') || renderEmpty('还没有长期事实', '明确成立且未来仍有用的信息会沉淀在这里。')}
@@ -1273,11 +1290,6 @@ function renderMemoryView(state, observerMode, {
                                 <p>${escapeHtml(clue.text)}</p>
                                 ${clue.sourceExcerpt ? `<blockquote>${escapeHtml(clue.sourceExcerpt)}</blockquote>` : ''}
                                 ${clue.resolution ? `<div class="wb-clue-resolution">${escapeHtml(clue.resolution)}</div>` : ''}
-                                <div class="wb-clue-tags">
-                                    ${(clue.people || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
-                                    ${(clue.locations || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
-                                    ${(clue.tags || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
-                                </div>
                                 ${renderMemoryActions('clue', clue)}
                             </article>
                         `).join('') || renderEmpty('伏笔簿还是空的', '真正需要回收的线索会出现在这里。')}
@@ -1683,7 +1695,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.7.0</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.7.1</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1779,7 +1791,12 @@ export function createWorldBackstageUI({
                 observation: personObservation,
                 busy,
             }) : ''}
-            ${toast ? `<div class="wb-toast" role="${root.dataset.toastTone === 'error' ? 'alert' : 'status'}" aria-live="polite">${escapeHtml(toast)}</div>` : ''}
+            ${toast ? `
+                <div class="wb-toast" role="${root.dataset.toastTone === 'error' ? 'alert' : 'status'}" aria-live="polite">
+                    <span aria-hidden="true">${escapeHtml(TOAST_FACES[root.dataset.toastTone] || TOAST_FACES.info)}</span>
+                    <p>${escapeHtml(toast)}</p>
+                </div>
+            ` : ''}
             ${syncStatus.manualUndo?.available ? `
                 <div class="wb-undo-toast" role="status">
                     <span>${escapeHtml(syncStatus.manualUndo.label)}</span>
@@ -1790,7 +1807,11 @@ export function createWorldBackstageUI({
         panelEntrancePending = false;
 
         const currentContent = root.querySelector('.wb-view-content');
-        if (currentContent) currentContent.scrollTop = viewScrollTop.get(activeView) || 0;
+        if (currentContent) {
+            // A module switch is a new reading context. Reusing another visit's
+            // scroll offset made the first row look clipped beneath the status bar.
+            currentContent.scrollTop = viewChanged ? 0 : (viewScrollTop.get(activeView) || 0);
+        }
         const currentSettings = root.querySelector('.wb-settings-popover');
         if (currentSettings) currentSettings.scrollTop = settingsScrollTop;
         const currentEventForm = root.querySelector('[data-wb-form="event"]');

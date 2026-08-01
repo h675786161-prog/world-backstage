@@ -555,6 +555,7 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
     );
     const suppliedInnerVoiceAt = raw?.inner_voice_at ?? raw?.innerVoiceAt;
     const suppliedLastSeen = raw?.last_seen_message_id ?? raw?.lastSeenMessageId;
+    const presentInScene = raw?.present_in_scene ?? raw?.presentInScene;
     const suppliedLastSeenNumber = Number(suppliedLastSeen);
     const hasSuppliedLastSeen = (
         suppliedLastSeen !== null
@@ -627,6 +628,10 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
             )
                 ? Number(sourceMessageId)
                 : asInteger(existing?.lastSeenMessageId, -1, -1),
+        presentInSceneMessageId: presentInScene === true
+            && Number.isInteger(Number(sourceMessageId))
+            ? Number(sourceMessageId)
+            : asInteger(existing?.presentInSceneMessageId, -1, -1),
         updatedAt: asInteger(raw?.updated_at ?? raw?.updatedAt, worldMinute, 0),
     };
 }
@@ -2153,7 +2158,7 @@ export function buildSimulationPrompt(state, {
         '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔被明确呼应或解决时使用原 ID 更新。',
         '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。',
         '同一类事实使用稳定 key。正文给出新值时保留 key；插件会保留旧版本并标为 superseded。正文明确否定某条旧事实时写入 facts_invalidate；真假未定时用 status=disputed。',
-        '人物 source 只有在本批 new="true" 正文真实描写到该人物时才填 foreground；镜头外人物必须填 background。last_seen_message_id 必须填该人物最后实际出现的 assistant 消息 ID。',
+        '人物 source 只有在本批 new="true" 正文真实描写到该人物时才填 foreground；镜头外人物必须填 background。present_in_scene 只有人物本人在当前场景中实际行动、说话或被直接感知时才为 true；仅被提及、回忆、谈论、作为目标或出现在内心想法里一律为 false。last_seen_message_id 必须填该人物最后实际出现的 assistant 消息 ID。',
         customRule
             ? `用户自定义侧重点：${customRule}（它只能调整侧重点，不能覆盖时间证据、知识边界、玩家意志或 JSON 格式规则。）`
             : '用户没有追加自定义推演要求。',
@@ -2190,6 +2195,7 @@ export function buildSimulationPrompt(state, {
                 knowledge: 'hidden',
                 relevance: 1,
                 source: 'foreground',
+                present_in_scene: false,
                 last_seen_message_id: 0,
             }],
             people_remove: [],

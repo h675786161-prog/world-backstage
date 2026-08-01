@@ -16,6 +16,10 @@ test('long memory UI uses filtering, search and progressive loading', () => {
     assert.match(uiSource, /save-memory-item/);
     assert.match(uiSource, /toggle-memory-flag/);
     assert.match(uiSource, /delete-memory-item/);
+    assert.doesNotMatch(uiSource, /\$\{\(fact\.people \|\| \[\]\)\.map\(tag/);
+    assert.doesNotMatch(uiSource, /\$\{\(clue\.people \|\| \[\]\)\.map\(tag/);
+    assert.match(uiSource, /class="is-edit"/);
+    assert.match(uiSource, /class="is-delete"/);
 });
 
 test('independent modules, cancellable simulation, NPC editor and observation cache are exposed', () => {
@@ -56,6 +60,26 @@ test('module switches keep stable brightness and do not replay the panel entranc
     assert.match(styleSource, /\.wb-panel-scrim\.is-opening/);
     assert.match(styleSource, /\.wb-panel-scrim\.is-opening \.wb-window/);
     assert.doesNotMatch(styleSource, /@keyframes wb-view-in\s*\{[^}]*opacity:/s);
+    assert.match(uiSource, /currentContent\.scrollTop = viewChanged \? 0/);
+});
+
+test('offscreen observation only excludes explicitly present characters and keeps cached results', () => {
+    assert.match(indexSource, /person\.presentInSceneMessageId/);
+    assert.doesNotMatch(indexSource, /person\.name && text\.includes\(person\.name\)/);
+    assert.match(indexSource, /if \(cached && !force\) return cached/);
+    assert.match(uiSource, /get-person-observation/);
+});
+
+test('disabling memory prevents both in-flight simulation writes and archive batches', () => {
+    assert.match(indexSource, /memoryEnabledAtCommit = getSettings\(\)\.memorySystemEnabled/);
+    assert.match(indexSource, /runtime\.activeHistoryScan\?\.abort\(\)/);
+    assert.match(indexSource, /记忆系统已关闭，本次整理已停止/);
+});
+
+test('echoes and memory cards use readable scalable typography and quiet actions', () => {
+    assert.match(styleSource, /#world-backstage-root \.wb-echo-card h3/);
+    assert.match(styleSource, /#world-backstage-root \.wb-echo-card p/);
+    assert.match(styleSource, /\.wb-memory-card-actions \{[\s\S]*width: fit-content/);
 });
 
 test('mobile navigation exposes all six views without horizontal overflow', () => {
@@ -106,8 +130,23 @@ test('transparent summary, model pull and observation delivery controls are expo
     assert.match(uiSource, /data-wb-action="pull-api-models"/);
     assert.match(uiSource, /data-wb-setting="maxOutputTokens"/);
     assert.match(uiSource, /data-wb-action="queue-person-observation"/);
+    assert.match(uiSource, /role="switch"/);
+    assert.match(uiSource, /默认关闭：仅供幕后观看/);
+    assert.match(uiSource, /不会强行插入，也不保证紧接下一轮出现/);
+    assert.match(uiSource, /重新观测/);
+    assert.doesNotMatch(uiSource, /安排到下一轮显露/);
     assert.match(indexSource, /function simulationSummary/);
     assert.match(indexSource, /function queuePersonObservation/);
+    assert.match(indexSource, /revealEnabled/);
+    assert.match(styleSource, /wb-observation-boundary/);
+});
+
+test('status toasts use restrained state-specific kaomoji', () => {
+    assert.match(uiSource, /const TOAST_FACES/);
+    assert.match(uiSource, /\(｡•̀ᴗ-\)✧/);
+    assert.match(uiSource, /\(；′⌒`\)/);
+    assert.match(styleSource, /data-toast-tone="success"/);
+    assert.match(styleSource, /data-toast-tone="warning"/);
 });
 
 test('worldbook NPC bridge is explicit, selective and never scans on every turn', () => {

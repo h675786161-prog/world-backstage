@@ -515,6 +515,42 @@ test('人物约束会进入推演与观测提示，并且普通推演不能擅�
     assert.match(simulationPrompt, /不得在 people_upsert 中重写/);
 });
 
+test('人物仅被提及时不会被标记为本轮实际在场', () => {
+    const mentioned = applySimulationResult(createInitialState(), {
+        elapsed_minutes: 0,
+        people_upsert: [{
+            id: 'distant-npc',
+            name: '远方守卫',
+            source: 'foreground',
+            present_in_scene: false,
+            location: '北门',
+            action: '巡逻',
+            intent: '守住城门',
+        }],
+    }, {
+        messageId: 12,
+        narrativeText: '有人提起了远方守卫，但他本人仍在北门。',
+    });
+    assert.equal(mentioned.people[0].presentInSceneMessageId, -1);
+
+    const present = applySimulationResult(mentioned, {
+        elapsed_minutes: 0,
+        people_upsert: [{
+            id: 'distant-npc',
+            name: '远方守卫',
+            source: 'foreground',
+            present_in_scene: true,
+            location: '庭院',
+            action: '推门进入',
+            intent: '报告消息',
+        }],
+    }, {
+        messageId: 13,
+        narrativeText: '远方守卫推门进入庭院。',
+    });
+    assert.equal(present.people[0].presentInSceneMessageId, 13);
+});
+
 test('快照恢复产生互不污染的重抽分支', () => {
     const root = createInitialState({ day: 7, hour: 12, minute: 0 });
     const base = createSnapshot(root, {

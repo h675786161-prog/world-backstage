@@ -13,6 +13,22 @@ test('long memory UI uses filtering, search and progressive loading', () => {
     assert.match(uiSource, /set-memory-filter/);
     assert.match(uiSource, /load-more-memory/);
     assert.match(uiSource, /memoryVisibleCount = 12/);
+    assert.match(uiSource, /save-memory-item/);
+    assert.match(uiSource, /toggle-memory-flag/);
+    assert.match(uiSource, /delete-memory-item/);
+});
+
+test('independent modules, pause, NPC editor and observation cache are exposed', () => {
+    assert.match(uiSource, /data-wb-setting="worldSimulationEnabled"/);
+    assert.match(uiSource, /data-wb-setting="worldPromptInjection"/);
+    assert.match(uiSource, /data-wb-setting="memorySystemEnabled"/);
+    assert.match(uiSource, /data-wb-setting="memoryPromptInjection"/);
+    assert.match(uiSource, /data-wb-setting="simulationPaused"/);
+    assert.match(uiSource, /添加后台 NPC/);
+    assert.match(indexSource, /personObservations/);
+    assert.match(indexSource, /personObservationCacheKey/);
+    assert.match(indexSource, /回复为空或生成失败，已跳过推演与记忆写入/);
+    assert.match(indexSource, /正文修改已保存，但不会自动重推/);
 });
 
 test('interaction polish includes grouped settings, outside close and undo', () => {

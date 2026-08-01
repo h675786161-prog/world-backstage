@@ -336,6 +336,9 @@ function normalizeStorySummary(raw, existing = null) {
         people: uniqueStrings(raw?.people ?? existing?.people, 20),
         locations: uniqueStrings(raw?.locations ?? existing?.locations, 16),
         tags: uniqueStrings(raw?.tags ?? existing?.tags, 20),
+        locked: Boolean(raw?.locked ?? existing?.locked),
+        important: Boolean(raw?.important ?? existing?.important),
+        manual: Boolean(raw?.manual ?? existing?.manual),
         createdAt: asString(raw?.created_at ?? raw?.createdAt, existing?.createdAt || nowIso(), 40),
     };
 }
@@ -371,6 +374,9 @@ function normalizeClue(raw, existing = null, worldMinute = 0, {
         people: uniqueStrings(raw?.people ?? existing?.people, 16),
         locations: uniqueStrings(raw?.locations ?? existing?.locations, 12),
         tags: uniqueStrings(raw?.tags ?? existing?.tags, 20),
+        locked: Boolean(raw?.locked ?? existing?.locked),
+        important: Boolean(raw?.important ?? existing?.important),
+        manual: Boolean(raw?.manual ?? existing?.manual),
         status: VALID_CLUE_STATES.has(requestedStatus) ? requestedStatus : 'open',
         importance: asInteger(raw?.importance, existing?.importance ?? 1, 1, 3),
         visibility: normalizeVisibility(raw?.visibility ?? existing?.visibility ?? 'hidden'),
@@ -447,6 +453,9 @@ function normalizeMemoryFact(raw, existing = null, worldMinute = 0, {
         people: uniqueStrings(raw?.people ?? existing?.people, 20),
         locations: uniqueStrings(raw?.locations ?? existing?.locations, 16),
         tags: uniqueStrings(raw?.tags ?? existing?.tags, 24),
+        locked: Boolean(raw?.locked ?? existing?.locked),
+        important: Boolean(raw?.important ?? existing?.important),
+        manual: Boolean(raw?.manual ?? existing?.manual),
         status: VALID_MEMORY_FACT_STATES.has(requestedStatus) ? requestedStatus : 'active',
         confidence: VALID_MEMORY_CONFIDENCE.has(requestedConfidence)
             ? requestedConfidence
@@ -556,6 +565,14 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         action: asString(raw?.action, existing?.action || '当前行动待确认', 280),
         intent: asString(raw?.intent, existing?.intent || '短期意图待确认', 320),
         longTermGoal: longTermGoal || asString(existing?.longTermGoal, '', LIMITS.longTermGoal),
+        simulationEnabled: Boolean(
+            raw?.simulation_enabled
+            ?? raw?.simulationEnabled
+            ?? existing?.simulationEnabled
+            ?? true,
+        ),
+        locked: Boolean(raw?.locked ?? existing?.locked),
+        manual: Boolean(raw?.manual ?? existing?.manual),
         trace: asString(raw?.trace, existing?.trace || '', 360),
         innerVoice: storedInnerVoice,
         innerVoiceAt: isUser && !allowUserInnerVoice
@@ -645,6 +662,11 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
         visibility,
         delivery: {
             state: deliveryState,
+            manualQueued: Boolean(
+                raw?.delivery_queued
+                ?? raw?.deliveryQueued
+                ?? oldDelivery.manualQueued,
+            ),
             attempts: asInteger(oldDelivery.attempts, 0, 0, 99),
             route: asString(raw?.delivery_route, oldDelivery.route || '', 220),
             confirmedAt: oldDelivery.confirmedAt ?? null,
@@ -862,6 +884,7 @@ function applyMemoryFactUpdates(state, {
         const sameCandidate = findMemoryFact(state.storyMemory, prepared);
         const same = sameCandidate?.value === prepared.value ? sameCandidate : null;
         if (same) {
+            if (same.locked) continue;
             Object.assign(
                 same,
                 normalizeMemoryFact(rawFact, same, state.clock.absoluteMinute, {
@@ -877,6 +900,7 @@ function applyMemoryFactUpdates(state, {
             && fact.value !== prepared.value
             && ['active', 'disputed'].includes(fact.status)
         ));
+        if (conflicts.some(fact => fact.locked)) prepared.status = 'disputed';
         if (conflicts.some(fact => fact.id === prepared.id)) {
             prepared.id = normalizeId(
                 `${prepared.id}_${hashText(prepared.value)}`,
@@ -886,18 +910,20 @@ function applyMemoryFactUpdates(state, {
 
         if (prepared.status === 'disputed') {
             for (const conflict of conflicts) {
+                if (conflict.locked) continue;
                 conflict.status = 'disputed';
                 conflict.updatedAt = state.clock.absoluteMinute;
             }
         } else {
             for (const conflict of conflicts) {
+                if (conflict.locked) continue;
                 conflict.status = 'superseded';
                 conflict.supersededBy = prepared.id;
                 conflict.updatedAt = state.clock.absoluteMinute;
             }
             prepared.supersedes = uniqueStrings([
                 ...prepared.supersedes,
-                ...conflicts.map(fact => fact.id),
+                ...conflicts.filter(fact => !fact.locked).map(fact => fact.id),
             ], 12);
         }
         state.storyMemory.facts.unshift(prepared);
@@ -908,7 +934,7 @@ function applyMemoryFactUpdates(state, {
             ? { id: rawInvalidation }
             : rawInvalidation;
         const fact = findMemoryFact(state.storyMemory, invalidation, { matchValue: false });
-        if (!fact) continue;
+        if (!fact || fact.locked) continue;
         fact.status = 'invalidated';
         fact.invalidationReason = asString(
             invalidation?.reason ?? invalidation?.invalidation_reason,
@@ -929,6 +955,7 @@ function applyClueUpdates(state, {
     state.storyMemory = normalizeStoryMemory(state.storyMemory, state.clock.absoluteMinute);
     for (const rawClue of asArray(cluesUpsert).slice(0, 24)) {
         const existing = findClue(state.storyMemory, rawClue);
+        if (existing?.locked) continue;
         const clue = normalizeClue(rawClue, existing, state.clock.absoluteMinute, {
             sourceMessageId,
             sourceSwipeId,
@@ -943,7 +970,7 @@ function applyClueUpdates(state, {
             ? { id: rawResolution }
             : rawResolution;
         const clue = findClue(state.storyMemory, resolution);
-        if (!clue) continue;
+        if (!clue || clue.locked) continue;
         clue.status = VALID_CLUE_STATES.has(resolution?.status)
             ? resolution.status
             : 'resolved';
@@ -1081,12 +1108,21 @@ export function applySimulationResult(baseState, rawPayload, {
             backgroundNpcUpdates += 1;
         }
         const existing = findPerson(state, rawPerson);
+        if (existing && !foregroundPerson && existing.simulationEnabled === false) continue;
         const person = normalizePerson(rawPerson, existing, worldMinute, {
             userName,
             allowUserInnerVoice,
             sourceMessageId: messageId,
         });
         if (existing) {
+            if (existing.locked) {
+                person.name = existing.name;
+                person.isUser = existing.isUser;
+                person.longTermGoal = existing.longTermGoal;
+                person.simulationEnabled = existing.simulationEnabled;
+                person.locked = true;
+                person.manual = existing.manual;
+            }
             Object.assign(existing, person);
         } else {
             state.people.push(person);
@@ -1096,8 +1132,11 @@ export function applySimulationResult(baseState, rawPayload, {
     if (payload.peopleRemove.length) {
         const removed = new Set(payload.peopleRemove.map(item => item.toLowerCase()));
         state.people = state.people.filter(person => (
-            !removed.has(person.id.toLowerCase())
-            && !removed.has(person.name.toLowerCase())
+            person.locked
+            || (
+                !removed.has(person.id.toLowerCase())
+                && !removed.has(person.name.toLowerCase())
+            )
         ));
     }
 
@@ -1309,14 +1348,18 @@ export function selectDeliveryCandidates(state, settings = {}) {
         活跃: 3,
     }[settings.deliveryDensity] || 1;
 
-    return state.events
+    const manuallyQueued = state.events
+        .filter(event => event.visibility !== 'hidden' && event.delivery?.manualQueued)
+        .sort((a, b) => eventPriority(b) - eventPriority(a));
+    const automatic = state.events
         .filter(event => (
             TERMINAL_EVENT_STATES.has(event.status)
             && event.visibility !== 'hidden'
             && event.delivery?.state === 'pending'
+            && !event.delivery?.manualQueued
         ))
-        .sort((a, b) => eventPriority(b) - eventPriority(a))
-        .slice(0, maximum);
+        .sort((a, b) => eventPriority(b) - eventPriority(a));
+    return [...manuallyQueued, ...automatic].slice(0, Math.max(maximum, manuallyQueued.length));
 }
 
 export function recordDeliveryOffers(inputState, eventIds, {
@@ -1327,7 +1370,9 @@ export function recordDeliveryOffers(inputState, eventIds, {
     const ids = new Set(uniqueStrings(eventIds, 24).map(id => normalizeId(id, 'event')));
 
     for (const event of state.events) {
-        if (!ids.has(event.id) || event.delivery?.state !== 'pending') continue;
+        if (!ids.has(event.id)) continue;
+        if (event.delivery?.manualQueued) event.delivery.manualQueued = false;
+        if (event.delivery?.state !== 'pending') continue;
         event.delivery.attempts = asInteger(event.delivery.attempts, 0, 0, 99) + 1;
         event.delivery.lastOfferedAt = state.clock.absoluteMinute;
         event.delivery.lastOfferedMessageId = messageId;
@@ -1368,19 +1413,25 @@ function selectRelevantPeople(state, recentText = '', maximum = 6) {
 }
 
 export function buildInjectionPackage(state, settings = {}, recentText = '') {
-    if (!settings.enabled || !settings.promptInjection) {
+    if (!settings.enabled) {
         return { text: '', eventIds: [] };
     }
 
+    const injectWorld = settings.worldSimulationEnabled !== false
+        && settings.worldPromptInjection !== false;
+    const injectMemory = settings.memorySystemEnabled !== false
+        && settings.memoryPromptInjection !== false;
+    if (!injectWorld && !injectMemory) return { text: '', eventIds: [] };
+
     const clock = formatWorldCalendar(state);
-    const people = selectRelevantPeople(state, recentText);
-    const deliveries = selectDeliveryCandidates(state, settings);
-    const recalledMemory = selectRelevantStoryMemory(state, recentText, {
+    const people = injectWorld ? selectRelevantPeople(state, recentText) : [];
+    const deliveries = injectWorld ? selectDeliveryCandidates(state, settings) : [];
+    const recalledMemory = injectMemory ? selectRelevantStoryMemory(state, recentText, {
         maximumFacts: 6,
         maximumClues: 3,
         maximumSummaries: 0,
         includeDigest: false,
-    });
+    }) : { facts: [], clues: [] };
     const knownFacts = recalledMemory.facts.filter(fact => (
         ['known', 'direct'].includes(fact.visibility)
         && ['active', 'disputed'].includes(fact.status)
@@ -1395,12 +1446,14 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
         open: '可以在场景中加入一条简短、自然的可感知变化，但不要后台播报。',
     }[settings.sceneTiming] || '只在自然时机显露，不要后台播报。';
 
-    const lines = [
-        '<world_backstage_state>',
-        `权威主世界时间：${state.world.name} · ${clock.stamp}`,
-        `整体状态：${state.world.title}；${state.world.detail}`,
-        '一致性规则：当前时间与下列人物位置是本轮事实源；没有明确经过时间时，不要擅自推进时钟。',
-    ];
+    const lines = ['<world_backstage_state>'];
+    if (injectWorld) {
+        lines.push(
+            `权威主世界时间：${state.world.name} · ${clock.stamp}`,
+            `整体状态：${state.world.title}；${state.world.detail}`,
+            '一致性规则：当前时间与下列人物位置是本轮事实源；没有明确经过时间时，不要擅自推进时钟。',
+        );
+    }
 
     if (people.length) {
         lines.push('当前人物状态（仅用于保持连续性，不等于主角知道全部后台信息）：');
@@ -1423,10 +1476,11 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
     }
 
     if (deliveries.length) {
-        lines.push('本轮可自然显露的既成结果：');
+        lines.push('本轮由用户点名或系统选中的可自然显露事件：');
         for (const event of deliveries) {
-            const route = event.delivery.route || event.result || event.consequence;
-            lines.push(`- [${event.id}] ${event.title}：${route}（${event.visibility}）`);
+            const route = event.delivery.route || event.result || event.consequence || event.summary;
+            const request = event.delivery?.manualQueued ? '用户要求下一轮优先显露' : '系统候选';
+            lines.push(`- [${event.id}] ${event.title}：${route}（${event.visibility}；${request}）`);
         }
         lines.push(`显露节奏：${sceneTiming}`);
         lines.push('只把真正写进正文、被角色感知或留下可见痕迹的结果视为已承接；不要声称“后台已递交”。');
@@ -1927,6 +1981,8 @@ export function compactStateForModel(state, {
                 inner_voice_at: person.innerVoiceAt,
                 knowledge: person.knowledge,
                 relevance: person.relevance,
+                background_simulation: person.simulationEnabled !== false,
+                locked_profile: Boolean(person.locked),
                 last_seen_message_id: person.lastSeenMessageId,
             };
         }),

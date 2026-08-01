@@ -1058,6 +1058,144 @@
     font-size: 8px;
 }
 
+.wb-event-delivery-toggle {
+    align-self: flex-start;
+    margin-top: 8px;
+    padding: 7px 11px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-soft);
+    font-size: 0.78em;
+    cursor: pointer;
+}
+
+.wb-event-delivery-toggle.is-queued {
+    border-color: color-mix(in srgb, var(--wb-accent) 58%, var(--wb-line));
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+}
+
+.wb-event-delivery-toggle:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.wb-memory-intro-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.wb-memory-intro-actions button,
+.wb-memory-card-actions button {
+    padding: 6px 9px;
+    border: 1px solid var(--wb-line);
+    border-radius: 9px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-soft);
+    cursor: pointer;
+}
+
+.wb-memory-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px solid var(--wb-line);
+}
+
+.wb-memory-card-actions button {
+    font-size: 9px;
+}
+
+.wb-memory-card-actions button.is-active {
+    border-color: color-mix(in srgb, var(--wb-accent) 58%, var(--wb-line));
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+}
+
+.wb-memory-card-actions button:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+}
+
+.wb-memory-editor-flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.wb-memory-editor-flags label {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 6px;
+    width: auto !important;
+    min-width: 0 !important;
+    color: var(--wb-text-soft);
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-memory-editor-flags input[type="checkbox"] {
+    appearance: auto !important;
+    flex: 0 0 18px !important;
+    width: 18px !important;
+    min-width: 18px !important;
+    max-width: 18px !important;
+    height: 18px !important;
+    min-height: 18px !important;
+    max-height: 18px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+.wb-person-sim-state {
+    display: inline-flex;
+    align-self: flex-start;
+    margin-top: 8px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+    font-size: 8px;
+}
+
+.wb-person-sim-state.is-sleeping {
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-faint);
+}
+
+.wb-person-edit-button {
+    align-self: flex-start;
+    margin-top: 7px;
+    padding: 6px 9px;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 9px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    cursor: pointer;
+}
+
+.wb-person-editor-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.wb-person-editor-actions > button:first-child:not(:last-child) {
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--wb-danger) 45%, var(--wb-line));
+    border-radius: 10px;
+    background: transparent;
+    color: var(--wb-danger);
+}
+
 .wb-route > i {
     width: 24px;
     height: 1px;
@@ -2783,14 +2921,33 @@
     }
 
     .wb-drawer-scrim {
-        align-items: end;
-        padding: 0;
+        position: fixed !important;
+        top: var(--wb-visual-inset-top, 0px) !important;
+        right: auto !important;
+        bottom: auto !important;
+        left: var(--wb-visual-inset-left, 0px) !important;
+        width: var(--wb-visual-width, 100dvw) !important;
+        height: var(--wb-visual-height, 100dvh) !important;
+        z-index: 2147483647 !important;
+        display: grid !important;
+        place-items: end stretch !important;
+        align-items: end !important;
+        padding:
+            max(4px, env(safe-area-inset-top, 0px))
+            max(0px, env(safe-area-inset-right, 0px))
+            0
+            max(0px, env(safe-area-inset-left, 0px));
+        overflow: hidden !important;
+        transform: none !important;
+        clip-path: none !important;
+        visibility: visible !important;
+        opacity: 1 !important;
     }
 
     .wb-event-form,
     .wb-person-drawer {
         width: 100%;
-        max-height: 88dvh;
+        max-height: min(88dvh, calc(var(--wb-visual-height, 100dvh) - 12px));
         border-right: 0;
         border-bottom: 0;
         border-left: 0;
@@ -2800,12 +2957,21 @@
 
     #world-backstage-root .wb-drawer-scrim > .wb-person-drawer {
         position: relative !important;
+        inset: auto !important;
+        top: auto !important;
+        right: auto !important;
+        bottom: auto !important;
+        left: auto !important;
         display: block !important;
+        align-self: end !important;
         width: 100% !important;
         height: auto !important;
         min-height: 0 !important;
-        max-height: 88dvh !important;
+        max-height: min(88dvh, calc(var(--wb-visual-height, 100dvh) - 12px)) !important;
         overflow: auto !important;
+        margin: 0 !important;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
         transform: none !important;
         clip-path: none !important;
         visibility: visible !important;
@@ -2816,12 +2982,21 @@
 
     #world-backstage-root .wb-drawer-scrim > .wb-event-form {
         position: relative !important;
+        inset: auto !important;
+        top: auto !important;
+        right: auto !important;
+        bottom: auto !important;
+        left: auto !important;
         display: grid !important;
+        align-self: end !important;
         width: 100% !important;
         height: auto !important;
         min-height: 0 !important;
-        max-height: 88dvh !important;
+        max-height: min(88dvh, calc(var(--wb-visual-height, 100dvh) - 12px)) !important;
         overflow: auto !important;
+        margin: 0 !important;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
         transform: none !important;
         clip-path: none !important;
         visibility: visible !important;

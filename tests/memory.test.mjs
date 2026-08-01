@@ -25,6 +25,32 @@ test('legacy state receives an empty story memory ledger', () => {
     assert.deepEqual(migrated.storyMemory.clues, []);
 });
 
+test('locked manual memory survives model updates and invalidation', () => {
+    const state = createInitialState();
+    state.storyMemory.facts.push({
+        id: 'locked-promise',
+        key: 'person:a:promise',
+        subject: 'A',
+        predicate: '承诺',
+        value: '不会离开',
+        status: 'active',
+        confidence: 'high',
+        importance: 3,
+        visibility: 'known',
+        locked: true,
+        manual: true,
+    });
+    const updated = applySimulationResult(state, {
+        memory_update: {
+            facts_upsert: [{ id: 'locked-promise', key: 'person:a:promise', value: '已经离开' }],
+            facts_invalidate: [{ id: 'locked-promise', reason: '模型判断失效' }],
+        },
+    });
+    const locked = updated.storyMemory.facts.find(fact => fact.id === 'locked-promise');
+    assert.equal(locked.value, '不会离开');
+    assert.equal(locked.status, 'active');
+});
+
 test('history batches create summaries and deduplicated clues', () => {
     const base = createInitialState();
     const first = applyHistoryIndexResult(base, {

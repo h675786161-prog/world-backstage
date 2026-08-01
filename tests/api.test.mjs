@@ -100,9 +100,8 @@ test('completion text extraction supports string and array content', () => {
     );
 });
 
-test('custom API reports completions cut off by the output limit', async () => {
-    await assert.rejects(
-        () => requestCustomCompletion({
+test('custom API preserves non-empty output when provider reports its token limit', async () => {
+    const partial = await requestCustomCompletion({
             customApiUrl: 'https://example.test/v1',
             customApiKey: 'plugin-secret',
             customApiModel: 'plugin-model',
@@ -115,8 +114,22 @@ test('custom API reports completions cut off by the output limit', async () => {
                 }],
             }),
             timeoutMs: 0,
+        });
+    assert.equal(partial, '{"elapsed_minutes":8');
+
+    await assert.rejects(
+        () => requestCustomCompletion({
+            customApiUrl: 'https://example.test/v1',
+            customApiKey: 'plugin-secret',
+            customApiModel: 'plugin-model',
+            customApiTransport: 'direct',
+        }, [{ role: 'user', content: 'test' }], {
+            fetchImpl: async () => response({
+                choices: [{ finish_reason: 'MAX_TOKENS', message: { content: '' } }],
+            }),
+            timeoutMs: 0,
         }),
-        /输出达到长度上限.*MAX_TOKENS/,
+        /输出达到长度上限.*MAX_TOKENS.*没有返回可恢复的正文/,
     );
 });
 

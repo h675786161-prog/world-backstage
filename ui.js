@@ -154,6 +154,11 @@ export function renderPersonCard(person, observerMode, worldMinute) {
             ${observerMode === 'backstage'
                 ? renderInnerVoice(person, worldMinute)
                 : '<span class="wb-known-boundary">幕后独白已隐藏</span>'}
+            <span class="wb-person-sim-state ${person.simulationEnabled === false ? 'is-sleeping' : ''}">
+                ${person.simulationEnabled === false ? '后台休眠' : '参与后台推演'}
+            </span>
+            <button class="wb-person-edit-button" type="button" data-wb-action="open-person-editor"
+                data-person-id="${escapeAttr(person.id)}">编辑人物卡</button>
         </article>
     `;
 }
@@ -220,6 +225,12 @@ function renderEventCard(event, state, wide = false) {
                 <i></i>
                 ${escapeHtml(visibilityLabel(event.visibility))}
             </div>
+            <button class="wb-event-delivery-toggle ${event.delivery?.manualQueued ? 'is-queued' : ''}"
+                type="button" data-wb-action="toggle-event-delivery"
+                data-event-id="${escapeAttr(event.id)}"
+                ${event.visibility === 'hidden' ? 'disabled' : ''}>
+                ${event.delivery?.manualQueued ? '✓ 下一轮显露' : '下一轮显露'}
+            </button>
         </article>
     `;
 }
@@ -455,21 +466,36 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                 </select>
             </div>
 
-            <div class="wb-setting-toggle">
-                <div><strong>正文状态注入</strong><span>同步时钟、相关位置和待显露结果</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="promptInjection"
-                        ${settings.promptInjection ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-
                 </div>
             </details>
 
             <details class="wb-settings-group" data-settings-group="simulation" ${groupOpen('simulation')}>
                 <summary><span>自动推演</span><small>频率、重试、NPC 与时间</small></summary>
                 <div class="wb-settings-group-body">
+            <div class="wb-setting-toggle">
+                <div><strong>启用世界推演</strong><span>关闭后不再生成或推进，但保留现有世界数据</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="worldSimulationEnabled"
+                        ${settings.worldSimulationEnabled ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>暂停自动推演</strong><span>新正文继续累计；手动同步仍可使用</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="simulationPaused"
+                        ${settings.simulationPaused ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>推演结果注入正文</strong><span>关闭后后台世界照常运行，只是不参与主对话生成</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="worldPromptInjection"
+                        ${settings.worldPromptInjection ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
             <div class="wb-setting-block">
                 <label>自动推演方式</label>
                 <div class="wb-option-row wb-option-row-four">
@@ -566,6 +592,22 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
             <details class="wb-settings-group" data-settings-group="memory" ${groupOpen('memory')}>
                 <summary><span>长期记忆</span><small>自动整理与历史建档</small></summary>
                 <div class="wb-settings-group-body">
+            <div class="wb-setting-toggle">
+                <div><strong>启用记忆系统</strong><span>关闭后停止整理与写入，但保留已有记忆</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="memorySystemEnabled"
+                        ${settings.memorySystemEnabled ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>记忆注入正文</strong><span>关闭后仍会整理和保存，只是不参与主对话生成</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="memoryPromptInjection"
+                        ${settings.memoryPromptInjection ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
             <div class="wb-history-settings">
                 <div class="wb-history-heading">
                     <div>
@@ -602,7 +644,8 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                         value="${escapeAttr(settings.memoryAutoIndexInterval)}">
                 </label>
                 <p>设为 N 后，每累计 N 条尚未整理的 AI 正文，自动整理一个新增批次；设为 0 则只手动整理。</p>
-                <button type="button" data-wb-action="scan-history" ${historyRunning ? 'disabled' : ''}>
+                <button type="button" data-wb-action="scan-history"
+                    ${historyRunning || !settings.memorySystemEnabled ? 'disabled' : ''}>
                     ${Number(memory.indexedThroughMessageId ?? -1) < 0 ? '建立初始记忆档案' : '立即整理新增正文'}
                 </button>
             </div>
@@ -711,6 +754,8 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                 <span class="wb-drawer-overline">LIVING TRACE</span>
                 <h3>${escapeHtml(person.name)}</h3>
                 <p class="wb-drawer-place">${escapeHtml(person.location)}</p>
+                <button class="wb-person-edit-button" type="button" data-wb-action="open-person-editor"
+                    data-person-id="${escapeAttr(person.id)}">编辑人物卡</button>
                 <div class="wb-drawer-section"><span>正在做</span><strong>${escapeHtml(person.action)}</strong></div>
                 <div class="wb-drawer-section"><span>短期意图</span><strong>${escapeHtml(person.intent)}</strong></div>
                 ${person.longTermGoal ? `
@@ -729,8 +774,14 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                 <div class="wb-person-observation">
                     ${canObserve ? `
                         <button type="button" data-wb-action="observe-person"
-                            data-person-id="${escapeAttr(person.id)}" ${busy ? 'disabled' : ''}>
-                            ${busy ? '正在看……' : `看看 ${escapeHtml(person.name)} 在做什么`}
+                            data-person-id="${escapeAttr(person.id)}"
+                            data-force="${observation?.personId === person.id ? 'true' : 'false'}"
+                            ${busy ? 'disabled' : ''}>
+                            ${busy
+                                ? '正在看……'
+                                : observation?.personId === person.id
+                                    ? '刷新这次观测'
+                                    : `看看 ${escapeHtml(person.name)} 在做什么`}
                         </button>
                     ` : `
                         <p>${person.isUser
@@ -808,7 +859,10 @@ function renderPeopleView(state, observerMode, people) {
     return `
         <div class="wb-view-intro">
             <p>人物的行动首先属于她们自己。她们未说出口的心声只存在于幕后，不会偷渡成主角的知识。</p>
-            <span>${people.length} 条可观测轨迹</span>
+            <div class="wb-memory-intro-actions">
+                <span>${people.length} 条可观测轨迹</span>
+                <button type="button" data-wb-action="open-person-editor">＋ 添加后台 NPC</button>
+            </div>
         </div>
         <div class="wb-people-grid">
             ${people.map(person => renderPersonCard(
@@ -819,6 +873,52 @@ function renderPeopleView(state, observerMode, people) {
                 observerMode === 'known' ? '角色目前没有可确认的人物轨迹' : '后台人物尚未建立',
                 observerMode === 'known' ? '切回幕后视角可以查看未知轨迹。' : '回复后自动推演或手动推演一次。',
             )}
+        </div>
+    `;
+}
+
+function renderPersonEditorModal(state, editor) {
+    const person = state.people.find(item => item.id === editor?.id) || null;
+    return `
+        <div class="wb-drawer-scrim" data-wb-action="close-person-editor">
+            <form class="wb-event-form wb-person-editor" data-wb-form="person">
+                <div class="wb-form-heading">
+                    <div><span>BACKSTAGE CAST</span><h3>${person ? '编辑后台人物' : '添加后台 NPC'}</h3></div>
+                    <button type="button" data-wb-action="close-person-editor">×</button>
+                </div>
+                <input type="hidden" name="id" value="${escapeAttr(person?.id || '')}">
+                <label>姓名<input name="name" required maxlength="80" value="${escapeAttr(person?.name || '')}"></label>
+                <label>当前位置<input name="location" maxlength="160" value="${escapeAttr(person?.location || '')}"></label>
+                <label>正在做<textarea name="action" maxlength="280" rows="2">${escapeHtml(person?.action || '')}</textarea></label>
+                <label>短期意图<textarea name="intent" maxlength="320" rows="2">${escapeHtml(person?.intent || '')}</textarea></label>
+                <label>长期目标<textarea name="longTermGoal" maxlength="420" rows="3">${escapeHtml(person?.longTermGoal || '')}</textarea></label>
+                <div class="wb-form-grid">
+                    <label>知识边界
+                        <select name="knowledge">
+                            <option value="backstage" ${person?.knowledge !== 'known' ? 'selected' : ''}>幕后未知</option>
+                            <option value="known" ${person?.knowledge === 'known' ? 'selected' : ''}>角色可知</option>
+                        </select>
+                    </label>
+                    <label>重要程度
+                        <select name="relevance">
+                            <option value="1" ${Number(person?.relevance || 2) === 1 ? 'selected' : ''}>普通</option>
+                            <option value="2" ${Number(person?.relevance || 2) === 2 ? 'selected' : ''}>重要</option>
+                            <option value="3" ${Number(person?.relevance || 2) === 3 ? 'selected' : ''}>核心</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="wb-memory-editor-flags">
+                    <label><input name="simulationEnabled" type="checkbox"
+                        ${person?.simulationEnabled !== false ? 'checked' : ''}> 参与镜头外推演</label>
+                    <label><input name="locked" type="checkbox" ${person?.locked ? 'checked' : ''}> 锁定核心设定</label>
+                </div>
+                <div class="wb-form-note">关闭“参与镜头外推演”后，人物仍保存在名单里；只有正文让其出场时才更新。</div>
+                <div class="wb-person-editor-actions">
+                    ${person ? `<button type="button" data-wb-action="delete-manual-person"
+                        data-person-id="${escapeAttr(person.id)}" ${person.locked ? 'disabled' : ''}>删除人物</button>` : ''}
+                    <button class="wb-primary-button" type="submit">${person ? '保存人物卡' : '加入后台名单'}</button>
+                </div>
+            </form>
         </div>
     `;
 }
@@ -890,6 +990,29 @@ function memoryItemMatches(item, query) {
         ...(item?.locations || []),
         ...(item?.tags || []),
     ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalized);
+}
+
+function renderMemoryActions(kind, item) {
+    return `
+        <div class="wb-memory-card-actions">
+            <button type="button" data-wb-action="open-memory-editor"
+                data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
+                ${item.locked ? 'disabled' : ''}>编辑</button>
+            <button type="button" data-wb-action="toggle-memory-flag"
+                data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
+                data-memory-field="important" class="${item.important ? 'is-active' : ''}">
+                ${item.important ? '★ 重要' : '☆ 重要'}
+            </button>
+            <button type="button" data-wb-action="toggle-memory-flag"
+                data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
+                data-memory-field="locked" class="${item.locked ? 'is-active' : ''}">
+                ${item.locked ? '🔒 已锁定' : '锁定'}
+            </button>
+            <button type="button" data-wb-action="delete-memory-item"
+                data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
+                ${item.locked ? 'disabled' : ''}>删除</button>
+        </div>
+    `;
 }
 
 function renderMemoryView(state, observerMode, {
@@ -965,7 +1088,10 @@ function renderMemoryView(state, observerMode, {
     return `
         <div class="wb-view-intro">
             <p>记忆会区分长期事实、未回收伏笔和阶段经历；旧说法被新正文改变时会保留版本关系，不把废弃分支悄悄混回来。</p>
-            <span>${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条有效事实 · ${allClues.filter(clue => ['open', 'echoed'].includes(clue.status)).length} 条待回收伏笔</span>
+            <div class="wb-memory-intro-actions">
+                <span>${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条有效事实 · ${allClues.filter(clue => ['open', 'echoed'].includes(clue.status)).length} 条待回收伏笔</span>
+                <button type="button" data-wb-action="open-memory-editor" data-memory-kind="fact">＋ 新增记忆</button>
+            </div>
         </div>
         <div class="wb-memory-shell">
             <div class="wb-memory-tools">
@@ -1020,6 +1146,7 @@ function renderMemoryView(state, observerMode, {
                                     ${(fact.locations || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
                                     ${(fact.tags || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
                                 </div>
+                                ${renderMemoryActions('fact', fact)}
                             </article>
                         `).join('') || renderEmpty('还没有长期事实', '明确成立且未来仍有用的信息会沉淀在这里。')}
                     </div>
@@ -1044,6 +1171,7 @@ function renderMemoryView(state, observerMode, {
                                     ${(clue.locations || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
                                     ${(clue.tags || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
                                 </div>
+                                ${renderMemoryActions('clue', clue)}
                             </article>
                         `).join('') || renderEmpty('伏笔簿还是空的', '真正需要回收的线索会出现在这里。')}
                     </div>
@@ -1059,6 +1187,7 @@ function renderMemoryView(state, observerMode, {
                             <span>消息 ${escapeHtml(summary.startMessageId)}—${escapeHtml(summary.endMessageId)}</span>
                             <h4>${escapeHtml(summary.title)}</h4>
                             <p>${escapeHtml(summary.summary)}</p>
+                            ${renderMemoryActions('summary', summary)}
                         </article>
                     `).join('') || renderEmpty(
                         observerMode === 'backstage' ? '还没有阶段经历' : '阶段经历只在幕后视角显示',
@@ -1072,6 +1201,56 @@ function renderMemoryView(state, observerMode, {
                     再显示一些 · 当前 ${shownCount}/${resultCount}
                 </button>
             ` : ''}
+        </div>
+    `;
+}
+
+function renderMemoryEditorModal(state, editor) {
+    const requestedKind = ['fact', 'clue', 'summary'].includes(editor?.kind)
+        ? editor.kind
+        : 'fact';
+    const collection = requestedKind === 'fact'
+        ? state.storyMemory?.facts
+        : requestedKind === 'clue'
+            ? state.storyMemory?.clues
+            : state.storyMemory?.summaries;
+    const item = collection?.find(entry => entry.id === editor?.id) || null;
+    const title = requestedKind === 'fact' ? item?.subject : item?.title;
+    const relation = requestedKind === 'fact' ? item?.predicate : '';
+    const content = requestedKind === 'fact'
+        ? item?.value
+        : requestedKind === 'clue'
+            ? item?.text
+            : item?.summary;
+    return `
+        <div class="wb-drawer-scrim" data-wb-action="close-memory-editor">
+            <form class="wb-event-form wb-memory-editor" data-wb-form="memory">
+                <div class="wb-form-heading">
+                    <div><span>MEMORY DESK</span><h3>${item ? '编辑记忆' : '手动新增记忆'}</h3></div>
+                    <button type="button" data-wb-action="close-memory-editor">×</button>
+                </div>
+                <input type="hidden" name="id" value="${escapeAttr(item?.id || '')}">
+                <label>记忆类型
+                    <select name="kind" ${item ? 'disabled' : ''}>
+                        <option value="fact" ${requestedKind === 'fact' ? 'selected' : ''}>长期事实</option>
+                        <option value="clue" ${requestedKind === 'clue' ? 'selected' : ''}>伏笔</option>
+                        <option value="summary" ${requestedKind === 'summary' ? 'selected' : ''}>阶段经历</option>
+                    </select>
+                    ${item ? `<input type="hidden" name="kind" value="${requestedKind}">` : ''}
+                </label>
+                <label>标题<input name="title" required maxlength="120"
+                    value="${escapeAttr(title || '')}" placeholder="人物、物品、约定或事件"></label>
+                <label>关系（长期事实可用）<input name="relation" maxlength="100"
+                    value="${escapeAttr(relation || '')}" placeholder="例如：答应、持有、真实身份"></label>
+                <label>内容<textarea name="content" required maxlength="1400" rows="5"
+                    placeholder="写下需要长期保留的准确内容">${escapeHtml(content || '')}</textarea></label>
+                <div class="wb-memory-editor-flags">
+                    <label><input name="important" type="checkbox" ${item?.important ? 'checked' : ''}> 标记为重要</label>
+                    <label><input name="locked" type="checkbox" ${item?.locked ? 'checked' : ''}> 保存后锁定</label>
+                </div>
+                <div class="wb-form-note">锁定后，自动整理不会覆盖或删除这条记忆；需要修改时先在卡片上解锁。</div>
+                <button class="wb-primary-button" type="submit">${item ? '保存修改' : '加入记忆'}</button>
+            </form>
         </div>
     `;
 }
@@ -1200,6 +1379,8 @@ export function createWorldBackstageUI({
     let memoryFilter = 'active';
     let memoryQuery = '';
     let memoryVisibleCount = 12;
+    let memoryEditor = null;
+    let personEditor = null;
     let settingsScrollTop = 0;
     let openSettingsGroups = new Set(['connection', 'simulation']);
     let eventFormDraft = null;
@@ -1256,6 +1437,8 @@ export function createWorldBackstageUI({
             settingsOpen = false;
             eventFormOpen = false;
             eventFormDraft = null;
+            memoryEditor = null;
+            personEditor = null;
             selectedPersonId = null;
             personObservation = null;
             render();
@@ -1395,7 +1578,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.5.9</i></span>
+                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.6.0</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1479,6 +1662,8 @@ export function createWorldBackstageUI({
             ` : ''}
 
             ${eventFormOpen ? renderAddEventModal(state) : ''}
+            ${memoryEditor ? renderMemoryEditorModal(state, memoryEditor) : ''}
+            ${personEditor ? renderPersonEditorModal(state, personEditor) : ''}
             ${person ? renderPersonDrawer(person, observerMode, state.clock.absoluteMinute, {
                 canObserve: canObservePerson,
                 observation: personObservation,
@@ -1651,6 +1836,38 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'open-memory-editor') {
+            memoryEditor = {
+                kind: target.dataset.memoryKind || 'fact',
+                id: target.dataset.memoryId || '',
+            };
+            render();
+            return;
+        }
+        if (action === 'close-memory-editor') {
+            memoryEditor = null;
+            render();
+            return;
+        }
+        if (action === 'toggle-memory-flag') {
+            await invokeAction('toggle-memory-flag', {
+                kind: target.dataset.memoryKind || 'fact',
+                id: target.dataset.memoryId || '',
+                field: target.dataset.memoryField || 'important',
+            });
+            render();
+            return;
+        }
+        if (action === 'delete-memory-item') {
+            const confirmed = globalThis.confirm?.('确定删除这条记忆吗？此操作可以用底部撤销恢复。');
+            if (confirmed === false) return;
+            await invokeAction('delete-memory-item', {
+                kind: target.dataset.memoryKind || 'fact',
+                id: target.dataset.memoryId || '',
+            });
+            render();
+            return;
+        }
         if (action === 'load-more-memory') {
             memoryVisibleCount += 12;
             render();
@@ -1672,12 +1889,39 @@ export function createWorldBackstageUI({
                 personObservation = null;
             }
             selectedPersonId = target.dataset.personId || null;
+            if (selectedPersonId) {
+                personObservation = await invokeAction('get-person-observation', {
+                    personId: selectedPersonId,
+                }) || null;
+            }
             render();
             return;
         }
         if (action === 'close-person') {
             selectedPersonId = null;
             personObservation = null;
+            render();
+            return;
+        }
+        if (action === 'open-person-editor') {
+            personEditor = { id: target.dataset.personId || '' };
+            selectedPersonId = null;
+            personObservation = null;
+            render();
+            return;
+        }
+        if (action === 'close-person-editor') {
+            personEditor = null;
+            render();
+            return;
+        }
+        if (action === 'delete-manual-person') {
+            const confirmed = globalThis.confirm?.('确定从后台人物名单中删除这个 NPC 吗？');
+            if (confirmed === false) return;
+            const completed = await invokeAction('delete-manual-person', {
+                id: target.dataset.personId || '',
+            });
+            if (completed) personEditor = null;
             render();
             return;
         }
@@ -1716,6 +1960,13 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'toggle-event-delivery') {
+            await invokeAction('toggle-event-delivery', {
+                eventId: target.dataset.eventId || '',
+            });
+            render();
+            return;
+        }
         if (action === 'import-state') {
             root.querySelector('.wb-import-input')?.click();
             return;
@@ -1723,6 +1974,7 @@ export function createWorldBackstageUI({
         if (action === 'observe-person') {
             const result = await invokeAction('observe-person', {
                 personId: target.dataset.personId || '',
+                force: target.dataset.force === 'true',
             });
             if (result && typeof result === 'object' && result.text) {
                 personObservation = result;
@@ -1804,6 +2056,33 @@ export function createWorldBackstageUI({
                 eventFormOpen = false;
                 eventFormDraft = null;
             }
+        }
+        if (form.dataset.wbForm === 'memory') {
+            const completed = await invokeAction('save-memory-item', {
+                id: data.id || '',
+                kind: data.kind || 'fact',
+                title: data.title || '',
+                relation: data.relation || '',
+                content: data.content || '',
+                important: form.elements.important?.checked || false,
+                locked: form.elements.locked?.checked || false,
+            });
+            if (completed) memoryEditor = null;
+        }
+        if (form.dataset.wbForm === 'person') {
+            const completed = await invokeAction('save-manual-person', {
+                id: data.id || '',
+                name: data.name || '',
+                location: data.location || '',
+                action: data.action || '',
+                intent: data.intent || '',
+                longTermGoal: data.longTermGoal || '',
+                knowledge: data.knowledge || 'backstage',
+                relevance: data.relevance || 2,
+                simulationEnabled: form.elements.simulationEnabled?.checked || false,
+                locked: form.elements.locked?.checked || false,
+            });
+            if (completed) personEditor = null;
         }
         render();
     });

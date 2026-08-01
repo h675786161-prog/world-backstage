@@ -38,6 +38,45 @@ test('主世界时钟使用绝对分钟，并按日/时/分稳定还原', () => 
     });
 });
 
+test('用户点名的活动事件会优先进入下一轮注入且只消费一次', () => {
+    const state = addManualEvent(createInitialState(), {
+        id: 'quiet-current',
+        title: '港口换防',
+        summary: '巡逻队正在重新部署。',
+        visibility: 'trace',
+    });
+    state.events[0].delivery.manualQueued = true;
+    const selected = selectDeliveryCandidates(state, { deliveryDensity: 'restrained' });
+    assert.equal(selected[0].id, 'quiet-current');
+    const offered = recordDeliveryOffers(state, ['quiet-current'], { messageId: 8 });
+    assert.equal(offered.events[0].delivery.manualQueued, false);
+});
+
+test('世界与记忆注入可以彼此独立关闭', () => {
+    const state = createInitialState();
+    state.storyMemory.facts.push({
+        id: 'promise', key: 'promise', subject: '约定', predicate: '内容', value: '黎明前回来',
+        status: 'active', confidence: 'high', importance: 3, visibility: 'known',
+    });
+    const memoryOnly = buildInjectionPackage(state, {
+        enabled: true,
+        worldSimulationEnabled: true,
+        worldPromptInjection: false,
+        memorySystemEnabled: true,
+        memoryPromptInjection: true,
+    }, '约定');
+    assert.match(memoryOnly.text, /黎明前回来/);
+    assert.doesNotMatch(memoryOnly.text, /权威主世界时间/);
+    const none = buildInjectionPackage(state, {
+        enabled: true,
+        worldSimulationEnabled: true,
+        worldPromptInjection: false,
+        memorySystemEnabled: true,
+        memoryPromptInjection: false,
+    }, '约定');
+    assert.equal(none.text, '');
+});
+
 test('世界日历支持年、月、日校准，并随权威时钟自动跨月跨年', () => {
     let state = createInitialState({ day: 3, hour: 23, minute: 30 });
     state = setWorldCalendar(state, {

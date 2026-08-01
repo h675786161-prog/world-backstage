@@ -213,11 +213,14 @@ export async function requestCustomCompletion(settings, messages, {
 
     const completion = extractCompletionText(data);
     const finishReason = extractCompletionFinishReason(data);
-    if (/length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason)) {
-        throw new Error(`独立 API 输出达到长度上限（${finishReason}），需要提高输出额度后重试`);
-    }
     if (!completion) {
+        if (/length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason)) {
+            throw new Error(`独立 API 输出达到长度上限（${finishReason}），且没有返回可恢复的正文`);
+        }
         throw new Error('独立 API 返回成功，但没有可读取的正文');
     }
+    // Some OpenAI-compatible providers report MAX_TOKENS even when the JSON body is
+    // already complete. Preserve non-empty output and let the JSON parser decide;
+    // an actually truncated object will enter the compact retry path instead.
     return completion;
 }

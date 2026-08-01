@@ -26,9 +26,14 @@ import { createWorldBackstageUI } from './ui.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 8,
+    settingsVersion: 9,
     enabled: true,
     promptInjection: true,
+    worldSimulationEnabled: true,
+    worldPromptInjection: true,
+    simulationPaused: false,
+    memorySystemEnabled: true,
+    memoryPromptInjection: true,
     autoSync: true,
     autoSimulationMode: 'balanced',
     autoSimulationInterval: 1,
@@ -119,7 +124,17 @@ function getSettings() {
         ...(previous && typeof previous === 'object' ? previous : {}),
     };
     settings.enabled = Boolean(settings.enabled);
-    settings.promptInjection = Boolean(settings.promptInjection);
+    if (previousSettingsVersion < 9) {
+        settings.worldPromptInjection = previous?.promptInjection !== false;
+        settings.memoryPromptInjection = previous?.promptInjection !== false;
+    }
+    // Kept only as a migration field. Injection is now controlled per module.
+    settings.promptInjection = true;
+    settings.worldSimulationEnabled = Boolean(settings.worldSimulationEnabled);
+    settings.worldPromptInjection = Boolean(settings.worldPromptInjection);
+    settings.simulationPaused = Boolean(settings.simulationPaused);
+    settings.memorySystemEnabled = Boolean(settings.memorySystemEnabled);
+    settings.memoryPromptInjection = Boolean(settings.memoryPromptInjection);
     settings.autoSync = Boolean(settings.autoSync);
     settings.includeUserInnerVoice = Boolean(settings.includeUserInnerVoice);
     if (!['auto', 'day', 'night'].includes(settings.theme)) settings.theme = 'auto';
@@ -161,7 +176,7 @@ function getSettings() {
     settings.customSimulationInstruction = String(
         settings.customSimulationInstruction || '',
     ).trim().slice(0, 1000);
-    settings.settingsVersion = 8;
+    settings.settingsVersion = 9;
     if (!['explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'explicit';
     }
@@ -194,6 +209,7 @@ function makeStore() {
         initialState,
         currentState: clone(initialState),
         branchOverrides: {},
+        personObservations: {},
         updatedAt: new Date().toISOString(),
     };
 }
@@ -238,6 +254,9 @@ function getStore({ create = true } = {}) {
     store.branchOverrides = store.branchOverrides && typeof store.branchOverrides === 'object'
         ? store.branchOverrides
         : {};
+    store.personObservations = store.personObservations && typeof store.personObservations === 'object'
+        ? store.personObservations
+        : {};
     return store;
 }
 
@@ -277,7 +296,7 @@ function latestAssistantEntry() {
     const chat = getContext()?.chat || [];
     for (let index = chat.length - 1; index >= 0; index -= 1) {
         const message = chat[index];
-        if (message && !message.is_user && !message.is_system) return { message, index };
+        if (hasUsableAssistantText(message)) return { message, index };
     }
     return null;
 }
@@ -453,7 +472,7 @@ function retryJsonPrompt(prompt, attempt) {
 }
 
 function retryTokenBudget(base, attempt) {
-    return Math.min(6000, Math.max(64, Number(base) || 2200) + Math.max(0, attempt) * 1200);
+    return Math.min(9000, Math.max(64, Number(base) || 3200) + Math.max(0, attempt) * 1800);
 }
 
 function unreadableJsonError(raw, subject = '模型') {
@@ -572,6 +591,15 @@ function selectedMessageText(message) {
     return String(message.swipes?.[swipeId] ?? message.mes ?? '');
 }
 
+function hasUsableAssistantText(message) {
+    if (!message || message.is_user || message.is_system) return false;
+    if (message.is_error || message.error || message.extra?.generation_error || message.extra?.api_error) {
+        return false;
+    }
+    const text = selectedMessageText(message).trim();
+    return Boolean(text && !/^(?:\.{3}|…+|（?空回复）?)$/u.test(text));
+}
+
 function narrativeContext(messageId, maximumTurns = 3) {
     const chat = getContext()?.chat || [];
     const assistant = chat[Number(messageId)];
@@ -638,7 +666,7 @@ function pendingAssistantEntriesThrough(messageId) {
     const entries = [];
     for (let index = start; index <= target; index += 1) {
         const message = chat[index];
-        if (!message || message.is_user || message.is_system) continue;
+        if (!hasUsableAssistantText(message)) continue;
         const branch = branchDataFromMessage(message);
         if (!branch) continue;
         if (branch?.status === 'committed' && !branch.stale) continue;
@@ -738,7 +766,7 @@ function markMessagePending(messageId, {
 } = {}) {
     const context = getContext();
     const message = context?.chat?.[messageId];
-    if (!message || message.is_user) return null;
+    if (!hasUsableAssistantText(message)) return null;
     const swipeId = Number(message.swipe_id ?? 0);
     const sourceKey = branchSourceKey(messageId, message, swipeId);
     const existing = branchDataFromMessage(message, swipeId);
@@ -858,8 +886,20 @@ async function runSimulationForMessage(messageId, {
 } = {}) {
     const beforeContext = getContext();
     const beforeMessage = beforeContext?.chat?.[messageId];
-    if (!beforeMessage || beforeMessage.is_user) {
+    const initialSettings = getSettings();
+    if (!initialSettings.enabled || !initialSettings.worldSimulationEnabled) {
+        throw new Error('世界推演模块当前已停用');
+    }
+    if (!hasUsableAssistantText(beforeMessage)) {
         throw new Error('没有找到可以推演的 AI 正文');
+    }
+    if (initialSettings.simulationPaused && trigger !== 'manual') {
+        setSyncStatus({
+            phase: 'pending',
+            message: '自动推演已暂停；正文保持待同步状态',
+            error: '',
+        });
+        return getState();
     }
     const beforeSwipeId = Number(beforeMessage.swipe_id ?? 0);
     const beforeSourceKey = branchSourceKey(messageId, beforeMessage, beforeSwipeId);
@@ -932,10 +972,10 @@ async function runSimulationForMessage(messageId, {
     });
     try {
         const baseMaxTokens = settings.autoSimulationMode === 'deep'
-            ? 3000
+            ? 4600
             : settings.autoSimulationMode === 'light'
-                ? 1600
-                : 2200;
+                ? 2400
+                : 3400;
         const payload = await runWithRetries(async attempt => {
             const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                 maxTokens: retryTokenBudget(baseMaxTokens, attempt),
@@ -961,7 +1001,45 @@ async function runSimulationForMessage(messageId, {
             },
         });
 
-        let resultState = applySimulationResult(baseState, payload, {
+        if (getSettings().simulationPaused && trigger !== 'manual') {
+            const target = locateTargetBranch(messageId, swipeId, expectedHash);
+            if (target) {
+                attachBranchData(target.message, swipeId, {
+                    ...prepared.data,
+                    status: 'pending',
+                    error: '',
+                });
+                await target.context.saveChat?.();
+            }
+            const store = getStore();
+            store.currentState = markPendingSync(baseState, true);
+            saveStore(store);
+            setSyncStatus({
+                phase: 'pending',
+                message: '推演已暂停；本次返回没有提交，正文仍可稍后继续同步',
+                error: '',
+            });
+            return baseState;
+        }
+
+        const applicablePayload = settings.memorySystemEnabled
+            ? payload
+            : {
+                ...payload,
+                memory_update: {
+                    facts_upsert: [],
+                    facts_invalidate: [],
+                    clues_upsert: [],
+                    clues_resolve: [],
+                },
+                memoryUpdate: {
+                    factsUpsert: [],
+                    factsInvalidate: [],
+                    cluesUpsert: [],
+                    cluesResolve: [],
+                },
+            };
+        let resultState = applySimulationResult(baseState, applicablePayload, {
             messageId,
             swipeId,
             sourceKey,
@@ -1090,13 +1168,30 @@ function queueSimulation(messageId, options = {}) {
 
 function scheduleAutoSync(messageId, type) {
     const settings = getSettings();
+    const message = getContext()?.chat?.[Number(messageId)];
+    if (!hasUsableAssistantText(message)) {
+        setSyncStatus({
+            phase: 'idle',
+            message: '未检测到有效 AI 正文，本轮没有推进世界',
+            error: '',
+        });
+        return;
+    }
+    if (!settings.enabled || !settings.worldSimulationEnabled) {
+        setSyncStatus({
+            phase: 'idle',
+            message: settings.enabled ? '世界推演模块已停用' : '世界背面当前未启用',
+            error: '',
+        });
+        return;
+    }
     markMessagePending(messageId, { trigger: type || 'reply' });
-    if (!settings.autoSync || !settings.enabled) {
+    if (!settings.autoSync || settings.simulationPaused) {
         setSyncStatus({
             phase: 'pending',
-            message: settings.enabled
-                ? '自动推演设为手动；可随时推演累计正文'
-                : '世界背面当前未启用',
+            message: settings.simulationPaused
+                ? '自动推演已暂停；新正文会安全累计，仍可手动推演'
+                : '自动推演设为手动；可随时推演累计正文',
             error: '',
         });
         return;
@@ -1133,7 +1228,9 @@ function schedulePendingCatchUp() {
     const settings = getSettings();
     if (
         !settings.enabled
+        || !settings.worldSimulationEnabled
         || !settings.autoSync
+        || settings.simulationPaused
         || runtime.simulationCount > 0
         || runtime.queuedSimulations.size > 0
     ) {
@@ -1157,14 +1254,14 @@ function unindexedAssistantCount() {
     );
     return (getContext()?.chat || [])
         .slice(cursor)
-        .filter(message => message && !message.is_user && !message.is_system)
+        .filter(hasUsableAssistantText)
         .length;
 }
 
 function scheduleAutoMemoryIndex() {
     const settings = getSettings();
     const interval = settings.memoryAutoIndexInterval;
-    if (!settings.enabled || interval <= 0) return;
+    if (!settings.enabled || !settings.memorySystemEnabled || interval <= 0) return;
     if (unindexedAssistantCount() < interval) return;
     if (runtime.autoMemoryTimer !== null) return;
 
@@ -1188,6 +1285,15 @@ function scheduleAutoMemoryIndex() {
 function onMessageReceived(messageId, type) {
     if (runtime.inBackgroundGeneration) return;
     if (['quiet', 'impersonate', 'first_message'].includes(type)) return;
+    const message = getContext()?.chat?.[Number(messageId)];
+    if (!hasUsableAssistantText(message)) {
+        setSyncStatus({
+            phase: 'idle',
+            message: '回复为空或生成失败，已跳过推演与记忆写入',
+            error: '',
+        });
+        return;
+    }
     scheduleAutoSync(Number(messageId), type);
     scheduleAutoMemoryIndex();
 }
@@ -1291,12 +1397,15 @@ function onMessageEdited(messageId) {
     runtime.ui?.render();
 
     if (message && !message.is_user && index === context.chat.length - 1) {
-        window.setTimeout(() => {
-            void queueSimulation(index, { force: true, trigger: 'edit' }).catch(() => undefined);
-        }, 120);
-    } else {
-        toast('已回到编辑点之前的世界快照；后续正文需要重新生成或手动同步。', 'info');
+        setSyncStatus({
+            phase: 'pending',
+            message: '正文已编辑，世界状态尚未改动；确认内容后请手动同步',
+            error: '',
+        });
+        toast('正文修改已保存，但不会自动重推；确认满意后再点“同步最新正文”。', 'info');
+        return;
     }
+    toast('已回到编辑点之前的世界快照；后续正文需要重新生成或手动同步。', 'info');
 }
 
 function onMessageDeleted() {
@@ -1488,6 +1597,10 @@ async function scanHistoryArchive({
     automatic = false,
     maximumBatches = Number.POSITIVE_INFINITY,
 } = {}) {
+    if (!getSettings().memorySystemEnabled) {
+        if (automatic) return false;
+        throw new Error('记忆系统当前已停用');
+    }
     if (runtime.historyProgress.phase === 'running') {
         if (automatic) return false;
         throw new Error('历史建档已经在进行中');
@@ -1630,7 +1743,34 @@ async function scanHistoryArchive({
     }
 }
 
-async function observePerson(personId) {
+function personObservationCacheKey(state, person) {
+    const latest = latestAssistantEntry();
+    const source = latest
+        ? branchSourceKey(latest.index, latest.message)
+        : 'no-assistant';
+    const stateFingerprint = hashText(JSON.stringify({
+        clock: state.clock.absoluteMinute,
+        world: state.world,
+        person: {
+            id: person.id,
+            location: person.location,
+            action: person.action,
+            intent: person.intent,
+            goal: person.longTermGoal,
+            updatedAt: person.updatedAt,
+        },
+    }));
+    return `${person.id}:${source}:${stateFingerprint}`;
+}
+
+function cachedPersonObservation(personId) {
+    const state = getState();
+    const person = state.people.find(item => item.id === personId);
+    if (!person) return null;
+    return getStore().personObservations?.[personObservationCacheKey(state, person)] || null;
+}
+
+async function observePerson(personId, { force = false } = {}) {
     const state = getState();
     const person = state.people.find(item => item.id === personId);
     if (!person) throw new Error('没有找到这个人物');
@@ -1638,6 +1778,9 @@ async function observePerson(personId) {
     if (currentTurnPresentPersonIds().includes(person.id)) {
         throw new Error('这个人物已经在本轮镜头中，不需要另行观测');
     }
+    const cacheKey = personObservationCacheKey(state, person);
+    const cached = getStore().personObservations?.[cacheKey];
+    if (cached && !force) return cached;
     const settings = getSettings();
     const latest = latestAssistantEntry();
     const narrative = latest
@@ -1669,11 +1812,20 @@ async function observePerson(personId) {
             succeededAt: new Date().toISOString(),
             method: runtime.syncStatus.method,
         });
-        return {
+        const result = {
             personId: person.id,
             text,
             worldMinute: state.clock.absoluteMinute,
+            cacheKey,
         };
+        const store = getStore();
+        store.personObservations[cacheKey] = result;
+        const cacheEntries = Object.entries(store.personObservations);
+        if (cacheEntries.length > 30) {
+            store.personObservations = Object.fromEntries(cacheEntries.slice(-30));
+        }
+        saveStore(store);
+        return result;
     } catch (error) {
         const errorMessage = describeError(error);
         setSyncStatus({
@@ -1703,6 +1855,9 @@ async function handleUiAction(action, payload = {}) {
         refreshInjection();
         syncSettingsEntry();
         runtime.ui?.render();
+        if (payload.simulationPaused === false) {
+            window.setTimeout(schedulePendingCatchUp, 40);
+        }
         return;
     }
 
@@ -1715,7 +1870,158 @@ async function handleUiAction(action, payload = {}) {
     }
 
     if (action === 'observe-person') {
-        return observePerson(String(payload.personId || ''));
+        return observePerson(String(payload.personId || ''), { force: Boolean(payload.force) });
+    }
+
+    if (action === 'get-person-observation') {
+        return cachedPersonObservation(String(payload.personId || ''));
+    }
+
+    if (action === 'save-memory-item') {
+        const kind = ['fact', 'clue', 'summary'].includes(payload.kind) ? payload.kind : 'fact';
+        const id = String(payload.id || '');
+        const title = String(payload.title || '').trim();
+        const relation = String(payload.relation || '').trim();
+        const content = String(payload.content || '').trim();
+        if (!title || !content) throw new Error('标题和内容不能为空');
+
+        const next = clone(getState());
+        next.storyMemory ||= { facts: [], clues: [], summaries: [] };
+        const collection = kind === 'fact'
+            ? next.storyMemory.facts
+            : kind === 'clue'
+                ? next.storyMemory.clues
+                : next.storyMemory.summaries;
+        const existing = collection.find(item => item.id === id);
+        if (existing?.locked && payload.locked === false) {
+            throw new Error('请先用卡片上的锁定按钮解锁，再编辑这条记忆');
+        }
+        const itemId = existing?.id || `${kind}_manual_${Date.now().toString(36)}`;
+        const common = {
+            ...(existing || {}),
+            id: itemId,
+            locked: Boolean(payload.locked),
+            important: Boolean(payload.important),
+            manual: true,
+        };
+        let updated;
+        if (kind === 'fact') {
+            updated = {
+                ...common,
+                key: existing?.key || `manual:${hashText(`${title}\n${relation}`)}`,
+                subject: title.slice(0, 100),
+                predicate: relation.slice(0, 100),
+                value: content.slice(0, 520),
+                status: existing?.status || 'active',
+                confidence: existing?.confidence || 'high',
+                importance: payload.important ? 3 : (existing?.importance || 2),
+                visibility: existing?.visibility || 'known',
+                updatedAt: next.clock.absoluteMinute,
+            };
+        } else if (kind === 'clue') {
+            updated = {
+                ...common,
+                title: title.slice(0, 120),
+                text: content.slice(0, 620),
+                status: existing?.status || 'open',
+                importance: payload.important ? 3 : (existing?.importance || 1),
+                visibility: existing?.visibility || 'hidden',
+                updatedAt: next.clock.absoluteMinute,
+                createdAt: existing?.createdAt ?? next.clock.absoluteMinute,
+            };
+        } else {
+            const anchor = latestAssistantEntry()?.index ?? 0;
+            updated = {
+                ...common,
+                title: title.slice(0, 120),
+                summary: content.slice(0, 1400),
+                startMessageId: existing?.startMessageId ?? anchor,
+                endMessageId: existing?.endMessageId ?? anchor,
+                createdAt: existing?.createdAt || new Date().toISOString(),
+            };
+        }
+        if (existing) Object.assign(existing, updated);
+        else collection.unshift(updated);
+        commitManualState(next, existing ? '记忆已经更新。' : '手动记忆已经加入。');
+        return updated;
+    }
+
+    if (action === 'toggle-memory-flag') {
+        const kind = ['fact', 'clue', 'summary'].includes(payload.kind) ? payload.kind : 'fact';
+        const field = payload.field === 'locked' ? 'locked' : 'important';
+        const next = clone(getState());
+        const collection = kind === 'fact'
+            ? next.storyMemory?.facts
+            : kind === 'clue'
+                ? next.storyMemory?.clues
+                : next.storyMemory?.summaries;
+        const item = collection?.find(entry => entry.id === String(payload.id || ''));
+        if (!item) throw new Error('没有找到这条记忆');
+        item[field] = !item[field];
+        if (field === 'important' && item.important && 'importance' in item) item.importance = 3;
+        commitManualState(next, field === 'locked'
+            ? (item.locked ? '记忆已锁定，不会被自动整理覆盖。' : '记忆已解锁。')
+            : (item.important ? '已标记为重要记忆。' : '已取消重要标记。'));
+        return;
+    }
+
+    if (action === 'delete-memory-item') {
+        const kind = ['fact', 'clue', 'summary'].includes(payload.kind) ? payload.kind : 'fact';
+        const next = clone(getState());
+        const collection = kind === 'fact'
+            ? next.storyMemory?.facts
+            : kind === 'clue'
+                ? next.storyMemory?.clues
+                : next.storyMemory?.summaries;
+        const index = collection?.findIndex(entry => entry.id === String(payload.id || '')) ?? -1;
+        if (index < 0) throw new Error('没有找到这条记忆');
+        if (collection[index].locked) throw new Error('锁定的记忆不能删除，请先解锁');
+        collection.splice(index, 1);
+        commitManualState(next, '记忆已经删除。');
+        return;
+    }
+
+    if (action === 'save-manual-person') {
+        const id = String(payload.id || '');
+        const name = String(payload.name || '').trim();
+        if (!name) throw new Error('人物姓名不能为空');
+        const next = clone(getState());
+        const existing = next.people.find(person => person.id === id);
+        if (existing?.locked && payload.locked === false) {
+            throw new Error('请先解锁人物卡，再修改核心设定');
+        }
+        const person = {
+            ...(existing || {}),
+            id: existing?.id || `person_manual_${hashText(`${name}\n${Date.now()}`)}`,
+            name: name.slice(0, 80),
+            monogram: name.slice(0, 1),
+            location: String(payload.location || '位置待确认').trim().slice(0, 160),
+            action: String(payload.action || '当前行动待确认').trim().slice(0, 280),
+            intent: String(payload.intent || '短期意图待确认').trim().slice(0, 320),
+            longTermGoal: String(payload.longTermGoal || '').trim().slice(0, 420),
+            knowledge: payload.knowledge === 'known' ? 'known' : 'backstage',
+            relevance: Math.min(3, Math.max(0, Number(payload.relevance) || 2)),
+            simulationEnabled: Boolean(payload.simulationEnabled),
+            locked: Boolean(payload.locked),
+            manual: true,
+            source: 'manual',
+            isUser: false,
+            updatedAt: next.clock.absoluteMinute,
+        };
+        if (existing) Object.assign(existing, person);
+        else next.people.push(person);
+        commitManualState(next, existing ? '后台人物卡已经更新。' : `已将 ${person.name} 加入后台人物。`);
+        return person;
+    }
+
+    if (action === 'delete-manual-person') {
+        const next = clone(getState());
+        const index = next.people.findIndex(person => person.id === String(payload.id || ''));
+        if (index < 0) throw new Error('没有找到这个人物');
+        if (next.people[index].locked) throw new Error('锁定的人物卡不能删除，请先解锁');
+        const [removed] = next.people.splice(index, 1);
+        commitManualState(next, `已移除后台人物 ${removed.name}。`);
+        return;
     }
 
     if (action === 'set-clock') {
@@ -1761,7 +2067,30 @@ async function handleUiAction(action, payload = {}) {
         return;
     }
 
+    if (action === 'toggle-event-delivery') {
+        const eventId = String(payload.eventId || '');
+        const next = clone(getState());
+        const event = next.events.find(item => item.id === eventId);
+        if (!event) throw new Error('没有找到这条事件');
+        if (event.visibility === 'hidden') {
+            throw new Error('完全隐藏的事件不能注入正文；请先调整其可见性');
+        }
+        event.delivery ||= { state: 'none' };
+        event.delivery.manualQueued = !event.delivery.manualQueued;
+        commitManualState(
+            next,
+            event.delivery.manualQueued
+                ? `“${event.title}”将在下一轮优先寻找自然显露时机。`
+                : `已取消“${event.title}”的下一轮显露。`,
+        );
+        return;
+    }
+
     if (action === 'manual-sync') {
+        if (!getSettings().worldSimulationEnabled) {
+            toast('世界推演模块当前已停用。', 'warning');
+            return;
+        }
         const lastAssistantIndex = latestAssistantEntry()?.index;
         if (!Number.isInteger(lastAssistantIndex)) {
             toast('当前聊天还没有可推演的 AI 正文。', 'warning');

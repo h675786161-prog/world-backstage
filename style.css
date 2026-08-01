@@ -3857,6 +3857,26 @@
     background: var(--wb-panel-faint);
 }
 
+.wb-api-draft-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--wb-text-faint);
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.wb-api-draft-heading button {
+    flex: 0 0 auto;
+    padding: 5px 8px;
+    border: 1px solid var(--wb-line);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--wb-text-soft);
+    cursor: pointer;
+}
+
 .wb-api-form label {
     display: grid;
     gap: 6px;
@@ -3878,6 +3898,36 @@
     border-radius: 9px;
     outline: none;
     background: var(--wb-panel);
+}
+
+.wb-api-secret-field {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
+}
+
+.wb-api-secret-field .wb-secret-input {
+    padding-right: 58px;
+    -webkit-text-security: disc;
+}
+
+.wb-api-secret-field .wb-secret-input.is-visible {
+    -webkit-text-security: none;
+}
+
+.wb-api-secret-field > button {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    bottom: 4px;
+    min-width: 46px;
+    padding: 0 8px;
+    border: 0;
+    border-left: 1px solid var(--wb-line);
+    background: transparent;
+    color: var(--wb-text-soft);
+    cursor: pointer;
 }
 
 .wb-api-form input:focus,

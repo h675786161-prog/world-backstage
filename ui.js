@@ -368,9 +368,10 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
     const worldbook = syncStatus?.worldbook || { books: [], entries: [], phase: 'idle' };
     const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
     const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
+    const hasSavedApiKey = Boolean(settings.customApiKey);
     const apiValues = {
         customApiUrl: apiDraft?.customApiUrl ?? settings.customApiUrl,
-        customApiKey: apiDraft?.customApiKey ?? settings.customApiKey,
+        customApiCredential: apiDraft?.customApiCredential ?? '',
         customApiModel: apiDraft?.customApiModel ?? settings.customApiModel,
         customApiTransport: apiDraft?.customApiTransport ?? settings.customApiTransport,
     };
@@ -432,23 +433,36 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
 
             ${settings.apiMode === 'custom' ? `
                 <form class="wb-api-form" data-wb-form="api" autocomplete="off">
+                    <div class="wb-api-draft-heading">
+                        <span>${hasSavedApiKey ? '已保存独立接口；旧 Key 不会再次显示。' : '尚未保存独立接口。'}</span>
+                        <button type="button" data-wb-action="reset-api-draft">清空重填</button>
+                    </div>
                     <label>接口地址
                         <input name="customApiUrl" type="url" required
                             value="${escapeAttr(apiValues.customApiUrl)}"
-                            inputmode="url" autocapitalize="none" spellcheck="false"
+                            autocomplete="off" inputmode="url" autocapitalize="none" spellcheck="false"
                             placeholder="https://example.com/v1">
                     </label>
                     <p>请填到版本层，例如 <code>/v1</code>；插件只会自动补上 <code>/chat/completions</code>。</p>
                     <label>API Key
-                        <input name="customApiKey" type="password" required
-                            value="${escapeAttr(apiValues.customApiKey)}"
-                            placeholder="sk-…" autocomplete="off" autocapitalize="none" spellcheck="false"
-                            data-lpignore="true" data-1p-ignore data-form-type="other">
+                        <span class="wb-api-secret-field">
+                            <input class="wb-secret-input" name="customApiCredential" type="text"
+                                value="${escapeAttr(apiValues.customApiCredential)}"
+                                placeholder="${hasSavedApiKey ? '留空则继续使用已保存的 Key' : '请输入 API Key'}"
+                                autocomplete="one-time-code" autocapitalize="none" spellcheck="false"
+                                data-lpignore="true" data-1p-ignore data-form-type="other"
+                                ${hasSavedApiKey ? '' : 'required'}>
+                            <button type="button" data-wb-action="toggle-api-key-visibility"
+                                aria-pressed="false">显示</button>
+                        </span>
                     </label>
+                    <p>${hasSavedApiKey
+                        ? '输入新 Key 会替换旧 Key；留空则沿用。为了避免手机自动回填，旧 Key 不会放回输入框。'
+                        : 'Key 只保存在本机的 SillyTavern 扩展设置中，不会写进导出的世界状态。'}</p>
                     <label>模型名称
                         <input name="customApiModel" required list="wb-custom-model-list"
                             value="${escapeAttr(apiValues.customApiModel)}"
-                            autocapitalize="none" spellcheck="false"
+                            autocomplete="off" autocapitalize="none" spellcheck="false"
                             placeholder="gemini-2.5-flash">
                         <datalist id="wb-custom-model-list">
                             ${availableModels.map(model => `<option value="${escapeAttr(model)}"></option>`).join('')}
@@ -473,7 +487,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                         </button>
                     </div>
                     ${modelPull.message ? `<p class="wb-api-model-status is-${escapeAttr(modelPull.phase)}">${escapeHtml(modelPull.message)}</p>` : ''}
-                    <p>Key 保存在本机的 SillyTavern 扩展设置中，不会写进导出的世界状态。</p>
                 </form>
             ` : ''}
 
@@ -626,6 +639,15 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                         ${settings.includeUserInnerVoice ? 'checked' : ''}>
                     <i></i>
                 </label>
+            </div>
+
+            <div class="wb-setting-block">
+                <label class="wb-custom-instruction">
+                    玩家角色身份锚点
+                    <textarea data-wb-setting="playerIdentityAnchor" maxlength="400" rows="3"
+                        placeholder="例如：男性，外表偏女性，使用“他”和男性称谓；狐族人外，不要因外貌误判性别。">${escapeHtml(settings.playerIdentityAnchor)}</textarea>
+                </label>
+                <p>可填写性别身份、称谓/代词、外貌表达、身体设定、物种与年龄阶段。外貌、衣着和物种不会被自动当成性别依据。</p>
             </div>
 
             <div class="wb-setting-block">
@@ -1513,6 +1535,7 @@ export function createWorldBackstageUI({
     let openSettingsGroups = new Set(['connection', 'simulation']);
     let eventFormDraft = null;
     let apiFormDraft = null;
+    let skipApiDraftCapture = false;
     const viewScrollTop = new Map();
     let orbDrag = null;
     let suppressOrbClick = false;
@@ -1526,6 +1549,27 @@ export function createWorldBackstageUI({
             render();
         }, tone === 'error' ? 5600 : 3200);
         render();
+    }
+
+    function readApiForm(form) {
+        const data = Object.fromEntries(new FormData(form).entries());
+        apiFormDraft = { ...data };
+        return data;
+    }
+
+    function apiSettingsFromDraft(data) {
+        const replacementKey = String(data.customApiCredential || '').trim();
+        return {
+            customApiUrl: data.customApiUrl,
+            customApiKey: replacementKey || getSettings().customApiKey,
+            customApiModel: data.customApiModel,
+            customApiTransport: data.customApiTransport,
+        };
+    }
+
+    function forgetApiKeyDraft(data) {
+        apiFormDraft = { ...data, customApiCredential: '' };
+        skipApiDraftCapture = true;
     }
 
     async function invokeAction(action, payload = {}) {
@@ -1594,9 +1638,10 @@ export function createWorldBackstageUI({
             eventFormDraft = Object.fromEntries(new FormData(previousEventForm).entries());
         }
         const previousApiForm = root.querySelector('[data-wb-form="api"]');
-        if (previousApiForm) {
-            apiFormDraft = Object.fromEntries(new FormData(previousApiForm).entries());
+        if (previousApiForm && !skipApiDraftCapture) {
+            readApiForm(previousApiForm);
         }
+        skipApiDraftCapture = false;
         const previousFocus = root.contains(document.activeElement)
             ? {
                 id: document.activeElement.id || '',
@@ -1709,7 +1754,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                        <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.7.2</i></span>
+                        <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.7.3</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -2166,14 +2211,11 @@ export function createWorldBackstageUI({
         if (action === 'test-api') {
             const form = target.closest('[data-wb-form="api"]');
             if (form) {
-                const data = Object.fromEntries(new FormData(form).entries());
-                apiFormDraft = { ...data };
-                await invokeAction('update-settings', {
-                    customApiUrl: data.customApiUrl,
-                    customApiKey: data.customApiKey,
-                    customApiModel: data.customApiModel,
-                    customApiTransport: data.customApiTransport,
-                });
+                if (!form.reportValidity()) return;
+                const data = readApiForm(form);
+                const completed = await invokeAction('update-settings', apiSettingsFromDraft(data));
+                if (!completed) return;
+                forgetApiKeyDraft(data);
             }
             await invokeAction('test-api');
             render();
@@ -2182,17 +2224,37 @@ export function createWorldBackstageUI({
         if (action === 'pull-api-models') {
             const form = target.closest('[data-wb-form="api"]');
             if (form) {
-                const data = Object.fromEntries(new FormData(form).entries());
-                apiFormDraft = { ...data };
-                await invokeAction('update-settings', {
-                    customApiUrl: data.customApiUrl,
-                    customApiKey: data.customApiKey,
-                    customApiModel: data.customApiModel,
-                    customApiTransport: data.customApiTransport,
-                });
+                if (!form.reportValidity()) return;
+                const data = readApiForm(form);
+                const completed = await invokeAction('update-settings', apiSettingsFromDraft(data));
+                if (!completed) return;
+                forgetApiKeyDraft(data);
             }
             await invokeAction('pull-api-models');
             render();
+            return;
+        }
+        if (action === 'reset-api-draft') {
+            apiFormDraft = {
+                customApiUrl: '',
+                customApiCredential: '',
+                customApiModel: '',
+                customApiTransport: getSettings().customApiTransport,
+            };
+            skipApiDraftCapture = true;
+            render();
+            window.setTimeout(() => {
+                root.querySelector('[data-wb-form="api"] [name="customApiUrl"]')?.focus();
+            }, 0);
+            return;
+        }
+        if (action === 'toggle-api-key-visibility') {
+            const field = target.closest('.wb-api-secret-field')?.querySelector('.wb-secret-input');
+            if (!field) return;
+            const visible = field.classList.toggle('is-visible');
+            target.setAttribute('aria-pressed', String(visible));
+            target.textContent = visible ? '隐藏' : '显示';
+            field.focus();
             return;
         }
 
@@ -2203,7 +2265,7 @@ export function createWorldBackstageUI({
     root.addEventListener('change', async event => {
         const apiForm = event.target.closest?.('[data-wb-form="api"]');
         if (apiForm) {
-            apiFormDraft = Object.fromEntries(new FormData(apiForm).entries());
+            readApiForm(apiForm);
             return;
         }
 
@@ -2232,7 +2294,7 @@ export function createWorldBackstageUI({
     root.addEventListener('input', event => {
         const apiForm = event.target.closest?.('[data-wb-form="api"]');
         if (apiForm) {
-            apiFormDraft = Object.fromEntries(new FormData(apiForm).entries());
+            readApiForm(apiForm);
             return;
         }
 
@@ -2254,13 +2316,11 @@ export function createWorldBackstageUI({
         }
         if (form.dataset.wbForm === 'api') {
             apiFormDraft = { ...data };
-            const completed = await invokeAction('update-settings', {
-                customApiUrl: data.customApiUrl,
-                customApiKey: data.customApiKey,
-                customApiModel: data.customApiModel,
-                customApiTransport: data.customApiTransport,
-            });
-            if (completed) notify('独立接口设置已保存。', 'success');
+            const completed = await invokeAction('update-settings', apiSettingsFromDraft(data));
+            if (completed) {
+                forgetApiKeyDraft(data);
+                notify('独立接口设置已保存，旧值不会再自动填回。', 'success');
+            }
         }
         if (form.dataset.wbForm === 'event') {
             const completed = await invokeAction('add-event', data);

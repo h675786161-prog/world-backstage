@@ -45,6 +45,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     memoryAutoIndexInterval: 10,
     backgroundNpcBudget: 4,
     customSimulationInstruction: '',
+    playerIdentityAnchor: '',
     theme: 'auto',
     deliveryDensity: 'restrained',
     sceneTiming: 'strict',
@@ -326,7 +327,10 @@ function getSettings() {
     settings.customSimulationInstruction = String(
         settings.customSimulationInstruction || '',
     ).trim().slice(0, 1000);
-    settings.settingsVersion = 11;
+    settings.playerIdentityAnchor = String(
+        settings.playerIdentityAnchor || '',
+    ).trim().slice(0, 400);
+    settings.settingsVersion = 12;
     if (!['explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'explicit';
     }
@@ -347,7 +351,7 @@ function getSettings() {
     );
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 11) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 12) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -1218,6 +1222,7 @@ async function runSimulationForMessage(messageId, {
         timePolicy: settings.timePolicy,
         simulationMode: settings.autoSimulationMode,
         customInstruction: settings.customSimulationInstruction,
+        playerIdentityAnchor: settings.playerIdentityAnchor,
         newAssistantTurns: assistantTurnsToApply,
         backgroundNpcBudget: settings.backgroundNpcBudget,
     });
@@ -2088,6 +2093,7 @@ async function scanHistoryArchive({
                     const prompt = buildHistoryIndexPrompt(state, {
                         messages: batch.messages,
                         userName: context?.name1 || '',
+                        playerIdentityAnchor: getSettings().playerIdentityAnchor,
                         compact: attempt > 0,
                     });
                     const historyBaseTokens = getSettings().maxOutputTokens > 0
@@ -2333,6 +2339,7 @@ async function observePerson(personId, { force = false } = {}) {
         narrativeTurns: narrative.turns,
         userName: getContext()?.name1 || '',
         includeUserInnerVoice: settings.includeUserInnerVoice,
+        playerIdentityAnchor: settings.playerIdentityAnchor,
     });
 
     setBusy(true);

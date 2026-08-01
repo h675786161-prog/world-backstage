@@ -180,9 +180,24 @@ test('worldbook NPC bridge is explicit, selective and never scans on every turn'
 
 test('custom API form preserves mobile edits across rerenders and avoids password autofill', () => {
     assert.match(uiSource, /let apiFormDraft = null/);
+    assert.match(uiSource, /let skipApiDraftCapture = false/);
     assert.match(uiSource, /const previousApiForm = root\.querySelector/);
     assert.match(uiSource, /apiDraft\?\.customApiUrl \?\? settings\.customApiUrl/);
-    assert.match(uiSource, /apiFormDraft = Object\.fromEntries\(new FormData\(apiForm\)\.entries\(\)\)/);
+    assert.match(uiSource, /apiDraft\?\.customApiCredential \?\? ''/);
+    assert.match(uiSource, /name="customApiCredential" type="text"/);
+    assert.doesNotMatch(uiSource, /value="\$\{escapeAttr\(settings\.customApiKey\)\}"/);
+    assert.match(uiSource, /autocomplete="one-time-code"/);
+    assert.match(uiSource, /replacementKey \|\| getSettings\(\)\.customApiKey/);
+    assert.match(uiSource, /data-wb-action="reset-api-draft"/);
+    assert.match(uiSource, /data-wb-action="toggle-api-key-visibility"/);
     assert.match(uiSource, /data-lpignore="true"/);
-    assert.match(uiSource, /notify\('独立接口设置已保存。', 'success'\)/);
+    assert.match(uiSource, /旧值不会再自动填回/);
+    assert.match(styleSource, /-webkit-text-security: disc/);
+});
+
+test('player identity anchor supports non-binary presentation and nonhuman roles', () => {
+    assert.match(indexSource, /playerIdentityAnchor: ''/);
+    assert.match(indexSource, /settings\.playerIdentityAnchor/);
+    assert.match(uiSource, /data-wb-setting="playerIdentityAnchor"/);
+    assert.match(uiSource, /外貌、衣着和物种不会被自动当成性别依据/);
 });

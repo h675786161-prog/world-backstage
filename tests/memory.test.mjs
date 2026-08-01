@@ -193,6 +193,39 @@ test('person observation is bounded and protects the player by default', () => {
     );
 });
 
+test('player identity anchor is free-form, gender-neutral and shared by all prompt paths', () => {
+    const state = createInitialState();
+    const anchor = '男性，外表偏女性，使用“他”和男性称谓；狐族人外。';
+    const worldPrompt = buildSimulationPrompt(state, {
+        userName: '月岛',
+        playerIdentityAnchor: anchor,
+        narrativeTurns: [{ role: 'assistant', content: '有人看向月岛。' }],
+    });
+    const historyPrompt = buildHistoryIndexPrompt(state, {
+        userName: '月岛',
+        playerIdentityAnchor: anchor,
+        messages: [{ id: 1, role: 'assistant', content: '有人看向月岛。' }],
+    });
+    const observationPrompt = buildPersonObservationPrompt(state, {
+        id: 'npc',
+        name: '守卫',
+        location: '城门',
+        action: '值守',
+        intent: '观察来客',
+        knowledge: 'hidden',
+    }, {
+        userName: '月岛',
+        playerIdentityAnchor: anchor,
+    });
+
+    for (const prompt of [worldPrompt, historyPrompt, observationPrompt]) {
+        assert.match(prompt, /男性，外表偏女性/);
+        assert.match(prompt, /不得根据外貌、衣着、身体或物种/);
+    }
+    assert.doesNotMatch(worldPrompt, /追踪她的位置与行动/);
+    assert.doesNotMatch(observationPrompt, /描写她此刻/);
+});
+
 test('history indexing stores a rolling digest and durable facts', () => {
     const state = applyHistoryIndexResult(createInitialState(), {
         memory_digest: {

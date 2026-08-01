@@ -1733,6 +1733,7 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
 export function buildHistoryIndexPrompt(state, {
     messages = [],
     userName = '',
+    playerIdentityAnchor = '',
     compact = false,
 } = {}) {
     const compactMode = Boolean(compact);
@@ -1765,6 +1766,7 @@ export function buildHistoryIndexPrompt(state, {
     const outputLimits = compactMode
         ? '极简重试：memory_digest.text 不超过240字，chapter_summary.summary 不超过160字；facts_upsert 最多3条，clues_upsert 最多2条；没有变化的数组必须返回空数组。'
         : '输出应紧凑：memory_digest.text 约300—600字，chapter_summary.summary 约160—320字；facts_upsert 最多8条，clues_upsert 最多6条。';
+    const identityAnchor = modelText(playerIdentityAnchor, 400);
 
     return [
         '你是“世界背面”的历史档案员。你只整理已经发生的聊天记录，不续写、不推演未来、不修改世界时间。',
@@ -1778,7 +1780,10 @@ export function buildHistoryIndexPrompt(state, {
         '6. 长期事实与伏笔必须记录最早或最清楚的来源消息 id、swipe，并保留不超过80字的原文摘录。',
         '7. 若旧伏笔在本批正文中被呼应但未解决，放入 clues_upsert 并把 status 改为 echoed；确实解决时放入 clues_resolve。被正文明确否定的长期事实放入 facts_invalidate。',
         '8. 不得把玩家未明说的想法写成事实。玩家角色名：'
-            + `${modelText(userName, 80) || '未提供'}。`,
+            + `${modelText(userName, 80) || '未提供'}。`
+            + (identityAnchor
+                ? ` 用户明确设定的身份锚点：${identityAnchor}。涉及性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守；不得根据外貌、衣着、身体或物种反推性别。`
+                : ' 未设置玩家身份锚点；正文没有明确时使用中性表述，不得根据外貌、衣着、身体或物种猜测性别与称谓。'),
         '9. 只返回一个合法 JSON 对象，不要代码围栏和解释。',
         `10. ${outputLimits}`,
         '',
@@ -1897,6 +1902,7 @@ export function buildPersonObservationPrompt(state, person, {
     narrativeTurns = [],
     userName = '',
     includeUserInnerVoice = false,
+    playerIdentityAnchor = '',
 } = {}) {
     const isUser = Boolean(
         person?.isUser
@@ -1946,12 +1952,15 @@ export function buildPersonObservationPrompt(state, person, {
         }));
 
     return [
-        `请以“${modelText(person?.name, 80)}”本人的第一人称，描写她此刻正在做什么。`,
+        `请以“${modelText(person?.name, 80)}”本人的第一人称，描写该角色此刻正在做什么。`,
         '这是幕后即时观测，不是主聊天正文，也不是新的世界推演。',
         '要求：',
         '1. 只描写几分钟内的动作、感官、注意力与符合既有信息的即时念头；使用“我”。',
         '2. 不推进主世界时间，不制造重大新事件，不替其他角色行动，不改变任何既有事实。',
-        '3. 严守该角色的知识边界；幕后伏笔若角色并不知道，不得让她突然知晓。',
+        '3. 严守该角色的知识边界；幕后伏笔若角色并不知道，不得让该角色突然知晓。',
+        modelText(playerIdentityAnchor, 400)
+            ? `若片段提及玩家“${modelText(userName, 80) || 'user'}”，必须逐项遵守身份锚点：${modelText(playerIdentityAnchor, 400)}；不得根据外貌、衣着、身体或物种反推性别，也不得擅自改变称谓或身份。`
+            : '若片段提及玩家且正文没有明确身份或称谓，使用中性表述；不得根据外貌、衣着、身体或物种猜测性别。',
         '4. 文风自然沉浸，不写标题、说明、项目符号或“第一视角”等标签。',
         '5. 输出约 250—500 字的中文片段，只返回片段本身。',
         '',
@@ -2075,6 +2084,7 @@ export function buildSimulationPrompt(state, {
     timePolicy = 'explicit',
     simulationMode = 'balanced',
     customInstruction = '',
+    playerIdentityAnchor = '',
     newAssistantTurns = 1,
     backgroundNpcBudget = 4,
 } = {}) {
@@ -2121,9 +2131,13 @@ export function buildSimulationPrompt(state, {
         cautious: '克制估算：明确时间正常计算；只有模糊时间变化时可以保守估算，但不得超过 180 分钟。',
         open: '开放估算：允许依据清楚的叙事时间变化估算经过时长，但仍不得把回复轮次当时间。',
     }[timePolicy] || '严格时间：没有明确、可计算的时间证据就填 0。';
+    const identityAnchor = modelText(playerIdentityAnchor, 400);
+    const playerIdentityRule = identityAnchor
+        ? `用户明确设定的玩家身份锚点：${identityAnchor}。涉及玩家的性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守，除非用户更新此锚点；不得根据外貌、衣着、身体或物种反推性别。`
+        : '用户没有设置玩家身份锚点；正文没有明确身份或称谓时必须使用中性表述，不得根据外貌、衣着、身体或物种猜测性别。';
     const userVoiceRule = includeUserInnerVoice
         ? `玩家角色名为“${modelText(userName, 80) || '未提供'}”；允许在正文已经明确体现其情绪时写入玩家角色 inner_voice，但不得替玩家新增决定、欲望或立场。`
-        : `玩家角色名为“${modelText(userName, 80) || '未提供'}”；可以追踪她的位置与行动，但必须标记 is_user=true，且 inner_voice 必须为空，绝不替玩家描写内心活动。`;
+        : `玩家角色名为“${modelText(userName, 80) || '未提供'}”；可以追踪玩家角色的位置与行动，但必须标记 is_user=true，且 inner_voice 必须为空，绝不替玩家描写内心活动。`;
     const simulationRule = {
         light: '轻量推演：只处理最后正文明确造成的变化，原则上不新建镜头外事件；最多提取1条真正重要的新伏笔。',
         balanced: '均衡推演：维护明确的前台变化，并让少量高相关的镜头外人物和事件继续发展；避免无意义扩张。',
@@ -2147,9 +2161,9 @@ export function buildSimulationPrompt(state, {
         '大量同阵营或同地点 NPC 的共同变化优先合并成势力/地点事件；名字重新出现、地点接近、关联事件到时或伏笔命中时再唤醒个人。',
         '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
-        '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在她的处境/目标/情绪有真实变化时更新。不要让所有人物每轮集体独白。',
+        '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在该人物的处境、目标或情绪有真实变化时更新。不要让所有人物每轮集体独白。',
         '人物状态中的 personality_anchor、speaking_style 与 behavior_boundaries 是用户维护的角色约束：必须遵守，不得在 people_upsert 中重写，也不得用本轮临时情绪覆盖稳定人格。',
-        `7. ${userVoiceRule}`,
+        `7. ${userVoiceRule} ${playerIdentityRule}`,
         '8. long_term_goal 是人物较稳定的长期方向；只有目标真正建立、完成、放弃或转向时才更新，不能把本轮动作重复填进去。',
         '9. inner_voice 是幕后观测信息，不得当作主角已知事实，也不得写入 deliveries_confirmed。',
         '10. deliveries_confirmed 只填写本批新正文确实承接、感知或留下可见痕迹的事件ID。没有写进正文就不要确认。',

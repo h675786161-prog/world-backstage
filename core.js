@@ -1489,9 +1489,29 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
     lines.push('禁止提及“世界背面”、状态表、注入块或幕后独白。');
     lines.push('</world_backstage_state>');
 
+    const keptLines = [];
+    let usedCharacters = 0;
+    for (const line of lines) {
+        const addition = line.length + (keptLines.length ? 1 : 0);
+        if (usedCharacters + addition > 4200) break;
+        keptLines.push(line);
+        usedCharacters += addition;
+    }
+    const originalKeptCount = keptLines.length;
+    if (originalKeptCount < lines.length) {
+        const closing = '</world_backstage_state>';
+        if (keptLines.at(-1) === closing) keptLines.pop();
+        const notice = '（其余低相关信息已压缩省略，禁止自行补全。）';
+        while (keptLines.length > 1 && [...keptLines, notice, closing].join('\n').length > 4200) {
+            keptLines.pop();
+        }
+        keptLines.push(notice, closing);
+    }
+
     return {
-        text: lines.join('\n').slice(0, 4200),
+        text: keptLines.join('\n'),
         eventIds: deliveries.map(event => event.id),
+        omittedLines: Math.max(0, lines.length - originalKeptCount),
     };
 }
 

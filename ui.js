@@ -310,6 +310,27 @@ function renderSyncStrip(syncStatus) {
         connection.apiLabel,
         connection.model,
     ].filter(Boolean).join(' · ');
+    const summary = !memoryTakesFocus && phase === 'success' ? status.summary : null;
+    const changedNames = summary?.peopleNames?.length
+        ? `（${summary.peopleNames.map(escapeHtml).join('、')}）`
+        : '';
+    const eventNames = summary?.eventTitles?.length
+        ? `（${summary.eventTitles.map(escapeHtml).join('、')}）`
+        : '';
+    const summaryHtml = summary ? `
+        <details class="wb-sync-summary">
+            <summary>本次变化与用量</summary>
+            <div>
+                <span>世界时间</span><strong>${summary.elapsedMinutes > 0 ? `+${escapeHtml(formatDuration(summary.elapsedMinutes))}` : '未推进'}</strong>
+                <span>人物变化</span><strong>${summary.peopleChanged || 0} 人 ${changedNames}</strong>
+                <span>事件变化</span><strong>新增 ${summary.eventsAdded || 0} · 更新 ${summary.eventsUpdated || 0} ${eventNames}</strong>
+                <span>记忆变化</span><strong>新增 ${summary.memoryAdded || 0} · 更新 ${summary.memoryUpdated || 0}</strong>
+                <span>推演上下文</span><strong>约 ${summary.promptTokens || 0} token · ${summary.promptCharacters || 0} 字符</strong>
+                <span>模型输出</span><strong>约 ${summary.outputTokens || 0} / ${summary.outputBudget || 0} token · ${summary.attempts || 1} 次请求</strong>
+                <span>正文注入</span><strong>${summary.injectionCharacters || 0} 字符 · ${summary.injectionEvents || 0} 个事件${summary.omittedInjectionLines ? ` · 压缩 ${summary.omittedInjectionLines} 行` : ''}</strong>
+            </div>
+        </details>
+    ` : '';
 
     return `
         <div class="wb-sync-strip is-${escapeAttr(phase)}" role="${phase === 'error' ? 'alert' : 'status'}">
@@ -319,6 +340,7 @@ function renderSyncStrip(syncStatus) {
                 <span>${escapeHtml(detail)}</span>
             </div>
             <span class="wb-sync-connection">${escapeHtml(connectionText || '跟随酒馆当前主 API')}</span>
+            ${summaryHtml}
         </div>
     `;
 }
@@ -329,6 +351,10 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
     const memory = syncStatus?.memory || {};
     const phase = syncStatus?.phase || 'idle';
     const historyRunning = memory.phase === 'running';
+    const availableModels = Array.isArray(syncStatus?.availableModels)
+        ? syncStatus.availableModels
+        : [];
+    const modelPull = syncStatus?.modelPull || { phase: 'idle', message: '' };
     const historyPercent = memory.total > 0
         ? Math.min(100, Math.round((Number(memory.processed) || 0) / memory.total * 100))
         : 0;
@@ -399,9 +425,12 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                             placeholder="sk-…" autocomplete="new-password">
                     </label>
                     <label>模型名称
-                        <input name="customApiModel" required
+                        <input name="customApiModel" required list="wb-custom-model-list"
                             value="${escapeAttr(settings.customApiModel)}"
                             placeholder="gemini-2.5-flash">
+                        <datalist id="wb-custom-model-list">
+                            ${availableModels.map(model => `<option value="${escapeAttr(model)}"></option>`).join('')}
+                        </datalist>
                     </label>
                     <label>连接方式
                         <select name="customApiTransport">
@@ -416,7 +445,12 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                     <div class="wb-api-actions">
                         <button type="submit">保存独立接口</button>
                         <button type="button" data-wb-action="test-api">测试连接</button>
+                        <button type="button" data-wb-action="pull-api-models"
+                            ${modelPull.phase === 'running' ? 'disabled' : ''}>
+                            ${modelPull.phase === 'running' ? '正在拉取…' : '拉取模型列表'}
+                        </button>
                     </div>
+                    ${modelPull.message ? `<p class="wb-api-model-status is-${escapeAttr(modelPull.phase)}">${escapeHtml(modelPull.message)}</p>` : ''}
                     <p>Key 保存在本机的 SillyTavern 扩展设置中，不会写进导出的世界状态。</p>
                 </form>
             ` : ''}
@@ -533,6 +567,20 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                         value="${escapeAttr(settings.autoRetryCount)}">
                 </label>
                 <p>重试会复用同一份推演前快照；只有取得合法结果后才写入状态，因此不会重复推进时间。</p>
+                <label>单次最大输出</label>
+                <div class="wb-option-row wb-option-row-four">
+                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 0, '自动')}
+                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 4000, '4K')}
+                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 8000, '8K')}
+                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 12000, '12K')}
+                </div>
+                <label class="wb-number-setting">
+                    自定义输出 token
+                    <input type="number" min="0" max="16000" step="500"
+                        data-wb-setting="maxOutputTokens"
+                        value="${escapeAttr(settings.maxOutputTokens)}">
+                </label>
+                <p>遇到 JSON 截断或模型提示输出上限时可调高；设为 0 时按轻量、均衡、深入档位自动分配。</p>
                 <label class="wb-custom-instruction">
                     自定义推演要求
                     <textarea data-wb-setting="customSimulationInstruction" maxlength="1000" rows="3"
@@ -794,6 +842,14 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                         <article>
                             <span>${escapeHtml(formatWorldMinute(observation.worldMinute).time)}</span>
                             <p>${escapeHtml(observation.text)}</p>
+                            <div class="wb-observation-actions">
+                                <small>当前只是保存的幕后观测，不会改动正文、时间或记忆。</small>
+                                <button type="button" data-wb-action="queue-person-observation"
+                                    data-person-id="${escapeAttr(person.id)}"
+                                    ${observation.queued ? 'disabled' : ''}>
+                                    ${observation.queued ? '✓ 已安排下一轮显露' : '安排到下一轮显露'}
+                                </button>
+                            </div>
                         </article>
                     ` : ''}
                 </div>
@@ -801,7 +857,7 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                     <i></i>
                     <div>
                         <strong>知识边界</strong>
-                        <p>这段幕后信息不会直接成为任何角色的记忆，只能通过行动与痕迹进入正文。</p>
+                        <p>默认只观看、不推进世界；只有你主动安排后，它才会作为下一轮的自然显露候选。</p>
                     </div>
                 </div>
             </div>
@@ -1982,6 +2038,14 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'queue-person-observation') {
+            const result = await invokeAction('queue-person-observation', {
+                personId: target.dataset.personId || '',
+            });
+            if (result && typeof result === 'object') personObservation = result;
+            render();
+            return;
+        }
         if (action === 'test-api') {
             const form = target.closest('[data-wb-form="api"]');
             if (form) {
@@ -1994,6 +2058,21 @@ export function createWorldBackstageUI({
                 });
             }
             await invokeAction('test-api');
+            render();
+            return;
+        }
+        if (action === 'pull-api-models') {
+            const form = target.closest('[data-wb-form="api"]');
+            if (form) {
+                const data = Object.fromEntries(new FormData(form).entries());
+                await invokeAction('update-settings', {
+                    customApiUrl: data.customApiUrl,
+                    customApiKey: data.customApiKey,
+                    customApiModel: data.customApiModel,
+                    customApiTransport: data.customApiTransport,
+                });
+            }
+            await invokeAction('pull-api-models');
             render();
             return;
         }

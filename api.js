@@ -43,6 +43,11 @@ export function customProxyBase(value) {
     return normalizeCustomApiUrl(value).replace(/\/chat\/completions$/i, '');
 }
 
+export function normalizeCustomModelsUrl(value) {
+    const base = customProxyBase(value).replace(/\/+$/, '');
+    return base ? `${base}/models` : '';
+}
+
 function contentText(value) {
     if (typeof value === 'string') return value;
     if (!Array.isArray(value)) return '';
@@ -140,6 +145,71 @@ async function fetchWithTimeout(fetchImpl, url, options, timeoutMs, externalSign
         clearTimeout(timer);
         externalSignal?.removeEventListener?.('abort', abort);
     }
+}
+
+function modelIdsFrom(payload) {
+    const candidates = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.data)
+            ? payload.data
+            : Array.isArray(payload?.models)
+                ? payload.models
+                : Array.isArray(payload?.model_names)
+                    ? payload.model_names
+                    : [];
+    return [...new Set(candidates
+        .map(item => cleanText(
+            typeof item === 'string' ? item : item?.id || item?.name || item?.model,
+        ))
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b));
+}
+
+export async function requestCustomModels(settings, {
+    fetchImpl = globalThis.fetch,
+    getRequestHeaders = null,
+    timeoutMs = null,
+    signal = null,
+} = {}) {
+    if (typeof fetchImpl !== 'function') throw new Error('当前环境不支持网络请求');
+    const modelsUrl = normalizeCustomModelsUrl(settings?.customApiUrl);
+    const apiKey = cleanText(settings?.customApiKey);
+    const transport = settings?.customApiTransport === 'direct' ? 'direct' : 'proxy';
+    const requestTimeout = Number(timeoutMs ?? settings?.customApiTimeoutMs ?? 120000);
+    if (!modelsUrl) throw new Error('请先填写独立 API 地址');
+    if (!apiKey) throw new Error('请先填写独立 API Key');
+
+    let target = modelsUrl;
+    let options = {
+        method: 'GET',
+        cache: 'no-cache',
+        headers: { Authorization: `Bearer ${apiKey}` },
+    };
+    if (transport === 'proxy') {
+        target = '/api/backends/chat-completions/status';
+        options = {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: headersFrom(getRequestHeaders),
+            body: JSON.stringify({
+                chat_completion_source: 'openai',
+                reverse_proxy: customProxyBase(settings.customApiUrl),
+                proxy_password: apiKey,
+            }),
+        };
+    }
+
+    const response = await fetchWithTimeout(fetchImpl, target, options, requestTimeout, signal);
+    const { text, data } = await readResponse(response);
+    if (!response.ok || data?.error) {
+        const detail = errorDetail(data, text);
+        throw new Error(`模型列表请求返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`);
+    }
+    const models = modelIdsFrom(data);
+    if (!models.length) {
+        throw new Error('接口连接成功，但没有返回可识别的模型列表；仍可手动填写模型名称');
+    }
+    return models;
 }
 
 export async function requestCustomCompletion(settings, messages, {

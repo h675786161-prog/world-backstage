@@ -77,6 +77,41 @@ test('世界与记忆注入可以彼此独立关闭', () => {
     assert.equal(none.text, '');
 });
 
+test('超长注入按完整行压缩并保留闭合标签', () => {
+    const state = createInitialState();
+    state.storyMemory.facts = Array.from({ length: 8 }, (_, index) => ({
+        id: `fact-${index}`,
+        key: `约定-${index}`,
+        subject: `约定-${index}`,
+        predicate: '具体内容',
+        value: `共同关键词 ${'很长的有效信息'.repeat(90)}`,
+        status: 'active',
+        confidence: 'high',
+        importance: 5,
+        visibility: 'known',
+    }));
+    state.people = Array.from({ length: 12 }, (_, index) => ({
+        id: `person-${index}`,
+        name: `共同关键词人物${index}`,
+        location: '很长的地点说明'.repeat(20),
+        action: '很长的行动说明'.repeat(35),
+        knowledge: 'known',
+        relevance: 5,
+        updatedAt: state.clock.absoluteMinute,
+    }));
+    const packet = buildInjectionPackage(state, {
+        enabled: true,
+        worldSimulationEnabled: true,
+        worldPromptInjection: true,
+        memorySystemEnabled: true,
+        memoryPromptInjection: true,
+    }, '共同关键词');
+    assert.ok(packet.text.length <= 4200);
+    assert.match(packet.text, /低相关信息已压缩省略/);
+    assert.match(packet.text, /<\/world_backstage_state>$/);
+    assert.ok(packet.omittedLines > 0);
+});
+
 test('世界日历支持年、月、日校准，并随权威时钟自动跨月跨年', () => {
     let state = createInitialState({ day: 3, hour: 23, minute: 30 });
     state = setWorldCalendar(state, {

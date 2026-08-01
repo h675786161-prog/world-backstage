@@ -6,7 +6,9 @@ import {
     extractCompletionFinishReason,
     extractCompletionText,
     normalizeCustomApiUrl,
+    normalizeCustomModelsUrl,
     requestCustomCompletion,
+    requestCustomModels,
     runWithRetries,
 } from '../api.js';
 
@@ -30,6 +32,42 @@ test('custom API URL only appends chat/completions', () => {
         'https://example.test/api/v3/chat/completions',
     );
     assert.equal(customProxyBase('https://example.test/api/v3'), 'https://example.test/api/v3');
+    assert.equal(normalizeCustomModelsUrl('https://example.test/v1/'), 'https://example.test/v1/models');
+});
+
+test('custom API can pull and normalize model lists while keeping manual input possible', async () => {
+    let directRequest = null;
+    const direct = await requestCustomModels({
+        customApiUrl: 'https://example.test/v1',
+        customApiKey: 'direct-secret',
+        customApiTransport: 'direct',
+    }, {
+        fetchImpl: async (url, options) => {
+            directRequest = { url, options };
+            return response({ data: [{ id: 'model-b' }, { id: 'model-a' }, { id: 'model-a' }] });
+        },
+        timeoutMs: 0,
+    });
+    assert.deepEqual(direct, ['model-a', 'model-b']);
+    assert.equal(directRequest.url, 'https://example.test/v1/models');
+    assert.equal(directRequest.options.headers.Authorization, 'Bearer direct-secret');
+
+    let proxyRequest = null;
+    const proxied = await requestCustomModels({
+        customApiUrl: 'https://example.test/v1',
+        customApiKey: 'proxy-secret',
+        customApiTransport: 'proxy',
+    }, {
+        fetchImpl: async (url, options) => {
+            proxyRequest = { url, body: JSON.parse(options.body) };
+            return response({ models: ['gemini-test'] });
+        },
+        getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }),
+        timeoutMs: 0,
+    });
+    assert.deepEqual(proxied, ['gemini-test']);
+    assert.equal(proxyRequest.url, '/api/backends/chat-completions/status');
+    assert.equal(proxyRequest.body.reverse_proxy, 'https://example.test/v1');
 });
 
 test('proxy request uses plugin URL, key and model instead of tavern selection', async () => {

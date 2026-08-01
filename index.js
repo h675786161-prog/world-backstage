@@ -21,12 +21,12 @@ import {
     setWorldCalendar,
     trimState,
 } from './core.js';
-import { requestCustomCompletion, runWithRetries } from './api.js';
+import { requestCustomCompletion, requestCustomModels, runWithRetries } from './api.js';
 import { createWorldBackstageUI } from './ui.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 9,
+    settingsVersion: 10,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     customApiModel: '',
     customApiTransport: 'proxy',
     customApiTimeoutMs: 120000,
+    maxOutputTokens: 0,
 });
 
 const runtime = {
@@ -71,6 +72,8 @@ const runtime = {
     autoMemoryTimer: null,
     manualUndo: null,
     manualUndoTimer: null,
+    customModels: [],
+    modelPullStatus: { phase: 'idle', message: '' },
     historyProgress: {
         phase: 'idle',
         processed: 0,
@@ -84,6 +87,7 @@ const runtime = {
         attemptedAt: '',
         succeededAt: '',
         method: '',
+        summary: null,
     },
 };
 
@@ -176,7 +180,7 @@ function getSettings() {
     settings.customSimulationInstruction = String(
         settings.customSimulationInstruction || '',
     ).trim().slice(0, 1000);
-    settings.settingsVersion = 9;
+    settings.settingsVersion = 10;
     if (!['explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'explicit';
     }
@@ -191,9 +195,13 @@ function getSettings() {
         300000,
         Math.max(15000, Number(settings.customApiTimeoutMs) || 120000),
     );
+    settings.maxOutputTokens = Math.min(
+        16000,
+        Math.max(0, Number.parseInt(settings.maxOutputTokens, 10) || 0),
+    );
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 8) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 10) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -401,6 +409,7 @@ function getSyncStatus() {
                 phase: 'success',
                 message: '最新正文已经完成推演',
                 error: '',
+                summary: branch.summary || null,
             };
         }
     }
@@ -430,13 +439,17 @@ function getSyncStatus() {
             label: runtime.manualUndo?.label || '撤销刚才的手动更改',
         },
         presentPersonIds: currentTurnPresentPersonIds(),
+        availableModels: runtime.customModels,
+        modelPull: runtime.modelPullStatus,
     };
 }
 
 function setSyncStatus(patch) {
+    const phaseChanged = Object.hasOwn(patch || {}, 'phase');
     runtime.syncStatus = {
         ...runtime.syncStatus,
         ...patch,
+        ...(phaseChanged && !Object.hasOwn(patch || {}, 'summary') ? { summary: null } : {}),
     };
     runtime.ui?.render();
 }
@@ -472,7 +485,74 @@ function retryJsonPrompt(prompt, attempt) {
 }
 
 function retryTokenBudget(base, attempt) {
-    return Math.min(9000, Math.max(64, Number(base) || 3200) + Math.max(0, attempt) * 1800);
+    return Math.min(16000, Math.max(64, Number(base) || 3200) + Math.max(0, attempt) * 1800);
+}
+
+function approximateTokens(text) {
+    return Math.max(0, Math.ceil(String(text || '').length / 2));
+}
+
+function changedItems(beforeItems = [], afterItems = [], fields = []) {
+    const beforeById = new Map(beforeItems.map(item => [item.id, item]));
+    const added = [];
+    const updated = [];
+    for (const item of afterItems) {
+        const previous = beforeById.get(item.id);
+        if (!previous) {
+            added.push(item);
+            continue;
+        }
+        const beforeShape = fields.map(field => previous?.[field]);
+        const afterShape = fields.map(field => item?.[field]);
+        if (JSON.stringify(beforeShape) !== JSON.stringify(afterShape)) updated.push(item);
+    }
+    return { added, updated };
+}
+
+function simulationSummary(before, after, {
+    prompt = '',
+    raw = '',
+    attempts = 1,
+    tokenBudget = 0,
+    injection = { text: '', eventIds: [], omittedLines: 0 },
+} = {}) {
+    const people = changedItems(before.people, after.people, [
+        'name', 'location', 'action', 'intent', 'longTermGoal', 'trace', 'innerVoice',
+    ]);
+    const events = changedItems(before.events, after.events, [
+        'title', 'summary', 'status', 'result', 'consequence', 'visibility', 'delivery',
+    ]);
+    const beforeMemory = before.storyMemory || {};
+    const afterMemory = after.storyMemory || {};
+    const facts = changedItems(beforeMemory.facts, afterMemory.facts, [
+        'subject', 'predicate', 'value', 'status', 'importance', 'locked', 'important',
+    ]);
+    const clues = changedItems(beforeMemory.clues, afterMemory.clues, [
+        'title', 'text', 'status', 'importance', 'locked', 'important',
+    ]);
+    const summaries = changedItems(beforeMemory.summaries, afterMemory.summaries, [
+        'title', 'summary', 'startMessageId', 'endMessageId',
+    ]);
+    return {
+        elapsedMinutes: Math.max(0, Number(after.clock?.absoluteMinute) - Number(before.clock?.absoluteMinute)),
+        peopleChanged: people.added.length + people.updated.length,
+        peopleNames: [...people.added, ...people.updated].map(item => item.name).filter(Boolean).slice(0, 6),
+        eventsAdded: events.added.length,
+        eventsUpdated: events.updated.length,
+        eventTitles: [...events.added, ...events.updated].map(item => item.title).filter(Boolean).slice(0, 6),
+        memoryAdded: facts.added.length + clues.added.length + summaries.added.length,
+        memoryUpdated: facts.updated.length + clues.updated.length + summaries.updated.length,
+        promptCharacters: String(prompt || '').length,
+        promptTokens: approximateTokens(prompt),
+        outputCharacters: String(raw || '').length,
+        outputTokens: approximateTokens(raw),
+        outputBudget: Number(tokenBudget) || 0,
+        attempts: Math.max(1, Number(attempts) || 1),
+        injectionCharacters: String(injection.text || '').length,
+        injectionLines: String(injection.text || '').split('\n').filter(Boolean).length,
+        injectionEvents: injection.eventIds?.length || 0,
+        omittedInjectionLines: Number(injection.omittedLines) || 0,
+    };
 }
 
 function unreadableJsonError(raw, subject = '模型') {
@@ -960,6 +1040,11 @@ async function runSimulationForMessage(messageId, {
         deep: '深入',
         manual: '手动',
     }[settings.autoSimulationMode] || '均衡';
+    const generationMetrics = {
+        raw: '',
+        attempts: 1,
+        tokenBudget: 0,
+    };
 
     setBusy(true);
     setSyncStatus({
@@ -971,18 +1056,24 @@ async function runSimulationForMessage(messageId, {
         attemptedAt: new Date().toISOString(),
     });
     try {
-        const baseMaxTokens = settings.autoSimulationMode === 'deep'
+        const automaticMaxTokens = settings.autoSimulationMode === 'deep'
             ? 4600
             : settings.autoSimulationMode === 'light'
                 ? 2400
                 : 3400;
+        const baseMaxTokens = settings.maxOutputTokens > 0
+            ? settings.maxOutputTokens
+            : automaticMaxTokens;
         const payload = await runWithRetries(async attempt => {
+            generationMetrics.attempts = attempt + 1;
+            generationMetrics.tokenBudget = retryTokenBudget(baseMaxTokens, attempt);
             const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
-                maxTokens: retryTokenBudget(baseMaxTokens, attempt),
+                maxTokens: generationMetrics.tokenBudget,
                 temperature: attempt > 0
                     ? 0.08
                     : settings.autoSimulationMode === 'deep' ? 0.28 : 0.18,
             });
+            generationMetrics.raw = String(raw || '');
             const parsed = extractJsonObject(raw);
             if (parsed) return parsed;
             throw unreadableJsonError(raw);
@@ -1053,6 +1144,14 @@ async function runSimulationForMessage(messageId, {
             messageId,
             expireAfter: 3,
         });
+        const nextInjection = buildInjectionPackage(resultState, settings, recentChatText());
+        const summary = simulationSummary(baseState, resultState, {
+            prompt,
+            raw: generationMetrics.raw,
+            attempts: generationMetrics.attempts,
+            tokenBudget: generationMetrics.tokenBudget,
+            injection: nextInjection,
+        });
 
         const target = locateTargetBranch(messageId, swipeId, expectedHash);
         if (!target || currentChatToken() !== chatTokenAtStart) {
@@ -1074,6 +1173,7 @@ async function runSimulationForMessage(messageId, {
                 kind: 'result',
             }),
             error: '',
+            summary,
         };
         attachBranchData(target.message, swipeId, committed);
 
@@ -1096,6 +1196,7 @@ async function runSimulationForMessage(messageId, {
             error: '',
             succeededAt: new Date().toISOString(),
             method: runtime.syncStatus.method,
+            summary,
         });
         return resultState;
     } catch (error) {
@@ -1593,6 +1694,37 @@ async function testCustomApiConnection() {
     }
 }
 
+async function pullCustomApiModels() {
+    const settings = getSettings();
+    if (settings.apiMode !== 'custom') {
+        throw new Error('请先把世界推演连接切换为“独立接口”');
+    }
+    runtime.modelPullStatus = { phase: 'running', message: '正在读取模型列表' };
+    runtime.ui?.render();
+    try {
+        const context = getContext();
+        const models = await requestCustomModels(settings, {
+            fetchImpl: globalThis.fetch.bind(globalThis),
+            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+        });
+        runtime.customModels = models;
+        runtime.modelPullStatus = {
+            phase: 'success',
+            message: `已读取 ${models.length} 个模型；仍可手动填写`,
+        };
+        toast(`已读取 ${models.length} 个可用模型。`, 'success');
+        return models;
+    } catch (error) {
+        runtime.modelPullStatus = {
+            phase: 'error',
+            message: describeError(error),
+        };
+        throw error;
+    } finally {
+        runtime.ui?.render();
+    }
+}
+
 async function scanHistoryArchive({
     automatic = false,
     maximumBatches = Number.POSITIVE_INFINITY,
@@ -1664,8 +1796,11 @@ async function scanHistoryArchive({
                 userName: context?.name1 || '',
             });
             const payload = await runWithRetries(async attempt => {
+                const historyBaseTokens = getSettings().maxOutputTokens > 0
+                    ? Math.max(3200, getSettings().maxOutputTokens)
+                    : 3200;
                 const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
-                    maxTokens: retryTokenBudget(3200, attempt),
+                    maxTokens: retryTokenBudget(historyBaseTokens, attempt),
                     temperature: attempt > 0 ? 0.05 : 0.1,
                 });
                 const parsed = extractJsonObject(raw);
@@ -1767,7 +1902,52 @@ function cachedPersonObservation(personId) {
     const state = getState();
     const person = state.people.find(item => item.id === personId);
     if (!person) return null;
-    return getStore().personObservations?.[personObservationCacheKey(state, person)] || null;
+    const cached = getStore().personObservations?.[personObservationCacheKey(state, person)];
+    if (!cached) return null;
+    return {
+        ...cached,
+        queued: Boolean(
+            cached.queuedEventId
+            && state.events.some(event => (
+                event.id === cached.queuedEventId
+                && event.delivery?.manualQueued
+            )),
+        ),
+    };
+}
+
+function queuePersonObservation(personId) {
+    const state = getState();
+    const person = state.people.find(item => item.id === personId);
+    if (!person) throw new Error('没有找到这个人物');
+    const cacheKey = personObservationCacheKey(state, person);
+    const store = getStore();
+    const observation = store.personObservations?.[cacheKey];
+    if (!observation?.text) throw new Error('请先生成一次人物观测');
+    const existing = state.events.find(event => event.id === observation.queuedEventId);
+    if (existing?.delivery?.manualQueued) return cachedPersonObservation(personId);
+
+    const previousIds = new Set(state.events.map(event => event.id));
+    const next = addManualEvent(state, {
+        title: `${person.name}的镜头外片段`,
+        place: person.location,
+        summary: observation.text,
+        expected_result: observation.text,
+        result: observation.text,
+        consequence: observation.text,
+        status: 'ready',
+        clock_mode: 'condition',
+        visibility: 'trace',
+        delivery_queued: true,
+        delivery_route: observation.text,
+    });
+    const created = next.events.find(event => !previousIds.has(event.id));
+    if (!created) throw new Error('没有成功建立下一轮显露事件');
+    commitManualState(next, `已把 ${person.name} 的这段镜头外片段安排到下一轮显露。`);
+    observation.queuedEventId = created.id;
+    store.personObservations[cacheKey] = observation;
+    saveStore(store);
+    return cachedPersonObservation(personId);
 }
 
 async function observePerson(personId, { force = false } = {}) {
@@ -1865,6 +2045,10 @@ async function handleUiAction(action, payload = {}) {
         return testCustomApiConnection();
     }
 
+    if (action === 'pull-api-models') {
+        return pullCustomApiModels();
+    }
+
     if (action === 'scan-history') {
         return scanHistoryArchive();
     }
@@ -1875,6 +2059,10 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'get-person-observation') {
         return cachedPersonObservation(String(payload.personId || ''));
+    }
+
+    if (action === 'queue-person-observation') {
+        return queuePersonObservation(String(payload.personId || ''));
     }
 
     if (action === 'save-memory-item') {

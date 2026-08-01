@@ -93,3 +93,12 @@ test('memory progress reports unindexed assistant responses', () => {
     assert.match(indexSource, /pendingAssistantResponses: unindexedAssistantCount\(\)/);
     assert.match(uiSource, /pendingAssistantResponses/);
 });
+
+test('transparent summary, model pull and observation delivery controls are exposed', () => {
+    assert.match(uiSource, /本次变化与用量/);
+    assert.match(uiSource, /data-wb-action="pull-api-models"/);
+    assert.match(uiSource, /data-wb-setting="maxOutputTokens"/);
+    assert.match(uiSource, /data-wb-action="queue-person-observation"/);
+    assert.match(indexSource, /function simulationSummary/);
+    assert.match(indexSource, /function queuePersonObservation/);
+});

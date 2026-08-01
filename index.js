@@ -3,6 +3,7 @@ import {
     SCHEMA_VERSION,
     SNAPSHOT_KEY,
     STATE_KEY,
+    addRecoveryPoint,
     addManualEvent,
     advanceWorldClock,
     applySimulationResult,
@@ -15,9 +16,11 @@ import {
     createSnapshot,
     extractJsonObject,
     hashText,
+    listRecoveryPoints,
     markPendingSync,
     recordDeliveryOffers,
     restoreSnapshot,
+    restoreRecoveryPoint,
     setWorldCalendar,
     trimState,
 } from './core.js';
@@ -30,8 +33,9 @@ import {
 import { createWorldBackstageUI } from './ui.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
+const PLUGIN_VERSION = '0.8.0';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 11,
+    settingsVersion: 12,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -244,7 +248,10 @@ function importWorldbookPeople(bookName, entryIds = []) {
 }
 
 function toast(message, tone = 'info') {
-    runtime.ui?.notify(message, tone);
+    if (runtime.ui?.notify) {
+        runtime.ui.notify(message, tone);
+        return;
+    }
     if (!globalThis.toastr) return;
     const method = ['success', 'warning', 'error', 'info'].includes(tone) ? tone : 'info';
     globalThis.toastr[method](message, '世界背面', { preventDuplicates: true });
@@ -369,6 +376,7 @@ function makeStore() {
         currentState: clone(initialState),
         branchOverrides: {},
         personObservations: {},
+        recoveryPoints: [],
         updatedAt: new Date().toISOString(),
     };
 }
@@ -392,6 +400,24 @@ function hasChatContext() {
     );
 }
 
+function findPlayerPerson(state, userName = getContext()?.name1 || '') {
+    const people = Array.isArray(state?.people) ? state.people : [];
+    const normalizedUserName = String(userName || '').trim().toLocaleLowerCase();
+    return people.find(person => person?.isUser)
+        || people.find(person => (
+            normalizedUserName
+            && String(person?.name || '').trim().toLocaleLowerCase() === normalizedUserName
+        ))
+        || null;
+}
+
+function getPlayerIdentityAnchor(state = null) {
+    const resolvedState = state || getState();
+    const player = findPlayerPerson(resolvedState);
+    if (player) return String(player.identityAnchor || '').trim().slice(0, 500);
+    return String(getSettings().playerIdentityAnchor || '').trim().slice(0, 400);
+}
+
 function getStore({ create = true } = {}) {
     const context = getContext();
     const metadata = context?.chatMetadata;
@@ -406,16 +432,53 @@ function getStore({ create = true } = {}) {
         context.saveMetadataDebounced?.();
     }
 
-    const store = metadata[STATE_KEY] || runtime.transientStore || makeStore();
+    let store = metadata[STATE_KEY] || runtime.transientStore || makeStore();
+    const previousSchemaVersion = Number(
+        store.schemaVersion
+        ?? store.currentState?.schemaVersion
+        ?? 0,
+    );
+    const migrationReason = `before-schema-${SCHEMA_VERSION}`;
+    let createdMigrationRecovery = false;
+    store.recoveryPoints = listRecoveryPoints(store);
+    if (
+        previousSchemaVersion > 0
+        && previousSchemaVersion < SCHEMA_VERSION
+        && store.currentState
+        && !store.recoveryPoints.some(point => point.reason === migrationReason)
+    ) {
+        store = addRecoveryPoint(store, {
+            reason: migrationReason,
+            label: `升级到数据结构 ${SCHEMA_VERSION} 前自动保存`,
+        });
+        createdMigrationRecovery = true;
+    }
     store.schemaVersion = SCHEMA_VERSION;
     store.initialState = trimState(store.initialState || createInitialState({ worldName: '主世界' }));
     store.currentState = trimState(store.currentState || store.initialState);
+    const settings = getSettings();
+    const legacyPlayerIdentityAnchor = String(settings.playerIdentityAnchor || '').trim().slice(0, 400);
+    const player = findPlayerPerson(store.currentState, context?.name1 || '');
+    let migratedLegacyPlayerIdentity = false;
+    if (player && legacyPlayerIdentityAnchor) {
+        if (!String(player.identityAnchor || '').trim()) {
+            player.identityAnchor = legacyPlayerIdentityAnchor;
+        }
+        settings.playerIdentityAnchor = '';
+        saveSettings();
+        migratedLegacyPlayerIdentity = true;
+    }
     store.branchOverrides = store.branchOverrides && typeof store.branchOverrides === 'object'
         ? store.branchOverrides
         : {};
     store.personObservations = store.personObservations && typeof store.personObservations === 'object'
         ? store.personObservations
         : {};
+    store.recoveryPoints = listRecoveryPoints(store);
+    if ((createdMigrationRecovery || migratedLegacyPlayerIdentity) && context?.chatMetadata && hasChatContext()) {
+        context.chatMetadata[STATE_KEY] = store;
+        context.saveMetadataDebounced?.();
+    }
     return store;
 }
 
@@ -540,6 +603,8 @@ function getConnectionInfo() {
 function getSyncStatus() {
     const latest = latestAssistantEntry();
     const branch = latest ? branchDataFromMessage(latest.message) : null;
+    const recoveryPoints = listRecoveryPoints(getStore());
+    const latestRecovery = recoveryPoints.at(-1) || null;
     let derived = {};
 
     if (runtime.syncStatus.phase === 'idle' && branch) {
@@ -569,6 +634,7 @@ function getSyncStatus() {
         ...runtime.syncStatus,
         ...derived,
         connection: getConnectionInfo(),
+        pluginVersion: PLUGIN_VERSION,
         userName: String(getContext()?.name1 || ''),
         memory: {
             indexedThroughMessageId: Number(getState().storyMemory?.indexedThroughMessageId ?? -1),
@@ -603,6 +669,17 @@ function getSyncStatus() {
         worldbook: {
             ...runtime.worldbookScan,
             books: getWorldbookNames(),
+        },
+        recovery: {
+            count: recoveryPoints.length,
+            latest: latestRecovery ? {
+                id: latestRecovery.id,
+                createdAt: latestRecovery.createdAt,
+                label: latestRecovery.label,
+                worldName: latestRecovery.worldName,
+                worldMinute: latestRecovery.worldMinute,
+                revision: latestRecovery.revision,
+            } : null,
         },
         canCancelSimulation: Boolean(
             runtime.activeSimulation
@@ -1223,7 +1300,7 @@ async function runSimulationForMessage(messageId, {
         timePolicy: settings.timePolicy,
         simulationMode: settings.autoSimulationMode,
         customInstruction: settings.customSimulationInstruction,
-        playerIdentityAnchor: settings.playerIdentityAnchor,
+        playerIdentityAnchor: getPlayerIdentityAnchor(baseState),
         newAssistantTurns: assistantTurnsToApply,
         backgroundNpcBudget: settings.backgroundNpcBudget,
     });
@@ -1891,6 +1968,176 @@ function commitManualState(nextState, message = '世界状态已更新') {
     toast(message, 'success');
 }
 
+function createManualRecoveryPoint() {
+    const store = addRecoveryPoint(getStore(), {
+        reason: 'manual',
+        label: '手动创建的恢复点',
+    });
+    saveStore(store, { immediate: true });
+    runtime.ui?.render();
+    toast('恢复点已经保存，放心继续探索吧。', 'success');
+    return listRecoveryPoints(store).at(-1) || null;
+}
+
+function restoreLatestSavedRecovery() {
+    const currentStore = getStore();
+    const target = listRecoveryPoints(currentStore).at(-1);
+    if (!target) throw new Error('当前聊天还没有可恢复的保存点');
+    const confirmed = globalThis.confirm?.(
+        `(・_・;)  将当前世界恢复到：${target.label}\n${target.createdAt}\n\n恢复前也会自动保存现在的状态。`,
+    );
+    if (confirmed === false) return null;
+
+    let store = addRecoveryPoint(currentStore, {
+        reason: 'before-restore',
+        label: '恢复操作前自动保存',
+    });
+    const restored = restoreRecoveryPoint(store, target.id);
+    if (!restored.point) throw new Error('恢复点已经失效，请重新打开设置后再试');
+    store = restored.store;
+    const key = currentAnchorKey();
+    store.branchOverrides ||= {};
+    store.branchOverrides[key] = createSnapshot(store.currentState, {
+        sourceKey: key,
+        kind: 'recovery-restore',
+    });
+    saveStore(store, { immediate: true });
+    refreshInjection();
+    runtime.ui?.render();
+    toast('世界已经恢复到保存点，可以继续啦。', 'success');
+    return restored.point;
+}
+
+function redactDiagnosticText(value) {
+    let text = String(value || '');
+    const key = String(getSettings().customApiKey || '');
+    if (key.length >= 4) text = text.split(key).join('[API Key 已隐藏]');
+    return text
+        .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [已隐藏]')
+        .replace(/https?:\/\/[^\s"'<>]+/gi, '[接口地址已隐藏]')
+        .replace(/(api[-_ ]?key\s*[:=]\s*)[^\s,;]+/gi, '$1[已隐藏]')
+        .slice(0, 600);
+}
+
+function classifyDiagnosticIssue(value) {
+    const text = String(value || '').toLocaleLowerCase();
+    if (!text) return 'none';
+    if (/abort|cancel|取消|停止/.test(text)) return 'cancelled';
+    if (/no message|empty|空回|没有生成|未生成/.test(text)) return 'empty-response';
+    if (/json|解析|parse|格式/.test(text)) return 'invalid-json';
+    if (/length|token|上限|过长|limit/.test(text)) return 'output-limit';
+    if (/401|403|unauthorized|forbidden|鉴权|密钥|key/.test(text)) return 'authorization';
+    if (/429|rate.?limit|频率|限流/.test(text)) return 'rate-limit';
+    if (/timeout|timed out|超时/.test(text)) return 'timeout';
+    if (/network|fetch|connection|econn|网络|连接/.test(text)) return 'network';
+    return 'other';
+}
+
+function buildDiagnosticReport() {
+    const context = getContext();
+    const settings = getSettings();
+    const state = getState();
+    const store = getStore();
+    const connection = getConnectionInfo();
+    const recoveryPoints = listRecoveryPoints(store);
+    const activeEvents = state.events.filter(event => ['active', 'waiting', 'ready'].includes(event.status));
+    const viewport = globalThis.visualViewport;
+    const report = {
+        plugin: {
+            name: 'World Backstage',
+            version: PLUGIN_VERSION,
+            stateSchema: SCHEMA_VERSION,
+        },
+        sillyTavern: {
+            version: String(
+                context?.version
+                || globalThis.SillyTavern?.version
+                || document.querySelector?.('#version_display')?.textContent
+                || '未识别',
+            ).trim().slice(0, 120),
+        },
+        device: {
+            userAgent: String(globalThis.navigator?.userAgent || '未识别').slice(0, 240),
+            viewport: `${Math.round(Number(viewport?.width || globalThis.innerWidth || 0))}x${Math.round(Number(viewport?.height || globalThis.innerHeight || 0))}`,
+            touchPoints: Number(globalThis.navigator?.maxTouchPoints || 0),
+        },
+        connection: {
+            mode: settings.apiMode,
+            api: connection.apiLabel,
+            source: connection.source,
+            model: redactDiagnosticText(connection.model),
+            transport: settings.apiMode === 'custom' ? settings.customApiTransport : 'tavern',
+            configured: connection.configured,
+            method: connection.method,
+        },
+        features: {
+            worldSimulation: settings.worldSimulationEnabled,
+            worldInjection: settings.worldPromptInjection,
+            memorySystem: settings.memorySystemEnabled,
+            memoryInjection: settings.memoryPromptInjection,
+            simulationMode: settings.autoSimulationMode,
+            simulationInterval: settings.autoSimulationInterval,
+            retryCount: settings.autoRetryCount,
+            contextTurns: settings.contextTurns,
+            npcBudget: settings.backgroundNpcBudget,
+            uiScale: settings.uiScale,
+        },
+        state: {
+            revision: state.revision,
+            worldMinute: state.clock?.absoluteMinute,
+            pendingSync: state.pendingSync,
+            people: state.people.length,
+            events: state.events.length,
+            activeEvents: activeEvents.length,
+            echoes: state.echoes.length,
+            archive: state.archive.length,
+            memoryFacts: state.storyMemory?.facts?.length || 0,
+            memorySummaries: state.storyMemory?.summaries?.length || 0,
+            memoryClues: state.storyMemory?.clues?.length || 0,
+            indexedThroughMessageId: state.storyMemory?.indexedThroughMessageId ?? -1,
+            chatMessages: context?.chat?.length || 0,
+            recoveryPoints: recoveryPoints.length,
+            latestSnapshot: Boolean(findLatestResultSnapshot()),
+        },
+        lastTask: {
+            phase: runtime.syncStatus.phase,
+            messageType: classifyDiagnosticIssue(runtime.syncStatus.message),
+            errorType: classifyDiagnosticIssue(runtime.syncStatus.error),
+            attemptedAt: runtime.syncStatus.attemptedAt,
+            succeededAt: runtime.syncStatus.succeededAt,
+            method: runtime.syncStatus.method,
+            memoryPhase: runtime.historyProgress.phase,
+            memoryMessageType: classifyDiagnosticIssue(runtime.historyProgress.message),
+        },
+        privacy: '不包含 API Key、接口地址、聊天正文、角色身份锚点或自定义提示词。',
+        generatedAt: new Date().toISOString(),
+    };
+    return `世界背面诊断信息（可安全分享）\n${JSON.stringify(report, null, 2)}`;
+}
+
+async function copyDiagnosticReport() {
+    const report = buildDiagnosticReport();
+    try {
+        if (typeof globalThis.navigator?.clipboard?.writeText !== 'function') {
+            throw new Error('Clipboard API unavailable');
+        }
+        await globalThis.navigator.clipboard.writeText(report);
+    } catch {
+        const textarea = document.createElement('textarea');
+        textarea.value = report;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand?.('copy');
+        textarea.remove();
+        if (!copied) throw new Error('浏览器没有允许复制，请检查剪贴板权限');
+    }
+    toast('诊断信息已复制，敏感内容没有放进去。', 'success');
+    return report;
+}
+
 function exportState() {
     const payload = {
         format: 'world-backstage-state',
@@ -1917,11 +2164,14 @@ function importState(text) {
     const parsed = JSON.parse(String(text || ''));
     const imported = trimState(parsed?.state || parsed);
     const confirmed = globalThis.confirm?.(
-        `导入会替换这个聊天当前的世界状态。\n\n导入：${imported.world.name}`,
+        `(・_・;)  导入会替换这个聊天当前的世界状态。\n\n导入：${imported.world.name}`,
     );
     if (confirmed === false) return;
 
-    const store = getStore();
+    let store = addRecoveryPoint(getStore(), {
+        reason: 'before-import',
+        label: '导入世界状态前自动保存',
+    });
     const previousState = clone(store.currentState);
     const previousInitialState = clone(store.initialState);
     const key = currentAnchorKey();
@@ -2039,7 +2289,7 @@ async function scanHistoryArchive({
     }
     if (!automatic) {
         const confirmed = globalThis.confirm?.(
-            `将从第 ${cursor} 层开始分批读取当前分支，共约 ${chatLength - cursor} 条消息。\n`
+            `( •ᴗ• )  将从第 ${cursor} 层开始分批读取当前分支，共约 ${chatLength - cursor} 条消息。\n`
             + '这会产生额外 API 调用，但每批成功后都会立即保存进度。是否继续？',
         );
         if (confirmed === false) return false;
@@ -2094,7 +2344,7 @@ async function scanHistoryArchive({
                     const prompt = buildHistoryIndexPrompt(state, {
                         messages: batch.messages,
                         userName: context?.name1 || '',
-                        playerIdentityAnchor: getSettings().playerIdentityAnchor,
+                        playerIdentityAnchor: getPlayerIdentityAnchor(state),
                         compact: attempt > 0,
                     });
                     const historyBaseTokens = getSettings().maxOutputTokens > 0
@@ -2340,7 +2590,7 @@ async function observePerson(personId, { force = false } = {}) {
         narrativeTurns: narrative.turns,
         userName: getContext()?.name1 || '',
         includeUserInnerVoice: settings.includeUserInnerVoice,
-        playerIdentityAnchor: settings.playerIdentityAnchor,
+        playerIdentityAnchor: getPlayerIdentityAnchor(state),
     });
 
     setBusy(true);
@@ -2395,6 +2645,23 @@ async function handleUiAction(action, payload = {}) {
     if (action === 'undo-manual') {
         undoManualChange();
         return;
+    }
+
+    if (action === 'create-recovery-point') {
+        return createManualRecoveryPoint();
+    }
+
+    if (action === 'restore-latest-recovery') {
+        return restoreLatestSavedRecovery();
+    }
+
+    if (action === 'copy-diagnostics') {
+        return copyDiagnosticReport();
+    }
+
+    if (action === 'preview-notice') {
+        toast('之后的保存、恢复、推演和报错都会用这样的提示告诉你。', 'success');
+        return null;
     }
 
     if (action === 'update-settings') {

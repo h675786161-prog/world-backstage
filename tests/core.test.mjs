@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
     MINUTES_PER_DAY,
+    RECOVERY_LIMIT,
+    addRecoveryPoint,
     addManualEvent,
     advanceWorldClock,
     applySimulationResult,
@@ -16,9 +18,11 @@ import {
     formatWorldCalendar,
     formatWorldMinute,
     hasExplicitTimeEvidence,
+    listRecoveryPoints,
     normalizeEvent,
     recordDeliveryOffers,
     restoreSnapshot,
+    restoreRecoveryPoint,
     selectDeliveryCandidates,
     setWorldCalendar,
     settleTimedEvents,
@@ -566,6 +570,36 @@ test('快照恢复产生互不污染的重抽分支', () => {
     assert.equal(firstBranch.clock.absoluteMinute, root.clock.absoluteMinute + 90);
     assert.equal(secondBranch.clock.absoluteMinute, root.clock.absoluteMinute + 15);
     assert.equal(restoreSnapshot(base).clock.absoluteMinute, root.clock.absoluteMinute);
+});
+
+test('聊天恢复点限制数量并能恢复保存时的世界状态', () => {
+    let store = {
+        schemaVersion: 6,
+        currentState: createInitialState({ worldName: '第一世界', day: 2, hour: 8 }),
+        recoveryPoints: [],
+    };
+    const savedIds = [];
+    for (let index = 0; index < RECOVERY_LIMIT + 1; index += 1) {
+        store.currentState.world.title = `阶段 ${index}`;
+        store = addRecoveryPoint(store, {
+            id: `recovery-${index}`,
+            createdAt: `2026-08-01T0${index}:00:00.000Z`,
+            reason: 'manual',
+            label: `保存 ${index}`,
+        });
+        savedIds.push(`recovery-${index}`);
+    }
+
+    const points = listRecoveryPoints(store);
+    assert.equal(points.length, RECOVERY_LIMIT);
+    assert.equal(points[0].id, savedIds[1]);
+    assert.equal(points.at(-1).id, savedIds.at(-1));
+
+    store.currentState.world.title = '后来被改动的世界';
+    const restored = restoreRecoveryPoint(store, savedIds[2]);
+    assert.equal(restored.point.label, '保存 2');
+    assert.equal(restored.store.currentState.world.title, '阶段 2');
+    assert.equal(store.currentState.world.title, '后来被改动的世界');
 });
 
 test('未被正文承接的非直接结果在三次显露后归档', () => {

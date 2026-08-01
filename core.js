@@ -1,8 +1,9 @@
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 export const MINUTES_PER_DAY = 24 * 60;
+export const RECOVERY_LIMIT = 3;
 
 const TERMINAL_EVENT_STATES = new Set(['resolved', 'cancelled', 'missed']);
 const ACTIVE_EVENT_STATES = new Set(['active', 'waiting']);
@@ -2455,6 +2456,74 @@ export function createSnapshot(state, meta = {}) {
         },
         state: trimState(deepClone(state)),
     };
+}
+
+function normalizeRecoveryPoint(raw) {
+    if (!raw || typeof raw !== 'object' || !raw.state || typeof raw.state !== 'object') return null;
+    return {
+        id: asString(raw.id, '', 120),
+        createdAt: asString(raw.createdAt, '', 40),
+        reason: asString(raw.reason, 'manual', 60),
+        label: asString(raw.label, '手动恢复点', 120),
+        schemaVersion: asInteger(raw.schemaVersion, 0, 0),
+        worldName: asString(raw.worldName, raw.state?.world?.name || '主世界', 80),
+        worldMinute: asInteger(raw.worldMinute, raw.state?.clock?.absoluteMinute ?? 0, 0),
+        revision: asInteger(raw.revision, raw.state?.revision ?? 0, 0),
+        state: deepClone(raw.state),
+    };
+}
+
+export function listRecoveryPoints(inputStore) {
+    return asArray(inputStore?.recoveryPoints)
+        .map(normalizeRecoveryPoint)
+        .filter(point => point?.id)
+        .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+        .slice(-RECOVERY_LIMIT);
+}
+
+export function addRecoveryPoint(inputStore, {
+    reason = 'manual',
+    label = '手动恢复点',
+    createdAt = nowIso(),
+    id = '',
+} = {}) {
+    const store = deepClone(inputStore || {});
+    const state = store.currentState;
+    if (!state || typeof state !== 'object') return store;
+    const normalizedCreatedAt = asString(createdAt, nowIso(), 40);
+    const signature = hashText(JSON.stringify({
+        createdAt: normalizedCreatedAt,
+        reason,
+        revision: state.revision,
+        worldMinute: state.clock?.absoluteMinute,
+    }));
+    const point = normalizeRecoveryPoint({
+        id: asString(id, '', 120) || `recovery_${Date.parse(normalizedCreatedAt) || Date.now()}_${signature}`,
+        createdAt: normalizedCreatedAt,
+        reason,
+        label,
+        schemaVersion: inputStore?.schemaVersion ?? state.schemaVersion ?? 0,
+        worldName: state.world?.name,
+        worldMinute: state.clock?.absoluteMinute,
+        revision: state.revision,
+        state,
+    });
+    const points = listRecoveryPoints(store).filter(existing => existing.id !== point.id);
+    store.recoveryPoints = [...points, point].slice(-RECOVERY_LIMIT);
+    return store;
+}
+
+export function restoreRecoveryPoint(inputStore, recoveryId = '') {
+    const store = deepClone(inputStore || {});
+    const points = listRecoveryPoints(store);
+    const target = recoveryId
+        ? points.find(point => point.id === String(recoveryId))
+        : points.at(-1);
+    if (!target) return { store, point: null };
+    store.currentState = trimState(target.state);
+    store.recoveryPoints = points;
+    store.updatedAt = nowIso();
+    return { store, point: target };
 }
 
 export function restoreSnapshot(snapshot, fallback = null) {

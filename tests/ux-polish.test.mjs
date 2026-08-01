@@ -197,10 +197,28 @@ test('custom API form preserves mobile edits across rerenders and avoids passwor
 
 test('player identity anchor supports non-binary presentation and nonhuman roles', () => {
     assert.match(indexSource, /playerIdentityAnchor: ''/);
-    assert.match(indexSource, /settings\.playerIdentityAnchor/);
-    assert.match(uiSource, /data-wb-setting="playerIdentityAnchor"/);
-    assert.match(uiSource, /外貌、衣着和物种不会被自动当成性别依据/);
+    assert.match(indexSource, /function getPlayerIdentityAnchor/);
+    assert.match(indexSource, /legacyPlayerIdentityAnchor/);
+    assert.doesNotMatch(uiSource, /data-wb-setting="playerIdentityAnchor"/);
     assert.match(uiSource, /name="identityAnchor"/);
     assert.match(uiSource, /不限制为男女二选一/);
     assert.match(indexSource, /identityAnchor: String\(payload\.identityAnchor/);
+});
+
+test('recovery, safe diagnostics and visible kaomoji notices are exposed', () => {
+    assert.match(uiSource, /data-wb-action="create-recovery-point"/);
+    assert.match(uiSource, /data-wb-action="restore-latest-recovery"/);
+    assert.match(uiSource, /data-wb-action="copy-diagnostics"/);
+    assert.match(uiSource, /data-wb-action="preview-notice"/);
+    assert.match(indexSource, /action === 'preview-notice'/);
+    assert.match(indexSource, /reason: 'before-import'/);
+    assert.match(indexSource, /before-schema-/);
+    assert.match(indexSource, /API Key、接口地址、聊天正文、角色身份锚点或自定义提示词/);
+    assert.match(indexSource, /function redactDiagnosticText/);
+    assert.match(indexSource, /function classifyDiagnosticIssue/);
+    assert.doesNotMatch(indexSource, /error:\s*redactDiagnosticText\(runtime\.syncStatus\.error\)/);
+    assert.doesNotMatch(indexSource, /customApiKey:\s*settings\.customApiKey/);
+    assert.match(uiSource, /const TOAST_FACES/);
+    assert.match(uiSource, /const TOAST_LABELS/);
+    assert.match(styleSource, /@keyframes wb-toast-in/);
 });

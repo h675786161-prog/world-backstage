@@ -25,6 +25,15 @@ const TOAST_FACES = {
     error: '(；′⌒`)',
 };
 
+const TOAST_LABELS = {
+    success: '好啦',
+    busy: '正在努力',
+    info: '小提示',
+    normal: '小提示',
+    warning: '等一下',
+    error: '出问题了',
+};
+
 function escapeHtml(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -36,6 +45,17 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
     return escapeHtml(value).replaceAll('`', '&#096;');
+}
+
+function formatLocalTimestamp(value) {
+    const date = new Date(String(value || ''));
+    if (!Number.isFinite(date.getTime())) return '时间未知';
+    return date.toLocaleString('zh-CN', {
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
 }
 
 function themeFor(state, settings) {
@@ -366,6 +386,8 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
         : [];
     const modelPull = syncStatus?.modelPull || { phase: 'idle', message: '' };
     const worldbook = syncStatus?.worldbook || { books: [], entries: [], phase: 'idle' };
+    const recovery = syncStatus?.recovery || { count: 0, latest: null };
+    const latestRecovery = recovery.latest || null;
     const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
     const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
     const hasSavedApiKey = Boolean(settings.customApiKey);
@@ -642,15 +664,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
             </div>
 
             <div class="wb-setting-block">
-                <label class="wb-custom-instruction">
-                    玩家角色身份锚点
-                    <textarea data-wb-setting="playerIdentityAnchor" maxlength="400" rows="3"
-                        placeholder="例如：男性，外表偏女性，使用“他”和男性称谓；狐族人外，不要因外貌误判性别。">${escapeHtml(settings.playerIdentityAnchor)}</textarea>
-                </label>
-                <p>可填写性别身份、称谓/代词、外貌表达、身体设定、物种与年龄阶段。外貌、衣着和物种不会被自动当成性别依据。</p>
-            </div>
-
-            <div class="wb-setting-block">
                 <label>正文读取范围</label>
                 <div class="wb-option-row">
                     ${settingButton('contextTurns', settings.contextTurns, 1, '最近 1 轮')}
@@ -811,6 +824,27 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                 <button type="button" data-wb-action="export-state">导出当前世界</button>
                 <button type="button" data-wb-action="import-state">导入世界状态</button>
                 <input class="wb-import-input" type="file" accept=".json,application/json">
+            </div>
+            <div class="wb-recovery-card">
+                <div class="wb-recovery-heading">
+                    <div><label>安全恢复</label><strong>${latestRecovery ? escapeHtml(latestRecovery.label) : '还没有恢复点'}</strong></div>
+                    <span>${latestRecovery ? escapeHtml(formatLocalTimestamp(latestRecovery.createdAt)) : '每个聊天独立'}</span>
+                </div>
+                <p>${latestRecovery
+                    ? `当前保存 ${Math.max(1, Number(recovery.count) || 1)} 个恢复点，恢复后仍会先替现在的状态留一份保险。`
+                    : '升级旧数据、导入世界状态时会自动留档，也可以现在手动保存一份。'}</p>
+                <div class="wb-setting-actions">
+                    <button type="button" data-wb-action="create-recovery-point">立即保存恢复点</button>
+                    <button type="button" data-wb-action="restore-latest-recovery" ${latestRecovery ? '' : 'disabled'}>恢复最近保存</button>
+                </div>
+            </div>
+            <div class="wb-diagnostic-card">
+                <div><label>遇到问题时</label><strong>复制安全诊断信息</strong></div>
+                <p>包含版本、设备、接口模式和错误状态；不会复制 API Key、接口地址、正文或角色设定。</p>
+                <div class="wb-setting-actions">
+                    <button type="button" data-wb-action="copy-diagnostics">复制诊断信息</button>
+                    <button type="button" data-wb-action="preview-notice">看看提示样式</button>
+                </div>
             </div>
                 </div>
             </details>
@@ -1554,7 +1588,7 @@ export function createWorldBackstageUI({
         toastTimer = window.setTimeout(() => {
             toast = '';
             render();
-        }, tone === 'error' ? 5600 : 3200);
+        }, tone === 'error' ? 7600 : 5200);
         render();
     }
 
@@ -1761,7 +1795,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                        <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.7.3</i></span>
+                            <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.8.0</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1874,7 +1908,7 @@ export function createWorldBackstageUI({
             ${toast ? `
                 <div class="wb-toast" role="${root.dataset.toastTone === 'error' ? 'alert' : 'status'}" aria-live="polite">
                     <span aria-hidden="true">${escapeHtml(TOAST_FACES[root.dataset.toastTone] || TOAST_FACES.info)}</span>
-                    <p>${escapeHtml(toast)}</p>
+                    <div><strong>${escapeHtml(TOAST_LABELS[root.dataset.toastTone] || TOAST_LABELS.info)}</strong><p>${escapeHtml(toast)}</p></div>
                 </div>
             ` : ''}
             ${syncStatus.manualUndo?.available ? `
@@ -2069,7 +2103,7 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'delete-memory-item') {
-            const confirmed = globalThis.confirm?.('确定删除这条记忆吗？此操作可以用底部撤销恢复。');
+            const confirmed = globalThis.confirm?.('(・_・;)  确定删除这条记忆吗？此操作可以用底部撤销恢复。');
             if (confirmed === false) return;
             await invokeAction('delete-memory-item', {
                 kind: target.dataset.memoryKind || 'fact',
@@ -2126,7 +2160,7 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'delete-manual-person') {
-            const confirmed = globalThis.confirm?.('确定从后台人物名单中删除这个 NPC 吗？');
+            const confirmed = globalThis.confirm?.('(・_・;)  确定从后台人物名单中删除这个 NPC 吗？');
             if (confirmed === false) return;
             const completed = await invokeAction('delete-manual-person', {
                 id: target.dataset.personId || '',

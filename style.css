@@ -2218,6 +2218,73 @@
     margin-top: 12px;
 }
 
+.wb-recovery-card,
+.wb-diagnostic-card {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 13px;
+    background: var(--wb-panel-faint);
+}
+
+.wb-recovery-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.wb-recovery-heading > div,
+.wb-diagnostic-card > div {
+    min-width: 0;
+}
+
+.wb-recovery-card label,
+.wb-diagnostic-card label {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--wb-text-faint);
+    font-size: 9px;
+}
+
+.wb-recovery-card strong,
+.wb-diagnostic-card strong {
+    display: block;
+    color: var(--wb-text);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.wb-recovery-heading > span {
+    flex: 0 0 auto;
+    color: var(--wb-text-faint);
+    font-size: 9px;
+}
+
+.wb-recovery-card p,
+.wb-diagnostic-card p {
+    margin: 0;
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    line-height: 1.55;
+}
+
+.wb-diagnostic-card > button {
+    min-height: 34px;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 9px;
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+    cursor: pointer;
+}
+
+.wb-setting-actions button:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+}
+
 .wb-import-input {
     display: none;
 }
@@ -2864,31 +2931,47 @@
 }
 
 .wb-toast {
-    bottom: 68px;
+    top: calc(var(--wb-visual-inset-top, 0px) + 18px);
+    bottom: auto;
     display: flex;
     align-items: center;
-    gap: 9px;
-    max-width: min(520px, calc(100vw - 36px));
-    padding: 9px 13px 9px 10px;
-    border-radius: 12px;
+    gap: 12px;
+    width: max-content;
+    min-width: min(340px, calc(100vw - 28px));
+    max-width: min(560px, calc(100vw - 28px));
+    padding: 12px 16px 12px 12px;
+    border-radius: 15px;
     text-align: left;
-    animation: wb-view-in 150ms ease-out both;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+    animation: wb-toast-in 220ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
 }
 
 .wb-toast > span {
     flex: 0 0 auto;
-    padding: 4px 7px;
-    border-radius: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
     background: var(--wb-accent-soft);
     color: var(--wb-accent);
-    font-size: 10px;
+    font-size: 13px;
     line-height: 1;
 }
 
-.wb-toast > p {
+.wb-toast > div {
     min-width: 0;
+}
+
+.wb-toast > div > strong {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--wb-text);
+    font-size: 14px;
+    font-weight: 650;
+}
+
+.wb-toast > div > p {
     margin: 0;
-    line-height: 1.55;
+    font-size: 13px;
+    line-height: 1.6;
 }
 
 .wb-undo-toast {
@@ -3016,7 +3099,7 @@
 }
 
 #world-backstage-root:has(.wb-undo-toast) .wb-toast {
-    bottom: 112px;
+    bottom: auto;
 }
 
 #world-backstage-root[data-toast-tone="error"] .wb-toast {
@@ -3088,6 +3171,11 @@
 @keyframes wb-view-in {
     from { transform: translateY(2px); }
     to { transform: translateY(0); }
+}
+
+@keyframes wb-toast-in {
+    from { opacity: 0; transform: translate(-50%, -10px) scale(0.97); }
+    to { opacity: 1; transform: translate(-50%, 0) scale(1); }
 }
 
 @keyframes wb-orbit {
@@ -3695,6 +3783,20 @@
 #world-backstage-root .wb-option-row button,
 #world-backstage-root .wb-setting-actions button {
     font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 15px) !important;
+}
+
+#world-backstage-root .wb-recovery-card label,
+#world-backstage-root .wb-diagnostic-card label,
+#world-backstage-root .wb-recovery-heading > span,
+#world-backstage-root .wb-recovery-card p,
+#world-backstage-root .wb-diagnostic-card p {
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 15px) !important;
+}
+
+#world-backstage-root .wb-recovery-card strong,
+#world-backstage-root .wb-diagnostic-card strong,
+#world-backstage-root .wb-diagnostic-card > button {
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 16px) !important;
 }
 
 #world-backstage-root .wb-setting-toggle span,

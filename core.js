@@ -1,7 +1,7 @@
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 export const MINUTES_PER_DAY = 24 * 60;
 
 const TERMINAL_EVENT_STATES = new Set(['resolved', 'cancelled', 'missed']);
@@ -31,6 +31,7 @@ const LIMITS = Object.freeze({
     text: 800,
     innerVoice: 240,
     longTermGoal: 360,
+    identityAnchor: 500,
     personalityAnchor: 600,
     speakingStyle: 360,
     behaviorBoundaries: 500,
@@ -532,6 +533,13 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
     );
     // These are author-owned character anchors. A routine simulation may use
     // them as constraints, but must never silently rewrite an existing card.
+    const identityAnchor = asString(
+        existing
+            ? existing.identityAnchor
+            : (raw?.identity_anchor ?? raw?.identityAnchor),
+        '',
+        LIMITS.identityAnchor,
+    );
     const personalityAnchor = asString(
         existing
             ? existing.personalityAnchor
@@ -592,6 +600,7 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         action: asString(raw?.action, existing?.action || '当前行动待确认', 280),
         intent: asString(raw?.intent, existing?.intent || '短期意图待确认', 320),
         longTermGoal: longTermGoal || asString(existing?.longTermGoal, '', LIMITS.longTermGoal),
+        identityAnchor,
         personalityAnchor,
         speakingStyle,
         behaviorBoundaries,
@@ -1767,6 +1776,13 @@ export function buildHistoryIndexPrompt(state, {
         ? '极简重试：memory_digest.text 不超过240字，chapter_summary.summary 不超过160字；facts_upsert 最多3条，clues_upsert 最多2条；没有变化的数组必须返回空数组。'
         : '输出应紧凑：memory_digest.text 约300—600字，chapter_summary.summary 约160—320字；facts_upsert 最多8条，clues_upsert 最多6条。';
     const identityAnchor = modelText(playerIdentityAnchor, 400);
+    const characterIdentityAnchors = asArray(state?.people)
+        .filter(person => modelText(person?.identityAnchor, LIMITS.identityAnchor))
+        .slice(0, LIMITS.people)
+        .map(person => ({
+            name: modelText(person?.name, 80),
+            identity_anchor: modelText(person?.identityAnchor, LIMITS.identityAnchor),
+        }));
 
     return [
         '你是“世界背面”的历史档案员。你只整理已经发生的聊天记录，不续写、不推演未来、不修改世界时间。',
@@ -1784,6 +1800,7 @@ export function buildHistoryIndexPrompt(state, {
             + (identityAnchor
                 ? ` 用户明确设定的身份锚点：${identityAnchor}。涉及性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守；不得根据外貌、衣着、身体或物种反推性别。`
                 : ' 未设置玩家身份锚点；正文没有明确时使用中性表述，不得根据外貌、衣着、身体或物种猜测性别与称谓。'),
+        `用户维护的其他角色身份锚点：${characterIdentityAnchors.length ? JSON.stringify(characterIdentityAnchors) : '无'}。这些锚点是权威设定，整理身份、称谓和关系时必须遵守；没有锚点且正文也不明确的角色使用中性表述，不得凭外貌、衣着、身体或物种猜测。`,
         '9. 只返回一个合法 JSON 对象，不要代码围栏和解释。',
         `10. ${outputLimits}`,
         '',
@@ -1950,6 +1967,7 @@ export function buildPersonObservationPrompt(state, person, {
             status: event.status,
             visibility: event.visibility,
         }));
+    const observedIdentityAnchor = modelText(person?.identityAnchor, LIMITS.identityAnchor);
 
     return [
         `请以“${modelText(person?.name, 80)}”本人的第一人称，描写该角色此刻正在做什么。`,
@@ -1958,6 +1976,9 @@ export function buildPersonObservationPrompt(state, person, {
         '1. 只描写几分钟内的动作、感官、注意力与符合既有信息的即时念头；使用“我”。',
         '2. 不推进主世界时间，不制造重大新事件，不替其他角色行动，不改变任何既有事实。',
         '3. 严守该角色的知识边界；幕后伏笔若角色并不知道，不得让该角色突然知晓。',
+        observedIdentityAnchor
+            ? `该角色的身份锚点：${observedIdentityAnchor}。性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段与社会身份必须逐项遵守，不得根据其他表面特征擅自改写。`
+            : '该角色没有设置身份锚点；正文也未明确时使用中性表述，不得根据外貌、衣着、身体或物种猜测其性别与称谓。',
         modelText(playerIdentityAnchor, 400)
             ? `若片段提及玩家“${modelText(userName, 80) || 'user'}”，必须逐项遵守身份锚点：${modelText(playerIdentityAnchor, 400)}；不得根据外貌、衣着、身体或物种反推性别，也不得擅自改变称谓或身份。`
             : '若片段提及玩家且正文没有明确身份或称谓，使用中性表述；不得根据外貌、衣着、身体或物种猜测性别。',
@@ -1972,6 +1993,7 @@ export function buildPersonObservationPrompt(state, person, {
             action: person?.action,
             intent: person?.intent,
             long_term_goal: person?.longTermGoal,
+            identity_anchor: person?.identityAnchor,
             personality_anchor: person?.personalityAnchor,
             speaking_style: person?.speakingStyle,
             behavior_boundaries: person?.behaviorBoundaries,
@@ -2035,6 +2057,7 @@ export function compactStateForModel(state, {
                 action: modelText(person.action, 180),
                 intent: modelText(person.intent, 180),
                 long_term_goal: modelText(person.longTermGoal, 220),
+                identity_anchor: modelText(person.identityAnchor, LIMITS.identityAnchor),
                 personality_anchor: modelText(person.personalityAnchor, LIMITS.personalityAnchor),
                 speaking_style: modelText(person.speakingStyle, LIMITS.speakingStyle),
                 behavior_boundaries: modelText(person.behaviorBoundaries, LIMITS.behaviorBoundaries),
@@ -2162,7 +2185,7 @@ export function buildSimulationPrompt(state, {
         '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
         '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在该人物的处境、目标或情绪有真实变化时更新。不要让所有人物每轮集体独白。',
-        '人物状态中的 personality_anchor、speaking_style 与 behavior_boundaries 是用户维护的角色约束：必须遵守，不得在 people_upsert 中重写，也不得用本轮临时情绪覆盖稳定人格。',
+        '人物状态中的 identity_anchor、personality_anchor、speaking_style 与 behavior_boundaries 是用户维护的角色约束：必须遵守，不得在 people_upsert 中重写。identity_anchor 可包含任意性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段与社会身份；不得根据外貌、衣着、身体或物种反推或改写身份。没有身份锚点且正文也不明确时使用中性表述。',
         `7. ${userVoiceRule} ${playerIdentityRule}`,
         '8. long_term_goal 是人物较稳定的长期方向；只有目标真正建立、完成、放弃或转向时才更新，不能把本轮动作重复填进去。',
         '9. inner_voice 是幕后观测信息，不得当作主角已知事实，也不得写入 deliveries_confirmed。',

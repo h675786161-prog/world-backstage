@@ -226,6 +226,48 @@ test('player identity anchor is free-form, gender-neutral and shared by all prom
     assert.doesNotMatch(observationPrompt, /描写她此刻/);
 });
 
+test('every character can keep an authoritative free-form identity anchor', () => {
+    const state = createInitialState();
+    state.people.push({
+        id: 'npc-androgynous-fox',
+        name: '流浪鸣人',
+        identityAnchor: '男性，外貌偏女性，使用“他”；狐族人外，年龄阶段为成年。',
+        location: '碎石滩',
+        action: '警戒周围',
+        intent: '寻找同伴',
+        knowledge: 'hidden',
+        source: 'manual',
+        manual: true,
+        simulationEnabled: true,
+    });
+    const normalized = trimState(state);
+    const person = normalized.people[0];
+    const worldPrompt = buildSimulationPrompt(normalized, {
+        narrativeTurns: [{ role: 'assistant', content: '远处有人经过。' }],
+    });
+    const historyPrompt = buildHistoryIndexPrompt(normalized, {
+        messages: [{ id: 1, role: 'assistant', content: '流浪鸣人在碎石滩警戒。' }],
+    });
+    const observationPrompt = buildPersonObservationPrompt(normalized, person);
+
+    for (const prompt of [worldPrompt, historyPrompt, observationPrompt]) {
+        assert.match(prompt, /男性，外貌偏女性/);
+        assert.match(prompt, /狐族人外/);
+    }
+
+    const modelAttempt = applySimulationResult(normalized, {
+        elapsed_minutes: 0,
+        people_upsert: [{
+            id: person.id,
+            name: person.name,
+            identity_anchor: '女性',
+            action: '继续警戒',
+            source: 'background',
+        }],
+    });
+    assert.equal(modelAttempt.people[0].identityAnchor, person.identityAnchor);
+});
+
 test('history indexing stores a rolling digest and durable facts', () => {
     const state = applyHistoryIndexResult(createInitialState(), {
         memory_digest: {

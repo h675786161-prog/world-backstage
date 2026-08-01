@@ -200,4 +200,7 @@ test('player identity anchor supports non-binary presentation and nonhuman roles
     assert.match(indexSource, /settings\.playerIdentityAnchor/);
     assert.match(uiSource, /data-wb-setting="playerIdentityAnchor"/);
     assert.match(uiSource, /外貌、衣着和物种不会被自动当成性别依据/);
+    assert.match(uiSource, /name="identityAnchor"/);
+    assert.match(uiSource, /不限制为男女二选一/);
+    assert.match(indexSource, /identityAnchor: String\(payload\.identityAnchor/);
 });

@@ -219,6 +219,7 @@ function importWorldbookPeople(bookName, entryIds = []) {
             action: '当前行动待确认',
             intent: '短期意图待确认',
             longTermGoal: '',
+            identityAnchor: '',
             personalityAnchor,
             speakingStyle: '',
             behaviorBoundaries: '',
@@ -2564,6 +2565,7 @@ async function handleUiAction(action, payload = {}) {
             action: String(payload.action || '当前行动待确认').trim().slice(0, 280),
             intent: String(payload.intent || '短期意图待确认').trim().slice(0, 320),
             longTermGoal: String(payload.longTermGoal || '').trim().slice(0, 420),
+            identityAnchor: String(payload.identityAnchor || '').trim().slice(0, 500),
             personalityAnchor: String(payload.personalityAnchor || '').trim().slice(0, 600),
             speakingStyle: String(payload.speakingStyle || '').trim().slice(0, 360),
             behaviorBoundaries: String(payload.behaviorBoundaries || '').trim().slice(0, 500),
@@ -2573,7 +2575,7 @@ async function handleUiAction(action, payload = {}) {
             locked: Boolean(payload.locked),
             manual: true,
             source: 'manual',
-            isUser: false,
+            isUser: Boolean(existing?.isUser),
             updatedAt: next.clock.absoluteMinute,
         };
         if (existing) Object.assign(existing, person);

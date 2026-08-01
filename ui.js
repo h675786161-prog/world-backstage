@@ -882,6 +882,9 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                 ${person.longTermGoal ? `
                     <div class="wb-drawer-section"><span>长期目标</span><strong>${escapeHtml(person.longTermGoal)}</strong></div>
                 ` : ''}
+                ${person.identityAnchor ? `
+                    <div class="wb-drawer-section is-character-anchor"><span>身份锚点</span><strong>${escapeHtml(person.identityAnchor)}</strong></div>
+                ` : ''}
                 ${person.personalityAnchor ? `
                     <div class="wb-drawer-section is-character-anchor"><span>人格锚点</span><strong>${escapeHtml(person.personalityAnchor)}</strong></div>
                 ` : ''}
@@ -1045,6 +1048,10 @@ function renderPersonEditorModal(state, editor) {
                 <label>长期目标<textarea name="longTermGoal" maxlength="420" rows="3">${escapeHtml(person?.longTermGoal || '')}</textarea></label>
                 <fieldset class="wb-character-anchor-fields">
                     <legend><span>角色约束</span><small>推演与即时观测都会遵守，AI 不会自动改写</small></legend>
+                    <label>角色身份锚点<textarea name="identityAnchor" maxlength="500" rows="3"
+                        placeholder="例如：男性，外表偏女性，使用“他”和男性称谓；狐族人外。也可填写非二元、无性别或自定义称谓。">${escapeHtml(person?.identityAnchor || '')}</textarea>
+                        <small>自由填写性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段与社会身份；不限制为男女二选一。</small>
+                    </label>
                     <label>人格锚点<textarea name="personalityAnchor" maxlength="600" rows="3"
                         placeholder="例如：外冷内热，警惕权威；重视承诺，但不轻易示弱。">${escapeHtml(person?.personalityAnchor || '')}</textarea></label>
                     <label>说话习惯<textarea name="speakingStyle" maxlength="360" rows="2"
@@ -2349,6 +2356,7 @@ export function createWorldBackstageUI({
                 action: data.action || '',
                 intent: data.intent || '',
                 longTermGoal: data.longTermGoal || '',
+                identityAnchor: data.identityAnchor || '',
                 personalityAnchor: data.personalityAnchor || '',
                 speakingStyle: data.speakingStyle || '',
                 behaviorBoundaries: data.behaviorBoundaries || '',

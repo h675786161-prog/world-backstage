@@ -330,9 +330,13 @@ function renderSyncStrip(syncStatus) {
     const memoryPhase = status.memory?.phase;
     const memoryTakesFocus = ['running', 'error'].includes(memoryPhase);
     const phase = memoryTakesFocus ? memoryPhase : (status.phase || 'idle');
-    const detail = memoryTakesFocus
+    const baseDetail = memoryTakesFocus
         ? status.memory?.message || (memoryPhase === 'error' ? '记忆整理没有完成' : '正在整理长期记忆')
         : status.error || status.message || '尚未进行世界推演';
+    const waitingTurns = Math.max(0, Number(status.queue?.waitingTurns) || 0);
+    const detail = !memoryTakesFocus && waitingTurns > 0 && !String(baseDetail).includes('待处理')
+        ? `${baseDetail} · 后面还有 ${waitingTurns} 轮待处理`
+        : baseDetail;
     const title = memoryTakesFocus
         ? (memoryPhase === 'error' ? '记忆整理失败' : '整理记忆中')
         : syncPhaseLabel(phase);
@@ -1702,7 +1706,9 @@ export function createWorldBackstageUI({
         const displayPhase = memoryTakesFocus ? memoryPhase : syncStatus.phase;
         const displayPhaseLabel = memoryTakesFocus
             ? (memoryPhase === 'error' ? '记忆失败' : '整理记忆中')
-            : syncPhaseLabel(syncStatus.phase);
+            : `${syncPhaseLabel(syncStatus.phase)}${syncStatus.queue?.waitingTurns > 0
+                ? ` · 待 ${syncStatus.queue.waitingTurns} 轮`
+                : ''}`;
         const theme = themeFor(state, settings);
         const clock = formatWorldCalendar(state);
         const orbStyles = orbInlineStyles(settings.orbPosition);

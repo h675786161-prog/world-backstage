@@ -33,7 +33,7 @@ import {
 import { createWorldBackstageUI } from './ui.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
-const PLUGIN_VERSION = '0.8.1';
+const PLUGIN_VERSION = '0.8.0';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 12,
     enabled: true,
@@ -605,14 +605,6 @@ function getSyncStatus() {
     const branch = latest ? branchDataFromMessage(latest.message) : null;
     const recoveryPoints = listRecoveryPoints(getStore());
     const latestRecovery = recoveryPoints.at(-1) || null;
-    const chatToken = currentChatToken();
-    const pendingTurns = latest ? pendingAssistantEntriesThrough(latest.index).length : 0;
-    const activeForCurrentChat = runtime.activeSimulation?.chatToken === chatToken
-        ? runtime.activeSimulation
-        : null;
-    const activeTurns = activeForCurrentChat
-        ? Math.max(1, Number(activeForCurrentChat.newAssistantCount) || 1)
-        : 0;
     let derived = {};
 
     if (runtime.syncStatus.phase === 'idle' && branch) {
@@ -689,14 +681,9 @@ function getSyncStatus() {
                 revision: latestRecovery.revision,
             } : null,
         },
-        queue: {
-            pendingTurns,
-            waitingTurns: Math.max(0, pendingTurns - activeTurns),
-            activeMessageId: activeForCurrentChat?.messageId ?? null,
-        },
         canCancelSimulation: Boolean(
-            activeForCurrentChat
-            && !activeForCurrentChat.controller.signal.aborted
+            runtime.activeSimulation
+            && !runtime.activeSimulation.controller.signal.aborted
         ),
     };
 }
@@ -1115,7 +1102,6 @@ function cancelActiveSimulation() {
 function markMessagePending(messageId, {
     trigger = 'reply',
     offeredEventIds = runtime.generationOffer.eventIds,
-    deferBase = false,
 } = {}) {
     const context = getContext();
     const message = context?.chat?.[messageId];
@@ -1124,16 +1110,14 @@ function markMessagePending(messageId, {
     const sourceKey = branchSourceKey(messageId, message, swipeId);
     const existing = branchDataFromMessage(message, swipeId);
 
-    let baseState = null;
-    if (!deferBase) {
-        if (existing?.base && !existing.stale) {
-            baseState = restoreSnapshot(existing.base, getStore().initialState);
-        } else {
-            const previous = findLatestResultSnapshot(messageId);
-            baseState = previous
-                ? stateWithBranchOverride(previous.snapshot)
-                : clone(getState());
-        }
+    let baseState;
+    if (existing?.base && !existing.stale) {
+        baseState = restoreSnapshot(existing.base, getStore().initialState);
+    } else {
+        const previous = findLatestResultSnapshot(messageId);
+        baseState = previous
+            ? stateWithBranchOverride(previous.snapshot)
+            : clone(getState());
     }
 
     const data = {
@@ -1142,12 +1126,12 @@ function markMessagePending(messageId, {
         sourceKey,
         trigger,
         offeredEventIds: [...new Set(offeredEventIds || [])],
-        base: baseState ? createSnapshot(baseState, {
+        base: createSnapshot(baseState, {
             messageId,
             swipeId,
             sourceKey,
             kind: 'base',
-        }) : null,
+        }),
         result: null,
         error: '',
         stale: false,
@@ -1156,7 +1140,7 @@ function markMessagePending(messageId, {
     attachBranchData(message, swipeId, data);
     void context?.saveChat?.();
     const store = getStore();
-    if (baseState && currentChatToken() === runtime.activeChatToken) {
+    if (currentChatToken() === runtime.activeChatToken) {
         store.currentState = markPendingSync(baseState, true);
         saveStore(store);
         refreshInjection();
@@ -1190,6 +1174,7 @@ async function backgroundSimulation(prompt, {
     }
     if (settings.apiMode === 'custom') {
         runtime.inBackgroundGeneration = true;
+        clearOwnInjection();
         try {
             runtime.syncStatus.method = settings.customApiTransport === 'direct'
                 ? '独立 API 浏览器直连'
@@ -1227,30 +1212,23 @@ async function backgroundSimulation(prompt, {
     };
     signal?.addEventListener?.('abort', stopNativeGeneration, { once: true });
     try {
-        let request;
         if (typeof context.generateRaw === 'function') {
             runtime.syncStatus.method = '独立上下文推演';
-            request = context.generateRaw({
+            return await context.generateRaw({
                 prompt: [{ role: 'user', content: prompt }],
                 responseLength: maxTokens,
                 trimNames: false,
                 signal,
             });
-        } else {
-            runtime.syncStatus.method = '安静生成兼容模式';
-            request = context.generateQuietPrompt({
-                quietPrompt: prompt,
-                skipWIAN: true,
-                responseLength: maxTokens,
-                removeReasoning: true,
-                signal,
-            });
         }
-        // The background request has captured its own prompt. Restore the
-        // foreground injection before waiting so a newly sent user turn never
-        // sees an empty World Backstage prompt.
-        refreshInjection();
-        return await request;
+        runtime.syncStatus.method = '安静生成兼容模式';
+        return await context.generateQuietPrompt({
+            quietPrompt: prompt,
+            skipWIAN: true,
+            responseLength: maxTokens,
+            removeReasoning: true,
+            signal,
+        });
     } finally {
         signal?.removeEventListener?.('abort', stopNativeGeneration);
         runtime.inBackgroundGeneration = false;
@@ -1262,11 +1240,7 @@ async function runSimulationForMessage(messageId, {
     force = false,
     trigger = 'reply',
     newAssistantCount = 1,
-    job = null,
 } = {}) {
-    const chatTokenAtStart = currentChatToken();
-    if (job?.chatToken && job.chatToken !== chatTokenAtStart) return null;
-
     const beforeContext = getContext();
     const beforeMessage = beforeContext?.chat?.[messageId];
     const initialSettings = getSettings();
@@ -1278,17 +1252,6 @@ async function runSimulationForMessage(messageId, {
     }
     const beforeSwipeId = Number(beforeMessage.swipe_id ?? 0);
     const beforeSourceKey = branchSourceKey(messageId, beforeMessage, beforeSwipeId);
-    if (
-        job
-        && (job.swipeId !== beforeSwipeId || job.sourceKey !== beforeSourceKey)
-    ) {
-        setSyncStatus({
-            phase: 'pending',
-            message: '正文已发生变化，旧排队任务已跳过；等待按最新正文推演',
-            error: '',
-        });
-        return null;
-    }
     const beforeData = branchDataFromMessage(beforeMessage, beforeSwipeId);
     if (
         !force
@@ -1300,10 +1263,7 @@ async function runSimulationForMessage(messageId, {
         return stateWithBranchOverride(beforeData.result);
     }
 
-    const prepared = markMessagePending(messageId, {
-        trigger,
-        offeredEventIds: job?.offeredEventIds ?? beforeData?.offeredEventIds,
-    });
+    const prepared = markMessagePending(messageId, { trigger });
     if (!prepared) {
         throw new Error('没有找到可以推演的 AI 正文');
     }
@@ -1315,6 +1275,7 @@ async function runSimulationForMessage(messageId, {
         baseState,
     } = prepared;
     const expectedHash = sourceKey.split(':').at(-1);
+    const chatTokenAtStart = currentChatToken();
     const offeredEventIds = prepared.data.offeredEventIds;
     const settings = getSettings();
     const assistantTurnsToApply = Math.min(
@@ -1359,9 +1320,6 @@ async function runSimulationForMessage(messageId, {
         controller,
         messageId,
         trigger,
-        chatToken: chatTokenAtStart,
-        sourceKey,
-        newAssistantCount: assistantTurnsToApply,
         apiMode: settings.apiMode,
         cancelled: false,
     };
@@ -1467,13 +1425,11 @@ async function runSimulationForMessage(messageId, {
 
         const target = locateTargetBranch(messageId, swipeId, expectedHash);
         if (!target || currentChatToken() !== chatTokenAtStart) {
-            if (currentChatToken() === chatTokenAtStart) {
-                setSyncStatus({
-                    phase: 'pending',
-                    message: '正文分支已变化，旧结果未提交；最新正文仍等待推演',
-                    error: '',
-                });
-            }
+            setSyncStatus({
+                phase: 'idle',
+                message: '推演已返回；你已切换聊天或正文分支，结果未覆盖当前页面',
+                error: '',
+            });
             return resultState;
         }
 
@@ -1515,9 +1471,7 @@ async function runSimulationForMessage(messageId, {
         return resultState;
     } catch (error) {
         if (isAbortError(error) || controller.signal.aborted) {
-            const target = currentChatToken() === chatTokenAtStart
-                ? locateTargetBranch(messageId, swipeId, expectedHash)
-                : null;
+            const target = locateTargetBranch(messageId, swipeId, expectedHash);
             if (target) {
                 attachBranchData(target.message, swipeId, {
                     ...prepared.data,
@@ -1526,27 +1480,21 @@ async function runSimulationForMessage(messageId, {
                 });
                 await target.context.saveChat?.();
             }
-            if (currentChatToken() === chatTokenAtStart) {
-                const store = getStore();
-                store.currentState = markPendingSync(baseState, true);
-                saveStore(store);
-                refreshInjection();
-                runtime.ui?.render();
-            }
-            if (currentChatToken() === chatTokenAtStart) {
-                setSyncStatus({
-                    phase: 'pending',
-                    message: '本次推演已取消，正文仍保持待同步',
-                    error: '',
-                });
-                toast('已停止推演；时间、人物、事件和记忆均未提交。', 'info');
-            }
+            const store = getStore();
+            store.currentState = markPendingSync(baseState, true);
+            saveStore(store);
+            refreshInjection();
+            runtime.ui?.render();
+            setSyncStatus({
+                phase: 'pending',
+                message: '本次推演已取消，正文仍保持待同步',
+                error: '',
+            });
+            toast('已停止推演；时间、人物、事件和记忆均未提交。', 'info');
             throw error;
         }
         const errorMessage = describeError(error);
-        const target = currentChatToken() === chatTokenAtStart
-            ? locateTargetBranch(messageId, swipeId, expectedHash)
-            : null;
+        const target = locateTargetBranch(messageId, swipeId, expectedHash);
         if (target) {
             const failed = {
                 ...prepared.data,
@@ -1557,23 +1505,19 @@ async function runSimulationForMessage(messageId, {
             await target.context.saveChat?.();
         }
 
-        if (currentChatToken() === chatTokenAtStart) {
-            const store = getStore();
-            store.currentState = markPendingSync(baseState, true);
-            saveStore(store);
-            refreshInjection();
-            runtime.ui?.render();
-        }
+        const store = getStore();
+        store.currentState = markPendingSync(baseState, true);
+        saveStore(store);
+        refreshInjection();
+        runtime.ui?.render();
 
-        if (currentChatToken() === chatTokenAtStart) {
-            setSyncStatus({
-                phase: 'error',
-                message: '世界推演没有完成',
-                error: errorMessage,
-                method: runtime.syncStatus.method,
-            });
-            toast(`世界推演没有完成：${errorMessage}`, 'warning');
-        }
+        setSyncStatus({
+            phase: 'error',
+            message: '世界推演没有完成',
+            error: errorMessage,
+            method: runtime.syncStatus.method,
+        });
+        toast(`世界推演没有完成：${errorMessage}`, 'warning');
         throw error;
     } finally {
         if (runtime.activeSimulation === activeSimulation) {
@@ -1585,31 +1529,10 @@ async function runSimulationForMessage(messageId, {
 
 function queueSimulation(messageId, options = {}) {
     const context = getContext();
-    const numericMessageId = Number(messageId);
-    const message = context?.chat?.[numericMessageId];
-    const swipeId = Number(message?.swipe_id ?? 0);
-    const sourceKey = message
-        ? branchSourceKey(numericMessageId, message, swipeId)
-        : `${numericMessageId}:${swipeId}:missing`;
-    const branch = message ? branchDataFromMessage(message, swipeId) : null;
-    const chatToken = currentChatToken();
-    const queueKey = `${chatToken}:${sourceKey}`;
-    const job = Object.freeze({
-        chatToken,
-        messageId: numericMessageId,
-        swipeId,
-        sourceKey,
-        queueKey,
-        trigger: options.trigger || 'reply',
-        force: Boolean(options.force),
-        newAssistantCount: Math.max(1, Number(options.newAssistantCount) || 1),
-        offeredEventIds: clone(
-            options.offeredEventIds
-            ?? branch?.offeredEventIds
-            ?? runtime.generationOffer.eventIds
-            ?? [],
-        ),
-    });
+    const message = context?.chat?.[Number(messageId)];
+    const queueKey = message
+        ? `${currentChatToken()}:${branchSourceKey(Number(messageId), message)}`
+        : `${currentChatToken()}:${Number(messageId)}`;
     const existing = runtime.queuedSimulations.get(queueKey);
     if (existing) return existing;
 
@@ -1620,13 +1543,7 @@ function queueSimulation(messageId, options = {}) {
     });
     const task = runtime.simulationChain
         .catch(() => undefined)
-        .then(() => runSimulationForMessage(numericMessageId, {
-            ...options,
-            trigger: job.trigger,
-            force: job.force,
-            newAssistantCount: job.newAssistantCount,
-            job,
-        }));
+        .then(() => runSimulationForMessage(messageId, options));
     runtime.simulationChain = task;
     runtime.queuedSimulations.set(queueKey, task);
     void task.then(
@@ -1637,15 +1554,9 @@ function queueSimulation(messageId, options = {}) {
             window.setTimeout(schedulePendingCatchUp, 40);
             window.setTimeout(scheduleAutoMemoryIndex, 700);
         },
-        error => {
+        () => {
             if (runtime.queuedSimulations.get(queueKey) === task) {
                 runtime.queuedSimulations.delete(queueKey);
-            }
-            if (!isAbortError(error)) {
-                window.setTimeout(
-                    () => schedulePendingCatchUp({ afterMessageId: job.messageId }),
-                    40,
-                );
             }
         },
     );
@@ -1654,8 +1565,7 @@ function queueSimulation(messageId, options = {}) {
 
 function scheduleAutoSync(messageId, type) {
     const settings = getSettings();
-    const numericMessageId = Number(messageId);
-    const message = getContext()?.chat?.[numericMessageId];
+    const message = getContext()?.chat?.[Number(messageId)];
     if (!hasUsableAssistantText(message)) {
         setSyncStatus({
             phase: 'idle',
@@ -1672,32 +1582,7 @@ function scheduleAutoSync(messageId, type) {
         });
         return;
     }
-    const sourceKey = branchSourceKey(numericMessageId, message);
-    const chatToken = currentChatToken();
-    const queueKey = `${chatToken}:${sourceKey}`;
-    const duplicateTask = Boolean(
-        (
-            runtime.activeSimulation?.chatToken === chatToken
-            && runtime.activeSimulation?.sourceKey === sourceKey
-        )
-        || runtime.queuedSimulations.has(queueKey)
-    );
-    if (duplicateTask) {
-        setSyncStatus({
-            phase: runtime.activeSimulation?.sourceKey === sourceKey ? 'running' : 'queued',
-            message: '这轮正文已经在推演队列中，无需重复处理',
-            error: '',
-        });
-        return;
-    }
-    const workAlreadyRunning = Boolean(
-        runtime.activeSimulation
-        || runtime.queuedSimulations.size > 0
-    );
-    markMessagePending(messageId, {
-        trigger: type || 'reply',
-        deferBase: workAlreadyRunning,
-    });
+    markMessagePending(messageId, { trigger: type || 'reply' });
     if (!settings.autoSync) {
         setSyncStatus({
             phase: 'pending',
@@ -1706,20 +1591,10 @@ function scheduleAutoSync(messageId, type) {
         });
         return;
     }
-    if (workAlreadyRunning) {
-        const activeForCurrentChat = runtime.activeSimulation?.chatToken === chatToken
-            ? runtime.activeSimulation
-            : null;
-        const activeTurns = activeForCurrentChat
-            ? Math.max(1, Number(activeForCurrentChat.newAssistantCount) || 1)
-            : 0;
-        const waitingTurns = Math.max(
-            1,
-            pendingAssistantEntriesThrough(messageId).length - activeTurns,
-        );
+    if (runtime.simulationCount > 0 || runtime.queuedSimulations.size > 0) {
         setSyncStatus({
-            phase: activeForCurrentChat ? 'running' : 'queued',
-            message: `新正文已安全进入队列，会在当前推演完成后继续（待处理 ${waitingTurns} 轮）`,
+            phase: 'queued',
+            message: '已有世界推演在进行，新正文已安全累计',
             error: '',
         });
         return;
@@ -1736,13 +1611,15 @@ function scheduleAutoSync(messageId, type) {
         return;
     }
 
-    void queueSimulation(messageId, {
-        trigger: type || 'reply',
-        newAssistantCount: pending.length,
-    }).catch(() => undefined);
+    window.setTimeout(() => {
+        void queueSimulation(messageId, {
+            trigger: type || 'reply',
+            newAssistantCount: pending.length,
+        }).catch(() => undefined);
+    }, 160);
 }
 
-function schedulePendingCatchUp({ afterMessageId = -1 } = {}) {
+function schedulePendingCatchUp() {
     const settings = getSettings();
     if (
         !settings.enabled
@@ -1755,7 +1632,6 @@ function schedulePendingCatchUp({ afterMessageId = -1 } = {}) {
     }
     const latest = latestAssistantEntry();
     if (!latest) return;
-    if (latest.index <= Number(afterMessageId)) return;
     const pending = pendingAssistantEntriesThrough(latest.index);
     if (pending.length < settings.autoSimulationInterval) return;
     void queueSimulation(latest.index, {
@@ -1801,16 +1677,15 @@ function scheduleAutoMemoryIndex() {
 }
 
 function onMessageReceived(messageId, type) {
+    if (runtime.inBackgroundGeneration) return;
     if (['quiet', 'impersonate', 'first_message'].includes(type)) return;
     const message = getContext()?.chat?.[Number(messageId)];
     if (!hasUsableAssistantText(message)) {
-        if (!runtime.inBackgroundGeneration) {
-            setSyncStatus({
-                phase: 'idle',
-                message: '回复为空或生成失败，已跳过推演与记忆写入',
-                error: '',
-            });
-        }
+        setSyncStatus({
+            phase: 'idle',
+            message: '回复为空或生成失败，已跳过推演与记忆写入',
+            error: '',
+        });
         return;
     }
     scheduleAutoSync(Number(messageId), type);
@@ -1818,7 +1693,7 @@ function onMessageReceived(messageId, type) {
 }
 
 function onGenerationStarted(type, _options, dryRun) {
-    if (dryRun || ['quiet', 'impersonate'].includes(type)) return;
+    if (runtime.inBackgroundGeneration || dryRun || ['quiet', 'impersonate'].includes(type)) return;
     refreshInjection();
     runtime.generationOffer = {
         eventIds: clone(runtime.injection.eventIds || []),
@@ -2033,7 +1908,6 @@ function onChatChanged() {
         runtime.activeChatToken = currentChatToken();
         restoreLatestBranch();
         syncSettingsEntry();
-        schedulePendingCatchUp();
     }, 80);
 }
 

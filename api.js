@@ -1,178 +1,367 @@
-# 0.8.1 试用检查表
+function cleanText(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
 
-## 0.8.1 连续发送与排队
+export async function runWithRetries(operation, {
+    retries = 0,
+    delayMs = 750,
+    wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+    onRetry = null,
+    shouldRetry = () => true,
+    signal = null,
+} = {}) {
+    const maximumRetries = Math.min(5, Math.max(0, Number.parseInt(retries, 10) || 0));
+    let attempt = 0;
+    while (true) {
+        try {
+            if (signal?.aborted) throw cancellationError();
+            return await operation(attempt);
+        } catch (error) {
+            if (signal?.aborted || isAbortError(error)) throw cancellationError();
+            if (attempt >= maximumRetries || !shouldRetry(error, attempt)) throw error;
+            attempt += 1;
+            const milliseconds = Math.min(
+                5000,
+                Math.max(0, Number(delayMs) || 0) * (2 ** (attempt - 1)),
+            );
+            await onRetry?.({
+                attempt,
+                total: maximumRetries,
+                delayMs: milliseconds,
+                error,
+            });
+            if (milliseconds > 0) await waitForRetry(wait, milliseconds, signal);
+        }
+    }
+}
 
-- [ ] 第一轮世界推演运行时继续发送第二轮正文，第二轮显示为待处理；第一轮完成后自动接续第二轮。
-- [ ] 连续发送三轮以上时始终只运行一个世界推演请求，顶部状态显示剩余待处理轮数，最终状态包含全部新正文且顺序正确。
-- [ ] 后一轮真正开始时使用前一轮已提交的世界状态，世界时间、人物变化、事件与记忆不会回退到旧快照。
-- [ ] 推演中发送的新一轮正文仍能读取世界背面注入，不会因为后台请求临时清空提示而漏掉状态。
-- [ ] 排队期间切换聊天、重抽或编辑正文，旧任务不会写入新聊天或新分支；回到原聊天后仍可处理待同步正文。
-- [ ] 当前推演失败但后面已有新正文时，可把失败轮与后续轮合并追赶；主动点击取消时不会自动重启，正文仍保留待同步。
+function cancellationError() {
+    const error = new Error('推演已由用户取消');
+    error.name = 'AbortError';
+    return error;
+}
 
-## 0.8.0 安全恢复、诊断与状态提示
+export function isAbortError(error) {
+    return error?.name === 'AbortError'
+        || /aborted|aborterror|已由用户取消|用户取消/i.test(String(error?.message || error || ''));
+}
 
-- [ ] 从 0.7.3 打开旧聊天时，在数据结构升级前自动生成恢复点，原有时钟、人物、事件与记忆保持不变。
-- [ ] 手动连续保存 4 次恢复点后只保留最近 3 次，并且每个聊天互不共享。
-- [ ] 导入世界状态前自动保存当前状态；恢复最近保存时先保存恢复前状态，因此可以再次恢复回来。
-- [ ] 恢复完成后当前正文分支、状态注入和设置页统计同步刷新，不会跳到其他聊天或 swipe。
-- [ ] “复制诊断信息”在桌面与手机浏览器均可用；内容包含版本、设备、接口模式与最近错误。
-- [ ] 诊断文本不包含 API Key、完整接口地址、聊天正文、角色身份锚点或自定义提示词。
-- [ ] 点“看看提示样式”，顶部安全区出现带颜文字、状态标题和正文的插件提示卡。
-- [ ] 成功、普通提醒、警告和失败提示均显示插件内颜文字卡片；酒馆 toastr 不会与它重复弹出。
-- [ ] 提示卡在手机安全区内完整可见，大字模式下文字不会被截断，约 5 秒后自动消失。
-- [ ] 旧版“玩家角色身份锚点”有内容时，升级后内容迁入玩家人物卡，设置页不再出现重复输入框。
-- [ ] 修改玩家人物卡的身份锚点后，推演、记忆整理和人物观测均使用新值。
+async function waitForRetry(wait, milliseconds, signal) {
+    if (!signal) {
+        await wait(milliseconds);
+        return;
+    }
+    if (signal.aborted) throw cancellationError();
+    let abort;
+    try {
+        await Promise.race([
+            wait(milliseconds),
+            new Promise((_, reject) => {
+                abort = () => reject(cancellationError());
+                signal.addEventListener('abort', abort, { once: true });
+            }),
+        ]);
+    } finally {
+        if (abort) signal.removeEventListener('abort', abort);
+    }
+}
 
-## 0.7.0 新增验收
+export function normalizeCustomApiUrl(value) {
+    const url = cleanText(value).replace(/\/+$/, '');
+    if (!url) return '';
+    if (/\/chat\/completions$/i.test(url)) return url;
+    return `${url}/chat/completions`;
+}
 
-- [ ] 自动推演方式设为“手动”后，只累计待同步正文；设置页不再出现重复的“暂停自动推演”。
-- [ ] 推演运行中，侧栏与底部按钮变成“停止推演”；点击后请求终止，时间、人物、事件和记忆均不提交。
-- [ ] 独立接口选择 `deepseek-v4-flash` 时，经酒馆转发和浏览器直连都会请求关闭思考，并能读取最终正文。
-- [ ] 记忆整理返回截断 JSON 时先紧凑重试；持续失败时自动缩小批次，成功批次的扫描进度仍被保留。
-- [ ] 人物卡可编辑人格锚点、说话习惯和行为边界；下一次推演与“看看 TA”提示会携带三项内容。
-- [ ] 模型返回不同的人格约束时，已有用户人物卡不会被自动覆盖。
-- [ ] 世界书只在点击“读取条目预览”时扫描；未勾选条目不会导入，导入人物仍受后台 NPC 预算约束。
-- [ ] 紧凑、舒适、大字三档有明显字号与行距差异；大字档设置页仍能滚动到底。
-- [ ] 手机人物详情中的长人格文本正常换行，顶部关闭按钮始终处于可视区。
-- [ ] 220 轮以上状态仍受容量限制，构造后续推演提示时不发生无界膨胀。
+export function customProxyBase(value) {
+    return normalizeCustomApiUrl(value).replace(/\/chat\/completions$/i, '');
+}
 
-## 手机端适配
+export function normalizeCustomModelsUrl(value) {
+    const base = customProxyBase(value).replace(/\/+$/, '');
+    return base ? `${base}/models` : '';
+}
 
-- [ ] 320、390、430px 宽的竖屏及短边触屏横屏下，标题、日历、三个顶部按钮和六个底部入口均不重叠或横向溢出。
-- [ ] 系统状态栏、刘海与左右安全区不会盖住标题或设置关闭按钮，旋转屏幕后布局重新贴合当前可见区域。
-- [ ] 手机设置页是完整独立面板，可滚动全部设置；切换选项、展开长期记忆和关闭设置后不会只留下顶部切片。
-- [ ] 酒馆主题或其他扩展的高层级悬浮控件不会盖到世界背面窗口上。
-- [ ] 手机悬浮球保持在 36—42px，关闭面板后可见、可拖动、可吸边，推演时仍会旋转。
+function contentText(value) {
+    if (typeof value === 'string') return value;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return contentText(value.text ?? value.value ?? value.content ?? '');
+    }
+    if (!Array.isArray(value)) return '';
+    return value
+        .map(part => (
+            typeof part === 'string'
+                ? part
+                : contentText(part?.text ?? part?.value ?? part?.content ?? '')
+        ))
+        .filter(Boolean)
+        .join('');
+}
 
-## 兼容接口 JSON 稳定性
+function responsesApiText(payload) {
+    if (!Array.isArray(payload?.output)) return '';
+    return payload.output
+        .map(item => contentText(item?.content ?? item?.text ?? ''))
+        .filter(Boolean)
+        .join('');
+}
 
-- [ ] 返回内容包在 `````json`` 代码围栏中时仍能提取状态。
-- [ ] JSON 含尾逗号或字符串裸换行时可保守修复；真正缺少闭合括号时必须拒绝写入状态。
-- [ ] 接口返回 `finish_reason: MAX_TOKENS` 时显示输出达到上限，并按自动重试设置提高后续输出额度。
-- [ ] 重试提示不要求延续被截断的句子，且合法结果出现前世界时间、人物与记忆保持推演前快照。
+function isDeepSeekV4Model(model) {
+    return /(?:^|[\/_-])deepseek[-_]?v?4(?:[\/_-]|$)/i.test(String(model || ''));
+}
 
-## 心声卡片精简
+export function extractCompletionText(payload) {
+    const choice = payload?.choices?.[0];
+    return cleanText(
+        contentText(choice?.message?.content)
+        || contentText(choice?.message?.output_text)
+        || choice?.text
+        || payload?.output_text
+        || responsesApiText(payload)
+        || contentText(payload?.content)
+        || payload?.response,
+    );
+}
 
-- [ ] 人物列表、人物卡片和详情抽屉只显示独白正文，不显示单独的时分时间戳。
-- [ ] 重抽或恢复快照后，人物的 `innerVoiceAt` 仍保存在状态中。
+export function extractCompletionFinishReason(payload) {
+    return cleanText(
+        payload?.choices?.[0]?.finish_reason
+        || payload?.choices?.[0]?.finishReason
+        || payload?.finish_reason
+        || payload?.finishReason,
+    );
+}
 
-## 模块切换舒适度
+async function readResponse(response) {
+    const text = await response.text();
+    let data = null;
+    if (text) {
+        try {
+            data = JSON.parse(text);
+        } catch {
+            if (response.ok) {
+                throw new Error(`接口返回的不是 JSON：${text.slice(0, 180)}`);
+            }
+        }
+    }
+    return { text, data };
+}
 
-- [ ] 打开面板时只播放一次面板入场动画；切换任意模块时不重新缩放或淡入整个面板。
-- [ ] 连续切换人物、暗流、回声、记忆和纪事，底层 SillyTavern 正文不会在中间帧透出。
-- [ ] 模块切换保留轻微位移反馈，但内容区、面板和遮罩透明度始终为 1。
+function errorDetail(data, text) {
+    return cleanText(
+        data?.error?.message
+        || data?.message
+        || data?.error
+        || text,
+    ).slice(0, 360);
+}
 
-## 体验收尾
+function headersFrom(getRequestHeaders) {
+    const headers = typeof getRequestHeaders === 'function'
+        ? { ...(getRequestHeaders() || {}) }
+        : {};
+    if (!headers['Content-Type'] && !headers['content-type']) {
+        headers['Content-Type'] = 'application/json';
+    }
+    return headers;
+}
 
-- [ ] 记忆页初次打开只渲染每类前 12 条；点击“再显示一些”后继续增加，不会一次绘制全部记忆。
-- [ ] “进行中/事实/伏笔/经历/全部”和关键词搜索会给出正确结果数，切换筛选后回到首批内容。
-- [ ] 推演、人物观测、接口测试与记忆整理时，悬浮球、顶部状态条和底部提示显示相同且准确的任务名称。
-- [ ] 设置页分为五个折叠区；改变设置导致重绘后，原先展开的分组和滚动位置仍然保留。
-- [ ] 点击面板外空白处会平滑关闭，点击窗口内部不会误关；Esc 仍按人物抽屉、事件表单、设置、主面板顺序关闭。
-- [ ] 校准/推进时间、新建暗流和导入状态后出现 9 秒撤销；撤销恢复前态，切换聊天或正文分支后不可误用。
-- [ ] 390px 手机宽度下六个底部入口保持单行、顶部月历可见、页面没有横向滚动。
+function timeoutError(timeoutMs) {
+    return new Error(`独立 API 请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
+}
 
-## 独立接口
+async function fetchWithTimeout(fetchImpl, url, options, timeoutMs, externalSignal) {
+    if (!(timeoutMs > 0)) {
+        return fetchImpl(url, { ...options, signal: externalSignal || undefined });
+    }
 
-- [ ] 切换“独立接口”，填写 URL、Key 与模型后，测试连接成功。
-- [ ] 修改酒馆当前模型，不会改变设置卡片中显示的独立模型。
-- [ ] 错误 Key 会显示上游错误，不会悄悄回退到酒馆当前 API。
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutMs);
+    const abort = () => controller.abort();
 
-## 分层记忆与自动总结
+    if (externalSignal) {
+        if (externalSignal.aborted) controller.abort();
+        else externalSignal.addEventListener('abort', abort, { once: true });
+    }
 
-- [ ] 点击“建立初始记忆档案”后分批显示进度，并产生持续摘要、长期事实、阶段经历和伏笔。
-- [ ] 伏笔保存来源消息楼层与 swipe。
-- [ ] 中途失败后再次点击，从最后成功批次继续。
-- [ ] 自动整理设为每 5 条后，新增第 5 条 AI 正文时触发一次整理，第 4 条之前不会触发。
-- [ ] 自定义整理频率设为 0 后，只能手动整理；设为 N 后按 AI 正文数而不是用户消息数计数。
-- [ ] 同一长期事实出现确定新值时，旧版本保留并标为“已被替代”。
-- [ ] 同一事实出现真假未定的新说法时，两个版本都显示“有争议”。
-- [ ] 正文明示旧事实错误时，该条事实进入“已失效”并显示原因。
-- [ ] 当前正文重新出现相关人物或物品时，世界推演提示只召回相关旧记忆。
-- [ ] 正文状态注入能收到相关的 `known/direct` 记忆，但收不到 `hidden/trace` 记忆、持续摘要或阶段经历。
+    try {
+        return await fetchImpl(url, { ...options, signal: controller.signal });
+    } catch (error) {
+        if (timedOut) throw timeoutError(timeoutMs);
+        throw error;
+    } finally {
+        clearTimeout(timer);
+        externalSignal?.removeEventListener?.('abort', abort);
+    }
+}
 
-## 镜头外人物观测
+function modelIdsFrom(payload) {
+    const candidates = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.data)
+            ? payload.data
+            : Array.isArray(payload?.models)
+                ? payload.models
+                : Array.isArray(payload?.model_names)
+                    ? payload.model_names
+                    : [];
+    return [...new Set(candidates
+        .map(item => cleanText(
+            typeof item === 'string' ? item : item?.id || item?.name || item?.model,
+        ))
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b));
+}
 
-- [ ] 本轮未出现的 NPC 详情显示“看看 TA 在做什么”。
-- [ ] 本轮已出现人物和玩家角色不显示该入口。
-- [ ] 生成片段不进入主聊天、不改变世界时钟和人物状态。
+export async function requestCustomModels(settings, {
+    fetchImpl = globalThis.fetch,
+    getRequestHeaders = null,
+    timeoutMs = null,
+    signal = null,
+} = {}) {
+    if (typeof fetchImpl !== 'function') throw new Error('当前环境不支持网络请求');
+    const modelsUrl = normalizeCustomModelsUrl(settings?.customApiUrl);
+    const apiKey = cleanText(settings?.customApiKey);
+    const transport = settings?.customApiTransport === 'direct' ? 'direct' : 'proxy';
+    const requestTimeout = Number(timeoutMs ?? settings?.customApiTimeoutMs ?? 120000);
+    if (!modelsUrl) throw new Error('请先填写独立 API 地址');
+    if (!apiKey) throw new Error('请先填写独立 API Key');
 
-## 自动推演与 NPC 预算
+    let target = modelsUrl;
+    let options = {
+        method: 'GET',
+        cache: 'no-cache',
+        headers: { Authorization: `Bearer ${apiKey}` },
+    };
+    if (transport === 'proxy') {
+        target = '/api/backends/chat-completions/status';
+        options = {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: headersFrom(getRequestHeaders),
+            body: JSON.stringify({
+                chat_completion_source: 'openai',
+                reverse_proxy: customProxyBase(settings.customApiUrl),
+                proxy_password: apiKey,
+            }),
+        };
+    }
 
-- [ ] 自动推演方式可在手动、轻量、均衡、深入之间切换。
-- [ ] 频率设为每 3 轮后，前两轮只显示累计状态，第三轮按顺序合并三轮新正文。
-- [ ] 自定义累计轮数接受 1—20，刷新页面后仍保留。
-- [ ] 自定义推演要求会保存，并进入世界推演提示。
-- [ ] 后台 NPC 预算设为 0 时，入镜人物仍更新，镜头外人物不主动推进。
-- [ ] 世界书含大量 NPC 时，一轮最多主动更新设置数量的镜头外人物。
-- [ ] 大批同组织 NPC 的共同变化优先成为势力或地点事件，而不是每人一张轨迹。
-- [ ] 休眠人物在重新被提及、地点接近、关联事件到时或伏笔命中后可以重新唤醒。
+    const response = await fetchWithTimeout(fetchImpl, target, options, requestTimeout, signal);
+    const { text, data } = await readResponse(response);
+    if (!response.ok || data?.error) {
+        const detail = errorDetail(data, text);
+        throw new Error(`模型列表请求返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`);
+    }
+    const models = modelIdsFrom(data);
+    if (!models.length) {
+        throw new Error('接口连接成功，但没有返回可识别的模型列表；仍可手动填写模型名称');
+    }
+    return models;
+}
 
-## 失败重试
+export async function requestCustomCompletion(settings, messages, {
+    fetchImpl = globalThis.fetch,
+    getRequestHeaders = null,
+    maxTokens = 2200,
+    temperature = 0.2,
+    timeoutMs = null,
+    signal = null,
+} = {}) {
+    if (typeof fetchImpl !== 'function') {
+        throw new Error('当前环境不支持网络请求');
+    }
 
-- [ ] 重试次数可选 0/1/2/3 或自定义 0—5。
-- [ ] 第一次请求临时失败、第二次成功时，只写入一次结果且时间只推进一次。
-- [ ] 每次重试在状态栏显示当前次数。
-- [ ] 最终仍失败时保留推演前快照并显示最后错误。
-- [ ] 缺少地址/Key/模型或 HTTP 400/401/403/404 时立即报错，不浪费重试次数。
+    const apiUrl = normalizeCustomApiUrl(settings?.customApiUrl);
+    const model = cleanText(settings?.customApiModel);
+    const apiKey = cleanText(settings?.customApiKey);
+    const transport = settings?.customApiTransport === 'direct' ? 'direct' : 'proxy';
+    const requestTimeout = Number(timeoutMs ?? settings?.customApiTimeoutMs ?? 120000);
 
-## 安装与界面
+    if (!apiUrl) throw new Error('请先填写独立 API 地址');
+    if (!model) throw new Error('请先填写独立 API 模型名');
+    if (!apiKey) throw new Error('请先填写独立 API Key');
 
-- [ ] 扩展设置里出现“世界背面”。
-- [ ] 页面右下角出现世界球。
-- [ ] 世界球可以拖动、自动吸附左右边缘，刷新页面后位置不丢失。
-- [ ] 世界推演、人物即时观测、连接测试或记忆整理运行时，世界球持续旋转；完成或失败后停止。
-- [ ] 面板可以打开、关闭，手机宽度下可以滚动。
-- [ ] 日间、夜间、自动三种主题都能切换。
-- [ ] 自动主题在主世界 06:00—17:59 使用日间，其余时间使用夜间。
+    const body = {
+        model,
+        messages: Array.isArray(messages) ? messages : [],
+        temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.2,
+        max_tokens: Math.max(64, Number.parseInt(maxTokens, 10) || 2200),
+        stream: false,
+    };
+    const useDeepSeekV4Compatibility = isDeepSeekV4Model(model);
+    if (useDeepSeekV4Compatibility) {
+        // DeepSeek V4 defaults to thinking mode. Structured background work does
+        // not need hidden reasoning, and it can otherwise consume the completion
+        // budget before message.content is produced.
+        body.thinking = { type: 'disabled' };
+    }
 
-## 时间与事件
+    let target = apiUrl;
+    let headers = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+    };
+    let payload = body;
 
-- [ ] 可填写历法名称、年、月、日、时、分，刷新页面后日期不丢失。
-- [ ] 从月末推进到次日会正确跨月，从年末推进到次日会正确跨年。
-- [ ] 旧版本仅有“第几日”的状态升级后，绝对时间和事件进度不改变。
-- [ ] 创建一个自然流逝 12 小时事件。
-- [ ] 连续产生不含时间变化的回复，事件进度不增长。
-- [ ] 手动推进 6 小时，事件进度约为 50%。
-- [ ] 再推进 6 小时，事件离开“暗流”，进入“回声”。
-- [ ] 有效工时事件只在正文明确工作时累计，不因休息或赶路增长。
-- [ ] 预定事件在指定时刻到期。
-- [ ] 条件事件不显示虚假的百分比。
+    if (transport === 'proxy') {
+        target = '/api/backends/chat-completions/generate';
+        headers = headersFrom(getRequestHeaders);
+        payload = {
+            chat_completion_source: useDeepSeekV4Compatibility ? 'deepseek' : 'openai',
+            reverse_proxy: customProxyBase(settings.customApiUrl),
+            proxy_password: apiKey,
+            include_reasoning: false,
+            ...body,
+        };
+    }
 
-## 重抽与编辑
+    let response;
+    try {
+        response = await fetchWithTimeout(fetchImpl, target, {
+            method: 'POST',
+            cache: 'no-cache',
+            headers,
+            body: JSON.stringify(payload),
+        }, requestTimeout, signal);
+    } catch (error) {
+        if (transport === 'direct' && /fetch|network|cors/i.test(String(error?.message || error))) {
+            throw new Error('浏览器直连接口失败，可能是跨域限制；请改用“经酒馆转发”');
+        }
+        throw error;
+    }
 
-- [ ] 让一条正文明确经过 3 小时，记下结算后时钟。
-- [ ] 重抽该回复，新回复的起始时钟是重抽前，而不是已经加过 3 小时的时钟。
-- [ ] 切回原 swipe，原来的 3 小时结果恢复。
-- [ ] 编辑较早消息后，面板回到编辑点之前并显示待结算。
-- [ ] 删除最后一条 AI 回复后，恢复上一条合法快照。
+    const { text, data } = await readResponse(response);
+    if (!response.ok || data?.error) {
+        const detail = errorDetail(data, text);
+        if (/no message generated|empty (?:message|response)|no content/i.test(detail)) {
+            throw new Error(
+                '独立 API 没有返回最终正文（No message generated）。'
+                + (useDeepSeekV4Compatibility
+                    ? '插件已请求关闭 DS4 思考；若仍为空，通常是中转站未转发该参数或接口输出额度耗尽'
+                    : '请检查模型输出额度或改用能稳定返回正文的模型'),
+            );
+        }
+        throw new Error(`独立 API 返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`);
+    }
 
-## 第一视角独白
-
-- [ ] 世界推演后，相关 NPC 在“人物”页出现第一视角独白。
-- [ ] “描写玩家内心”关闭时，玩家角色不会显示或保存新独白。
-- [ ] 长期目标只在稳定方向变化时更新，不重复短期动作。
-- [ ] 独白使用该 NPC 自己的口吻，而不是旁白总结。
-- [ ] 没有变化的人物不会每轮机械刷新独白。
-- [ ] 切换到“角色所知”，独白完全隐藏。
-- [ ] 正文不会直接复述本应未知的独白。
-- [ ] 切换 swipe 时，独白随对应分支一起恢复。
-
-## 结果与知识边界
-
-- [ ] 隐藏结果不会突然成为主角知识。
-- [ ] 可显露结果只有真正进入正文后才显示“已由正文承接”。
-- [ ] 没有合适时机的非直接结果不会连续强塞正文。
-- [ ] “纪事”能看到未抵达镜头但已经形成的世界后果。
-- [ ] 导出 JSON 后可以重新导入，并恢复时钟、人物与事件。
-
-## 失败恢复
-
-- [ ] 关闭自动推演后，回复只显示待推演，不会擅自推进时钟。
-- [ ] 点击“推演最新正文”可以补做推演。
-- [ ] 面板能显示排队、推演中、成功或失败状态，以及实际继承的 API 与模型。
-- [ ] 严格时间下，只有“夜幕降临”等模糊描述时，时钟保持不动。
-- [ ] 严格时间下，正文明确写“六小时后”时，时钟允许前进六小时。
-- [ ] API 暂时失败时，时钟保持在结算前，不出现随机跳跃。
-- [ ] API 返回非 JSON 或空错误时，面板给出可读原因，而不是点击后无反馈。
-- [ ] 切换聊天后，每个聊天显示各自的世界状态。
+    const completion = extractCompletionText(data);
+    const finishReason = extractCompletionFinishReason(data);
+    if (!completion) {
+        if (/length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason)) {
+            throw new Error(`独立 API 输出达到长度上限（${finishReason}），且没有返回可恢复的正文`);
+        }
+        throw new Error(
+            '独立 API 返回成功，但没有可读取的最终正文。'
+            + (useDeepSeekV4Compatibility ? 'DS4 思考可能占满了中转站的输出额度' : ''),
+        );
+    }
+    // Some OpenAI-compatible providers report MAX_TOKENS even when the JSON body is
+    // already complete. Preserve non-empty output and let the JSON parser decide;
+    // an actually truncated object will enter the compact retry path instead.
+    return completion;
+}

@@ -355,7 +355,7 @@ function renderSyncStrip(syncStatus) {
     `;
 }
 
-function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
+function renderSettings(state, settings, syncStatus, openGroups = new Set(), apiDraft = null) {
     const clock = formatWorldCalendar(state);
     const connection = syncStatus?.connection || {};
     const memory = syncStatus?.memory || {};
@@ -368,6 +368,12 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
     const worldbook = syncStatus?.worldbook || { books: [], entries: [], phase: 'idle' };
     const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
     const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
+    const apiValues = {
+        customApiUrl: apiDraft?.customApiUrl ?? settings.customApiUrl,
+        customApiKey: apiDraft?.customApiKey ?? settings.customApiKey,
+        customApiModel: apiDraft?.customApiModel ?? settings.customApiModel,
+        customApiTransport: apiDraft?.customApiTransport ?? settings.customApiTransport,
+    };
     const historyPercent = memory.total > 0
         ? Math.min(100, Math.round((Number(memory.processed) || 0) / memory.total * 100))
         : 0;
@@ -428,18 +434,21 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                 <form class="wb-api-form" data-wb-form="api" autocomplete="off">
                     <label>接口地址
                         <input name="customApiUrl" type="url" required
-                            value="${escapeAttr(settings.customApiUrl)}"
+                            value="${escapeAttr(apiValues.customApiUrl)}"
+                            inputmode="url" autocapitalize="none" spellcheck="false"
                             placeholder="https://example.com/v1">
                     </label>
                     <p>请填到版本层，例如 <code>/v1</code>；插件只会自动补上 <code>/chat/completions</code>。</p>
                     <label>API Key
                         <input name="customApiKey" type="password" required
-                            value="${escapeAttr(settings.customApiKey)}"
-                            placeholder="sk-…" autocomplete="new-password">
+                            value="${escapeAttr(apiValues.customApiKey)}"
+                            placeholder="sk-…" autocomplete="off" autocapitalize="none" spellcheck="false"
+                            data-lpignore="true" data-1p-ignore data-form-type="other">
                     </label>
                     <label>模型名称
                         <input name="customApiModel" required list="wb-custom-model-list"
-                            value="${escapeAttr(settings.customApiModel)}"
+                            value="${escapeAttr(apiValues.customApiModel)}"
+                            autocapitalize="none" spellcheck="false"
                             placeholder="gemini-2.5-flash">
                         <datalist id="wb-custom-model-list">
                             ${availableModels.map(model => `<option value="${escapeAttr(model)}"></option>`).join('')}
@@ -447,10 +456,10 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
                     </label>
                     <label>连接方式
                         <select name="customApiTransport">
-                            <option value="proxy" ${settings.customApiTransport === 'proxy' ? 'selected' : ''}>
+                            <option value="proxy" ${apiValues.customApiTransport === 'proxy' ? 'selected' : ''}>
                                 经酒馆服务器转发（推荐）
                             </option>
-                            <option value="direct" ${settings.customApiTransport === 'direct' ? 'selected' : ''}>
+                            <option value="direct" ${apiValues.customApiTransport === 'direct' ? 'selected' : ''}>
                                 浏览器直连
                             </option>
                         </select>
@@ -485,13 +494,13 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set()) {
             </div>
 
             <div class="wb-setting-block">
-                <label>阅读大小</label>
+                <label>界面字号</label>
                 <div class="wb-option-row">
                     ${settingButton('uiScale', settings.uiScale, 'compact', '紧凑')}
-                    ${settingButton('uiScale', settings.uiScale, 'comfortable', '舒适')}
+                    ${settingButton('uiScale', settings.uiScale, 'comfortable', '标准')}
                     ${settingButton('uiScale', settings.uiScale, 'large', '大字')}
                 </div>
-                <p>同时调整主要文字、卡片间距与可读面积；手机界面会自动适配。</p>
+                <p>控制整个插件的阅读字号；下方“均衡”只控制剧情显露频率，与字体无关。</p>
             </div>
 
             <div class="wb-setting-block">
@@ -1503,6 +1512,7 @@ export function createWorldBackstageUI({
     let settingsScrollTop = 0;
     let openSettingsGroups = new Set(['connection', 'simulation']);
     let eventFormDraft = null;
+    let apiFormDraft = null;
     const viewScrollTop = new Map();
     let orbDrag = null;
     let suppressOrbClick = false;
@@ -1582,6 +1592,10 @@ export function createWorldBackstageUI({
         const previousEventForm = root.querySelector('[data-wb-form="event"]');
         if (previousEventForm && eventFormOpen) {
             eventFormDraft = Object.fromEntries(new FormData(previousEventForm).entries());
+        }
+        const previousApiForm = root.querySelector('[data-wb-form="api"]');
+        if (previousApiForm) {
+            apiFormDraft = Object.fromEntries(new FormData(previousApiForm).entries());
         }
         const previousFocus = root.contains(document.activeElement)
             ? {
@@ -1695,7 +1709,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                                    <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.7.1</i></span>
+                        <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.7.2</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -1777,7 +1791,7 @@ export function createWorldBackstageUI({
                     </section>
                     ${settingsOpen ? `
                         <div class="wb-settings-layer">
-                            ${renderSettings(state, settings, syncStatus, openSettingsGroups)}
+                            ${renderSettings(state, settings, syncStatus, openSettingsGroups, apiFormDraft)}
                         </div>
                     ` : ''}
                 </div>
@@ -1791,6 +1805,20 @@ export function createWorldBackstageUI({
                 observation: personObservation,
                 busy,
             }) : ''}
+            ${syncStatus.editDecision?.available ? `
+                <div class="wb-edit-choice" role="alertdialog" aria-modal="false"
+                    aria-labelledby="wb-edit-choice-title" aria-describedby="wb-edit-choice-detail">
+                    <span class="wb-edit-choice-face" aria-hidden="true">${escapeHtml(TOAST_FACES.warning)}</span>
+                    <div class="wb-edit-choice-copy">
+                        <strong id="wb-edit-choice-title">检测到已推演正文被修改</strong>
+                        <p id="wb-edit-choice-detail">剧情、时间或人物行动有变化时建议重推；若只修正错字、标点或措辞，可以保留原推演。</p>
+                    </div>
+                    <div class="wb-edit-choice-actions">
+                        <button type="button" class="is-rerun" data-wb-action="resolve-message-edit" data-mode="rerun">按修改后正文重推</button>
+                        <button type="button" data-wb-action="resolve-message-edit" data-mode="keep">保留原推演</button>
+                    </div>
+                </div>
+            ` : ''}
             ${toast ? `
                 <div class="wb-toast" role="${root.dataset.toastTone === 'error' ? 'alert' : 'status'}" aria-live="polite">
                     <span aria-hidden="true">${escapeHtml(TOAST_FACES[root.dataset.toastTone] || TOAST_FACES.info)}</span>
@@ -2128,10 +2156,18 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'resolve-message-edit') {
+            await invokeAction('resolve-message-edit', {
+                mode: target.dataset.mode === 'keep' ? 'keep' : 'rerun',
+            });
+            render();
+            return;
+        }
         if (action === 'test-api') {
             const form = target.closest('[data-wb-form="api"]');
             if (form) {
                 const data = Object.fromEntries(new FormData(form).entries());
+                apiFormDraft = { ...data };
                 await invokeAction('update-settings', {
                     customApiUrl: data.customApiUrl,
                     customApiKey: data.customApiKey,
@@ -2147,6 +2183,7 @@ export function createWorldBackstageUI({
             const form = target.closest('[data-wb-form="api"]');
             if (form) {
                 const data = Object.fromEntries(new FormData(form).entries());
+                apiFormDraft = { ...data };
                 await invokeAction('update-settings', {
                     customApiUrl: data.customApiUrl,
                     customApiKey: data.customApiKey,
@@ -2164,6 +2201,12 @@ export function createWorldBackstageUI({
     });
 
     root.addEventListener('change', async event => {
+        const apiForm = event.target.closest?.('[data-wb-form="api"]');
+        if (apiForm) {
+            apiFormDraft = Object.fromEntries(new FormData(apiForm).entries());
+            return;
+        }
+
         const setting = event.target.dataset.wbSetting;
         if (setting) {
             const value = event.target.type === 'checkbox'
@@ -2187,6 +2230,12 @@ export function createWorldBackstageUI({
     });
 
     root.addEventListener('input', event => {
+        const apiForm = event.target.closest?.('[data-wb-form="api"]');
+        if (apiForm) {
+            apiFormDraft = Object.fromEntries(new FormData(apiForm).entries());
+            return;
+        }
+
         if (!event.target.matches?.('[data-wb-memory-search]')) return;
         memoryQuery = String(event.target.value || '').slice(0, 80);
         memoryVisibleCount = 12;
@@ -2204,12 +2253,14 @@ export function createWorldBackstageUI({
             await invokeAction('set-clock', data);
         }
         if (form.dataset.wbForm === 'api') {
-            await invokeAction('update-settings', {
+            apiFormDraft = { ...data };
+            const completed = await invokeAction('update-settings', {
                 customApiUrl: data.customApiUrl,
                 customApiKey: data.customApiKey,
                 customApiModel: data.customApiModel,
                 customApiTransport: data.customApiTransport,
             });
+            if (completed) notify('独立接口设置已保存。', 'success');
         }
         if (form.dataset.wbForm === 'event') {
             const completed = await invokeAction('add-event', data);

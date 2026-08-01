@@ -80,6 +80,23 @@ test('echoes and memory cards use readable scalable typography and quiet actions
     assert.match(styleSource, /#world-backstage-root \.wb-echo-card h3/);
     assert.match(styleSource, /#world-backstage-root \.wb-echo-card p/);
     assert.match(styleSource, /\.wb-memory-card-actions \{[\s\S]*width: fit-content/);
+    assert.match(styleSource, /Complete typography pass/);
+    assert.match(styleSource, /\.wb-person-observation article p[\s\S]*font-size: clamp\(12px/);
+    assert.match(styleSource, /\.wb-event-card p[\s\S]*font-size: clamp\(12px/);
+    assert.match(uiSource, /界面字号/);
+    assert.match(uiSource, /“均衡”只控制剧情显露频率/);
+});
+
+test('editing a committed latest reply asks before rerunning or keeping state', () => {
+    assert.match(indexSource, /editDecision: null/);
+    assert.match(indexSource, /async function resolveMessageEdit/);
+    assert.match(indexSource, /trigger: 'edited-reply'/);
+    assert.match(indexSource, /已保留编辑前的世界推演结果/);
+    assert.match(uiSource, /检测到已推演正文被修改/);
+    assert.match(uiSource, /按修改后正文重推/);
+    assert.match(uiSource, /保留原推演/);
+    assert.match(uiSource, /TOAST_FACES\.warning/);
+    assert.match(styleSource, /\.wb-edit-choice/);
 });
 
 test('mobile navigation exposes all six views without horizontal overflow', () => {
@@ -159,4 +176,13 @@ test('worldbook NPC bridge is explicit, selective and never scans on every turn'
     assert.match(indexSource, /function importWorldbookPeople/);
     assert.match(styleSource, /wb-worldbook-entry-list/);
     assert.doesNotMatch(indexSource, /queueSimulation[\s\S]{0,400}scanWorldbook/);
+});
+
+test('custom API form preserves mobile edits across rerenders and avoids password autofill', () => {
+    assert.match(uiSource, /let apiFormDraft = null/);
+    assert.match(uiSource, /const previousApiForm = root\.querySelector/);
+    assert.match(uiSource, /apiDraft\?\.customApiUrl \?\? settings\.customApiUrl/);
+    assert.match(uiSource, /apiFormDraft = Object\.fromEntries\(new FormData\(apiForm\)\.entries\(\)\)/);
+    assert.match(uiSource, /data-lpignore="true"/);
+    assert.match(uiSource, /notify\('独立接口设置已保存。', 'success'\)/);
 });

@@ -2921,6 +2921,100 @@
     cursor: pointer;
 }
 
+.wb-edit-choice {
+    position: fixed;
+    z-index: 100522;
+    right: 50%;
+    bottom: max(72px, calc(env(safe-area-inset-bottom, 0px) + 58px));
+    width: min(700px, calc(100vw - 32px));
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--wb-amber) 48%, var(--wb-line));
+    border-radius: 15px;
+    background: var(--wb-bg);
+    box-shadow: 0 20px 55px rgba(0, 0, 0, 0.34);
+    color: var(--wb-text-soft);
+    pointer-events: auto;
+    transform: translateX(50%);
+    animation: wb-view-in 160ms ease-out both;
+}
+
+.wb-edit-choice-face {
+    padding: 8px 9px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--wb-amber) 13%, transparent);
+    color: var(--wb-amber);
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.wb-edit-choice-copy {
+    min-width: 0;
+}
+
+.wb-edit-choice-copy strong {
+    display: block;
+    color: var(--wb-text);
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 17px);
+    font-weight: 600;
+}
+
+.wb-edit-choice-copy p {
+    margin: 4px 0 0;
+    color: var(--wb-text-faint);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    line-height: 1.55;
+}
+
+.wb-edit-choice-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.wb-edit-choice-actions button {
+    min-height: 34px;
+    padding: 7px 11px;
+    border: 1px solid var(--wb-line);
+    border-radius: 9px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-soft);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.wb-edit-choice-actions button.is-rerun {
+    border-color: color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line));
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+}
+
+.wb-edit-choice-actions button:hover {
+    border-color: var(--wb-accent);
+}
+
+@media (max-width: 680px) {
+    .wb-edit-choice {
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: start;
+    }
+
+    .wb-edit-choice-actions {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .wb-edit-choice-actions button {
+        white-space: normal;
+    }
+}
+
 #world-backstage-root:has(.wb-undo-toast) .wb-toast {
     bottom: 112px;
 }
@@ -3546,7 +3640,7 @@
    whole window, so text stays crisp and the panel never grows beyond the viewport. */
 #world-backstage-root .wb-brand p,
 #world-backstage-root .wb-view-intro p {
-    font-size: calc(11px + var(--wb-reading-bump)) !important;
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 18px) !important;
     line-height: calc(1.55 + var(--wb-reading-leading));
 }
 
@@ -3555,7 +3649,7 @@
 #world-backstage-root .wb-observer-switch button,
 #world-backstage-root .wb-sync-copy strong,
 #world-backstage-root .wb-window-footer > button {
-    font-size: calc(10px + var(--wb-reading-bump)) !important;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 16px) !important;
 }
 
 #world-backstage-root .wb-settings-group > summary > span,
@@ -3565,14 +3659,14 @@
 #world-backstage-root .wb-form-grid label,
 #world-backstage-root .wb-custom-instruction,
 #world-backstage-root .wb-number-setting {
-    font-size: calc(10px + var(--wb-reading-bump)) !important;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 16px) !important;
 }
 
 #world-backstage-root .wb-settings-group > summary > small,
 #world-backstage-root .wb-setting-block p,
 #world-backstage-root .wb-form-note,
 #world-backstage-root .wb-connection-card > small {
-    font-size: calc(8px + var(--wb-reading-bump)) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 15px) !important;
     line-height: calc(1.5 + var(--wb-reading-leading));
 }
 
@@ -3585,7 +3679,7 @@
 #world-backstage-root .wb-api-form input,
 #world-backstage-root .wb-api-form select,
 #world-backstage-root .wb-api-form textarea {
-    font-size: calc(10px + var(--wb-reading-bump)) !important;
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 17px) !important;
 }
 
 #world-backstage-root .wb-side-nav button small,
@@ -3600,7 +3694,7 @@
 #world-backstage-root .wb-setting-toggle span,
 #world-backstage-root .wb-option-row button,
 #world-backstage-root .wb-setting-actions button {
-    font-size: calc(9px + var(--wb-reading-bump)) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 15px) !important;
 }
 
 #world-backstage-root .wb-setting-toggle span,
@@ -3615,7 +3709,7 @@
 }
 
 #world-backstage-root .wb-person-name-line strong {
-    font-size: calc(11px + var(--wb-reading-bump)) !important;
+    font-size: clamp(13px, calc(13px + var(--wb-reading-bump)), 19px) !important;
 }
 
 #world-backstage-root .wb-person-name-line small,
@@ -3623,30 +3717,30 @@
 #world-backstage-root .wb-person-thread small,
 #world-backstage-root .wb-known-boundary,
 #world-backstage-root .wb-view-intro > span {
-    font-size: calc(8px + var(--wb-reading-bump)) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
 }
 
 #world-backstage-root .wb-person-action,
 #world-backstage-root .wb-person-thread strong {
-    font-size: calc(9px + var(--wb-reading-bump)) !important;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 17px) !important;
 }
 
 #world-backstage-root .wb-person-card > p,
 #world-backstage-root .wb-inner-voice p,
 #world-backstage-root .wb-drawer-section strong,
 #world-backstage-root .wb-knowledge-boundary p {
-    font-size: calc(10px + var(--wb-reading-bump)) !important;
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 18px) !important;
 }
 
 #world-backstage-root .wb-drawer-section > span {
-    font-size: calc(8px + var(--wb-reading-bump)) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
 }
 
 #world-backstage-root .wb-echo-card h3,
 #world-backstage-root .wb-memory-fact-card h4,
 #world-backstage-root .wb-clue-card h4,
 #world-backstage-root .wb-summary-card h4 {
-    font-size: calc(14px + var(--wb-reading-bump)) !important;
+    font-size: clamp(16px, calc(16px + var(--wb-reading-bump)), 22px) !important;
 }
 
 #world-backstage-root .wb-echo-card p,
@@ -3654,7 +3748,7 @@
 #world-backstage-root .wb-clue-card > p,
 #world-backstage-root .wb-summary-card > p,
 #world-backstage-root .wb-clue-card blockquote {
-    font-size: calc(10px + var(--wb-reading-bump)) !important;
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 18px) !important;
     line-height: calc(1.6 + var(--wb-reading-leading));
 }
 
@@ -3663,7 +3757,79 @@
 #world-backstage-root .wb-memory-fact-meta,
 #world-backstage-root .wb-clue-meta,
 #world-backstage-root .wb-memory-card-actions button {
-    font-size: calc(8px + var(--wb-reading-bump)) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
+}
+
+/* Complete typography pass: every piece of user-facing information follows the
+   same three reading sizes. Decorative eyebrow text stays smaller, but never
+   drops below 10px even in compact mode. */
+#world-backstage-root .wb-world-card h3,
+#world-backstage-root .wb-event-card h3,
+#world-backstage-root .wb-person-card h3,
+#world-backstage-root .wb-archive-copy h3,
+#world-backstage-root .wb-empty strong {
+    font-size: clamp(16px, calc(16px + var(--wb-reading-bump)), 22px) !important;
+}
+
+#world-backstage-root .wb-world-card p,
+#world-backstage-root .wb-event-card p,
+#world-backstage-root .wb-consequence strong,
+#world-backstage-root .wb-person-card > p,
+#world-backstage-root .wb-inner-voice p,
+#world-backstage-root .wb-archive-copy p,
+#world-backstage-root .wb-memory-digest p,
+#world-backstage-root .wb-memory-fact-note,
+#world-backstage-root .wb-clue-resolution,
+#world-backstage-root .wb-person-observation article p {
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 18px) !important;
+    line-height: calc(1.62 + var(--wb-reading-leading));
+}
+
+#world-backstage-root .wb-brand-line > i,
+#world-backstage-root .wb-calendar-page small,
+#world-backstage-root .wb-world-pulse > strong,
+#world-backstage-root .wb-inline-add,
+#world-backstage-root .wb-event-topline,
+#world-backstage-root .wb-consequence span,
+#world-backstage-root .wb-time-progress-copy,
+#world-backstage-root .wb-time-foot,
+#world-backstage-root .wb-condition-progress,
+#world-backstage-root .wb-route,
+#world-backstage-root .wb-person-sim-state,
+#world-backstage-root .wb-archive-date span,
+#world-backstage-root .wb-archive-copy > div > span,
+#world-backstage-root .wb-empty p,
+#world-backstage-root .wb-connection-card dt,
+#world-backstage-root .wb-connection-card dd,
+#world-backstage-root .wb-connection-card > p,
+#world-backstage-root .wb-memory-queue,
+#world-backstage-root .wb-memory-queue strong,
+#world-backstage-root .wb-memory-search,
+#world-backstage-root .wb-memory-tools > small,
+#world-backstage-root .wb-memory-digest > small,
+#world-backstage-root .wb-memory-fact-card > small,
+#world-backstage-root .wb-clue-tags span,
+#world-backstage-root .wb-summary-card > span,
+#world-backstage-root .wb-person-observation > p,
+#world-backstage-root .wb-person-observation article span,
+#world-backstage-root .wb-observation-primary > span,
+#world-backstage-root .wb-knowledge-boundary strong,
+#world-backstage-root .wb-history-settings > p,
+#world-backstage-root .wb-history-heading > span,
+#world-backstage-root .wb-orb-caption span {
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
+    line-height: calc(1.45 + var(--wb-reading-leading));
+}
+
+#world-backstage-root .wb-archive-date strong,
+#world-backstage-root .wb-connection-card > div > strong,
+#world-backstage-root .wb-history-heading strong,
+#world-backstage-root .wb-history-heading label,
+#world-backstage-root .wb-person-edit-button,
+#world-backstage-root .wb-toast,
+#world-backstage-root .wb-undo-toast,
+#world-backstage-root .wb-orb-caption strong {
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 16px) !important;
 }
 
 #world-backstage-root.wb-size-large .wb-person-card {

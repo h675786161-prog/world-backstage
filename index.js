@@ -78,6 +78,7 @@ const runtime = {
     autoMemoryTimer: null,
     manualUndo: null,
     manualUndoTimer: null,
+    editDecision: null,
     customModels: [],
     modelPullStatus: { phase: 'idle', message: '' },
     worldbookScan: {
@@ -582,6 +583,14 @@ function getSyncStatus() {
                 && runtime.manualUndo.key === currentAnchorKey()
             ),
             label: runtime.manualUndo?.label || '撤销刚才的手动更改',
+        },
+        editDecision: {
+            available: Boolean(
+                runtime.editDecision
+                && runtime.editDecision.chatToken === currentChatToken()
+                && runtime.editDecision.messageId === latestAssistantEntry()?.index
+            ),
+            messageId: runtime.editDecision?.messageId ?? null,
         },
         presentPersonIds: currentTurnPresentPersonIds(),
         availableModels: runtime.customModels,
@@ -1686,6 +1695,31 @@ function onMessageEdited(messageId) {
     const context = getContext();
     const index = Number(messageId);
     const message = context?.chat?.[index];
+    const swipeId = Number(message?.swipe_id ?? 0);
+    const existing = message ? branchDataFromMessage(message, swipeId) : null;
+
+    if (
+        message
+        && !message.is_user
+        && index === context.chat.length - 1
+        && existing?.status === 'committed'
+        && existing.result
+        && existing.base
+        && !existing.stale
+    ) {
+        runtime.editDecision = {
+            chatToken: currentChatToken(),
+            messageId: index,
+        };
+        setSyncStatus({
+            phase: 'pending',
+            message: '检测到已推演正文被编辑，正在等待你选择是否重推',
+            error: '',
+        });
+        runtime.ui?.render();
+        return;
+    }
+
     markSnapshotsStaleFrom(index);
 
     const previous = findLatestResultSnapshot(index);
@@ -1710,6 +1744,53 @@ function onMessageEdited(messageId) {
     toast('已回到编辑点之前的世界快照；后续正文需要重新生成或手动同步。', 'info');
 }
 
+async function resolveMessageEdit(mode) {
+    const decision = runtime.editDecision;
+    if (!decision || decision.chatToken !== currentChatToken()) {
+        runtime.editDecision = null;
+        throw new Error('这次正文修改已经不在当前聊天分支中');
+    }
+    const context = getContext();
+    const message = context?.chat?.[decision.messageId];
+    if (!message || message.is_user || decision.messageId !== context.chat.length - 1) {
+        runtime.editDecision = null;
+        throw new Error('正文位置已经改变，请改用“推演最新正文”同步');
+    }
+
+    if (mode === 'keep') {
+        runtime.editDecision = null;
+        setSyncStatus({
+            phase: 'success',
+            message: '已保留编辑前的世界推演结果',
+            error: '',
+        });
+        runtime.ui?.render();
+        toast('已保留原推演，适合仅修改错字、标点或措辞的情况。', 'success');
+        return;
+    }
+
+    if (!getSettings().worldSimulationEnabled) {
+        throw new Error('世界推演模块当前已停用，无法按修改后的正文重推');
+    }
+    runtime.editDecision = null;
+    markSnapshotsStaleFrom(decision.messageId);
+    const store = getStore();
+    const previous = findLatestResultSnapshot(decision.messageId);
+    store.currentState = markPendingSync(
+        previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState),
+        true,
+    );
+    saveStore(store);
+    refreshInjection();
+    runtime.ui?.render();
+    await queueSimulation(decision.messageId, {
+        force: true,
+        trigger: 'edited-reply',
+        newAssistantCount: 1,
+    });
+    toast('已按照修改后的正文重新完成世界推演。', 'success');
+}
+
 function onMessageDeleted() {
     restoreLatestBranch();
 }
@@ -1724,6 +1805,7 @@ function onChatChanged() {
         runtime.manualUndoTimer = null;
     }
     runtime.manualUndo = null;
+    runtime.editDecision = null;
     runtime.activeChatToken = currentChatToken();
     runtime.historyProgress = {
         phase: 'idle',
@@ -2577,6 +2659,11 @@ async function handleUiAction(action, payload = {}) {
         if (!cancelActiveSimulation()) {
             toast('当前没有正在运行的世界推演。', 'info');
         }
+        return;
+    }
+
+    if (action === 'resolve-message-edit') {
+        await resolveMessageEdit(payload.mode === 'keep' ? 'keep' : 'rerun');
         return;
     }
 

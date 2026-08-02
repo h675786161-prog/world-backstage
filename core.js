@@ -287,20 +287,19 @@ function parseClockFragment(period, hourRaw, minuteRaw) {
     if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute < 0 || minute > 59) {
         return null;
     }
+    if (hour > 23 || hour < 0) return null;
     const p = String(period || '');
     if (p === '上午' || p === '凌晨' || p === '清晨' || p === '早上') {
         if (hour === 12) hour = 0;
-        else if (hour < 1 || hour > 11) return null;
-    } else if (p === '下午') {
+        else if (hour >= 13) {
+            // Already 24h despite a morning label (e.g. 上午14:00) — keep literal.
+        } else if (hour < 1 || hour > 11) return null;
+    } else if (p === '下午' || p === '傍晚' || p === '晚上' || p === '夜里') {
         if (hour === 12) hour = 12;
         else if (hour >= 1 && hour <= 11) hour += 12;
-        else return null;
+        // 13–23 already 24h (common RP wording: 下午16:40)
     } else if (p === '中午') {
         hour = 12;
-    } else if (p === '傍晚' || p === '晚上' || p === '夜里') {
-        if (hour < 12) hour += 12;
-    } else if (hour > 23 || hour < 0) {
-        return null;
     }
     return { hour, minute };
 }
@@ -331,10 +330,12 @@ export function extractNarrativeClockCandidates(text) {
         if (match[5] !== undefined) {
             const minutePart = match[6] !== undefined ? match[6] : match[7];
             const parsed = parseClockFragment(match[4] || '', match[5], minutePart);
-            if (!parsed) continue;
-            hour = parsed.hour;
-            minute = parsed.minute;
-            precision = 'datetime';
+            if (parsed) {
+                hour = parsed.hour;
+                minute = parsed.minute;
+                precision = 'datetime';
+            }
+            // If the clock fragment is unusable, still keep the calendar date at 00:00.
         }
         found.push({ ...date, hour, minute, precision, index, raw: match[0] });
     }
@@ -354,10 +355,12 @@ export function extractNarrativeClockCandidates(text) {
         if (match[5] !== undefined) {
             const minutePart = match[6] !== undefined ? match[6] : match[7];
             const parsed = parseClockFragment(match[4] || '', match[5], minutePart);
-            if (!parsed) continue;
-            hour = parsed.hour;
-            minute = parsed.minute;
-            precision = 'datetime';
+            if (parsed) {
+                hour = parsed.hour;
+                minute = parsed.minute;
+                precision = 'datetime';
+            }
+            // If the clock fragment is unusable, still keep the calendar date at 00:00.
         }
         found.push({ ...date, hour, minute, precision, index, raw: match[0] });
     }
@@ -373,7 +376,7 @@ export function extractNarrativeClockCandidates(text) {
         });
     }
 
-    const yearRe = /(\d{4})\s*年(?!\s*[月春夏秋冬])/g;
+    const yearRe = /(\d{4})\s*年(?!\s*(?:\d{1,2}\s*)?[月春夏秋冬])/g;
     for (const match of value.matchAll(yearRe)) {
         const index = match.index ?? 0;
         if (!claim(index, index + match[0].length)) continue;
@@ -386,10 +389,10 @@ export function extractNarrativeClockCandidates(text) {
     const timeRe = /(凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜里)?\s*(\d{1,2})\s*(?:[:：]\s*(\d{1,2})|(?:点|时)(?:\s*(\d{1,2})\s*分?)?)/g;
     for (const match of value.matchAll(timeRe)) {
         const index = match.index ?? 0;
-        if (!claim(index, index + match[0].length)) continue;
         const minutePart = match[3] !== undefined ? match[3] : match[4];
         const parsed = parseClockFragment(match[1] || '', match[2], minutePart);
         if (!parsed) continue;
+        if (!claim(index, index + match[0].length)) continue;
         found.push({
             year: null, month: null, day: null,
             hour: parsed.hour, minute: parsed.minute,

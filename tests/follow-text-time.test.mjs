@@ -75,6 +75,23 @@ test('时段换算：下午2点 / 上午12点 / 下午12点', () => {
     assert.equal(extractNarrativeClockCandidates('下午12点')[0].hour, 12);
 });
 
+test('下午16:40 按已是 24 小时制保留 16:40，不丢整段日期', () => {
+    const list = extractNarrativeClockCandidates('2042年5月17日下午16:40');
+    assert.ok(list.some(c => (
+        c.year === 2042
+        && c.month === 5
+        && c.day === 17
+        && c.hour === 16
+        && c.minute === 40
+        && c.precision === 'datetime'
+    )), JSON.stringify(list));
+});
+
+test('2042年5月 不误匹配成仅年份 1月1日', () => {
+    const list = extractNarrativeClockCandidates('主世界历2042年5月。日常推进。');
+    assert.equal(list.filter(c => c.precision === 'year').length, 0);
+});
+
 test('完整日期时间与仅日期', () => {
     const dt = extractNarrativeClockCandidates('2033年5月22日 上午10:20');
     assert.ok(dt.some(c => c.year === 2033 && c.month === 5 && c.day === 22 && c.hour === 10 && c.minute === 20));
@@ -170,6 +187,22 @@ test('pick：dayDelta 超过 120*365 拒绝', () => {
     }, state);
     assert.equal(picked.targetAbsoluteMinute, null);
     assert.match(picked.reason, /120/);
+});
+
+test('follow_text：正文 下午16:40 跳到当天 16:40 而非 00:00', () => {
+    const base = calibratedState();
+    const result = applySimulationResult(base, {
+        elapsed_minutes: 0,
+        world: { title: '日常', detail: '主世界历2042年5月' },
+    }, {
+        timePolicy: 'follow_text',
+        narrativeText: '2042年5月17日下午16:40，艺涵放学回家。',
+    });
+    const cal = formatWorldCalendar(result);
+    assert.equal(cal.year, 2042);
+    assert.equal(cal.month, 5);
+    assert.equal(cal.dayOfMonth, 17);
+    assert.equal(cal.time, '16:40');
 });
 
 test('follow_text：elapsed_minutes=0 仍跟随 world 2042年春（截图回归）', () => {

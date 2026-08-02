@@ -169,6 +169,8 @@ test('DeepSeek V4 disables thinking and uses the tavern DeepSeek proxy path', as
     assert.equal(proxyRequest.body.chat_completion_source, 'deepseek');
     assert.equal(proxyRequest.body.include_reasoning, false);
     assert.deepEqual(proxyRequest.body.thinking, { type: 'disabled' });
+    // The tavern dispatcher only forwards `thinking` when it sees this key.
+    assert.equal(proxyRequest.body.reasoning_effort, 'none');
 });
 
 test('DeepSeek V4 direct mode also requests non-thinking output', async () => {

@@ -128,6 +128,7 @@ export function hasExplicitTimeEvidence(text) {
 }
 
 export function resolveElapsedMinutes(rawMinutes, narrativeText, policy = 'explicit') {
+    if (policy === 'follow_text') return 0;
     const minutes = asInteger(rawMinutes, 0, 0, 5 * 365 * MINUTES_PER_DAY);
     if (policy === 'open') return minutes;
     if (hasExplicitTimeEvidence(narrativeText)) return minutes;
@@ -239,6 +240,269 @@ export function formatWorldCalendar(state, totalMinutes = state?.clock?.absolute
         date: dateLabel,
         shortDate: `${pad(date.month)}月${pad(date.day)}日`,
         stamp: `${calendar.name} ${dateLabel} ${clock.time}`,
+    };
+}
+
+
+const SEASON_ANCHOR = { '春': [3, 1], '夏': [6, 1], '秋': [9, 1], '冬': [12, 1] };
+const CALENDAR_PRECISION = new Set(['datetime', 'date', 'season', 'year']);
+const MAX_FOLLOW_DAY_DELTA = 120 * 365;
+
+export function daysBetweenCalendarDates(from, to) {
+    const a = normalizeCalendarDate(from);
+    const b = normalizeCalendarDate(to);
+    const start = Date.UTC(a.year, a.month - 1, a.day);
+    const end = Date.UTC(b.year, b.month - 1, b.day);
+    return Math.round((end - start) / (24 * 60 * 60 * 1000));
+}
+
+export function calendarDateTimeToAbsoluteMinute(state, {
+    year, month, day, hour = 0, minute = 0,
+} = {}) {
+    const baseAbs = asInteger(state?.clock?.absoluteMinute, 0, 0);
+    const current = formatWorldCalendar(state, baseAbs);
+    const normalized = normalizeCalendarDate({ year, month, day }, {
+        year: current.year,
+        month: current.month,
+        day: current.dayOfMonth,
+    });
+    const dayDelta = daysBetweenCalendarDates(
+        { year: current.year, month: current.month, day: current.dayOfMonth },
+        normalized,
+    );
+    const safeHour = asInteger(hour, 0, 0, 23);
+    const safeMinute = asInteger(minute, 0, 0, 59);
+    return (
+        (Math.floor(baseAbs / MINUTES_PER_DAY) + dayDelta) * MINUTES_PER_DAY
+        + safeHour * 60
+        + safeMinute
+    );
+}
+
+function parseClockFragment(period, hourRaw, minuteRaw) {
+    let hour = Number(hourRaw);
+    const minute = minuteRaw === undefined || minuteRaw === '' || minuteRaw === null
+        ? 0
+        : Number(minuteRaw);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute < 0 || minute > 59) {
+        return null;
+    }
+    const p = String(period || '');
+    if (p === '上午' || p === '凌晨' || p === '清晨' || p === '早上') {
+        if (hour === 12) hour = 0;
+        else if (hour < 1 || hour > 11) return null;
+    } else if (p === '下午') {
+        if (hour === 12) hour = 12;
+        else if (hour >= 1 && hour <= 11) hour += 12;
+        else return null;
+    } else if (p === '中午') {
+        hour = 12;
+    } else if (p === '傍晚' || p === '晚上' || p === '夜里') {
+        if (hour < 12) hour += 12;
+    } else if (hour > 23 || hour < 0) {
+        return null;
+    }
+    return { hour, minute };
+}
+
+export function extractNarrativeClockCandidates(text) {
+    const value = String(text || '');
+    const found = [];
+    const occupied = [];
+
+    const claim = (start, end) => {
+        if (occupied.some(([a, b]) => start < b && end > a)) return false;
+        occupied.push([start, end]);
+        return true;
+    };
+
+    const dateRe = /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日(?:\s*(凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜里)?\s*(\d{1,2})\s*(?:[:：]\s*(\d{1,2})|(?:点|时)\s*(\d{1,2})?\s*分?)?)?/g;
+    for (const match of value.matchAll(dateRe)) {
+        const index = match.index ?? 0;
+        if (!claim(index, index + match[0].length)) continue;
+        const date = normalizeCalendarDate({
+            year: Number(match[1]),
+            month: Number(match[2]),
+            day: Number(match[3]),
+        });
+        let hour = 0;
+        let minute = 0;
+        let precision = 'date';
+        if (match[5] !== undefined) {
+            const minutePart = match[6] !== undefined ? match[6] : match[7];
+            const parsed = parseClockFragment(match[4] || '', match[5], minutePart);
+            if (!parsed) continue;
+            hour = parsed.hour;
+            minute = parsed.minute;
+            precision = 'datetime';
+        }
+        found.push({ ...date, hour, minute, precision, index, raw: match[0] });
+    }
+
+    const isoRe = /(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s*(凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜里)?\s*(\d{1,2})\s*(?:[:：]\s*(\d{1,2})|(?:点|时)\s*(\d{1,2})?\s*分?)?)?/g;
+    for (const match of value.matchAll(isoRe)) {
+        const index = match.index ?? 0;
+        if (!claim(index, index + match[0].length)) continue;
+        const date = normalizeCalendarDate({
+            year: Number(match[1]),
+            month: Number(match[2]),
+            day: Number(match[3]),
+        });
+        let hour = 0;
+        let minute = 0;
+        let precision = 'date';
+        if (match[5] !== undefined) {
+            const minutePart = match[6] !== undefined ? match[6] : match[7];
+            const parsed = parseClockFragment(match[4] || '', match[5], minutePart);
+            if (!parsed) continue;
+            hour = parsed.hour;
+            minute = parsed.minute;
+            precision = 'datetime';
+        }
+        found.push({ ...date, hour, minute, precision, index, raw: match[0] });
+    }
+
+    const seasonRe = /(\d{4})\s*年\s*([春夏秋冬])/g;
+    for (const match of value.matchAll(seasonRe)) {
+        const index = match.index ?? 0;
+        if (!claim(index, index + match[0].length)) continue;
+        const [month, day] = SEASON_ANCHOR[match[2]];
+        const date = normalizeCalendarDate({ year: Number(match[1]), month, day });
+        found.push({
+            ...date, hour: 0, minute: 0, precision: 'season', index, raw: match[0],
+        });
+    }
+
+    const yearRe = /(\d{4})\s*年(?!\s*[月春夏秋冬])/g;
+    for (const match of value.matchAll(yearRe)) {
+        const index = match.index ?? 0;
+        if (!claim(index, index + match[0].length)) continue;
+        const date = normalizeCalendarDate({ year: Number(match[1]), month: 1, day: 1 });
+        found.push({
+            ...date, hour: 0, minute: 0, precision: 'year', index, raw: match[0],
+        });
+    }
+
+    const timeRe = /(凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜里)?\s*(\d{1,2})\s*(?:[:：]\s*(\d{1,2})|(?:点|时)(?:\s*(\d{1,2})\s*分?)?)/g;
+    for (const match of value.matchAll(timeRe)) {
+        const index = match.index ?? 0;
+        if (!claim(index, index + match[0].length)) continue;
+        const minutePart = match[3] !== undefined ? match[3] : match[4];
+        const parsed = parseClockFragment(match[1] || '', match[2], minutePart);
+        if (!parsed) continue;
+        found.push({
+            year: null, month: null, day: null,
+            hour: parsed.hour, minute: parsed.minute,
+            precision: 'time_only', index, raw: match[0],
+        });
+    }
+
+    return found.sort((a, b) => a.index - b.index);
+}
+
+function candidateToAbsoluteMinute(candidate, state) {
+    const current = formatWorldCalendar(state);
+    const baseAbs = state.clock.absoluteMinute;
+    if (candidate.precision === 'time_only') {
+        let abs = calendarDateTimeToAbsoluteMinute(state, {
+            year: current.year,
+            month: current.month,
+            day: current.dayOfMonth,
+            hour: candidate.hour,
+            minute: candidate.minute,
+        });
+        let dayDelta = 0;
+        if (abs <= baseAbs) {
+            abs += MINUTES_PER_DAY;
+            dayDelta = 1;
+        }
+        return { abs, dayDelta };
+    }
+    const abs = calendarDateTimeToAbsoluteMinute(state, candidate);
+    const dayDelta = daysBetweenCalendarDates(
+        { year: current.year, month: current.month, day: current.dayOfMonth },
+        { year: candidate.year, month: candidate.month, day: candidate.day },
+    );
+    return { abs, dayDelta };
+}
+
+function bestLaterCandidate(candidates, state, source) {
+    const baseAbs = state.clock.absoluteMinute;
+    let best = null;
+    for (const candidate of candidates) {
+        const { abs, dayDelta } = candidateToAbsoluteMinute(candidate, state);
+        if (dayDelta > MAX_FOLLOW_DAY_DELTA) continue;
+        if (abs <= baseAbs) continue;
+        if (
+            !best
+            || abs > best.targetAbsoluteMinute
+            || (abs === best.targetAbsoluteMinute && candidate.index > best.index)
+        ) {
+            best = {
+                targetAbsoluteMinute: abs,
+                matchedText: candidate.raw,
+                source,
+                index: candidate.index,
+                reason: `跟随正文时间（${source}）：${candidate.raw}`,
+            };
+        }
+    }
+    return best;
+}
+
+export function pickFollowTextClockTarget({ chatNarrative = '', worldCopy = '' } = {}, baseState) {
+    const chatAll = extractNarrativeClockCandidates(chatNarrative);
+    const worldAll = extractNarrativeClockCandidates(worldCopy);
+
+    const chatCalendar = chatAll.filter(c => CALENDAR_PRECISION.has(c.precision));
+    const fromChatCal = bestLaterCandidate(chatCalendar, baseState, 'chat');
+    if (fromChatCal) {
+        return {
+            targetAbsoluteMinute: fromChatCal.targetAbsoluteMinute,
+            matchedText: fromChatCal.matchedText,
+            source: 'chat',
+            reason: fromChatCal.reason,
+        };
+    }
+
+    const fromWorld = bestLaterCandidate(worldAll, baseState, 'world');
+    if (fromWorld) {
+        return {
+            targetAbsoluteMinute: fromWorld.targetAbsoluteMinute,
+            matchedText: fromWorld.matchedText,
+            source: 'world',
+            reason: fromWorld.reason,
+        };
+    }
+
+    const chatTimeOnly = chatAll.filter(c => c.precision === 'time_only');
+    const fromChatTime = bestLaterCandidate(chatTimeOnly, baseState, 'chat');
+    if (fromChatTime) {
+        return {
+            targetAbsoluteMinute: fromChatTime.targetAbsoluteMinute,
+            matchedText: fromChatTime.matchedText,
+            source: 'chat',
+            reason: fromChatTime.reason,
+        };
+    }
+
+    const anyHuge = [...chatAll, ...worldAll].some((candidate) => {
+        if (candidate.precision === 'time_only') return false;
+        const current = formatWorldCalendar(baseState);
+        const dayDelta = daysBetweenCalendarDates(
+            { year: current.year, month: current.month, day: current.dayOfMonth },
+            { year: candidate.year, month: candidate.month, day: candidate.day },
+        );
+        return dayDelta > MAX_FOLLOW_DAY_DELTA;
+    });
+
+    return {
+        targetAbsoluteMinute: null,
+        matchedText: '',
+        source: null,
+        reason: anyHuge
+            ? '解析到的时间跨度超过 120 年，本轮保持世界时钟不动'
+            : '正文未解析到更晚的绝对时间，本轮保持世界时钟不动',
     };
 }
 
@@ -1093,35 +1357,58 @@ export function applySimulationResult(baseState, rawPayload, {
     const payload = normalizeSimulationResult(rawPayload);
     const requestedElapsedMinutes = payload.elapsedMinutes;
     const explicitTimeEvidence = hasExplicitTimeEvidence(narrativeText);
-    payload.elapsedMinutes = resolveElapsedMinutes(
-        requestedElapsedMinutes,
-        narrativeText,
-        timePolicy,
-    );
-    if (!explicitTimeEvidence && timePolicy !== 'open') {
-        for (const update of payload.eventsUpdate) {
-            const requestedWork = asInteger(
-                update?.worked_minutes ?? update?.workedMinutes,
-                0,
-                0,
-            );
-            const guardedWork = timePolicy === 'cautious'
-                ? Math.min(requestedWork, 180)
-                : 0;
-            update.worked_minutes = guardedWork;
-            update.workedMinutes = guardedWork;
+    let state;
+    if (timePolicy === 'follow_text') {
+        const picked = pickFollowTextClockTarget({
+            chatNarrative: narrativeText,
+            worldCopy: `${payload.world.title}\n${payload.world.detail}`,
+        }, baseState);
+        if (picked.targetAbsoluteMinute != null) {
+            payload.elapsedMinutes = picked.targetAbsoluteMinute - baseState.clock.absoluteMinute;
+            payload.timeReason = picked.reason;
+            state = settleTimedEvents(baseState, picked.targetAbsoluteMinute, {
+                source: 'narrative',
+                reason: payload.timeReason,
+            });
+        } else {
+            payload.elapsedMinutes = 0;
+            payload.timeReason = picked.reason;
+            state = settleTimedEvents(baseState, baseState.clock.absoluteMinute, {
+                source: 'narrative',
+                reason: payload.timeReason,
+            });
         }
+    } else {
+        payload.elapsedMinutes = resolveElapsedMinutes(
+            requestedElapsedMinutes,
+            narrativeText,
+            timePolicy,
+        );
+        if (!explicitTimeEvidence && timePolicy !== 'open') {
+            for (const update of payload.eventsUpdate) {
+                const requestedWork = asInteger(
+                    update?.worked_minutes ?? update?.workedMinutes,
+                    0,
+                    0,
+                );
+                const guardedWork = timePolicy === 'cautious'
+                    ? Math.min(requestedWork, 180)
+                    : 0;
+                update.worked_minutes = guardedWork;
+                update.workedMinutes = guardedWork;
+            }
+        }
+        if (requestedElapsedMinutes > 0 && payload.elapsedMinutes === 0) {
+            payload.timeReason = '正文没有明确、可计算的时间证据，本轮保持世界时钟不动';
+        } else if (payload.elapsedMinutes < requestedElapsedMinutes) {
+            payload.timeReason = `正文时间较含糊，本轮最多推进 ${payload.elapsedMinutes} 分钟`;
+        }
+        state = settleTimedEvents(
+            baseState,
+            baseState.clock.absoluteMinute + payload.elapsedMinutes,
+            { source: 'narrative', reason: payload.timeReason || '正文推演' },
+        );
     }
-    if (requestedElapsedMinutes > 0 && payload.elapsedMinutes === 0) {
-        payload.timeReason = '正文没有明确、可计算的时间证据，本轮保持世界时钟不动';
-    } else if (payload.elapsedMinutes < requestedElapsedMinutes) {
-        payload.timeReason = `正文时间较含糊，本轮最多推进 ${payload.elapsedMinutes} 分钟`;
-    }
-    let state = settleTimedEvents(
-        baseState,
-        baseState.clock.absoluteMinute + payload.elapsedMinutes,
-        { source: 'narrative', reason: payload.timeReason || '正文推演' },
-    );
     const worldMinute = state.clock.absoluteMinute;
 
     if (payload.world.title) state.world.title = payload.world.title;
@@ -2154,6 +2441,7 @@ export function buildSimulationPrompt(state, {
         explicit: '严格时间：只有正文明确给出几点、多少分钟/小时/天或明确跨到次日时，elapsed_minutes 才能大于 0；“夜幕降临、过了一会、首夜、许久”等氛围或模糊词一律填 0。',
         cautious: '克制估算：明确时间正常计算；只有模糊时间变化时可以保守估算，但不得超过 180 分钟。',
         open: '开放估算：允许依据清楚的叙事时间变化估算经过时长，但仍不得把回复轮次当时间。',
+        follow_text: '跟随正文时间：插件会忽略 elapsed_minutes，改为从本批正文与 world.title/detail 解析最晚的绝对历法时间并跳转时钟；时代跳跃时请在 world 文案写明如「主世界历2042年春」；不得把回复轮次当时间。',
     }[timePolicy] || '严格时间：没有明确、可计算的时间证据就填 0。';
     const identityAnchor = modelText(playerIdentityAnchor, 400);
     const playerIdentityRule = identityAnchor

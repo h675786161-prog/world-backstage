@@ -352,7 +352,7 @@ function getSettings() {
         settings.tagFilterRules = normalizeTagFilterRules(settings.tagFilterRules);
     }
     settings.settingsVersion = 13;
-    if (!['explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
+    if (!['explicit', 'cautious', 'open', 'follow_text'].includes(settings.timePolicy)) {
         settings.timePolicy = 'explicit';
     }
     if (!['tavern', 'custom'].includes(settings.apiMode)) settings.apiMode = 'tavern';

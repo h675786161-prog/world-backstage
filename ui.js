@@ -682,12 +682,13 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
 
             <div class="wb-setting-block">
                 <label>时间推进</label>
-                <div class="wb-option-row">
+                <div class="wb-option-row wb-option-row-four">
                     ${settingButton('timePolicy', settings.timePolicy, 'explicit', '严格')}
                     ${settingButton('timePolicy', settings.timePolicy, 'cautious', '克制')}
                     ${settingButton('timePolicy', settings.timePolicy, 'open', '开放')}
+                    ${settingButton('timePolicy', settings.timePolicy, 'follow_text', '跟随正文')}
                 </div>
-                <p>严格模式下，没有明确几点或经过多少分钟/小时/天，世界时钟就保持不动。</p>
+                <p>严格：无明确几点或时长则不动。克制：模糊最多三小时。开放：信模型增量。跟随正文：优先用本批聊天里的年月日/季节跳转；聊天没有这类锚点时再用推演世界文案；仅钟点不会挡住跨年文案。取更晚者，不回拨；解析不到则本轮不动。</p>
             </div>
 
                 </div>

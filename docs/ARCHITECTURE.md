@@ -119,6 +119,8 @@ absoluteMinute = day × 1440 + hour × 60 + minute
 
 达到自动触发频率后，模型只返回本批新正文中可确认的 `elapsed_minutes`。插件再用它推进时钟并结算事件。
 
+第四档 `follow_text`（跟随正文）忽略模型增量，由插件从本批正文与 `world` 文案解析绝对时间并 `settleTimedEvents` 跳转；不回拨；仅钟点不会挡住世界文案中的跨年锚点。
+
 ```mermaid
 flowchart TD
     A["AI 正文完成"] --> B{"累计轮数达到设置值？"}

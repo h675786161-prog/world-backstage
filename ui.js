@@ -47,6 +47,42 @@ function escapeAttr(value) {
     return escapeHtml(value).replaceAll('`', '&#096;');
 }
 
+
+function foldOpenAttr(openFolds, key, defaultOpen = false) {
+    const isOpen = openFolds instanceof Set ? openFolds.has(key) : defaultOpen;
+    return isOpen ? 'open' : '';
+}
+
+function renderFoldToolbar(prefix) {
+    return `
+        <div class="wb-fold-toolbar" aria-label="折叠控制">
+            <button type="button" data-wb-action="expand-folds" data-fold-prefix="${escapeAttr(prefix)}">全部展开</button>
+            <button type="button" data-wb-action="collapse-folds" data-fold-prefix="${escapeAttr(prefix)}">全部收起</button>
+        </div>
+    `;
+}
+
+function compactText(value, maximum = 64) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (text.length <= maximum) return text;
+    return `${text.slice(0, Math.max(1, maximum - 1)).trimEnd()}…`;
+}
+
+function normalizeGroupLabel(value, fallback = '其他') {
+    const label = String(value || '').trim();
+    return label || fallback;
+}
+
+function groupItems(items, getLabel) {
+    const groups = new Map();
+    for (const item of items) {
+        const label = normalizeGroupLabel(getLabel(item));
+        const key = label.toLocaleLowerCase();
+        if (!groups.has(key)) groups.set(key, { label, items: [] });
+        groups.get(key).items.push(item);
+    }
+    return [...groups.values()];
+}
 function formatLocalTimestamp(value) {
     const date = new Date(String(value || ''));
     if (!Number.isFinite(date.getTime())) return '时间未知';
@@ -56,6 +92,10 @@ function formatLocalTimestamp(value) {
         hour: '2-digit',
         minute: '2-digit',
     });
+}
+
+function worldClockLabel(state, clock = formatWorldCalendar(state)) {
+    return state.clock?.anchored ? clock.stamp : '待从正文建立时间锚点';
 }
 
 function themeFor(state, settings) {
@@ -160,35 +200,55 @@ function renderPersonRow(person, observerMode, worldMinute) {
     `;
 }
 
-export function renderPersonCard(person, observerMode, worldMinute) {
+export function renderPersonCard(person, observerMode, worldMinute, openFolds = new Set()) {
+    const foldKey = `people:${person.id}`;
     return `
-        <article class="wb-person-card" role="button" tabindex="0"
-            data-wb-action="select-person" data-person-id="${escapeAttr(person.id)}">
-            <span class="wb-person-card-top">
-                ${renderPersonAvatar(person, 'is-large')}
-                <span class="wb-person-place">${escapeHtml(person.location)}</span>
-            </span>
-            <h3>${escapeHtml(person.name)}</h3>
-            <p>${escapeHtml(person.action)}</p>
-            <span class="wb-person-thread">
-                <small>短期意图</small>
-                <strong>${escapeHtml(person.intent)}</strong>
-            </span>
-            ${person.longTermGoal ? `
-                <span class="wb-person-thread is-long-term">
-                    <small>长期目标</small>
-                    <strong>${escapeHtml(person.longTermGoal)}</strong>
+        <details class="wb-fold wb-person-card" data-fold-key="${escapeAttr(foldKey)}"
+            ${foldOpenAttr(openFolds, foldKey)}>
+            <summary class="wb-person-card-summary">
+                <span class="wb-person-summary-main">
+                    ${renderPersonAvatar(person, 'is-large')}
+                    <span class="wb-person-summary-copy">
+                        <span class="wb-person-summary-heading">
+                            <strong>${escapeHtml(person.name)}</strong>
+                            <small>${escapeHtml(person.location)}</small>
+                        </span>
+                        <span class="wb-person-summary-action">${escapeHtml(compactText(person.action, 72) || '暂时没有新的动作。')}</span>
+                    </span>
                 </span>
-            ` : ''}
-            ${observerMode === 'backstage'
-                ? renderInnerVoice(person, worldMinute)
-                : '<span class="wb-known-boundary">幕后独白已隐藏</span>'}
-            <span class="wb-person-sim-state ${person.simulationEnabled === false ? 'is-sleeping' : ''}">
-                ${person.simulationEnabled === false ? '后台休眠' : '参与后台推演'}
-            </span>
-            <button class="wb-person-edit-button" type="button" data-wb-action="open-person-editor"
-                data-person-id="${escapeAttr(person.id)}">编辑人物卡</button>
-        </article>
+                <span class="wb-fold-meta">
+                    <span class="wb-person-sim-state ${person.simulationEnabled === false ? 'is-sleeping' : ''}">
+                        ${person.simulationEnabled === false ? '后台休眠' : '后台活动'}
+                    </span>
+                    <i class="wb-fold-chevron" aria-hidden="true"></i>
+                </span>
+            </summary>
+            <div class="wb-fold-body wb-person-card-body">
+                <span class="wb-person-thread is-current-action">
+                    <small>正在做</small>
+                    <strong>${escapeHtml(person.action || '暂时没有新的动作。')}</strong>
+                </span>
+                <span class="wb-person-thread">
+                    <small>短期意图</small>
+                    <strong>${escapeHtml(person.intent || '暂无明确短期意图。')}</strong>
+                </span>
+                ${person.longTermGoal ? `
+                    <span class="wb-person-thread is-long-term">
+                        <small>长期目标</small>
+                        <strong>${escapeHtml(person.longTermGoal)}</strong>
+                    </span>
+                ` : ''}
+                ${observerMode === 'backstage'
+                    ? renderInnerVoice(person, worldMinute)
+                    : '<span class="wb-known-boundary">幕后独白已隐藏</span>'}
+                <div class="wb-person-card-actions">
+                    <button class="wb-card-action-button is-primary" type="button"
+                        data-wb-action="select-person" data-person-id="${escapeAttr(person.id)}">查看人物详情</button>
+                    <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-person-editor"
+                        data-person-id="${escapeAttr(person.id)}">编辑</button>
+                </div>
+            </div>
+        </details>
     `;
 }
 
@@ -234,57 +294,125 @@ function renderProgress(event, state, wide = false) {
     `;
 }
 
-function renderEventCard(event, state, wide = false) {
-    return `
-        <article class="wb-event-card ${wide ? 'is-wide' : ''}">
-            <div class="wb-event-topline">
-                <span class="wb-phase phase-${escapeAttr(event.status)}">${escapeHtml(eventStatusLabel(event))}</span>
-                <span>${escapeHtml(event.place)}</span>
-            </div>
-            <h3>${escapeHtml(event.title)}</h3>
-            <p>${escapeHtml(event.summary || event.consequence || '事件仍在形成。')}</p>
-            ${wide && event.consequence ? `
-                <div class="wb-consequence">
-                    <span>可能后果</span>
-                    <strong>${escapeHtml(event.consequence)}</strong>
+function renderEventCard(event, state, wide = false, openFolds = new Set()) {
+    if (!wide) {
+        return `
+            <article class="wb-event-card">
+                <div class="wb-event-topline">
+                    <span class="wb-phase phase-${escapeAttr(event.status)}">${escapeHtml(eventStatusLabel(event))}</span>
+                    <span>${escapeHtml(event.place)}</span>
                 </div>
-            ` : ''}
-            ${renderProgress(event, state, wide)}
-            <div class="wb-route">
-                <i></i>
-                ${escapeHtml(visibilityLabel(event.visibility))}
+                <h3>${escapeHtml(event.title)}</h3>
+                <p>${escapeHtml(event.summary || event.consequence || '事件仍在形成。')}</p>
+                ${renderProgress(event, state, false)}
+                <div class="wb-route">
+                    <i></i>
+                    ${escapeHtml(visibilityLabel(event.visibility))}
+                </div>
+                <div class="wb-event-card-actions">
+                    <button class="wb-card-action-button is-primary wb-event-delivery-toggle ${event.delivery?.manualQueued ? 'is-queued' : ''}"
+                        type="button" data-wb-action="toggle-event-delivery"
+                        data-event-id="${escapeAttr(event.id)}"
+                        ${event.visibility === 'hidden' ? 'disabled' : ''}>
+                        ${event.delivery?.manualQueued ? '✓ 下一轮显露' : '下一轮显露'}
+                    </button>
+                </div>
+            </article>
+        `;
+    }
+
+    const progress = eventProgress(event, state.clock.absoluteMinute);
+    const remaining = progress.remaining === null
+        ? progress.phase
+        : progress.remaining === 0
+            ? eventStatusLabel(event)
+            : `剩余 ${formatDuration(progress.remaining)}`;
+    const foldKey = `currents:${event.id}`;
+    return `
+        <details class="wb-fold wb-event-card is-wide" data-fold-key="${escapeAttr(foldKey)}"
+            ${foldOpenAttr(openFolds, foldKey)}>
+            <summary class="wb-event-summary">
+                <span class="wb-event-summary-copy">
+                    <span class="wb-event-topline">
+                        <span class="wb-phase phase-${escapeAttr(event.status)}">${escapeHtml(eventStatusLabel(event))}</span>
+                        <span>${escapeHtml(event.place)}</span>
+                    </span>
+                    <strong>${escapeHtml(event.title)}</strong>
+                    <small>${escapeHtml(compactText(event.summary || event.consequence || '事件仍在形成。', 90))}</small>
+                </span>
+                <span class="wb-fold-meta">
+                    <span class="wb-fold-status">${escapeHtml(remaining)}</span>
+                    <i class="wb-fold-chevron" aria-hidden="true"></i>
+                </span>
+            </summary>
+            <div class="wb-fold-body wb-event-card-body">
+                <p>${escapeHtml(event.summary || event.consequence || '事件仍在形成。')}</p>
+                ${event.consequence ? `
+                    <div class="wb-consequence">
+                        <span>可能后果</span>
+                        <strong>${escapeHtml(event.consequence)}</strong>
+                    </div>
+                ` : ''}
+                ${renderProgress(event, state, true)}
+                <div class="wb-route">
+                    <i></i>
+                    ${escapeHtml(visibilityLabel(event.visibility))}
+                </div>
+                <div class="wb-event-card-actions">
+                    <button class="wb-card-action-button is-primary wb-event-delivery-toggle ${event.delivery?.manualQueued ? 'is-queued' : ''}"
+                        type="button" data-wb-action="toggle-event-delivery"
+                        data-event-id="${escapeAttr(event.id)}"
+                        ${event.visibility === 'hidden' ? 'disabled' : ''}>
+                        ${event.delivery?.manualQueued ? '✓ 下一轮显露' : '下一轮显露'}
+                    </button>
+                    <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-event-editor"
+                        data-event-id="${escapeAttr(event.id)}">编辑</button>
+                    <button class="wb-card-action-button is-danger" type="button" data-wb-action="delete-event"
+                        data-event-id="${escapeAttr(event.id)}">删除</button>
+                </div>
             </div>
-            <button class="wb-event-delivery-toggle ${event.delivery?.manualQueued ? 'is-queued' : ''}"
-                type="button" data-wb-action="toggle-event-delivery"
-                data-event-id="${escapeAttr(event.id)}"
-                ${event.visibility === 'hidden' ? 'disabled' : ''}>
-                ${event.delivery?.manualQueued ? '✓ 下一轮显露' : '下一轮显露'}
-            </button>
-        </article>
+        </details>
     `;
 }
 
-function renderOutcome(event, state) {
+function renderOutcome(event, state, openFolds = new Set()) {
     const time = formatWorldCalendar(
         state,
         event.resolvedAt ?? event.updatedAt ?? event.dueAt ?? 0,
     );
+    const result = event.result || event.expectedResult || event.consequence || '结果等待确认。';
+    const foldKey = `echoes:${event.id}`;
     return `
         <article class="wb-echo-item">
             <time>${escapeHtml(`${time.shortDate} ${time.time}`)}</time>
             <span class="wb-timeline-node state-${escapeAttr(event.delivery?.state || 'none')}"></span>
-            <div class="wb-echo-card">
-                <div>
-                    <h3>${escapeHtml(event.title)}</h3>
-                    <p>${escapeHtml(event.result || event.expectedResult || event.consequence || '结果等待确认。')}</p>
+            <details class="wb-fold wb-echo-card" data-fold-key="${escapeAttr(foldKey)}"
+                ${foldOpenAttr(openFolds, foldKey)}>
+                <summary class="wb-echo-summary">
+                    <span class="wb-echo-copy">
+                        <strong>${escapeHtml(event.title)}</strong>
+                        <small>${escapeHtml(compactText(result, 96))}</small>
+                    </span>
+                    <span class="wb-fold-meta">
+                        <span class="wb-record-state">${escapeHtml(deliveryLabel(event))}</span>
+                        <i class="wb-fold-chevron" aria-hidden="true"></i>
+                    </span>
+                </summary>
+                <div class="wb-fold-body wb-echo-body">
+                    <p>${escapeHtml(result)}</p>
+                    <div class="wb-record-actions">
+                        <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-record-editor"
+                            data-record-kind="echo" data-record-id="${escapeAttr(event.id)}">编辑</button>
+                        <button class="wb-card-action-button is-danger" type="button" data-wb-action="delete-record"
+                            data-record-kind="echo" data-record-id="${escapeAttr(event.id)}">删除</button>
+                    </div>
                 </div>
-                <span>${escapeHtml(deliveryLabel(event))}</span>
-            </div>
+            </details>
         </article>
     `;
 }
 
-function renderArchiveEntry(entry, state) {
+function renderArchiveEntry(entry, state, recordKind = 'archive', openFolds = new Set()) {
     const time = Number.isFinite(Number(entry.resolvedAt ?? entry.at))
         ? formatWorldCalendar(state, entry.resolvedAt ?? entry.at)
         : null;
@@ -295,6 +423,7 @@ function renderArchiveEntry(entry, state) {
         entry.delivery?.state ? deliveryLabel(entry) : '',
         entry.deliveryState === 'expired' ? '未显露，转入纪事' : '',
     ].filter(Boolean);
+    const foldKey = `archive:${recordKind}:${entry.id}`;
 
     return `
         <article class="wb-archive-entry">
@@ -303,11 +432,26 @@ function renderArchiveEntry(entry, state) {
                 <span>${time ? time.time : '—'}</span>
             </div>
             <span class="wb-archive-rule"></span>
-            <div class="wb-archive-copy">
-                <h3>${escapeHtml(title)}</h3>
-                <p>${escapeHtml(text || '这件事已经成为世界事实。')}</p>
-                <div>${tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>
-            </div>
+            <details class="wb-fold wb-archive-copy" data-fold-key="${escapeAttr(foldKey)}"
+                ${foldOpenAttr(openFolds, foldKey)}>
+                <summary class="wb-archive-summary">
+                    <span>
+                        <strong>${escapeHtml(title)}</strong>
+                        <small>${escapeHtml(compactText(text || '这件事已经成为世界事实。', 100))}</small>
+                    </span>
+                    <i class="wb-fold-chevron" aria-hidden="true"></i>
+                </summary>
+                <div class="wb-fold-body wb-archive-body">
+                    <p>${escapeHtml(text || '这件事已经成为世界事实。')}</p>
+                    <div class="wb-archive-tags">${tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>
+                    <div class="wb-record-actions">
+                        <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-record-editor"
+                            data-record-kind="${escapeAttr(recordKind)}" data-record-id="${escapeAttr(entry.id)}">编辑</button>
+                        <button class="wb-card-action-button is-danger" type="button" data-wb-action="delete-record"
+                            data-record-kind="${escapeAttr(recordKind)}" data-record-id="${escapeAttr(entry.id)}">删除</button>
+                    </div>
+                </div>
+            </details>
         </article>
     `;
 }
@@ -379,8 +523,9 @@ function renderSyncStrip(syncStatus) {
     `;
 }
 
-function renderSettings(state, settings, syncStatus, openGroups = new Set(), apiDraft = null, tagFilterRules = null) {
+function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null) {
     const clock = formatWorldCalendar(state);
+    const clockLabel = worldClockLabel(state, clock);
     const connection = syncStatus?.connection || {};
     const memory = syncStatus?.memory || {};
     const phase = syncStatus?.phase || 'idle';
@@ -423,6 +568,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
             class="${String(current) === String(id) ? 'is-active' : ''}">${label}</button>
     `;
     const groupOpen = id => openGroups.has(id) ? 'open' : '';
+    const subgroupOpen = id => openSubgroups.has(id) ? 'open' : '';
 
     return `
         <div class="wb-settings-popover" role="dialog" aria-modal="true" aria-label="世界背面设置">
@@ -433,7 +579,10 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
 
             <details class="wb-settings-group" data-settings-group="connection" ${groupOpen('connection')}>
                 <summary><span>连接</span><small>API 与模型</small></summary>
-                <div class="wb-settings-group-body">
+                <div class="wb-settings-group-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="connection-main" ${subgroupOpen('connection-main')}>
+                        <summary><span>连接方式</span><small>当前 API、模型与运行方式</small></summary>
+                        <div class="wb-settings-subgroup-body">
             <div class="wb-connection-card is-${escapeAttr(phase)}">
                 <div>
                     <span>世界推演连接</span>
@@ -447,8 +596,8 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                 </dl>
                 ${syncStatus?.error ? `<p>${escapeHtml(syncStatus.error)}</p>` : ''}
                 <small>${settings.apiMode === 'custom'
-                    ? '独立接口只复用酒馆的网络转发，不继承当前聊天模型、预设或上下文。'
-                    : '当前跟随酒馆主 API；切换到独立接口后可单独填写地址、Key 与模型。'}</small>
+                    ? '独立接口仍使用自己的模型与 Key。世界背面使用内置兼容 system 与任务专用 system；人物即时观测保持独立 POV。'
+                    : '当前跟随酒馆主 API。世界背面使用内置兼容 system 与任务专用 system；人物即时观测保持独立 POV。'}</small>
             </div>
 
             <div class="wb-setting-block">
@@ -459,8 +608,12 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                 </div>
                 <p>独立接口只用于世界推演、历史建档和人物观测，不会改变主聊天连接。</p>
             </div>
-
+                        </div>
+                    </details>
             ${settings.apiMode === 'custom' ? `
+                    <details class="wb-settings-subgroup" data-settings-subgroup="connection-custom" ${subgroupOpen('connection-custom')}>
+                        <summary><span>独立接口配置</span><small>地址、Key、模型与连接方式</small></summary>
+                        <div class="wb-settings-subgroup-body">
                 <form class="wb-api-form" data-wb-form="api" autocomplete="off">
                     <div class="wb-api-draft-heading">
                         <span>${hasSavedApiKey ? '已保存独立接口；旧 Key 不会再次显示。' : '尚未保存独立接口。'}</span>
@@ -517,6 +670,8 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                     </div>
                     ${modelPull.message ? `<p class="wb-api-model-status is-${escapeAttr(modelPull.phase)}">${escapeHtml(modelPull.message)}</p>` : ''}
                 </form>
+                        </div>
+                    </details>
             ` : ''}
 
                 </div>
@@ -524,7 +679,10 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
 
             <details class="wb-settings-group" data-settings-group="appearance" ${groupOpen('appearance')}>
                 <summary><span>界面与显露</span><small>主题、字号、正文注入</small></summary>
-                <div class="wb-settings-group-body">
+                <div class="wb-settings-group-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="appearance-ui" ${subgroupOpen('appearance-ui')}>
+                        <summary><span>界面</span><small>明暗与阅读字号</small></summary>
+                        <div class="wb-settings-subgroup-body">
             <div class="wb-setting-block">
                 <label>界面明暗</label>
                 <div class="wb-option-row">
@@ -544,7 +702,12 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                 </div>
                 <p>控制整个插件的阅读字号；下方“均衡”只控制剧情显露频率，与字体无关。</p>
             </div>
+                        </div>
+                    </details>
 
+                    <details class="wb-settings-subgroup" data-settings-subgroup="appearance-reveal" ${subgroupOpen('appearance-reveal')}>
+                        <summary><span>显露</span><small>密度与进入正文的时机</small></summary>
+                        <div class="wb-settings-subgroup-body">
             <div class="wb-setting-block">
                 <label>正文显露度</label>
                 <div class="wb-option-row">
@@ -563,13 +726,18 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                     <option value="open" ${settings.sceneTiming === 'open' ? 'selected' : ''}>开放：允许简短自然变化</option>
                 </select>
             </div>
+                        </div>
+                    </details>
 
                 </div>
             </details>
 
             <details class="wb-settings-group" data-settings-group="simulation" ${groupOpen('simulation')}>
                 <summary><span>自动推演</span><small>频率、重试、NPC 与时间</small></summary>
-                <div class="wb-settings-group-body">
+                <div class="wb-settings-group-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-switches" ${subgroupOpen('simulation-switches')}>
+                        <summary><span>推演开关</span><small>启用状态与正文注入</small></summary>
+                        <div class="wb-settings-subgroup-body">
             <div class="wb-setting-toggle">
                 <div><strong>启用世界推演</strong><span>关闭后不再生成或推进，但保留现有世界数据</span></div>
                 <label class="wb-switch">
@@ -586,6 +754,12 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                     <i></i>
                 </label>
             </div>
+                        </div>
+                    </details>
+
+                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-trigger" ${subgroupOpen('simulation-trigger')}>
+                        <summary><span>自动触发</span><small>模式与累计频率</small></summary>
+                        <div class="wb-settings-subgroup-body">
             <div class="wb-setting-block">
                 <label>自动推演方式</label>
                 <div class="wb-option-row wb-option-row-four">
@@ -609,6 +783,14 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                         value="${escapeAttr(settings.autoSimulationInterval)}">
                 </label>
                 <p>设为 N 轮时会按顺序合并这 N 轮新正文进行一次推演，不会只处理最后一条。</p>
+            </div>
+                        </div>
+                    </details>
+
+                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-output" ${subgroupOpen('simulation-output')}>
+                        <summary><span>失败与输出</span><small>重试、输出预算与附加要求</small></summary>
+                        <div class="wb-settings-subgroup-body">
+            <div class="wb-setting-block">
                 <label>推演失败自动重试</label>
                 <div class="wb-option-row wb-option-row-four">
                     ${settingButton('autoRetryCount', settings.autoRetryCount, 0, '不重试')}
@@ -643,7 +825,12 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                         placeholder="例如：少制造新事件；更关注商会与港口的变化。">${escapeHtml(settings.customSimulationInstruction)}</textarea>
                 </label>
             </div>
+                        </div>
+                    </details>
 
+                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-npc" ${subgroupOpen('simulation-npc')}>
+                        <summary><span>NPC 与玩家边界</span><small>后台人数与玩家内心</small></summary>
+                        <div class="wb-settings-subgroup-body">
             <div class="wb-setting-block">
                 <label>后台 NPC 预算</label>
                 <div class="wb-option-row wb-option-row-four">
@@ -669,7 +856,12 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                     <i></i>
                 </label>
             </div>
+                        </div>
+                    </details>
 
+                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-context" ${subgroupOpen('simulation-context')}>
+                        <summary><span>上下文与时间</span><small>读取范围与世界钟策略</small></summary>
+                        <div class="wb-settings-subgroup-body">
             <div class="wb-setting-block">
                 <label>正文读取范围</label>
                 <div class="wb-option-row">
@@ -683,19 +875,195 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
             <div class="wb-setting-block">
                 <label>时间推进</label>
                 <div class="wb-option-row">
+                    ${settingButton('timePolicy', settings.timePolicy, 'world', '世界钟')}
                     ${settingButton('timePolicy', settings.timePolicy, 'explicit', '严格')}
                     ${settingButton('timePolicy', settings.timePolicy, 'cautious', '克制')}
                     ${settingButton('timePolicy', settings.timePolicy, 'open', '开放')}
                 </div>
-                <p>严格模式下，没有明确几点或经过多少分钟/小时/天，世界时钟就保持不动。</p>
+                <p>世界钟模式会先从故事上下文建立时间锚点，之后只根据正文实际发生的事件估算经过时长；正文时间栏跟随世界钟校准，而不是反过来每轮覆盖它。</p>
             </div>
+                        </div>
+                    </details>
 
                 </div>
             </details>
 
-            <details class="wb-settings-group" data-settings-group="tagfilter" ${groupOpen('tagfilter')}>
-                <summary><span>标签过滤</span><small>剔除杂标签与注释后再推演 / 记忆</small></summary>
-                <div class="wb-settings-group-body">
+            <details class="wb-settings-group" data-settings-group="worldbook" ${groupOpen('worldbook')}>
+                <summary><span>世界书人物</span><small>手动读取、预览与选择</small></summary>
+                <div class="wb-settings-group-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="worldbook-import" ${subgroupOpen('worldbook-import')}>
+                        <summary><span>人物导入</span><small>选择世界书、预览并勾选人物</small></summary>
+                        <div class="wb-settings-subgroup-body">
+                    <form class="wb-worldbook-import" data-wb-form="worldbook">
+                        <label>选择世界书
+                            <select name="bookName" ${worldbookBooks.length ? '' : 'disabled'}>
+                                ${worldbookBooks.length
+                                    ? worldbookBooks.map(book => `<option value="${escapeAttr(book)}"
+                                        ${book === worldbook.bookName ? 'selected' : ''}>${escapeHtml(book)}</option>`).join('')
+                                    : '<option value="">酒馆当前没有可读取的世界书</option>'}
+                            </select>
+                        </label>
+                        <button type="button" data-wb-action="scan-worldbook"
+                            ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
+                            ${worldbook.phase === 'running' ? '正在读取…' : '读取条目预览'}
+                        </button>
+                        <p>插件只在你点击时读取一次，不会每轮扫描世界书，也不会自动把所有条目当成 NPC。</p>
+                        ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
+                        ${worldbookEntries.length ? `
+                            <div class="wb-worldbook-entry-list">
+                                ${worldbookEntries.map(entry => `
+                                    <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''}">
+                                        <input type="checkbox" name="entryIds" value="${escapeAttr(entry.uid)}">
+                                        <span>
+                                            <strong>${escapeHtml(entry.name)}</strong>
+                                            <small>${entry.disabled ? '世界书中已停用 · ' : ''}${escapeHtml((entry.keys || []).join('、') || `UID ${entry.uid}`)}</small>
+                                            <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? '…' : ''}</p>
+                                        </span>
+                                    </label>
+                                `).join('')}
+                            </div>
+                            <button class="wb-primary-button" type="submit">导入勾选人物</button>
+                        ` : ''}
+                    </form>
+                        </div>
+                    </details>
+                </div>
+            </details>
+
+            <details class="wb-settings-group" data-settings-group="memory" ${groupOpen('memory')}>
+                <summary><span>长期记忆</span><small>自动整理与历史建档</small></summary>
+                <div class="wb-settings-group-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="memory-switches" ${subgroupOpen('memory-switches')}>
+                        <summary><span>记忆开关</span><small>整理与正文注入</small></summary>
+                        <div class="wb-settings-subgroup-body">
+            <div class="wb-setting-toggle">
+                <div><strong>启用记忆系统</strong><span>关闭后停止整理与写入，但保留已有记忆</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="memorySystemEnabled"
+                        ${settings.memorySystemEnabled ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>记忆注入正文</strong><span>关闭后仍会整理和保存，只是不参与主对话生成</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="memoryPromptInjection"
+                        ${settings.memoryPromptInjection ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+                        </div>
+                    </details>
+
+                    <details class="wb-settings-subgroup" data-settings-subgroup="memory-history" ${subgroupOpen('memory-history')}>
+                        <summary><span>历史档案</span><small>自动整理、进度与手动建档</small></summary>
+                        <div class="wb-settings-subgroup-body">
+            <div class="wb-history-settings">
+                <div class="wb-history-heading">
+                    <div>
+                        <label>长篇历史档案</label>
+                        <strong>${escapeHtml(
+                            historyRunning
+                                ? memory.message || '正在扫描'
+                                : `${memory.facts || 0} 条事实 · ${memory.clues || 0} 条伏笔 · ${memory.summaries || 0} 段经历`,
+                        )}</strong>
+                    </div>
+                    <span>${historyRunning ? `${historyPercent}%` : `已到第 ${Math.max(-1, Number(memory.indexedThroughMessageId ?? -1))} 层`}</span>
+                </div>
+                ${historyRunning ? `
+                    <div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>
+                ` : ''}
+                <p>首次使用时分批扫描当前重抽分支；以后只整理新增正文。每批都会更新持续摘要、长期事实和伏笔状态。</p>
+                <div class="wb-memory-queue">
+                    <span>尚有 ${Math.max(0, Number(memory.pendingAssistantResponses || 0))} 条 AI 正文未整理</span>
+                    <strong>${settings.memoryAutoIndexInterval > 0
+                        ? `自动阈值 ${settings.memoryAutoIndexInterval} 条`
+                        : '当前仅手动整理'}</strong>
+                </div>
+                <label>自动整理记忆</label>
+                <div class="wb-option-row wb-option-row-four">
+                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 0, '手动')}
+                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 5, '每 5 轮')}
+                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 10, '每 10 轮')}
+                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 20, '每 20 轮')}
+                </div>
+                <label class="wb-number-setting">
+                    自定义新增回复数
+                    <input type="number" min="0" max="50" step="1"
+                        data-wb-setting="memoryAutoIndexInterval"
+                        value="${escapeAttr(settings.memoryAutoIndexInterval)}">
+                </label>
+                <p>设为 N 后，每累计 N 条尚未整理的 AI 正文，自动整理一个新增批次；设为 0 则只手动整理。</p>
+                <button type="button" data-wb-action="scan-history"
+                    ${historyRunning || !settings.memorySystemEnabled ? 'disabled' : ''}>
+                    ${Number(memory.indexedThroughMessageId ?? -1) < 0 ? '建立初始记忆档案' : '立即整理新增正文'}
+                </button>
+            </div>
+                        </div>
+                    </details>
+
+                </div>
+            </details>
+
+            <details class="wb-settings-group" data-settings-group="calendar" ${groupOpen('calendar')}>
+                <summary><span>日历与数据</span><small>日期校准、导入与导出</small></summary>
+                <div class="wb-settings-group-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="calendar-clock" ${subgroupOpen('calendar-clock')}>
+                        <summary><span>主世界日历</span><small>正文校准、手动设定与快进</small></summary>
+                        <div class="wb-settings-subgroup-body">
+            <form class="wb-clock-form" data-wb-form="clock">
+                <div class="wb-clock-form-heading">
+                    <div><label>主世界日历</label><strong>${escapeHtml(clockLabel)}</strong></div>
+                    <span>每个聊天独立保存</span>
+                </div>
+                <label class="wb-calendar-name-field">
+                    历法名称
+                    <input name="calendarName" maxlength="40"
+                        value="${escapeAttr(clock.calendarName)}" placeholder="例如：帝国历">
+                </label>
+                <div class="wb-calendar-date-fields">
+                    <label><input name="year" type="number" min="1" max="9999"
+                        value="${clock.year}"> 年</label>
+                    <label><input name="month" type="number" min="1" max="12"
+                        value="${clock.month}"> 月</label>
+                    <label><input name="day" type="number" min="1" max="31"
+                        value="${clock.dayOfMonth}"> 日</label>
+                </div>
+                <div class="wb-clock-fields">
+                    <label><input name="hour" type="number" min="0" max="23" value="${clock.hour}"> 时</label>
+                    <label><input name="minute" type="number" min="0" max="59" value="${clock.minute}"> 分</label>
+                    <button type="button" data-wb-action="sync-clock-from-story">与正文校准</button>
+                    <button type="submit" class="wb-clock-manual-save">手动设定</button>
+                </div>
+                <p class="wb-clock-sync-note">“与正文校准”只读取最新一条有效正文；识别不到明确年月日或钟点时不会改动世界钟。</p>
+                <div class="wb-time-actions">
+                    <button type="button" data-wb-action="advance-clock" data-minutes="60">+ 1 小时</button>
+                    <button type="button" data-wb-action="advance-clock" data-minutes="360">+ 6 小时</button>
+                    <button type="button" data-wb-action="advance-clock" data-minutes="1440">+ 1 天</button>
+                </div>
+            </form>
+                        </div>
+                    </details>
+
+                    <details class="wb-settings-subgroup" data-settings-subgroup="calendar-data" ${subgroupOpen('calendar-data')}>
+                        <summary><span>数据备份</span><small>导出与导入当前世界</small></summary>
+                        <div class="wb-settings-subgroup-body">
+            <div class="wb-setting-actions">
+                <button type="button" data-wb-action="export-state">导出当前世界</button>
+                <button type="button" data-wb-action="import-state">导入世界状态</button>
+                <input class="wb-import-input" type="file" accept=".json,application/json">
+            </div>
+                        </div>
+                    </details>
+                </div>
+            </details>
+
+            <details class="wb-settings-group" data-settings-group="advanced" ${groupOpen('advanced')}>
+                <summary><span>高级与维护</span><small>过滤、恢复与诊断</small></summary>
+                <div class="wb-settings-group-body wb-advanced-settings-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-tagfilter" ${subgroupOpen('advanced-tagfilter')}>
+                        <summary><span>标签过滤</span><small>清理杂标签与 HTML 注释</small></summary>
+                        <div class="wb-settings-subgroup-body">
                     <div class="wb-setting-toggle">
                         <div><strong>启用标签过滤</strong><span>关闭后仍会删除 HTML 注释 &lt;!-- --&gt;</span></div>
                         <label class="wb-switch">
@@ -738,213 +1106,98 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                             ＋ 添加规则
                         </button>
                     </div>
-                </div>
-            </details>
 
-            <details class="wb-settings-group" data-settings-group="worldbook" ${groupOpen('worldbook')}>
-                <summary><span>世界书人物</span><small>手动读取、预览与选择</small></summary>
-                <div class="wb-settings-group-body">
-                    <form class="wb-worldbook-import" data-wb-form="worldbook">
-                        <label>选择世界书
-                            <select name="bookName" ${worldbookBooks.length ? '' : 'disabled'}>
-                                ${worldbookBooks.length
-                                    ? worldbookBooks.map(book => `<option value="${escapeAttr(book)}"
-                                        ${book === worldbook.bookName ? 'selected' : ''}>${escapeHtml(book)}</option>`).join('')
-                                    : '<option value="">酒馆当前没有可读取的世界书</option>'}
-                            </select>
-                        </label>
-                        <button type="button" data-wb-action="scan-worldbook"
-                            ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
-                            ${worldbook.phase === 'running' ? '正在读取…' : '读取条目预览'}
-                        </button>
-                        <p>插件只在你点击时读取一次，不会每轮扫描世界书，也不会自动把所有条目当成 NPC。</p>
-                        ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
-                        ${worldbookEntries.length ? `
-                            <div class="wb-worldbook-entry-list">
-                                ${worldbookEntries.map(entry => `
-                                    <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''}">
-                                        <input type="checkbox" name="entryIds" value="${escapeAttr(entry.uid)}">
-                                        <span>
-                                            <strong>${escapeHtml(entry.name)}</strong>
-                                            <small>${entry.disabled ? '世界书中已停用 · ' : ''}${escapeHtml((entry.keys || []).join('、') || `UID ${entry.uid}`)}</small>
-                                            <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? '…' : ''}</p>
-                                        </span>
-                                    </label>
-                                `).join('')}
+                        </div>
+                    </details>
+
+                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-recovery" ${subgroupOpen('advanced-recovery')}>
+                        <summary><span>安全恢复</span><small>${latestRecovery ? escapeHtml(latestRecovery.label) : '恢复点与回滚'}</small></summary>
+                        <div class="wb-settings-subgroup-body">
+                            <div class="wb-maintenance-status">
+                                <strong>${latestRecovery ? escapeHtml(latestRecovery.label) : '还没有恢复点'}</strong>
+                                <span>${latestRecovery ? escapeHtml(formatLocalTimestamp(latestRecovery.createdAt)) : '每个聊天独立'}</span>
                             </div>
-                            <button class="wb-primary-button" type="submit">导入勾选人物</button>
-                        ` : ''}
-                    </form>
+                            <p>${latestRecovery
+                                ? `当前保存 ${Math.max(1, Number(recovery.count) || 1)} 个恢复点，恢复后仍会先替现在的状态留一份保险。`
+                                : '升级旧数据、导入世界状态时会自动留档，也可以现在手动保存一份。'}</p>
+                            <div class="wb-setting-actions">
+                                <button type="button" data-wb-action="create-recovery-point">立即保存恢复点</button>
+                                <button type="button" data-wb-action="restore-latest-recovery" ${latestRecovery ? '' : 'disabled'}>恢复最近保存</button>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-diagnostics" ${subgroupOpen('advanced-diagnostics')}>
+                        <summary><span>故障诊断</span><small>安全复制诊断信息</small></summary>
+                        <div class="wb-settings-subgroup-body">
+                            <p>包含版本、设备、接口模式和错误状态；不会复制 API Key、接口地址、正文或角色设定。</p>
+                            <div class="wb-setting-actions">
+                                <button type="button" data-wb-action="copy-diagnostics">复制诊断信息</button>
+                                <button type="button" data-wb-action="preview-notice">看看提示样式</button>
+                            </div>
+                        </div>
+                    </details>
                 </div>
             </details>
 
-            <details class="wb-settings-group" data-settings-group="memory" ${groupOpen('memory')}>
-                <summary><span>长期记忆</span><small>自动整理与历史建档</small></summary>
-                <div class="wb-settings-group-body">
-            <div class="wb-setting-toggle">
-                <div><strong>启用记忆系统</strong><span>关闭后停止整理与写入，但保留已有记忆</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="memorySystemEnabled"
-                        ${settings.memorySystemEnabled ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-            <div class="wb-setting-toggle">
-                <div><strong>记忆注入正文</strong><span>关闭后仍会整理和保存，只是不参与主对话生成</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="memoryPromptInjection"
-                        ${settings.memoryPromptInjection ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-            <div class="wb-history-settings">
-                <div class="wb-history-heading">
-                    <div>
-                        <label>长篇历史档案</label>
-                        <strong>${escapeHtml(
-                            historyRunning
-                                ? memory.message || '正在扫描'
-                                : `${memory.facts || 0} 条事实 · ${memory.clues || 0} 条伏笔 · ${memory.summaries || 0} 段经历`,
-                        )}</strong>
-                    </div>
-                    <span>${historyRunning ? `${historyPercent}%` : `已到第 ${Math.max(-1, Number(memory.indexedThroughMessageId ?? -1))} 层`}</span>
-                </div>
-                ${historyRunning ? `
-                    <div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>
-                ` : ''}
-                <p>首次使用时分批扫描当前重抽分支；以后只整理新增正文。每批都会更新持续摘要、长期事实和伏笔状态。</p>
-                <div class="wb-memory-queue">
-                    <span>尚有 ${Math.max(0, Number(memory.pendingAssistantResponses || 0))} 条 AI 正文未整理</span>
-                    <strong>${settings.memoryAutoIndexInterval > 0
-                        ? `自动阈值 ${settings.memoryAutoIndexInterval} 条`
-                        : '当前仅手动整理'}</strong>
-                </div>
-                <label>自动整理记忆</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 0, '手动')}
-                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 5, '每 5 轮')}
-                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 10, '每 10 轮')}
-                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 20, '每 20 轮')}
-                </div>
-                <label class="wb-number-setting">
-                    自定义新增回复数
-                    <input type="number" min="0" max="50" step="1"
-                        data-wb-setting="memoryAutoIndexInterval"
-                        value="${escapeAttr(settings.memoryAutoIndexInterval)}">
-                </label>
-                <p>设为 N 后，每累计 N 条尚未整理的 AI 正文，自动整理一个新增批次；设为 0 则只手动整理。</p>
-                <button type="button" data-wb-action="scan-history"
-                    ${historyRunning || !settings.memorySystemEnabled ? 'disabled' : ''}>
-                    ${Number(memory.indexedThroughMessageId ?? -1) < 0 ? '建立初始记忆档案' : '立即整理新增正文'}
-                </button>
-            </div>
-
-                </div>
-            </details>
-
-            <details class="wb-settings-group" data-settings-group="calendar" ${groupOpen('calendar')}>
-                <summary><span>日历与数据</span><small>日期校准、导入与导出</small></summary>
-                <div class="wb-settings-group-body">
-            <form class="wb-clock-form" data-wb-form="clock">
-                <div class="wb-clock-form-heading">
-                    <div><label>主世界日历</label><strong>${escapeHtml(clock.stamp)}</strong></div>
-                    <span>每个聊天独立保存</span>
-                </div>
-                <label class="wb-calendar-name-field">
-                    历法名称
-                    <input name="calendarName" maxlength="40"
-                        value="${escapeAttr(clock.calendarName)}" placeholder="例如：帝国历">
-                </label>
-                <div class="wb-calendar-date-fields">
-                    <label><input name="year" type="number" min="1" max="9999"
-                        value="${clock.year}"> 年</label>
-                    <label><input name="month" type="number" min="1" max="12"
-                        value="${clock.month}"> 月</label>
-                    <label><input name="day" type="number" min="1" max="31"
-                        value="${clock.dayOfMonth}"> 日</label>
-                </div>
-                <div class="wb-clock-fields">
-                    <label><input name="hour" type="number" min="0" max="23" value="${clock.hour}"> 时</label>
-                    <label><input name="minute" type="number" min="0" max="59" value="${clock.minute}"> 分</label>
-                    <button type="submit">校准</button>
-                </div>
-                <div class="wb-time-actions">
-                    <button type="button" data-wb-action="advance-clock" data-minutes="60">+ 1 小时</button>
-                    <button type="button" data-wb-action="advance-clock" data-minutes="360">+ 6 小时</button>
-                    <button type="button" data-wb-action="advance-clock" data-minutes="1440">+ 1 天</button>
-                </div>
-            </form>
-
-            <div class="wb-setting-actions">
-                <button type="button" data-wb-action="export-state">导出当前世界</button>
-                <button type="button" data-wb-action="import-state">导入世界状态</button>
-                <input class="wb-import-input" type="file" accept=".json,application/json">
-            </div>
-            <div class="wb-recovery-card">
-                <div class="wb-recovery-heading">
-                    <div><label>安全恢复</label><strong>${latestRecovery ? escapeHtml(latestRecovery.label) : '还没有恢复点'}</strong></div>
-                    <span>${latestRecovery ? escapeHtml(formatLocalTimestamp(latestRecovery.createdAt)) : '每个聊天独立'}</span>
-                </div>
-                <p>${latestRecovery
-                    ? `当前保存 ${Math.max(1, Number(recovery.count) || 1)} 个恢复点，恢复后仍会先替现在的状态留一份保险。`
-                    : '升级旧数据、导入世界状态时会自动留档，也可以现在手动保存一份。'}</p>
-                <div class="wb-setting-actions">
-                    <button type="button" data-wb-action="create-recovery-point">立即保存恢复点</button>
-                    <button type="button" data-wb-action="restore-latest-recovery" ${latestRecovery ? '' : 'disabled'}>恢复最近保存</button>
-                </div>
-            </div>
-            <div class="wb-diagnostic-card">
-                <div><label>遇到问题时</label><strong>复制安全诊断信息</strong></div>
-                <p>包含版本、设备、接口模式和错误状态；不会复制 API Key、接口地址、正文或角色设定。</p>
-                <div class="wb-setting-actions">
-                    <button type="button" data-wb-action="copy-diagnostics">复制诊断信息</button>
-                    <button type="button" data-wb-action="preview-notice">看看提示样式</button>
-                </div>
-            </div>
-                </div>
-            </details>
         </div>
     `;
 }
 
-function renderAddEventModal(state) {
+function renderEventModal(state, editorId = '') {
+    const event = editorId
+        ? state.events.find(item => item.id === editorId) || null
+        : null;
+    const isEdit = Boolean(event);
+    const durationHours = Math.max(0, Number(event?.durationMinutes || 0) / 60);
+    const durationValue = Number.isInteger(durationHours)
+        ? String(durationHours)
+        : String(Number(durationHours.toFixed(2)));
+    const startedStamp = event
+        ? formatWorldCalendar(state, event.startedAt).stamp
+        : formatWorldCalendar(state).stamp;
     return `
         <div class="wb-drawer-scrim" data-wb-action="close-event-form">
             <form class="wb-event-form" data-wb-form="event">
                 <div class="wb-form-heading">
-                    <div><span>NEW CURRENT</span><h3>放入一条暗流</h3></div>
+                    <div><span>${isEdit ? 'EDIT CURRENT' : 'NEW CURRENT'}</span><h3>${isEdit ? '修改这条暗流' : '放入一条暗流'}</h3></div>
                     <button type="button" data-wb-action="close-event-form">×</button>
                 </div>
-                <label>事件名称<input name="title" required maxlength="140" placeholder="例如：修复一台旧通讯器"></label>
-                <label>地点<input name="place" maxlength="140" placeholder="南岸维修站"></label>
-                <label>正在发生什么<textarea name="summary" maxlength="420" rows="3"></textarea></label>
-                <label>预计结果<textarea name="expectedResult" maxlength="420" rows="2"></textarea></label>
+                <input type="hidden" name="id" value="${escapeAttr(event?.id || '')}">
+                <label>事件名称<input name="title" required maxlength="140"
+                    value="${escapeAttr(event?.title || '')}" placeholder="例如：修复一台旧通讯器"></label>
+                <label>地点<input name="place" maxlength="140"
+                    value="${escapeAttr(event?.place || '')}" placeholder="南岸维修站"></label>
+                <label>正在发生什么<textarea name="summary" maxlength="420" rows="3">${escapeHtml(event?.summary || '')}</textarea></label>
+                <label>预计结果<textarea name="expectedResult" maxlength="420" rows="2">${escapeHtml(event?.expectedResult || event?.consequence || '')}</textarea></label>
                 <div class="wb-form-grid">
                     <label>计时方式
                         <select name="clockMode">
-                            <option value="duration">自然流逝</option>
-                            <option value="active">有效工时</option>
-                            <option value="scheduled">预定时间</option>
-                            <option value="condition">条件等待</option>
+                            <option value="duration" ${event?.clockMode === 'duration' || !event ? 'selected' : ''}>自然流逝</option>
+                            <option value="active" ${event?.clockMode === 'active' ? 'selected' : ''}>有效工时</option>
+                            <option value="scheduled" ${event?.clockMode === 'scheduled' ? 'selected' : ''}>预定时间</option>
+                            <option value="condition" ${event?.clockMode === 'condition' ? 'selected' : ''}>条件等待</option>
                         </select>
                     </label>
                     <label>预计耗时（小时）
-                        <input name="durationHours" type="number" min="0" step="0.5" value="12">
+                        <input name="durationHours" type="number" min="0" step="0.5"
+                            value="${isEdit ? escapeAttr(durationValue) : '12'}">
                     </label>
                 </div>
                 <label>可见边界
                     <select name="visibility">
-                        <option value="hidden">角色尚不可知</option>
-                        <option value="trace">可由痕迹察觉</option>
-                        <option value="known">可经消息获知</option>
-                        <option value="direct">可以直接感知</option>
+                        <option value="hidden" ${event?.visibility === 'hidden' || !event ? 'selected' : ''}>角色尚不可知</option>
+                        <option value="trace" ${event?.visibility === 'trace' ? 'selected' : ''}>可由痕迹察觉</option>
+                        <option value="known" ${event?.visibility === 'known' ? 'selected' : ''}>可经消息获知</option>
+                        <option value="direct" ${event?.visibility === 'direct' ? 'selected' : ''}>可以直接感知</option>
                     </select>
                 </label>
                 <div class="wb-form-note">
-                    从 ${escapeHtml(formatWorldCalendar(state).stamp)} 开始计时。
-                    回复轮次不会增加进度。
+                    ${isEdit
+                        ? `这条暗流从 ${escapeHtml(startedStamp)} 开始。修改计时方式或耗时后，会沿用原始开始时间重新计算；只改文字不会改变已有进度。`
+                        : `从 ${escapeHtml(formatWorldCalendar(state).stamp)} 开始计时。回复轮次不会增加进度。`}
                 </div>
-                <button class="wb-primary-button" type="submit">开始在后台发展</button>
+                <button class="wb-primary-button" type="submit">${isEdit ? '保存暗流修改' : '开始在后台发展'}</button>
             </form>
         </div>
     `;
@@ -1054,11 +1307,16 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
 
 function renderNowView(state, observerMode, people, activeEvents) {
     const clock = formatWorldCalendar(state);
+    const clockLabel = worldClockLabel(state, clock);
     return `
         <div class="wb-overview">
             <section class="wb-world-card">
                 <div class="wb-world-card-copy">
-                    <span class="wb-section-kicker">WORLD STATE · ${escapeHtml(clock.stamp)}</span>
+                    <div class="wb-world-card-heading-row">
+                        <span class="wb-section-kicker">WORLD STATE · ${escapeHtml(clockLabel)}</span>
+                        <button class="wb-card-action-button is-edit" type="button"
+                            data-wb-action="open-world-editor" aria-label="编辑世界概况">编辑</button>
+                    </div>
                     <h3>${escapeHtml(state.world.title)}</h3>
                     <p>${escapeHtml(state.world.detail)}</p>
                 </div>
@@ -1098,7 +1356,7 @@ function renderNowView(state, observerMode, people, activeEvents) {
     `;
 }
 
-function renderPeopleView(state, observerMode, people) {
+function renderPeopleView(state, observerMode, people, openFolds = new Set()) {
     return `
         <div class="wb-view-intro">
             <p>人物的行动首先属于她们自己。她们未说出口的心声只存在于幕后，不会偷渡成主角的知识。</p>
@@ -1107,11 +1365,16 @@ function renderPeopleView(state, observerMode, people) {
                 <button type="button" data-wb-action="open-person-editor">＋ 添加后台 NPC</button>
             </div>
         </div>
+        <div class="wb-view-fold-head">
+            <span>默认只露出地点与当前动作，展开后查看意图、长期目标和幕后独白。</span>
+            ${renderFoldToolbar('people:')}
+        </div>
         <div class="wb-people-grid">
             ${people.map(person => renderPersonCard(
                 person,
                 observerMode,
                 state.clock.absoluteMinute,
+                openFolds,
             )).join('') || renderEmpty(
                 observerMode === 'known' ? '角色目前没有可确认的人物轨迹' : '后台人物尚未建立',
                 observerMode === 'known' ? '切回幕后视角可以查看未知轨迹。' : '回复后自动推演或手动推演一次。',
@@ -1179,27 +1442,35 @@ function renderPersonEditorModal(state, editor) {
     `;
 }
 
-function renderCurrentsView(state, activeEvents) {
+function renderCurrentsView(state, activeEvents, openFolds = new Set()) {
     return `
         <div class="wb-view-intro">
             <p>每条事件都锚定主世界时间。AI回复只触发推演，时钟没有前进时，事件也不会凭轮次长到100%。</p>
             <button class="wb-inline-add" type="button" data-wb-action="open-event-form">＋ 放入一条暗流</button>
         </div>
+        <div class="wb-view-fold-head">
+            <span>摘要显示状态、地点和剩余时间；展开后查看后果、进度与操作。</span>
+            ${renderFoldToolbar('currents:')}
+        </div>
         <div class="wb-event-list is-full">
-            ${activeEvents.map(event => renderEventCard(event, state, true)).join('')
+            ${activeEvents.map(event => renderEventCard(event, state, true, openFolds)).join('')
                 || renderEmpty('进行中列表已经清空', '到时、取消或错过的事件会离开这里，结果转入回声。')}
         </div>
     `;
 }
 
-function renderEchoesView(state, outcomes) {
+function renderEchoesView(state, outcomes, openFolds = new Set()) {
     return `
         <div class="wb-view-intro">
             <p>到时事件从进行中列表离开。只有正文真正承接过的结果，才会被标为“已由正文承接”。</p>
             <span>最近结果</span>
         </div>
+        <div class="wb-view-fold-head">
+            <span>先看结果摘要与递交状态，需要时再展开完整记录。</span>
+            ${renderFoldToolbar('echoes:')}
+        </div>
         <div class="wb-echo-timeline">
-            ${outcomes.map(event => renderOutcome(event, state)).join('')
+            ${outcomes.map(event => renderOutcome(event, state, openFolds)).join('')
                 || renderEmpty('还没有形成结果', '后台发生不等于已经递交前台。')}
         </div>
     `;
@@ -1248,6 +1519,32 @@ function memoryItemMatches(item, query) {
     ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalized);
 }
 
+function resolvePersonDisplayName(state, value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const token = raw.toLocaleLowerCase();
+    const person = (state?.people || []).find(item => (
+        String(item?.id || '').trim().toLocaleLowerCase() === token
+        || String(item?.name || '').trim().toLocaleLowerCase() === token
+    ));
+    return person?.name || raw;
+}
+
+function memoryFactGroupLabel(fact, state) {
+    if (Array.isArray(fact?.people) && fact.people.length) {
+        return resolvePersonDisplayName(state, fact.people[0]);
+    }
+    return resolvePersonDisplayName(state, fact?.subject || fact?.key) || '其他事实';
+}
+
+function memoryClueGroupLabel(clue, state) {
+    if (Array.isArray(clue?.people) && clue.people.length) {
+        return resolvePersonDisplayName(state, clue.people[0]);
+    }
+    if (Array.isArray(clue?.locations) && clue.locations.length) return clue.locations[0];
+    return clue?.title || '其他伏笔';
+}
+
 function renderMemoryActions(kind, item) {
     return `
         <div class="wb-memory-card-actions">
@@ -1275,6 +1572,7 @@ function renderMemoryView(state, observerMode, {
     query = '',
     filter = 'active',
     visibleCount = 12,
+    openFolds = new Set(),
 } = {}) {
     const memory = state.storyMemory || {
         digest: null,
@@ -1293,11 +1591,11 @@ function renderMemoryView(state, observerMode, {
     const allClues = [...(memory.clues || [])]
         .filter(clue => observerMode === 'backstage' || clue.visibility !== 'hidden')
         .sort((a, b) => (
-        Number(['open', 'echoed'].includes(b.status))
-        - Number(['open', 'echoed'].includes(a.status))
-        || Number(b.importance || 0) - Number(a.importance || 0)
-        || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
-    ));
+            Number(['open', 'echoed'].includes(b.status))
+            - Number(['open', 'echoed'].includes(a.status))
+            || Number(b.importance || 0) - Number(a.importance || 0)
+            || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+        ));
     const allSummaries = observerMode === 'backstage'
         ? [...(memory.summaries || [])].sort(
             (a, b) => Number(b.endMessageId || 0) - Number(a.endMessageId || 0),
@@ -1331,6 +1629,8 @@ function renderMemoryView(state, observerMode, {
     const shownFacts = facts.slice(0, maximum);
     const shownClues = clues.slice(0, maximum);
     const shownSummaries = summaries.slice(0, maximum);
+    const factGroups = groupItems(shownFacts, fact => memoryFactGroupLabel(fact, state));
+    const clueGroups = groupItems(shownClues, clue => memoryClueGroupLabel(clue, state));
     const resultCount = facts.length + clues.length + summaries.length;
     const shownCount = shownFacts.length + shownClues.length + shownSummaries.length;
     const hasMore = shownFacts.length < facts.length
@@ -1341,8 +1641,36 @@ function renderMemoryView(state, observerMode, {
             aria-pressed="${normalizedFilter === id}"
             class="${normalizedFilter === id ? 'is-active' : ''}">${label}</button>
     `;
+    const renderFactCard = fact => `
+        <article class="wb-memory-fact-card is-${escapeAttr(fact.status)}">
+            <div class="wb-memory-fact-meta">
+                <span>${escapeHtml(memoryFactStatusLabel(fact.status))}</span>
+                <span>${escapeHtml(memoryConfidenceLabel(fact.confidence))} · 来源 ${escapeHtml(fact.sourceMessageId)}:${escapeHtml(fact.sourceSwipeId)}</span>
+            </div>
+            <h4>${escapeHtml(fact.subject || fact.key)}</h4>
+            ${fact.predicate ? `<small>${escapeHtml(fact.predicate)}</small>` : ''}
+            <p>${escapeHtml(fact.value)}</p>
+            ${fact.invalidationReason
+                ? `<div class="wb-memory-fact-note">${escapeHtml(fact.invalidationReason)}</div>`
+                : ''}
+            ${renderMemoryActions('fact', fact)}
+        </article>
+    `;
+    const renderClueCard = clue => `
+        <article class="wb-clue-card is-${escapeAttr(clue.status)}">
+            <div class="wb-clue-meta">
+                <span>${escapeHtml(clueStatusLabel(clue.status))}</span>
+                <span>第 ${escapeHtml(clue.sourceMessageId)} 层 · 重抽 ${escapeHtml(clue.sourceSwipeId)}</span>
+            </div>
+            <h4>${escapeHtml(clue.title)}</h4>
+            <p>${escapeHtml(clue.text)}</p>
+            ${clue.sourceExcerpt ? `<blockquote>${escapeHtml(clue.sourceExcerpt)}</blockquote>` : ''}
+            ${clue.resolution ? `<div class="wb-clue-resolution">${escapeHtml(clue.resolution)}</div>` : ''}
+            ${renderMemoryActions('clue', clue)}
+        </article>
+    `;
     return `
-        <div class="wb-view-intro">
+        <div class="wb-view-intro wb-memory-intro">
             <p>记忆会区分长期事实、未回收伏笔和阶段经历；旧说法被新正文改变时会保留版本关系，不把废弃分支悄悄混回来。</p>
             <div class="wb-memory-intro-actions">
                 <span>${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条有效事实 · ${allClues.filter(clue => ['open', 'echoed'].includes(clue.status)).length} 条待回收伏笔</span>
@@ -1366,14 +1694,22 @@ function renderMemoryView(state, observerMode, {
                 <small>${query ? `找到 ${resultCount} 条` : `当前分类 ${resultCount} 条`}</small>
             </div>
             ${digest?.text ? `
-                <section class="wb-memory-digest">
-                    <div>
-                        <span>CONTINUOUS MEMORY</span>
-                        <h3>持续摘要</h3>
+                <details class="wb-fold wb-memory-digest" data-fold-key="memory:digest"
+                    ${foldOpenAttr(openFolds, 'memory:digest')}>
+                    <summary class="wb-memory-digest-summary">
+                        <span>
+                            <small>CONTINUOUS MEMORY</small>
+                            <strong>持续摘要</strong>
+                        </span>
+                        <span class="wb-fold-meta">
+                            <small>整理至消息 ${escapeHtml(digest.throughMessageId)}</small>
+                            <i class="wb-fold-chevron" aria-hidden="true"></i>
+                        </span>
+                    </summary>
+                    <div class="wb-fold-body wb-memory-digest-body">
+                        <p>${escapeHtml(digest.text)}</p>
                     </div>
-                    <p>${escapeHtml(digest.text)}</p>
-                    <small>整理至消息 ${escapeHtml(digest.throughMessageId)}</small>
-                </section>
+                </details>
             ` : ''}
             ${resultCount === 0 ? renderEmpty(
                 query ? '没有找到匹配的记忆' : '这个分类暂时是空的',
@@ -1381,61 +1717,83 @@ function renderMemoryView(state, observerMode, {
             ) : `
             <div class="wb-memory-layout">
                 <section class="wb-memory-section ${shownFacts.length ? '' : 'is-hidden'}">
-                    <div class="wb-section-heading">
+                    <div class="wb-section-heading wb-memory-heading-with-folds">
                         <div><span>DURABLE FACTS</span><h3>长期事实</h3></div>
+                        ${renderFoldToolbar('memory:facts:')}
                     </div>
-                    <div class="wb-memory-fact-list">
-                        ${shownFacts.map(fact => `
-                            <article class="wb-memory-fact-card is-${escapeAttr(fact.status)}">
-                                <div class="wb-memory-fact-meta">
-                                    <span>${escapeHtml(memoryFactStatusLabel(fact.status))}</span>
-                                    <span>${escapeHtml(memoryConfidenceLabel(fact.confidence))} · 来源 ${escapeHtml(fact.sourceMessageId)}:${escapeHtml(fact.sourceSwipeId)}</span>
-                                </div>
-                                <h4>${escapeHtml(fact.subject || fact.key)}</h4>
-                                ${fact.predicate ? `<small>${escapeHtml(fact.predicate)}</small>` : ''}
-                                <p>${escapeHtml(fact.value)}</p>
-                                ${fact.invalidationReason
-                                    ? `<div class="wb-memory-fact-note">${escapeHtml(fact.invalidationReason)}</div>`
-                                    : ''}
-                                ${renderMemoryActions('fact', fact)}
-                            </article>
-                        `).join('') || renderEmpty('还没有长期事实', '明确成立且未来仍有用的信息会沉淀在这里。')}
+                    <div class="wb-memory-group-list">
+                        ${factGroups.map(group => {
+                            const foldKey = `memory:facts:${encodeURIComponent(group.label)}`;
+                            return `
+                                <details class="wb-fold wb-memory-group" data-fold-key="${escapeAttr(foldKey)}"
+                                    ${foldOpenAttr(openFolds, foldKey)}>
+                                    <summary class="wb-memory-group-summary">
+                                        <span>
+                                            <strong>${escapeHtml(group.label)}</strong>
+                                            <small>${group.items.length} 条长期事实</small>
+                                        </span>
+                                        <i class="wb-fold-chevron" aria-hidden="true"></i>
+                                    </summary>
+                                    <div class="wb-fold-body wb-memory-group-body">
+                                        ${group.items.map(renderFactCard).join('')}
+                                    </div>
+                                </details>
+                            `;
+                        }).join('') || renderEmpty('还没有长期事实', '明确成立且未来仍有用的信息会沉淀在这里。')}
                     </div>
                 </section>
                 <section class="wb-memory-section ${shownClues.length ? '' : 'is-hidden'}">
-                    <div class="wb-section-heading">
+                    <div class="wb-section-heading wb-memory-heading-with-folds">
                         <div><span>UNRESOLVED THREADS</span><h3>伏笔簿</h3></div>
+                        ${renderFoldToolbar('memory:clues:')}
                     </div>
-                    <div class="wb-clue-list">
-                        ${shownClues.map(clue => `
-                            <article class="wb-clue-card is-${escapeAttr(clue.status)}">
-                                <div class="wb-clue-meta">
-                                    <span>${escapeHtml(clueStatusLabel(clue.status))}</span>
-                                    <span>第 ${escapeHtml(clue.sourceMessageId)} 层 · 重抽 ${escapeHtml(clue.sourceSwipeId)}</span>
-                                </div>
-                                <h4>${escapeHtml(clue.title)}</h4>
-                                <p>${escapeHtml(clue.text)}</p>
-                                ${clue.sourceExcerpt ? `<blockquote>${escapeHtml(clue.sourceExcerpt)}</blockquote>` : ''}
-                                ${clue.resolution ? `<div class="wb-clue-resolution">${escapeHtml(clue.resolution)}</div>` : ''}
-                                ${renderMemoryActions('clue', clue)}
-                            </article>
-                        `).join('') || renderEmpty('伏笔簿还是空的', '真正需要回收的线索会出现在这里。')}
+                    <div class="wb-memory-group-list">
+                        ${clueGroups.map(group => {
+                            const foldKey = `memory:clues:${encodeURIComponent(group.label)}`;
+                            return `
+                                <details class="wb-fold wb-memory-group" data-fold-key="${escapeAttr(foldKey)}"
+                                    ${foldOpenAttr(openFolds, foldKey)}>
+                                    <summary class="wb-memory-group-summary">
+                                        <span>
+                                            <strong>${escapeHtml(group.label)}</strong>
+                                            <small>${group.items.length} 条相关伏笔</small>
+                                        </span>
+                                        <i class="wb-fold-chevron" aria-hidden="true"></i>
+                                    </summary>
+                                    <div class="wb-fold-body wb-memory-group-body">
+                                        ${group.items.map(renderClueCard).join('')}
+                                    </div>
+                                </details>
+                            `;
+                        }).join('') || renderEmpty('伏笔簿还是空的', '真正需要回收的线索会出现在这里。')}
                     </div>
                 </section>
             </div>
             <section class="wb-memory-summary-section ${shownSummaries.length ? '' : 'is-hidden'}">
-                <div class="wb-section-heading">
+                <div class="wb-section-heading wb-memory-heading-with-folds">
                     <div><span>EPISODIC MEMORY</span><h3>阶段经历</h3></div>
+                    ${renderFoldToolbar('memory:summary:')}
                 </div>
                 <div class="wb-summary-list">
-                    ${shownSummaries.map(summary => `
-                        <article class="wb-summary-card">
-                            <span>消息 ${escapeHtml(summary.startMessageId)}—${escapeHtml(summary.endMessageId)}</span>
-                            <h4>${escapeHtml(summary.title)}</h4>
-                            <p>${escapeHtml(summary.summary)}</p>
-                            ${renderMemoryActions('summary', summary)}
-                        </article>
-                    `).join('') || renderEmpty(
+                    ${shownSummaries.map(summary => {
+                        const foldKey = `memory:summary:${summary.id || `${summary.startMessageId}-${summary.endMessageId}`}`;
+                        return `
+                            <details class="wb-fold wb-summary-card" data-fold-key="${escapeAttr(foldKey)}"
+                                ${foldOpenAttr(openFolds, foldKey)}>
+                                <summary class="wb-summary-card-summary">
+                                    <span>
+                                        <small>消息 ${escapeHtml(summary.startMessageId)}—${escapeHtml(summary.endMessageId)}</small>
+                                        <strong>${escapeHtml(summary.title)}</strong>
+                                    </span>
+                                    <i class="wb-fold-chevron" aria-hidden="true"></i>
+                                </summary>
+                                <div class="wb-fold-body wb-summary-card-body">
+                                    <p>${escapeHtml(summary.summary)}</p>
+                                    ${renderMemoryActions('summary', summary)}
+                                </div>
+                            </details>
+                        `;
+                    }).join('') || renderEmpty(
                         observerMode === 'backstage' ? '还没有阶段经历' : '阶段经历只在幕后视角显示',
                         observerMode === 'backstage' ? '自动整理或建立历史档案后会出现在这里。' : '',
                     )}
@@ -1501,16 +1859,16 @@ function renderMemoryEditorModal(state, editor) {
     `;
 }
 
-function renderArchiveView(state, outcomes) {
+function renderArchiveView(state, outcomes, openFolds = new Set()) {
     const combined = [
-        ...state.archive,
+        ...state.archive.map(entry => ({ entry, recordKind: 'archive' })),
         ...outcomes.filter(event => (
             ['delivered', 'expired'].includes(event.delivery?.state)
             || event.visibility === 'hidden'
-        )),
+        )).map(entry => ({ entry, recordKind: 'echo' })),
     ];
     const seen = new Set();
-    const archived = combined.filter(entry => {
+    const archived = combined.filter(({ entry }) => {
         const key = entry.eventId || entry.id;
         if (seen.has(key)) return false;
         seen.add(key);
@@ -1521,9 +1879,110 @@ function renderArchiveView(state, outcomes) {
             <p>没有抵达镜头的故事也不会凭空消失。这里保留世界后果，不把它们冒充成任何角色的记忆。</p>
             <span>世界账本</span>
         </div>
+        <div class="wb-view-fold-head">
+            <span>账本默认保留日期、标题和摘要，完整内容按需展开。</span>
+            ${renderFoldToolbar('archive:')}
+        </div>
         <div class="wb-archive-ledger">
-            ${archived.map(entry => renderArchiveEntry(entry, state)).join('')
+            ${archived.map(({ entry, recordKind }) => renderArchiveEntry(entry, state, recordKind, openFolds)).join('')
                 || renderEmpty('纪事还是空的', '稳定结果形成后会留下可追溯记录。')}
+        </div>
+    `;
+}
+
+
+function renderWorldEditorModal(state) {
+    return `
+        <div class="wb-drawer-scrim" data-wb-action="close-world-editor">
+            <form class="wb-event-form wb-world-editor" data-wb-form="world">
+                <div class="wb-form-heading">
+                    <div><span>WORLD DESK</span><h3>编辑世界概况</h3></div>
+                    <button type="button" data-wb-action="close-world-editor">×</button>
+                </div>
+                <label>世界标题
+                    <input name="title" required maxlength="140" value="${escapeAttr(state.world?.title || '')}">
+                </label>
+                <label>当前概况
+                    <textarea name="detail" required maxlength="900" rows="6">${escapeHtml(state.world?.detail || '')}</textarea>
+                </label>
+                <div class="wb-form-note">这里只修改“此刻”页展示的世界概况；主世界时间请继续在观测设置里校准。</div>
+                <button class="wb-primary-button" type="submit">保存世界概况</button>
+            </form>
+        </div>
+    `;
+}
+
+function recordEditorData(state, editor) {
+    if (!editor) return null;
+    if (editor.kind === 'echo') {
+        const event = state.events.find(item => item.id === editor.id);
+        if (!event) return null;
+        return {
+            kind: 'echo',
+            id: event.id,
+            title: event.title || '',
+            text: event.result || event.expectedResult || event.consequence || '',
+            place: event.place || '',
+            visibility: event.visibility || 'hidden',
+            deliveryState: event.delivery?.state || 'none',
+        };
+    }
+    const entry = state.archive.find(item => item.id === editor.id);
+    if (!entry) return null;
+    return {
+        kind: 'archive',
+        id: entry.id,
+        title: entry.title || '未命名记录',
+        text: entry.result || entry.text || entry.consequence || entry.route || '',
+        place: '',
+        visibility: entry.visibility || 'hidden',
+        deliveryState: entry.deliveryState || entry.delivery?.state || 'none',
+    };
+}
+
+function renderRecordEditorModal(state, editor) {
+    const record = recordEditorData(state, editor);
+    if (!record) return '';
+    const isEcho = record.kind === 'echo';
+    return `
+        <div class="wb-drawer-scrim" data-wb-action="close-record-editor">
+            <form class="wb-event-form wb-record-editor" data-wb-form="record">
+                <div class="wb-form-heading">
+                    <div><span>${isEcho ? 'ECHO DESK' : 'ARCHIVE DESK'}</span><h3>${isEcho ? '编辑回声' : '编辑纪事'}</h3></div>
+                    <button type="button" data-wb-action="close-record-editor">×</button>
+                </div>
+                <input type="hidden" name="kind" value="${escapeAttr(record.kind)}">
+                <input type="hidden" name="id" value="${escapeAttr(record.id)}">
+                <label>标题
+                    <input name="title" required maxlength="140" value="${escapeAttr(record.title)}">
+                </label>
+                <label>${isEcho ? '形成的结果' : '纪事内容'}
+                    <textarea name="text" required maxlength="900" rows="6">${escapeHtml(record.text)}</textarea>
+                </label>
+                ${isEcho ? `<label>地点
+                    <input name="place" maxlength="160" value="${escapeAttr(record.place)}">
+                </label>` : ''}
+                <div class="wb-form-grid">
+                    <label>可见边界
+                        <select name="visibility">
+                            <option value="hidden" ${record.visibility === 'hidden' ? 'selected' : ''}>完全幕后</option>
+                            <option value="trace" ${record.visibility === 'trace' ? 'selected' : ''}>留下痕迹</option>
+                            <option value="known" ${record.visibility === 'known' ? 'selected' : ''}>角色可知</option>
+                            <option value="direct" ${record.visibility === 'direct' ? 'selected' : ''}>可直接显露</option>
+                        </select>
+                    </label>
+                    ${isEcho ? `<label>递交状态
+                        <select name="deliveryState">
+                            <option value="none" ${record.deliveryState === 'none' ? 'selected' : ''}>尚未递交</option>
+                            <option value="pending" ${record.deliveryState === 'pending' ? 'selected' : ''}>等待显露</option>
+                            <option value="delivered" ${record.deliveryState === 'delivered' ? 'selected' : ''}>正文已承接</option>
+                            <option value="expired" ${record.deliveryState === 'expired' ? 'selected' : ''}>未显露归档</option>
+                        </select>
+                    </label>` : ''}
+                </div>
+                <div class="wb-form-note">修改只会修正当前世界记录，不会推进主世界时间。删除则可以用底部撤销恢复。</div>
+                <button class="wb-primary-button" type="submit">保存修改</button>
+            </form>
         </div>
     `;
 }
@@ -1613,6 +2072,7 @@ export function createWorldBackstageUI({
     let isOpen = false;
     let settingsOpen = false;
     let eventFormOpen = false;
+    let eventEditorId = '';
     let selectedPersonId = null;
     let personObservation = null;
     let busy = false;
@@ -1627,8 +2087,12 @@ export function createWorldBackstageUI({
     let memoryVisibleCount = 12;
     let memoryEditor = null;
     let personEditor = null;
+    let worldEditorOpen = false;
+    let recordEditor = null;
     let settingsScrollTop = 0;
     let openSettingsGroups = new Set(['connection', 'simulation']);
+    let openSettingsSubgroups = new Set();
+    let openContentFolds = new Set();
     let eventFormDraft = null;
     let clockFormDraft = null;
     let apiFormDraft = null;
@@ -1731,11 +2195,14 @@ export function createWorldBackstageUI({
             closing = false;
             settingsOpen = false;
             eventFormOpen = false;
+            eventEditorId = '';
             eventFormDraft = null;
             clockFormDraft = null;
             tagFilterDraftRules = null;
             memoryEditor = null;
             personEditor = null;
+            worldEditorOpen = false;
+            recordEditor = null;
             selectedPersonId = null;
             personObservation = null;
             render();
@@ -1747,6 +2214,15 @@ export function createWorldBackstageUI({
         const animatePanelEntrance = Boolean(isOpen && panelEntrancePending);
         const previousContent = root.querySelector('.wb-view-content');
         if (previousContent) viewScrollTop.set(renderedView, previousContent.scrollTop);
+        const previousContentFolds = root.querySelectorAll('.wb-fold[data-fold-key]');
+        if (previousContentFolds.length) {
+            openContentFolds = new Set(
+                [...previousContentFolds]
+                    .filter(item => item.open)
+                    .map(item => item.dataset.foldKey)
+                    .filter(Boolean),
+            );
+        }
         const previousSettings = root.querySelector('.wb-settings-popover');
         if (previousSettings) settingsScrollTop = previousSettings.scrollTop;
         const previousSettingGroups = root.querySelectorAll('.wb-settings-group[data-settings-group]');
@@ -1755,6 +2231,14 @@ export function createWorldBackstageUI({
                 [...previousSettingGroups]
                     .filter(group => group.open)
                     .map(group => group.dataset.settingsGroup),
+            );
+        }
+        const previousSettingSubgroups = root.querySelectorAll('.wb-settings-subgroup[data-settings-subgroup]');
+        if (previousSettingSubgroups.length) {
+            openSettingsSubgroups = new Set(
+                [...previousSettingSubgroups]
+                    .filter(group => group.open)
+                    .map(group => group.dataset.settingsSubgroup),
             );
         }
         const previousEventForm = root.querySelector('[data-wb-form="event"]');
@@ -1794,7 +2278,10 @@ export function createWorldBackstageUI({
         const syncStatus = getSyncStatus();
         const canCancelSimulation = Boolean(syncStatus.canCancelSimulation);
         const memoryPhase = syncStatus.memory?.phase;
-        if (['running', 'error'].includes(memoryPhase)) openSettingsGroups.add('memory');
+        if (['running', 'error'].includes(memoryPhase)) {
+            openSettingsGroups.add('memory');
+            openSettingsSubgroups.add('memory-history');
+        }
         const memoryTakesFocus = ['running', 'error'].includes(memoryPhase);
         const displayPhase = memoryTakesFocus ? memoryPhase : syncStatus.phase;
         const displayPhaseLabel = memoryTakesFocus
@@ -1804,6 +2291,8 @@ export function createWorldBackstageUI({
                 : ''}`;
         const theme = themeFor(state, settings);
         const clock = formatWorldCalendar(state);
+        const clockAnchored = Boolean(state.clock?.anchored);
+        const clockLabel = worldClockLabel(state, clock);
         const orbStyles = orbInlineStyles(settings.orbPosition);
         const currentView = VIEWS.find(view => view.id === activeView) || VIEWS[0];
         const userName = String(syncStatus.userName || '').toLocaleLowerCase();
@@ -1848,15 +2337,16 @@ export function createWorldBackstageUI({
 
         let content = '';
         if (activeView === 'now') content = renderNowView(state, observerMode, visiblePeople, activeEvents);
-        if (activeView === 'people') content = renderPeopleView(state, observerMode, visiblePeople);
-        if (activeView === 'currents') content = renderCurrentsView(state, activeEvents);
-        if (activeView === 'echoes') content = renderEchoesView(state, outcomes);
+        if (activeView === 'people') content = renderPeopleView(state, observerMode, visiblePeople, openContentFolds);
+        if (activeView === 'currents') content = renderCurrentsView(state, activeEvents, openContentFolds);
+        if (activeView === 'echoes') content = renderEchoesView(state, outcomes, openContentFolds);
         if (activeView === 'memory') content = renderMemoryView(state, observerMode, {
             query: memoryQuery,
             filter: memoryFilter,
             visibleCount: memoryVisibleCount,
+            openFolds: openContentFolds,
         });
-        if (activeView === 'archive') content = renderArchiveView(state, outcomes);
+        if (activeView === 'archive') content = renderArchiveView(state, outcomes, openContentFolds);
 
         root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'}`;
         root.innerHTML = `
@@ -1894,23 +2384,35 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                            <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.8.0</i></span>
+                            <span class="wb-brand-line"><h1>世界背面</h1><i>试用版 0.8.9-dev</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
                             <div class="wb-header-center">
-                                <time class="wb-world-calendar" datetime="${escapeAttr(
+                                <time class="wb-world-calendar" ${clockAnchored ? `datetime="${escapeAttr(
                                     `${clock.year}-${String(clock.month).padStart(2, '0')}-${String(clock.dayOfMonth).padStart(2, '0')}T${clock.time}`,
-                                )}" aria-label="${escapeAttr(clock.stamp)}">
-                                    <span class="wb-calendar-page" aria-hidden="true">
-                                        <small>${escapeHtml(`${clock.month}月`)}</small>
-                                        <strong>${escapeHtml(String(clock.dayOfMonth).padStart(2, '0'))}</strong>
-                                    </span>
-                                    <span class="wb-calendar-copy">
-                                        <small>${escapeHtml(`${state.world.name} · ${clock.calendarName}`)}</small>
-                                        <strong>${escapeHtml(`${clock.year} 年 ${clock.month} 月`)}</strong>
-                                        <em>${escapeHtml(clock.time)}</em>
-                                    </span>
+                                )}"` : ''} aria-label="${escapeAttr(clockLabel)}">
+                                    ${clockAnchored ? `
+                                        <span class="wb-calendar-page" aria-hidden="true">
+                                            <small>${escapeHtml(`${clock.month}月`)}</small>
+                                            <strong>${escapeHtml(String(clock.dayOfMonth).padStart(2, '0'))}</strong>
+                                        </span>
+                                        <span class="wb-calendar-copy">
+                                            <small>${escapeHtml(`${state.world.name} · ${clock.calendarName}`)}</small>
+                                            <strong>${escapeHtml(`${clock.year} 年 ${clock.month} 月`)}</strong>
+                                            <em>${escapeHtml(clock.time)}</em>
+                                        </span>
+                                    ` : `
+                                        <span class="wb-calendar-page" aria-hidden="true">
+                                            <small>时间</small>
+                                            <strong>··</strong>
+                                        </span>
+                                        <span class="wb-calendar-copy">
+                                            <small>${escapeHtml(`${state.world.name} · 主世界钟`)}</small>
+                                            <strong>等待首次校准</strong>
+                                            <em>推演后建立</em>
+                                        </span>
+                                    `}
                                 </time>
                                 <span class="wb-live-status is-${escapeAttr(displayPhase)}">
                                     <i></i>${escapeHtml(displayPhaseLabel)}
@@ -1918,7 +2420,7 @@ export function createWorldBackstageUI({
                             </div>
                             <div class="wb-header-actions">
                                 <button type="button" class="wb-round-action" data-wb-action="cycle-theme"
-                                    aria-label="切换界面明暗"><span class="wb-theme-glyph"></span></button>
+                                    aria-label="切换日间/夜间"><span class="wb-theme-glyph"></span></button>
                                 <button type="button" class="wb-round-action ${settingsOpen ? 'is-active' : ''}"
                                     data-wb-action="toggle-settings" aria-label="观测设置">
                                     <span class="wb-settings-glyph"></span>
@@ -1960,8 +2462,8 @@ export function createWorldBackstageUI({
                                 <div class="wb-view-content ${viewChanged ? 'is-entering' : ''}">${content}</div>
                                 <footer class="wb-window-footer">
                                     <div>
-                                        <span>主世界 ${escapeHtml(clock.stamp)}</span><i></i>
-                                        <span>AI回复：只触发推演，不自动计时</span><i></i>
+                                        <span>主世界 ${escapeHtml(clockLabel)}</span><i></i>
+                                        <span>AI回复：由世界钟结算实际耗时</span><i></i>
                                         <span>独白：仅幕后可见</span>
                                     </div>
                                     <button class="wb-sim-action ${canCancelSimulation ? 'is-cancel' : ''}" type="button"
@@ -1981,6 +2483,7 @@ export function createWorldBackstageUI({
                                 settings,
                                 syncStatus,
                                 openSettingsGroups,
+                                openSettingsSubgroups,
                                 apiFormDraft,
                                 visibleTagFilterRules(settings),
                             )}
@@ -1989,9 +2492,11 @@ export function createWorldBackstageUI({
                 </div>
             ` : ''}
 
-            ${eventFormOpen ? renderAddEventModal(state) : ''}
+            ${eventFormOpen ? renderEventModal(state, eventEditorId) : ''}
             ${memoryEditor ? renderMemoryEditorModal(state, memoryEditor) : ''}
             ${personEditor ? renderPersonEditorModal(state, personEditor) : ''}
+            ${worldEditorOpen ? renderWorldEditorModal(state) : ''}
+            ${recordEditor ? renderRecordEditorModal(state, recordEditor) : ''}
             ${person ? renderPersonDrawer(person, observerMode, state.clock.absoluteMinute, {
                 canObserve: canObservePerson,
                 observation: personObservation,
@@ -2187,6 +2692,55 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'open-world-editor') {
+            worldEditorOpen = true;
+            render();
+            return;
+        }
+        if (action === 'close-world-editor') {
+            worldEditorOpen = false;
+            render();
+            return;
+        }
+        if (action === 'open-record-editor') {
+            recordEditor = {
+                kind: target.dataset.recordKind === 'archive' ? 'archive' : 'echo',
+                id: target.dataset.recordId || '',
+            };
+            render();
+            return;
+        }
+        if (action === 'close-record-editor') {
+            recordEditor = null;
+            render();
+            return;
+        }
+        if (action === 'delete-record') {
+            const kind = target.dataset.recordKind === 'archive' ? 'archive' : 'echo';
+            const confirmed = globalThis.confirm?.(`(・_・;)  确定删除这条${kind === 'echo' ? '回声' : '纪事'}吗？删除后可以用底部撤销恢复。`);
+            if (confirmed === false) return;
+            const completed = await invokeAction('delete-record', {
+                kind,
+                id: target.dataset.recordId || '',
+            });
+            if (completed && recordEditor?.id === (target.dataset.recordId || '')) recordEditor = null;
+            render();
+            return;
+        }
+        if (action === 'expand-folds' || action === 'collapse-folds') {
+            const prefix = target.dataset.foldPrefix || '';
+            const shouldOpen = action === 'expand-folds';
+            [...root.querySelectorAll('.wb-fold[data-fold-key]')]
+                .filter(item => !prefix || String(item.dataset.foldKey || '').startsWith(prefix))
+                .forEach(item => {
+                    item.open = shouldOpen;
+                    const key = item.dataset.foldKey;
+                    if (!key) return;
+                    if (shouldOpen) openContentFolds.add(key);
+                    else openContentFolds.delete(key);
+                });
+            return;
+        }
         if (action === 'set-memory-filter') {
             memoryFilter = target.dataset.filter || 'active';
             memoryVisibleCount = 12;
@@ -2304,12 +2858,34 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'open-event-form') {
+            eventEditorId = '';
             eventFormDraft = null;
             eventFormOpen = true;
             render();
             return;
         }
+        if (action === 'open-event-editor') {
+            eventEditorId = target.dataset.eventId || '';
+            eventFormDraft = null;
+            eventFormOpen = Boolean(eventEditorId);
+            render();
+            return;
+        }
+        if (action === 'delete-event') {
+            const eventId = target.dataset.eventId || '';
+            const confirmed = globalThis.confirm?.('(・_・;)  确定删除这条暗流吗？删除后可以用底部撤销恢复。');
+            if (confirmed === false) return;
+            const completed = await invokeAction('delete-event', { eventId });
+            if (completed && eventEditorId === eventId) {
+                eventEditorId = '';
+                eventFormOpen = false;
+                eventFormDraft = null;
+            }
+            render();
+            return;
+        }
         if (action === 'close-event-form') {
+            eventEditorId = '';
             eventFormDraft = null;
             eventFormOpen = false;
             render();
@@ -2324,12 +2900,18 @@ export function createWorldBackstageUI({
         }
         if (action === 'cycle-theme') {
             const settings = getSettings();
-            const next = settings.theme === 'auto'
-                ? 'day'
-                : settings.theme === 'day'
-                    ? 'night'
-                    : 'auto';
+            const state = getState();
+            // 顶栏快捷键只做“日间 ↔ 夜间”直切；自动模式仍可在设置页选择。
+            // 旧逻辑会经过 auto，若 auto 恰好解析成当前主题，视觉上像按钮失灵。
+            const currentTheme = themeFor(state, settings);
+            const next = currentTheme === 'day' ? 'night' : 'day';
             await invokeAction('update-settings', { theme: next });
+            render();
+            return;
+        }
+        if (action === 'sync-clock-from-story') {
+            clockFormDraft = null;
+            await invokeAction('sync-clock-from-story');
             render();
             return;
         }
@@ -2515,10 +3097,30 @@ export function createWorldBackstageUI({
                 notify('独立接口设置已保存，旧值不会再自动填回。', 'success');
             }
         }
+        if (form.dataset.wbForm === 'world') {
+            const completed = await invokeAction('save-world-summary', {
+                title: data.title || '',
+                detail: data.detail || '',
+            });
+            if (completed) worldEditorOpen = false;
+        }
+        if (form.dataset.wbForm === 'record') {
+            const completed = await invokeAction('save-record', {
+                kind: data.kind || 'echo',
+                id: data.id || '',
+                title: data.title || '',
+                text: data.text || '',
+                place: data.place || '',
+                visibility: data.visibility || 'hidden',
+                deliveryState: data.deliveryState || 'none',
+            });
+            if (completed) recordEditor = null;
+        }
         if (form.dataset.wbForm === 'event') {
-            const completed = await invokeAction('add-event', data);
+            const completed = await invokeAction(data.id ? 'update-event' : 'add-event', data);
             if (completed) {
                 eventFormOpen = false;
+                eventEditorId = '';
                 eventFormDraft = null;
             }
         }
@@ -2573,9 +3175,12 @@ export function createWorldBackstageUI({
             return;
         }
         if (event.key !== 'Escape') return;
-        if (selectedPersonId) selectedPersonId = null;
+        if (recordEditor) recordEditor = null;
+        else if (worldEditorOpen) worldEditorOpen = false;
+        else if (selectedPersonId) selectedPersonId = null;
         else if (eventFormOpen) {
             eventFormOpen = false;
+            eventEditorId = '';
             eventFormDraft = null;
         }
         else if (settingsOpen) {

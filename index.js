@@ -16,7 +16,9 @@ import {
     createSnapshot,
     DEFAULT_TAG_FILTER_RULES,
     extractJsonObject,
+    extractNarrativeTimeAnchor,
     filterNarrativeText,
+    formatWorldCalendar,
     countSurvivingNewAssistantTurns,
     hashText,
     selectPendingAssistantMessageIds,
@@ -36,11 +38,13 @@ import {
     runWithRetries,
 } from './api.js';
 import { createWorldBackstageUI } from './ui.js';
+import { buildBackstageMessages } from './prompt-bridge.js';
+import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
-const PLUGIN_VERSION = '0.8.1';
+const PLUGIN_VERSION = '1.0.1';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 13,
+    settingsVersion: 17,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -62,7 +66,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     includeUserInnerVoice: false,
     uiScale: 'comfortable',
     contextTurns: 5,
-    timePolicy: 'explicit',
+    timePolicy: 'world',
     apiMode: 'tavern',
     customApiUrl: '',
     customApiKey: '',
@@ -93,6 +97,7 @@ const runtime = {
     editDecision: null,
     customModels: [],
     modelPullStatus: { phase: 'idle', message: '' },
+    lastPromptBridge: null,
     worldbookScan: {
         phase: 'idle',
         message: '',
@@ -342,6 +347,10 @@ function getSettings() {
     settings.customSimulationInstruction = String(
         settings.customSimulationInstruction || '',
     ).trim().slice(0, 1000);
+    // 0.9.6 removes foreground preset bridging entirely. World Backstage now
+    // always uses its own internal compatibility layer plus task-specific system.
+    delete settings.presetBridgeEnabled;
+    delete settings.presetBridgeAdditionalPrompt;
     settings.playerIdentityAnchor = String(
         settings.playerIdentityAnchor || '',
     ).trim().slice(0, 400);
@@ -351,9 +360,12 @@ function getSettings() {
     } else {
         settings.tagFilterRules = normalizeTagFilterRules(settings.tagFilterRules);
     }
-    settings.settingsVersion = 13;
-    if (!['explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
-        settings.timePolicy = 'explicit';
+    if (previousSettingsVersion < 15) {
+        settings.timePolicy = 'world';
+    }
+    settings.settingsVersion = 17;
+    if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
+        settings.timePolicy = 'world';
     }
     if (!['tavern', 'custom'].includes(settings.apiMode)) settings.apiMode = 'tavern';
     settings.customApiUrl = String(settings.customApiUrl || '').trim().slice(0, 500);
@@ -372,7 +384,7 @@ function getSettings() {
     );
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 13) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 14) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -687,6 +699,14 @@ function getSyncStatus() {
         presentPersonIds: currentTurnPresentPersonIds(),
         availableModels: runtime.customModels,
         modelPull: runtime.modelPullStatus,
+        promptBridge: runtime.lastPromptBridge || {
+            enabled: false,
+            promptCount: 0,
+            available: false,
+            truncated: false,
+            internalCompatChars: String(INTERNAL_COMPAT_SYSTEM_PROMPT || '').trim().length,
+            at: '',
+        },
         worldbook: {
             ...runtime.worldbookScan,
             books: getWorldbookNames(),
@@ -1193,13 +1213,35 @@ function locateTargetBranch(messageId, swipeId, expectedHash) {
     return { context, message };
 }
 
+function backgroundRequestMessages(prompt, settings = getSettings(), {
+    taskKind = 'simulation',
+    rejectTruncated = false,
+} = {}) {
+    const messages = buildBackstageMessages(prompt);
+    runtime.lastPromptBridge = {
+        enabled: false,
+        removed: true,
+        taskKind,
+        promptCount: 0,
+        available: false,
+        truncated: false,
+        internalCompatChars: String(INTERNAL_COMPAT_SYSTEM_PROMPT || '').trim().length,
+        systemChars: String(messages[0]?.content || '').length,
+        userChars: String(messages[1]?.content || '').length,
+        at: new Date().toISOString(),
+    };
+    return messages;
+}
+
 async function backgroundSimulation(prompt, {
     maxTokens = 2200,
     temperature = 0.2,
     signal = null,
+    taskKind = 'simulation',
 } = {}) {
     const context = getContext();
     const settings = getSettings();
+    const messages = backgroundRequestMessages(prompt, settings, { taskKind });
     if (signal?.aborted) {
         const error = new Error('推演已由用户取消');
         error.name = 'AbortError';
@@ -1211,14 +1253,13 @@ async function backgroundSimulation(prompt, {
             runtime.syncStatus.method = settings.customApiTransport === 'direct'
                 ? '独立 API 浏览器直连'
                 : '独立 API 经酒馆转发';
-            return await requestCustomCompletion(settings, [
-                { role: 'user', content: prompt },
-            ], {
+            return await requestCustomCompletion(settings, messages, {
                 fetchImpl: globalThis.fetch.bind(globalThis),
                 getRequestHeaders: () => context?.getRequestHeaders?.() || {},
                 maxTokens,
                 temperature,
                 signal,
+                rejectTruncated,
             });
         } finally {
             runtime.inBackgroundGeneration = false;
@@ -1231,6 +1272,9 @@ async function backgroundSimulation(prompt, {
         && typeof context?.generateQuietPrompt !== 'function'
     ) {
         throw new Error('当前酒馆版本没有提供安静生成接口');
+    }
+    if (taskKind === 'person-observation' && typeof context?.generateRaw !== 'function') {
+        throw new Error('当前酒馆版本没有提供独立上下文人物观测接口；请更新 SillyTavern 或为世界背面配置独立 API');
     }
 
     runtime.inBackgroundGeneration = true;
@@ -1248,7 +1292,7 @@ async function backgroundSimulation(prompt, {
         if (typeof context.generateRaw === 'function') {
             runtime.syncStatus.method = '独立上下文推演';
             request = context.generateRaw({
-                prompt: [{ role: 'user', content: prompt }],
+                prompt: messages,
                 responseLength: maxTokens,
                 trimNames: false,
                 signal,
@@ -1256,7 +1300,7 @@ async function backgroundSimulation(prompt, {
         } else {
             runtime.syncStatus.method = '安静生成兼容模式';
             request = context.generateQuietPrompt({
-                quietPrompt: prompt,
+                quietPrompt: `${messages[0]?.content || ''}\n\n${messages[1]?.content || ''}`.trim(),
                 skipWIAN: true,
                 responseLength: maxTokens,
                 removeReasoning: true,
@@ -1338,9 +1382,10 @@ async function runSimulationForMessage(messageId, {
         20,
         Math.max(1, Number.parseInt(newAssistantCount, 10) || 1),
     );
+    const anchorContextTurns = baseState?.clock?.anchored ? 0 : 20;
     const narrative = narrativeContext(
         messageId,
-        Math.max(settings.contextTurns, assistantTurnsToApply),
+        Math.max(settings.contextTurns, assistantTurnsToApply, anchorContextTurns),
     );
     // Pending batch must come from raw chat ids (hasUsableAssistantText), not
     // narrative.turns — narrativeContext already drops empty-after-filter turns,
@@ -2290,6 +2335,8 @@ function buildDiagnosticReport() {
             transport: settings.apiMode === 'custom' ? settings.customApiTransport : 'tavern',
             configured: connection.configured,
             method: connection.method,
+            internalCompatChars: Number(runtime.lastPromptBridge?.internalCompatChars
+                ?? String(INTERNAL_COMPAT_SYSTEM_PROMPT || '').trim().length),
         },
         features: {
             worldSimulation: settings.worldSimulationEnabled,
@@ -2791,6 +2838,85 @@ function queuePersonObservation(personId) {
     return cachedPersonObservation(personId);
 }
 
+function personObservationPollutionReason(text, person) {
+    const value = String(text || '').trim();
+    if (!value) return '返回内容为空';
+    if (/<\/?content\b|<UpdateVariable\b|<JSONPatch\b|JSONPatch|<details\b/i.test(value)) {
+        return '返回内容混入了主聊天正文 / 变量更新协议';
+    }
+    const playerCentricHits = (value.match(/(?:^|[。！？\n])\s*你(?:正|又|还|已经|沿|走|坐|站|抬|低|伸|把|看|听|闻|感觉|发现|来到|回到|穿|拿|吃|喝|说|问|停|转)/g) || []).length;
+    const firstPersonHits = (value.match(/(?:^|[。！？\n，,])\s*我(?:正|又|还|已经|在|把|看|听|闻|想|觉得|发现|走|坐|站|抬|低|伸|拿|吃|喝|说|问|停|转|没|有)/g) || []).length;
+    if (playerCentricHits >= 3 && firstPersonHits === 0) {
+        return `返回内容疑似把玩家当成叙述主体，而不是 ${person?.name || '被观测人物'} 的第一人称`;
+    }
+    return '';
+}
+
+function personObservationLooksComplete(text) {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    // Character observations are prose-only. A result that ends mid-word or
+    // mid-sentence is overwhelmingly likely to be a max-token truncation on
+    // tavern-backed generation, where finish_reason is not exposed to plugins.
+    return /[。！？!?…」』”’）)\]】]$/.test(value);
+}
+
+async function generateIndependentPersonObservation(prompt, person, settings) {
+    runtime.syncStatus.method = settings.apiMode === 'custom'
+        ? '人物观测 · 世界背面独立接口'
+        : '人物观测 · 世界背面独立上下文';
+
+    const attempts = [
+        { maxTokens: 4096, temperature: 0.75 },
+        { maxTokens: 8192, temperature: 0.65 },
+    ];
+    let lastTruncation = null;
+
+    for (let index = 0; index < attempts.length; index += 1) {
+        const attempt = attempts[index];
+        try {
+            const raw = String(await backgroundSimulation(prompt, {
+                maxTokens: attempt.maxTokens,
+                temperature: attempt.temperature,
+                // Person observation must never inherit the foreground preset. It has
+                // its own POV/output contract.
+                taskKind: 'person-observation',
+                // Custom APIs expose finish_reason, so reject MAX_TOKENS/length
+                // immediately instead of accepting a visibly cut-off paragraph.
+                rejectTruncated: true,
+            }) || '');
+            const filtered = filterNarrativeText(raw, settings).trim();
+            if (!filtered) {
+                throw new Error('人物观测返回内容在标签过滤后为空');
+            }
+            const pollution = personObservationPollutionReason(filtered, person);
+            if (pollution) {
+                throw new Error(`人物观测输出污染：${pollution}`);
+            }
+            if (!personObservationLooksComplete(filtered)) {
+                const error = new Error('人物观测疑似因输出长度被截断，未保存半截内容');
+                error.code = 'OUTPUT_TRUNCATED';
+                error.partialText = filtered;
+                throw error;
+            }
+            return filtered;
+        } catch (error) {
+            if (isAbortError(error)) throw error;
+            const truncated = error?.code === 'OUTPUT_TRUNCATED'
+                || /输出达到长度上限|输出长度被截断|MAX_TOKENS|finish_reason.?length/i.test(String(error?.message || error));
+            if (!truncated) throw error;
+            lastTruncation = error;
+            if (index >= attempts.length - 1) break;
+            console.warn(`[世界背面] 人物观测疑似截断，自动提高输出额度重试（${attempt.maxTokens} → ${attempts[index + 1].maxTokens}）`);
+        }
+    }
+
+    const reason = String(lastTruncation?.finishReason || '').trim();
+    throw new Error(
+        `人物观测连续两次达到输出上限${reason ? `（${reason}）` : ''}，没有保存半截内容；请重新观测或检查当前模型的输出限制`,
+    );
+}
+
 async function observePerson(personId, { force = false } = {}) {
     const state = getState();
     const person = state.people.find(item => item.id === personId);
@@ -2822,11 +2948,7 @@ async function observePerson(personId, { force = false } = {}) {
         attemptedAt: new Date().toISOString(),
     });
     try {
-        const text = String(await backgroundSimulation(prompt, {
-            maxTokens: 1200,
-            temperature: 0.65,
-        }) || '').trim();
-        if (!text) throw new Error('人物观测没有返回内容');
+        const text = await generateIndependentPersonObservation(prompt, person, settings);
         setSyncStatus({
             phase: 'success',
             message: `${person.name} 的即时观测已经生成`,
@@ -2929,6 +3051,88 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'queue-person-observation') {
         return queuePersonObservation(String(payload.personId || ''));
+    }
+
+    if (action === 'save-world-summary') {
+        const title = String(payload.title || '').trim();
+        const detail = String(payload.detail || '').trim();
+        if (!title || !detail) throw new Error('世界标题和概况不能为空');
+        const next = clone(getState());
+        next.world ||= {};
+        next.world.title = title.slice(0, 140);
+        next.world.detail = detail.slice(0, 900);
+        commitManualState(next, '世界概况已经更新。');
+        return next.world;
+    }
+
+    if (action === 'save-record') {
+        const kind = payload.kind === 'archive' ? 'archive' : 'echo';
+        const id = String(payload.id || '');
+        const title = String(payload.title || '').trim();
+        const text = String(payload.text || '').trim();
+        if (!title || !text) throw new Error('标题和内容不能为空');
+        const next = clone(getState());
+        const visibility = ['hidden', 'trace', 'known', 'direct'].includes(payload.visibility)
+            ? payload.visibility
+            : 'hidden';
+
+        if (kind === 'echo') {
+            const event = next.events.find(item => item.id === id);
+            if (!event) throw new Error('没有找到这条回声');
+            event.title = title.slice(0, 140);
+            event.result = text.slice(0, 900);
+            event.consequence = event.result;
+            event.place = String(payload.place || event.place || '').trim().slice(0, 160);
+            event.visibility = visibility;
+            event.delivery ||= { state: 'none' };
+            event.delivery.state = ['none', 'pending', 'delivered', 'expired'].includes(payload.deliveryState)
+                ? payload.deliveryState
+                : event.delivery.state;
+            event.updatedAt = next.clock.absoluteMinute;
+            for (const echo of next.echoes || []) {
+                if (echo.eventId !== event.id) continue;
+                echo.title = event.title;
+                echo.route = event.result;
+            }
+            for (const entry of next.archive || []) {
+                if (entry.eventId !== event.id) continue;
+                entry.title = event.title;
+                entry.text = event.result;
+                entry.visibility = event.visibility;
+                entry.deliveryState = event.delivery.state;
+            }
+            commitManualState(next, `回声“${event.title}”已经更新。`);
+            return event;
+        }
+
+        const entry = next.archive.find(item => item.id === id);
+        if (!entry) throw new Error('没有找到这条纪事');
+        entry.title = title.slice(0, 140);
+        entry.text = text.slice(0, 900);
+        entry.visibility = visibility;
+        entry.manual = true;
+        commitManualState(next, `纪事“${entry.title}”已经更新。`);
+        return entry;
+    }
+
+    if (action === 'delete-record') {
+        const kind = payload.kind === 'archive' ? 'archive' : 'echo';
+        const id = String(payload.id || '');
+        const next = clone(getState());
+        if (kind === 'echo') {
+            const index = next.events.findIndex(item => item.id === id);
+            if (index < 0) throw new Error('没有找到这条回声');
+            const [removed] = next.events.splice(index, 1);
+            next.echoes = (next.echoes || []).filter(item => item.eventId !== removed.id);
+            next.archive = (next.archive || []).filter(item => item.eventId !== removed.id);
+            commitManualState(next, `回声“${removed.title}”已经删除。`);
+            return;
+        }
+        const index = next.archive.findIndex(item => item.id === id);
+        if (index < 0) throw new Error('没有找到这条纪事');
+        const [removed] = next.archive.splice(index, 1);
+        commitManualState(next, `纪事“${removed.title || '未命名记录'}”已经删除。`);
+        return;
     }
 
     if (action === 'save-memory-item') {
@@ -3082,6 +3286,45 @@ async function handleUiAction(action, payload = {}) {
         return;
     }
 
+    if (action === 'sync-clock-from-story') {
+        const latest = latestAssistantEntry();
+        if (!latest?.message) {
+            toast('未识别正文时间。', 'warning');
+            return false;
+        }
+        const anchor = extractNarrativeTimeAnchor(selectedMessageText(latest.message));
+        if (!anchor) {
+            toast('未识别正文时间。', 'warning');
+            return false;
+        }
+
+        const current = getState();
+        const clock = formatWorldCalendar(current);
+        const hasDate = Number.isFinite(anchor.year) && Number.isFinite(anchor.month) && Number.isFinite(anchor.day);
+        const hasMinute = Number.isFinite(anchor.hour) && Number.isFinite(anchor.minute);
+        const next = setWorldCalendar(current, {
+            calendarName: clock.calendarName,
+            year: hasDate ? anchor.year : clock.year,
+            month: hasDate ? anchor.month : clock.month,
+            day: hasDate ? anchor.day : clock.dayOfMonth,
+            hour: hasMinute ? anchor.hour : clock.hour,
+            minute: hasMinute ? anchor.minute : clock.minute,
+            reason: `与最新正文校准${anchor.excerpt ? `：${anchor.excerpt}` : ''}`,
+        });
+        next.clock.precision = hasMinute ? 'minute' : (anchor.daypart ? 'daypart' : 'date');
+        next.clock.source = 'narrative-manual-sync';
+        next.clock.reason = `手动与最新正文校准${anchor.excerpt ? `：${anchor.excerpt}` : ''}`.slice(0, 240);
+        commitManualState(
+            next,
+            hasDate && hasMinute
+                ? `已与正文校准至 ${anchor.year}年${anchor.month}月${anchor.day}日 ${String(anchor.hour).padStart(2, '0')}:${String(anchor.minute).padStart(2, '0')}。`
+                : hasDate
+                    ? `已同步正文日期：${anchor.year}年${anchor.month}月${anchor.day}日${anchor.daypart ? ` · ${anchor.daypart}` : ''}；正文未给出精确钟点，保留当前时分。`
+                    : `已同步正文钟点：${String(anchor.hour).padStart(2, '0')}:${String(anchor.minute).padStart(2, '0')}。`,
+        );
+        return true;
+    }
+
     if (action === 'set-clock') {
         const next = setWorldCalendar(getState(), {
             calendarName: payload.calendarName,
@@ -3122,6 +3365,84 @@ async function handleUiAction(action, payload = {}) {
             delivery_route: '',
         });
         commitManualState(next, `暗流“${payload.title}”已经开始发展。`);
+        return;
+    }
+
+    if (action === 'update-event') {
+        const eventId = String(payload.id || payload.eventId || '');
+        const title = String(payload.title || '').trim();
+        if (!title) throw new Error('事件名称不能为空');
+
+        const next = clone(getState());
+        const event = next.events.find(item => item.id === eventId);
+        if (!event) throw new Error('没有找到这条暗流');
+        if (['resolved', 'cancelled', 'missed'].includes(event.status)) {
+            throw new Error('已经形成结果的事件请在“回声”中查看，不能再作为暗流修改');
+        }
+
+        const previousClockMode = event.clockMode;
+        const previousDuration = Number(event.durationMinutes) || 0;
+        const clockMode = ['duration', 'active', 'scheduled', 'condition'].includes(payload.clockMode)
+            ? payload.clockMode
+            : event.clockMode;
+        const durationHours = Math.max(0, Number(payload.durationHours) || 0);
+        const durationMinutes = Math.round(durationHours * 60);
+        const timingChanged = previousClockMode !== clockMode || previousDuration !== durationMinutes;
+
+        event.title = title.slice(0, 140);
+        event.place = String(payload.place || '地点待确认').trim().slice(0, 140) || '地点待确认';
+        event.summary = String(payload.summary || '').trim().slice(0, 420);
+        event.expectedResult = String(payload.expectedResult || '').trim().slice(0, 420);
+        event.consequence = event.expectedResult;
+        event.visibility = ['hidden', 'trace', 'known', 'direct'].includes(payload.visibility)
+            ? payload.visibility
+            : event.visibility;
+        event.clockMode = clockMode;
+        event.durationMinutes = durationMinutes;
+
+        if (timingChanged) {
+            if (clockMode === 'duration' || clockMode === 'scheduled') {
+                event.dueAt = Number(event.startedAt || next.clock.absoluteMinute) + durationMinutes;
+                event.accruedMinutes = 0;
+                if (event.dueAt <= next.clock.absoluteMinute) {
+                    event.status = 'ready';
+                } else if (event.status === 'ready') {
+                    event.status = 'active';
+                    event.result = '';
+                }
+            } else if (clockMode === 'active') {
+                event.dueAt = null;
+                event.accruedMinutes = Math.min(Number(event.accruedMinutes) || 0, durationMinutes || Number.MAX_SAFE_INTEGER);
+                if (durationMinutes > 0 && event.accruedMinutes >= durationMinutes) {
+                    event.status = 'ready';
+                } else if (event.status === 'ready') {
+                    event.status = 'active';
+                    event.result = '';
+                }
+            } else {
+                event.dueAt = null;
+                event.accruedMinutes = 0;
+                if (event.status === 'ready') {
+                    event.status = 'active';
+                    event.result = '';
+                }
+            }
+        }
+
+        event.updatedAt = next.clock.absoluteMinute;
+        event.resolvedAt = null;
+        commitManualState(next, `暗流“${event.title}”已经更新。`);
+        return event;
+    }
+
+    if (action === 'delete-event') {
+        const eventId = String(payload.eventId || payload.id || '');
+        const next = clone(getState());
+        const index = next.events.findIndex(item => item.id === eventId);
+        if (index < 0) throw new Error('没有找到这条暗流');
+        const [removed] = next.events.splice(index, 1);
+        next.echoes = (next.echoes || []).filter(echo => echo.eventId !== eventId);
+        commitManualState(next, `暗流“${removed.title}”已经删除。`);
         return;
     }
 

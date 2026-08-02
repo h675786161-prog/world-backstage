@@ -547,12 +547,15 @@
 #world-backstage-root .wb-side-sync {
     margin-top: auto;
     min-height: 40px;
-    padding: 8px 10px !important;
-    border: 1px solid color-mix(in srgb, var(--wb-accent) 28%, var(--wb-line)) !important;
-    border-radius: 12px;
+    padding: 9px 14px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 36%, var(--wb-line)) !important;
+    border-radius: 999px;
     background:
-        linear-gradient(135deg, color-mix(in srgb, var(--wb-accent-soft) 72%, transparent), transparent),
+        linear-gradient(180deg, color-mix(in srgb, var(--wb-panel) 92%, transparent), color-mix(in srgb, var(--wb-accent-soft) 82%, transparent)),
         var(--wb-panel-faint);
+    box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
+        0 8px 18px color-mix(in srgb, var(--wb-accent-soft) 18%, transparent);
     color: var(--wb-text-soft);
     cursor: pointer;
 }
@@ -569,7 +572,10 @@
 }
 
 #world-backstage-root .wb-side-sync:hover {
-    border-color: color-mix(in srgb, var(--wb-accent) 58%, var(--wb-line)) !important;
+    border-color: color-mix(in srgb, var(--wb-accent) 62%, var(--wb-line)) !important;
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--wb-panel) 88%, transparent), color-mix(in srgb, var(--wb-accent-soft) 92%, transparent)),
+        var(--wb-panel-faint);
     color: var(--wb-accent);
 }
 
@@ -582,12 +588,14 @@
     display: inline-flex !important;
     align-items: center;
     justify-content: center;
-    gap: 7px;
+    gap: 8px;
     font-family: var(--wb-font) !important;
+    font-size: 12px;
+    line-height: 1;
     font-weight: 600;
     letter-spacing: 0.025em;
     white-space: nowrap;
-    transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 150ms ease;
+    transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
 }
 
 #world-backstage-root .wb-sim-action > i {
@@ -802,6 +810,7 @@
 .wb-window-footer {
     justify-content: space-between;
     gap: 14px;
+    min-height: 52px;
     padding: 0 22px 0 26px;
     border-top: 1px solid var(--wb-line);
     background: color-mix(in srgb, var(--wb-bg-soft) 72%, transparent);
@@ -826,18 +835,32 @@
 
 #world-backstage-root .wb-window-footer > button {
     flex: 0 0 auto;
-    min-height: 34px;
-    padding: 7px 13px !important;
-    border: 1px solid color-mix(in srgb, var(--wb-accent) 34%, var(--wb-line)) !important;
-    border-radius: 10px;
-    background: var(--wb-accent-soft);
+    min-height: 38px;
+    padding: 8px 16px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 38%, var(--wb-line)) !important;
+    border-radius: 999px;
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--wb-panel) 95%, transparent), color-mix(in srgb, var(--wb-accent-soft) 88%, transparent)),
+        var(--wb-accent-soft);
+    box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
+        0 8px 18px color-mix(in srgb, var(--wb-accent-soft) 18%, transparent);
     color: var(--wb-text-soft);
     cursor: pointer;
+}
+
+#world-backstage-root .wb-window-footer > button:hover {
+    border-color: color-mix(in srgb, var(--wb-accent) 62%, var(--wb-line)) !important;
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--wb-panel) 92%, transparent), color-mix(in srgb, var(--wb-accent-soft) 96%, transparent)),
+        var(--wb-accent-soft);
+    color: var(--wb-accent);
 }
 
 .wb-window-footer > button:disabled {
     cursor: wait;
     opacity: 0.58;
+    box-shadow: none;
 }
 
 .wb-world-card {
@@ -1165,6 +1188,41 @@
 .wb-event-delivery-toggle:disabled {
     opacity: 0.45;
     cursor: not-allowed;
+}
+
+.wb-event-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    margin-top: 8px;
+}
+
+.wb-event-card-actions .wb-event-delivery-toggle {
+    margin-top: 0;
+}
+
+.wb-event-edit-button,
+.wb-event-delete-button {
+    min-height: 30px;
+    padding: 7px 11px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    font-size: 0.78em;
+    cursor: pointer;
+}
+
+.wb-event-edit-button:hover {
+    border-color: color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line));
+    color: var(--wb-accent);
+}
+
+.wb-event-delete-button:hover {
+    border-color: color-mix(in srgb, var(--wb-danger) 52%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-danger) 8%, transparent);
+    color: var(--wb-danger);
 }
 
 .wb-memory-intro-actions {
@@ -2178,7 +2236,7 @@
 
 .wb-clock-fields {
     display: grid;
-    grid-template-columns: 1fr 1fr auto;
+    grid-template-columns: 1fr 1fr minmax(96px, auto) minmax(72px, auto);
     gap: 7px;
     margin-top: 11px;
 }
@@ -2204,6 +2262,19 @@
     background: var(--wb-accent-soft);
     color: var(--wb-accent);
     cursor: pointer;
+}
+
+.wb-clock-fields .wb-clock-manual-save {
+    border: 1px solid var(--wb-line) !important;
+    background: transparent;
+    color: var(--wb-text-faint);
+}
+
+.wb-clock-sync-note {
+    margin: 8px 0 0;
+    color: var(--wb-text-faint);
+    font-size: 8px;
+    line-height: 1.55;
 }
 
 .wb-time-actions {
@@ -4645,4 +4716,1049 @@
 .wb-tag-filter-add:disabled {
     opacity: 0.45;
     cursor: not-allowed;
+}
+
+
+/* 0.8.8-dev · consistent edit controls for world / echoes / archive */
+#world-backstage-root .wb-world-card-heading-row,
+#world-backstage-root .wb-archive-heading-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+#world-backstage-root .wb-card-action-button {
+    appearance: none !important;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-width: 0 !important;
+    min-height: 28px !important;
+    padding: 0 10px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 22%, var(--wb-line)) !important;
+    border-radius: 999px !important;
+    outline: none;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--wb-accent-soft) 58%, transparent), transparent), var(--wb-panel-faint) !important;
+    box-shadow: none !important;
+    color: var(--wb-text-soft) !important;
+    font-family: var(--wb-font) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.04em;
+    line-height: 1 !important;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+#world-backstage-root .wb-card-action-button.is-edit::before {
+    width: 10px;
+    height: 10px;
+    content: "";
+    opacity: 0.72;
+    background: currentColor;
+    clip-path: polygon(12% 70%, 12% 90%, 32% 90%, 89% 33%, 68% 12%);
+}
+
+#world-backstage-root .wb-card-action-button.is-danger {
+    border-color: color-mix(in srgb, var(--wb-danger) 15%, var(--wb-line)) !important;
+    background: var(--wb-panel-faint) !important;
+    color: var(--wb-text-faint) !important;
+}
+
+#world-backstage-root .wb-card-action-button.is-edit:hover,
+#world-backstage-root .wb-card-action-button.is-edit:focus-visible {
+    border-color: color-mix(in srgb, var(--wb-accent) 55%, var(--wb-line)) !important;
+    background: var(--wb-accent-soft) !important;
+    color: var(--wb-accent) !important;
+    transform: translateY(-1px);
+}
+
+#world-backstage-root .wb-card-action-button.is-danger:hover,
+#world-backstage-root .wb-card-action-button.is-danger:focus-visible {
+    border-color: color-mix(in srgb, var(--wb-danger) 48%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-danger) 8%, var(--wb-panel)) !important;
+    color: var(--wb-danger) !important;
+    transform: translateY(-1px);
+}
+
+#world-backstage-root .wb-card-action-button:active {
+    transform: translateY(0) scale(0.98) !important;
+}
+
+#world-backstage-root .wb-event-edit-button,
+#world-backstage-root .wb-event-delete-button {
+    min-height: 28px !important;
+    padding: 0 10px !important;
+    border-radius: 999px !important;
+    font-family: var(--wb-font) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.04em;
+}
+
+#world-backstage-root .wb-echo-copy {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+#world-backstage-root .wb-record-side {
+    flex: 0 0 auto;
+    display: grid;
+    justify-items: end;
+    gap: 9px;
+}
+
+#world-backstage-root .wb-record-state {
+    padding: 5px 8px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 13px);
+}
+
+#world-backstage-root .wb-record-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+#world-backstage-root .wb-archive-heading-row h3 {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+#world-backstage-root .wb-archive-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 9px;
+}
+
+#world-backstage-root .wb-archive-tags > span {
+    padding: 4px 7px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    color: var(--wb-text-faint);
+    font-size: 7px;
+}
+
+@media (max-width: 640px) {
+    #world-backstage-root .wb-echo-card {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+    #world-backstage-root .wb-record-side {
+        width: 100%;
+        justify-items: start;
+    }
+    #world-backstage-root .wb-archive-heading-row {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+}
+
+
+/* 0.9.1-dev · settings order + unified current action controls */
+#world-backstage-root .wb-event-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+#world-backstage-root .wb-event-card-actions .wb-card-action-button {
+    min-height: 30px !important;
+    height: 30px;
+    padding: 0 11px !important;
+    margin: 0 !important;
+    border-radius: 999px !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.035em;
+    line-height: 1 !important;
+}
+
+#world-backstage-root .wb-card-action-button.is-primary {
+    border-color: color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-accent-soft) 52%, var(--wb-panel-faint)) !important;
+    color: var(--wb-text-soft) !important;
+}
+
+#world-backstage-root .wb-card-action-button.is-primary:hover,
+#world-backstage-root .wb-card-action-button.is-primary:focus-visible,
+#world-backstage-root .wb-card-action-button.is-primary.is-queued {
+    border-color: color-mix(in srgb, var(--wb-accent) 52%, var(--wb-line)) !important;
+    background: var(--wb-accent-soft) !important;
+    color: var(--wb-accent) !important;
+}
+
+#world-backstage-root .wb-card-action-button.is-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none !important;
+}
+
+#world-backstage-root .wb-event-card-actions .wb-card-action-button.is-edit,
+#world-backstage-root .wb-event-card-actions .wb-card-action-button.is-danger {
+    background: var(--wb-panel-faint) !important;
+}
+
+/* 0.9.2-dev · advanced maintenance + nested settings folds */
+#world-backstage-root .wb-advanced-settings-body {
+    display: grid;
+    gap: 8px;
+}
+
+#world-backstage-root .wb-settings-subgroup {
+    margin-top: 10px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 86%, transparent);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--wb-panel-faint) 74%, transparent);
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-settings-subgroup + .wb-settings-subgroup {
+    margin-top: 0;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 39px;
+    padding: 9px 11px;
+    list-style: none;
+    color: var(--wb-text-soft);
+    cursor: pointer;
+    user-select: none;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary::-webkit-details-marker {
+    display: none;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary::after {
+    grid-column: 2;
+    grid-row: 1;
+    content: "⌄";
+    color: var(--wb-text-faint);
+    font-size: 12px;
+    transition: transform 150ms ease;
+}
+
+#world-backstage-root .wb-settings-subgroup[open] > summary::after {
+    transform: rotate(180deg);
+}
+
+#world-backstage-root .wb-settings-subgroup > summary > span {
+    font-size: 10px;
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary > small {
+    grid-column: 1;
+    overflow: hidden;
+    color: var(--wb-text-faint);
+    font-size: 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-settings-subgroup-body {
+    padding: 10px 11px 11px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 78%, transparent);
+}
+
+#world-backstage-root .wb-settings-subgroup-body > p {
+    margin: 0;
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-maintenance-status {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 7px;
+}
+
+#world-backstage-root .wb-maintenance-status strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--wb-text);
+    font-size: 10px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-maintenance-status span {
+    flex: 0 0 auto;
+    color: var(--wb-text-faint);
+    font-size: 8px;
+}
+
+/* 0.9.4-dev · universal nested settings layout */
+#world-backstage-root .wb-settings-group-body.wb-settings-subgroup-stack {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+}
+
+#world-backstage-root .wb-settings-subgroup-stack > .wb-settings-subgroup {
+    width: 100%;
+    margin: 0;
+    box-sizing: border-box;
+}
+
+#world-backstage-root .wb-settings-subgroup-stack > .wb-settings-subgroup + .wb-settings-subgroup {
+    margin-top: 0;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary {
+    min-height: 42px;
+    padding: 9px 12px;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary > span {
+    font-size: 10px;
+    line-height: 1.35;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary > small {
+    margin-top: 1px;
+    font-size: 8px;
+    line-height: 1.35;
+}
+
+#world-backstage-root .wb-settings-subgroup-body {
+    display: grid;
+    gap: 10px;
+    padding: 11px 12px 12px;
+}
+
+#world-backstage-root .wb-settings-subgroup-body > .wb-setting-block,
+#world-backstage-root .wb-settings-subgroup-body > .wb-setting-toggle,
+#world-backstage-root .wb-settings-subgroup-body > .wb-connection-card,
+#world-backstage-root .wb-settings-subgroup-body > .wb-history-settings,
+#world-backstage-root .wb-settings-subgroup-body > .wb-clock-form,
+#world-backstage-root .wb-settings-subgroup-body > .wb-setting-actions,
+#world-backstage-root .wb-settings-subgroup-body > .wb-api-form,
+#world-backstage-root .wb-settings-subgroup-body > .wb-worldbook-import {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+#world-backstage-root .wb-advanced-settings-body {
+    gap: 8px;
+}
+
+@media (max-width: 720px) {
+    #world-backstage-root .wb-settings-group-body.wb-settings-subgroup-stack {
+        gap: 7px;
+        padding: 8px;
+    }
+
+    #world-backstage-root .wb-settings-subgroup > summary {
+        min-height: 40px;
+        padding: 8px 10px;
+    }
+
+    #world-backstage-root .wb-settings-subgroup-body {
+        padding: 10px;
+    }
+}
+
+/* 0.9.5-dev · unified content folding */
+#world-backstage-root .wb-fold > summary {
+    list-style: none;
+}
+
+#world-backstage-root .wb-fold > summary::-webkit-details-marker {
+    display: none;
+}
+
+#world-backstage-root .wb-fold > summary:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--wb-accent) 42%, transparent);
+    outline-offset: -2px;
+}
+
+#world-backstage-root .wb-fold-chevron {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    color: var(--wb-text-faint);
+    transform: rotate(45deg) translate(-1px, -1px);
+    transform-origin: center;
+    transition: transform 150ms ease, color 150ms ease;
+}
+
+#world-backstage-root .wb-fold[open] > summary .wb-fold-chevron {
+    color: var(--wb-accent);
+    transform: rotate(225deg) translate(-1px, -1px);
+}
+
+#world-backstage-root .wb-fold-meta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex: 0 0 auto;
+    color: var(--wb-text-faint);
+}
+
+#world-backstage-root .wb-fold-status {
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-view-fold-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin: -5px 0 14px;
+    padding: 0 2px;
+}
+
+#world-backstage-root .wb-view-fold-head > span {
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-fold-toolbar {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+}
+
+#world-backstage-root .wb-fold-toolbar button {
+    min-height: 26px;
+    padding: 0 9px !important;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 999px;
+    background: var(--wb-panel-faint) !important;
+    color: var(--wb-text-faint) !important;
+    font-size: 8px !important;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-fold-toolbar button:hover,
+#world-backstage-root .wb-fold-toolbar button:focus-visible {
+    border-color: color-mix(in srgb, var(--wb-accent) 40%, var(--wb-line)) !important;
+    color: var(--wb-accent) !important;
+}
+
+/* people: compact summary first, details on demand */
+#world-backstage-root .wb-person-card {
+    display: block;
+    padding: 0;
+    cursor: default;
+}
+
+#world-backstage-root .wb-person-card:hover {
+    transform: none;
+}
+
+#world-backstage-root .wb-person-card[open] {
+    border-color: color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line)) !important;
+}
+
+#world-backstage-root .wb-person-card-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    padding: 14px 15px;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-person-summary-main {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+#world-backstage-root .wb-person-summary-copy {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+#world-backstage-root .wb-person-summary-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-person-summary-heading strong {
+    min-width: 0;
+    color: var(--wb-text);
+    font-family: "Iowan Old Style", "Noto Serif SC", "Songti SC", serif;
+    font-size: 15px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-person-summary-heading small {
+    max-width: 58%;
+    color: var(--wb-text-faint);
+    font-size: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-person-summary-action {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    line-height: 1.55;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+#world-backstage-root .wb-person-card-summary .wb-person-sim-state {
+    margin: 0;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-person-card-body {
+    padding: 0 15px 15px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 80%, transparent);
+}
+
+#world-backstage-root .wb-person-detail-row {
+    display: grid;
+    grid-template-columns: 58px minmax(0, 1fr);
+    gap: 10px;
+    padding-top: 12px;
+}
+
+#world-backstage-root .wb-person-detail-row > span {
+    color: var(--wb-text-faint);
+    font-size: 8px;
+}
+
+#world-backstage-root .wb-person-detail-row > p {
+    margin: 0;
+    color: var(--wb-text-soft);
+    font-size: 10px;
+    line-height: 1.65;
+}
+
+#world-backstage-root .wb-person-thread.is-current-action {
+    margin-top: 12px;
+    border-left-color: color-mix(in srgb, var(--wb-accent) 72%, var(--wb-line-strong));
+    background:
+        linear-gradient(90deg, color-mix(in srgb, var(--wb-accent-soft) 72%, transparent), transparent 72%),
+        var(--wb-panel-faint);
+}
+
+#world-backstage-root .wb-person-thread.is-current-action small {
+    color: color-mix(in srgb, var(--wb-accent) 72%, var(--wb-text-faint));
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+#world-backstage-root .wb-person-thread.is-current-action strong {
+    color: var(--wb-text);
+}
+
+#world-backstage-root .wb-person-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 13px;
+}
+
+/* currents */
+#world-backstage-root .wb-event-card.is-wide {
+    padding: 0;
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-event-card.is-wide[open] {
+    border-color: color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line));
+}
+
+#world-backstage-root .wb-event-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-width: 0;
+    padding: 16px 18px;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-event-summary-copy {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+#world-backstage-root .wb-event-summary-copy > strong {
+    color: var(--wb-text);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-event-summary-copy > small {
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-event-card-body {
+    padding: 0 18px 17px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 80%, transparent);
+}
+
+#world-backstage-root .wb-event-card-body > p {
+    margin: 13px 0 0;
+}
+
+/* echoes */
+#world-backstage-root .wb-echo-card {
+    display: block;
+    padding: 0;
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-echo-card[open] {
+    border-color: color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line));
+}
+
+#world-backstage-root .wb-echo-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-width: 0;
+    padding: 14px 16px;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-echo-summary .wb-echo-copy {
+    display: grid;
+    gap: 5px;
+}
+
+#world-backstage-root .wb-echo-summary .wb-echo-copy > strong {
+    color: var(--wb-text);
+    font-size: 14px;
+}
+
+#world-backstage-root .wb-echo-summary .wb-echo-copy > small {
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-echo-body {
+    padding: 0 16px 14px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 80%, transparent);
+}
+
+#world-backstage-root .wb-echo-body > p {
+    margin: 12px 0;
+    color: var(--wb-text-soft);
+    font-size: 11px;
+    line-height: 1.7;
+}
+
+/* archive */
+#world-backstage-root .wb-archive-copy {
+    min-width: 0;
+}
+
+#world-backstage-root .wb-archive-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    padding: 2px 0 9px;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-archive-summary > span {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-archive-summary strong {
+    color: var(--wb-text);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-archive-summary small {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    line-height: 1.55;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+#world-backstage-root .wb-archive-body {
+    padding: 0 0 4px;
+}
+
+#world-backstage-root .wb-archive-body .wb-record-actions {
+    margin-top: 10px;
+}
+
+/* memory intro + grouped folds */
+#world-backstage-root .wb-view-intro.wb-memory-intro {
+    align-items: center;
+}
+
+#world-backstage-root .wb-memory-intro-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    height: auto;
+    background: none;
+}
+
+#world-backstage-root .wb-memory-intro-actions > span {
+    padding: 5px 8px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    color: var(--wb-text-faint);
+    background: var(--wb-panel-faint);
+    font-size: 8px;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-memory-intro-actions > button {
+    min-height: 29px;
+    border-radius: 999px !important;
+}
+
+#world-backstage-root .wb-memory-heading-with-folds {
+    align-items: center;
+}
+
+#world-backstage-root .wb-memory-group-list {
+    display: grid;
+    gap: 9px;
+    margin-top: 12px;
+}
+
+#world-backstage-root .wb-memory-group {
+    overflow: hidden;
+    border: 1px solid var(--wb-line);
+    border-radius: 13px;
+    background: var(--wb-panel);
+}
+
+#world-backstage-root .wb-memory-group[open] {
+    border-color: color-mix(in srgb, var(--wb-accent) 22%, var(--wb-line));
+}
+
+#world-backstage-root .wb-memory-group-summary,
+#world-backstage-root .wb-summary-card-summary,
+#world-backstage-root .wb-memory-digest-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-memory-group-summary {
+    padding: 12px 13px;
+}
+
+#world-backstage-root .wb-memory-group-summary > span,
+#world-backstage-root .wb-summary-card-summary > span,
+#world-backstage-root .wb-memory-digest-summary > span:first-child {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-memory-group-summary strong,
+#world-backstage-root .wb-summary-card-summary strong,
+#world-backstage-root .wb-memory-digest-summary strong {
+    color: var(--wb-text);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-memory-group-summary small,
+#world-backstage-root .wb-summary-card-summary small,
+#world-backstage-root .wb-memory-digest-summary small {
+    color: var(--wb-text-faint);
+    font-size: 8px;
+}
+
+#world-backstage-root .wb-memory-group-body {
+    display: grid;
+    gap: 9px;
+    padding: 0 10px 10px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 80%, transparent);
+}
+
+#world-backstage-root .wb-memory-group-body > article:first-child {
+    margin-top: 10px;
+}
+
+#world-backstage-root .wb-memory-group-body .wb-memory-fact-card,
+#world-backstage-root .wb-memory-group-body .wb-clue-card {
+    border-color: color-mix(in srgb, var(--wb-line) 72%, transparent);
+    background: var(--wb-panel-faint);
+}
+
+#world-backstage-root .wb-memory-digest {
+    display: block;
+    padding: 0;
+}
+
+#world-backstage-root .wb-memory-digest-summary {
+    padding: 13px 16px;
+}
+
+#world-backstage-root .wb-memory-digest-body {
+    padding: 0 16px 14px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 80%, transparent);
+}
+
+#world-backstage-root .wb-memory-digest-body p {
+    margin: 11px 0 0;
+}
+
+#world-backstage-root .wb-summary-card {
+    padding: 0;
+}
+
+#world-backstage-root .wb-summary-card-summary {
+    padding: 12px 13px;
+}
+
+#world-backstage-root .wb-summary-card-body {
+    padding: 0 13px 12px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 80%, transparent);
+}
+
+#world-backstage-root .wb-summary-card-body > p {
+    margin: 10px 0 0;
+}
+
+@media (max-width: 720px) {
+    #world-backstage-root .wb-view-fold-head {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    #world-backstage-root .wb-fold-toolbar {
+        align-self: stretch;
+    }
+
+    #world-backstage-root .wb-fold-toolbar button {
+        flex: 1 1 0;
+    }
+
+    #world-backstage-root .wb-person-card-summary,
+    #world-backstage-root .wb-event-summary,
+    #world-backstage-root .wb-echo-summary {
+        align-items: flex-start;
+    }
+
+    #world-backstage-root .wb-person-summary-heading {
+        display: grid;
+        gap: 3px;
+    }
+
+    #world-backstage-root .wb-person-summary-heading small {
+        max-width: 100%;
+        text-align: left;
+    }
+
+    #world-backstage-root .wb-fold-meta {
+        gap: 7px;
+    }
+
+    #world-backstage-root .wb-fold-status,
+    #world-backstage-root .wb-person-card-summary .wb-person-sim-state {
+        display: none;
+    }
+
+    #world-backstage-root .wb-memory-layout {
+        grid-template-columns: 1fr;
+    }
+
+    #world-backstage-root .wb-view-intro.wb-memory-intro {
+        align-items: stretch;
+    }
+
+    #world-backstage-root .wb-memory-intro-actions {
+        justify-content: flex-start;
+    }
+}
+
+/* 0.9.6-dev · independent folds + restored readable typography */
+#world-backstage-root .wb-people-grid {
+    align-items: start;
+}
+
+#world-backstage-root .wb-people-grid > .wb-person-card {
+    align-self: start;
+    height: auto;
+}
+
+/* Fold controls follow the same reading scale as the rest of the panel. */
+#world-backstage-root .wb-fold-status,
+#world-backstage-root .wb-view-fold-head > span,
+#world-backstage-root .wb-fold-toolbar button,
+#world-backstage-root .wb-person-summary-heading small,
+#world-backstage-root .wb-person-detail-row > span,
+#world-backstage-root .wb-memory-intro-actions > span,
+#world-backstage-root .wb-memory-group-summary small,
+#world-backstage-root .wb-summary-card-summary small,
+#world-backstage-root .wb-memory-digest-summary small {
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
+    line-height: calc(1.45 + var(--wb-reading-leading));
+}
+
+#world-backstage-root .wb-person-summary-heading strong,
+#world-backstage-root .wb-event-summary-copy > strong,
+#world-backstage-root .wb-echo-summary .wb-echo-copy > strong,
+#world-backstage-root .wb-archive-summary strong,
+#world-backstage-root .wb-memory-group-summary strong,
+#world-backstage-root .wb-summary-card-summary strong,
+#world-backstage-root .wb-memory-digest-summary strong {
+    font-size: clamp(16px, calc(16px + var(--wb-reading-bump)), 22px) !important;
+    line-height: calc(1.35 + var(--wb-reading-leading));
+}
+
+#world-backstage-root .wb-person-summary-action,
+#world-backstage-root .wb-person-detail-row > p,
+#world-backstage-root .wb-event-summary-copy > small,
+#world-backstage-root .wb-echo-summary .wb-echo-copy > small,
+#world-backstage-root .wb-echo-body > p,
+#world-backstage-root .wb-archive-summary small {
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 18px) !important;
+    line-height: calc(1.6 + var(--wb-reading-leading));
+}
+
+#world-backstage-root .wb-person-card-summary {
+    padding: 16px 17px;
+}
+
+#world-backstage-root .wb-person-card-body {
+    padding: 0 17px 17px;
+}
+
+#world-backstage-root .wb-fold-toolbar button {
+    min-height: 30px;
+    padding-inline: 11px !important;
+}
+
+/* 0.9.7-dev · person detail blocks share one visual language */
+#world-backstage-root .wb-person-card-body > .wb-person-thread {
+    border-radius: 0 11px 11px 0;
+}
+
+#world-backstage-root .wb-person-card-body > .wb-person-thread + .wb-person-thread {
+    margin-top: 10px;
+}
+
+
+/* 0.9.8-dev · restore readable typography across Observation settings */
+#world-backstage-root .wb-settings-popover .wb-settings-group > summary > span {
+    font-size: clamp(13px, calc(13px + var(--wb-reading-bump)), 18px) !important;
+    line-height: 1.35;
+}
+
+#world-backstage-root .wb-settings-popover .wb-settings-group > summary > small {
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 15px) !important;
+    line-height: 1.45;
+}
+
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup > summary > span {
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 17px) !important;
+    line-height: 1.35;
+}
+
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup > summary > small {
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
+    line-height: 1.45;
+}
+
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body label,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body .wb-setting-toggle strong,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body .wb-number-setting,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body .wb-custom-instruction {
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 16px) !important;
+}
+
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body p,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body small,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body .wb-form-note,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body .wb-setting-toggle span,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body .wb-connection-card > small {
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 15px) !important;
+    line-height: calc(1.5 + var(--wb-reading-leading));
+}
+
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body button,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body .wb-option-row button,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body .wb-setting-actions button {
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 15px) !important;
+}
+
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body input,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body textarea,
+#world-backstage-root .wb-settings-popover .wb-settings-subgroup-body select {
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 17px) !important;
+}
+
+@media (max-width: 700px) {
+    #world-backstage-root .wb-settings-popover .wb-settings-group > summary > span {
+        font-size: clamp(13px, calc(13px + var(--wb-reading-bump)), 17px) !important;
+    }
+    #world-backstage-root .wb-settings-popover .wb-settings-group > summary > small {
+        font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 14px) !important;
+    }
+    #world-backstage-root .wb-settings-popover .wb-settings-subgroup > summary > span {
+        font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 16px) !important;
+    }
+    #world-backstage-root .wb-settings-popover .wb-settings-subgroup > summary > small {
+        font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px) !important;
+    }
 }

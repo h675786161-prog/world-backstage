@@ -271,6 +271,7 @@ export async function requestCustomCompletion(settings, messages, {
     temperature = 0.2,
     timeoutMs = null,
     signal = null,
+    rejectTruncated = false,
 } = {}) {
     if (typeof fetchImpl !== 'function') {
         throw new Error('当前环境不支持网络请求');
@@ -367,8 +368,16 @@ export async function requestCustomCompletion(settings, messages, {
             + (useDeepSeekV4Compatibility ? 'DS4 思考可能占满了中转站的输出额度' : ''),
         );
     }
-    // Some OpenAI-compatible providers report MAX_TOKENS even when the JSON body is
-    // already complete. Preserve non-empty output and let the JSON parser decide;
-    // an actually truncated object will enter the compact retry path instead.
+    const hitLengthLimit = /length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason);
+    if (hitLengthLimit && rejectTruncated) {
+        const error = new Error(`独立 API 输出达到长度上限（${finishReason}），本任务不接受被截断的结果`);
+        error.code = 'OUTPUT_TRUNCATED';
+        error.finishReason = finishReason;
+        error.partialText = completion;
+        throw error;
+    }
+    // Structured simulation calls may still receive a complete JSON object even
+    // when a provider reports MAX_TOKENS. Preserve non-empty output there and let
+    // the JSON parser decide whether compact retry is necessary.
     return completion;
 }

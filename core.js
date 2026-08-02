@@ -1,7 +1,7 @@
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
 
@@ -129,7 +129,7 @@ export function hasExplicitTimeEvidence(text) {
 
 export function resolveElapsedMinutes(rawMinutes, narrativeText, policy = 'explicit') {
     const minutes = asInteger(rawMinutes, 0, 0, 5 * 365 * MINUTES_PER_DAY);
-    if (policy === 'open') return minutes;
+    if (policy === 'open' || policy === 'world') return minutes;
     if (hasExplicitTimeEvidence(narrativeText)) return minutes;
     if (policy === 'cautious') return Math.min(minutes, 180);
     return 0;
@@ -189,6 +189,89 @@ function addCalendarDays(date, days) {
         year: value.getUTCFullYear(),
         month: value.getUTCMonth() + 1,
         day: value.getUTCDate(),
+    };
+}
+
+function calendarDayDifference(fromDate, toDate) {
+    const from = normalizeCalendarDate(fromDate);
+    const to = normalizeCalendarDate(toDate, from);
+    const asUtcDay = value => {
+        const date = new Date(0);
+        date.setUTCHours(12, 0, 0, 0);
+        date.setUTCFullYear(value.year, value.month - 1, value.day);
+        return Math.floor(date.getTime() / (24 * 60 * 60 * 1000));
+    };
+    return asUtcDay(to) - asUtcDay(from);
+}
+
+function extractExplicitCalendarDate(text = '') {
+    const source = asString(text, '', 60000);
+    const patterns = [
+        /(?:^|\D)(\d{1,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日(?:\D|$)/g,
+        /(?:^|\D)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\D|$)/g,
+    ];
+    let latest = null;
+    for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) {
+            const year = Number(match[1]);
+            const month = Number(match[2]);
+            const day = Number(match[3]);
+            if (year < 1 || year > 9999 || month < 1 || month > 12) continue;
+            if (day < 1 || day > daysInCalendarMonth(year, month)) continue;
+            const index = Number(match.index ?? 0);
+            if (!latest || index >= latest.index) {
+                latest = { year, month, day, index, excerpt: match[0].trim() };
+            }
+        }
+    }
+    return latest;
+}
+
+
+/**
+ * 从一条正文中读取“作者明确写出来”的时间锚点。
+ * 手动“与正文校准”使用它：不调用模型、不推断缺失的钟点。
+ * 优先解析正文的“时间与地点” details；找不到时才回退到整条正文。
+ */
+export function extractNarrativeTimeAnchor(text = '') {
+    const source = asString(text, '', 60000);
+    if (!source.trim()) return null;
+
+    const detailMatches = [...source.matchAll(/<details\b[^>]*>[\s\S]*?<summary\b[^>]*>[\s\S]*?(?:时间\s*[与和]\s*地点|时间地点)[\s\S]*?<\/summary>[\s\S]*?<\/details>/giu)];
+    const scope = detailMatches.length
+        ? String(detailMatches.at(-1)?.[0] || '')
+        : source;
+
+    const date = extractExplicitCalendarDate(scope) || (scope === source ? null : extractExplicitCalendarDate(source));
+
+    // 形如 ▶07:40→08:15：结尾时间代表这段正文结束时的时间。
+    const transitions = [...scope.matchAll(/(?:▶|>)?\s*([01]?\d|2[0-3])\s*:\s*([0-5]\d)\s*(?:→|->|至|到)\s*([01]?\d|2[0-3])\s*:\s*([0-5]\d)/gu)];
+    let exact = null;
+    if (transitions.length) {
+        const match = transitions.at(-1);
+        exact = { hour: Number(match[3]), minute: Number(match[4]), excerpt: match[0].trim() };
+    } else {
+        // 时间栏里只有单个明确钟点时也允许同步。限制在“时间与地点”区域可减少误抓正文中的普通数字。
+        const times = [...scope.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])\s*:\s*([0-5]\d)(?!\d)/gu)];
+        if (times.length) {
+            const match = times.at(-1);
+            exact = { hour: Number(match[1]), minute: Number(match[2]), excerpt: match[0].trim() };
+        }
+    }
+
+    const daypartMatch = [...scope.matchAll(/(?:凌晨|黎明|清晨|早晨|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|深夜)/gu)].at(-1);
+    const daypart = daypartMatch?.[0] || '';
+
+    if (!date && !exact) return null;
+    return {
+        year: date?.year ?? null,
+        month: date?.month ?? null,
+        day: date?.day ?? null,
+        hour: exact?.hour ?? null,
+        minute: exact?.minute ?? null,
+        daypart,
+        precision: date && exact ? 'minute' : date ? (daypart ? 'daypart' : 'date') : 'minute',
+        excerpt: [date?.excerpt, exact?.excerpt, daypart].filter(Boolean).join(' · ').slice(0, 240),
     };
 }
 
@@ -289,6 +372,8 @@ export function createInitialState({
             lastCheckedAt: absoluteMinute,
             source: 'initial',
             reason: '建立主世界时钟',
+            anchored: false,
+            precision: 'uninitialized',
         },
         people: [],
         events: [],
@@ -813,6 +898,7 @@ export function settleTimedEvents(inputState, targetMinute, {
     const previousStamp = formatWorldCalendar(state, previousMinute).stamp;
 
     state.clock = {
+        ...state.clock,
         absoluteMinute: nextMinute,
         lastCheckedAt: nextMinute,
         source,
@@ -1038,6 +1124,16 @@ function applyClueUpdates(state, {
 }
 
 function normalizeSimulationResult(payload) {
+    const rawClockAnchor = payload?.clock_anchor ?? payload?.clockAnchor ?? {};
+    const anchorMode = ['none', 'initialize', 'calibrate'].includes(rawClockAnchor?.mode)
+        ? rawClockAnchor.mode
+        : 'none';
+    const anchorPrecision = ['minute', 'daypart', 'date'].includes(rawClockAnchor?.precision)
+        ? rawClockAnchor.precision
+        : 'minute';
+    const anchorConfidence = ['low', 'medium', 'high'].includes(rawClockAnchor?.confidence)
+        ? rawClockAnchor.confidence
+        : 'low';
     return {
         elapsedMinutes: asInteger(
             payload?.elapsed_minutes ?? payload?.elapsedMinutes,
@@ -1046,6 +1142,45 @@ function normalizeSimulationResult(payload) {
             5 * 365 * MINUTES_PER_DAY,
         ),
         timeReason: asString(payload?.time_reason ?? payload?.timeReason, '', 320),
+        clockAnchor: {
+            mode: anchorMode,
+            calendarName: asString(
+                rawClockAnchor?.calendar_name ?? rawClockAnchor?.calendarName,
+                '',
+                40,
+            ),
+            year: asInteger(rawClockAnchor?.year, 0, 0, 9999),
+            month: asInteger(rawClockAnchor?.month, 0, 0, 12),
+            day: asInteger(rawClockAnchor?.day, 0, 0, 31),
+            hour: asInteger(rawClockAnchor?.hour, 0, 0, 23),
+            minute: asInteger(rawClockAnchor?.minute, 0, 0, 59),
+            hasDate: (() => {
+                const year = Number(rawClockAnchor?.year);
+                const month = Number(rawClockAnchor?.month);
+                const day = Number(rawClockAnchor?.day);
+                return Number.isFinite(year) && year >= 1 && year <= 9999
+                    && Number.isFinite(month) && month >= 1 && month <= 12
+                    && Number.isFinite(day) && day >= 1 && day <= 31;
+            })(),
+            hasTime: (() => {
+                const rawHour = rawClockAnchor?.hour;
+                const rawMinute = rawClockAnchor?.minute;
+                if (rawHour === null || rawHour === undefined || rawHour === '') return false;
+                if (rawMinute === null || rawMinute === undefined || rawMinute === '') return false;
+                const hour = Number(rawHour);
+                const minute = Number(rawMinute);
+                return Number.isFinite(hour) && hour >= 0 && hour <= 23
+                    && Number.isFinite(minute) && minute >= 0 && minute <= 59;
+            })(),
+            precision: anchorPrecision,
+            confidence: anchorConfidence,
+            sourceExcerpt: asString(
+                rawClockAnchor?.source_excerpt ?? rawClockAnchor?.sourceExcerpt,
+                '',
+                220,
+            ),
+            reason: asString(rawClockAnchor?.reason, '', 240),
+        },
         world: {
             title: asString(payload?.world?.title, '', 180),
             detail: asString(payload?.world?.detail, '', 640),
@@ -1091,13 +1226,63 @@ export function applySimulationResult(baseState, rawPayload, {
     backgroundNpcBudget = LIMITS.people,
 } = {}) {
     const payload = normalizeSimulationResult(rawPayload);
+    const baseClockAnchored = Boolean(baseState?.clock?.anchored);
+    const anchor = payload.clockAnchor;
+    const narrativeCalendar = extractExplicitCalendarDate(narrativeText);
+
+    // Date and clock time are intentionally separate. A story may give an
+    // authoritative YYYY/M/D while only saying “清晨/下午” for the time of day.
+    // Older builds required both fields, which caused the calendar date to stay
+    // on the placeholder epoch forever.
+    if (
+        !baseClockAnchored
+        && !anchor?.hasDate
+        && narrativeCalendar
+        && timePolicy === 'world'
+    ) {
+        anchor.mode = 'initialize';
+        anchor.year = narrativeCalendar.year;
+        anchor.month = narrativeCalendar.month;
+        anchor.day = narrativeCalendar.day;
+        anchor.hasDate = true;
+        anchor.precision = anchor.precision === 'minute' ? 'date' : anchor.precision;
+        anchor.confidence = ['medium', 'high'].includes(anchor.confidence)
+            ? anchor.confidence
+            : 'high';
+        anchor.sourceExcerpt = anchor.sourceExcerpt || narrativeCalendar.excerpt;
+        anchor.reason = anchor.reason || '从正文中的明确年月日建立主世界历法锚点';
+    }
+
+    const anchorHasDate = Boolean(anchor?.hasDate);
+    const anchorHasExactTime = Boolean(anchor?.hasTime);
+    const initializeClock = !baseClockAnchored
+        && anchorHasDate
+        && ['initialize', 'calibrate'].includes(anchor?.mode)
+        && ['medium', 'high'].includes(anchor?.confidence);
+    const recalibrateClock = baseClockAnchored
+        && anchorHasDate
+        && anchor?.mode === 'calibrate'
+        && anchor?.confidence === 'high';
+    const anchorApplied = initializeClock || recalibrateClock;
+    const exactAnchorApplied = anchorApplied && anchorHasExactTime;
+
     const requestedElapsedMinutes = payload.elapsedMinutes;
     const explicitTimeEvidence = hasExplicitTimeEvidence(narrativeText);
-    payload.elapsedMinutes = resolveElapsedMinutes(
-        requestedElapsedMinutes,
-        narrativeText,
-        timePolicy,
-    );
+    if (exactAnchorApplied) {
+        // A minute-precise clock_anchor represents the end-of-batch story time.
+        // Applying elapsed_minutes on top would double-count the same span.
+        payload.elapsedMinutes = 0;
+    } else if (!anchorApplied && !baseClockAnchored && timePolicy === 'world') {
+        // In world-clock mode, do not let the placeholder epoch drift forward.
+        // The first successful time operation must establish a real story anchor.
+        payload.elapsedMinutes = 0;
+    } else {
+        payload.elapsedMinutes = resolveElapsedMinutes(
+            requestedElapsedMinutes,
+            narrativeText,
+            timePolicy,
+        );
+    }
     if (!explicitTimeEvidence && timePolicy !== 'open') {
         for (const update of payload.eventsUpdate) {
             const requestedWork = asInteger(
@@ -1107,19 +1292,87 @@ export function applySimulationResult(baseState, rawPayload, {
             );
             const guardedWork = timePolicy === 'cautious'
                 ? Math.min(requestedWork, 180)
-                : 0;
+                : timePolicy === 'world'
+                    ? requestedWork
+                    : 0;
             update.worked_minutes = guardedWork;
             update.workedMinutes = guardedWork;
         }
     }
-    if (requestedElapsedMinutes > 0 && payload.elapsedMinutes === 0) {
+    if (anchorApplied) {
+        payload.timeReason = anchor.reason
+            || (initializeClock ? '从故事上下文建立主世界时间锚点' : '正文给出新的可靠绝对时间，校准主世界时钟');
+    } else if (!baseClockAnchored && timePolicy === 'world') {
+        payload.timeReason = '尚未找到足够可靠的故事时间锚点，本轮不推进占位时钟';
+    } else if (requestedElapsedMinutes > 0 && payload.elapsedMinutes === 0) {
         payload.timeReason = '正文没有明确、可计算的时间证据，本轮保持世界时钟不动';
     } else if (payload.elapsedMinutes < requestedElapsedMinutes) {
         payload.timeReason = `正文时间较含糊，本轮最多推进 ${payload.elapsedMinutes} 分钟`;
     }
+    let anchoredBaseState = baseState;
+    if (initializeClock) {
+        const currentClock = formatWorldCalendar(baseState);
+        anchoredBaseState = setWorldCalendar(baseState, {
+            calendarName: anchor.calendarName || baseState?.world?.calendar?.name || '主世界历',
+            year: anchor.year,
+            month: anchor.month,
+            day: anchor.day,
+            hour: anchorHasExactTime ? anchor.hour : currentClock.hour,
+            minute: anchorHasExactTime ? anchor.minute : currentClock.minute,
+            reason: payload.timeReason,
+        });
+        anchoredBaseState.clock.source = 'narrative-anchor-init';
+        anchoredBaseState.clock.anchored = true;
+        anchoredBaseState.clock.precision = anchor.precision;
+        appendAudit(anchoredBaseState, {
+            type: 'clock_anchor_initialized',
+            text: `主世界时间锚点建立：${formatWorldCalendar(anchoredBaseState).stamp}`,
+            reason: anchor.sourceExcerpt
+                ? `${payload.timeReason}；依据：${anchor.sourceExcerpt}`
+                : payload.timeReason,
+        });
+    } else if (recalibrateClock) {
+        const current = formatWorldCalendar(baseState);
+        const dayDelta = calendarDayDifference({
+            year: current.year,
+            month: current.month,
+            day: current.dayOfMonth,
+        }, {
+            year: anchor.year,
+            month: anchor.month,
+            day: anchor.day,
+        });
+        const currentMinuteOfDay = current.hour * 60 + current.minute;
+        const anchorMinuteOfDay = anchorHasExactTime
+            ? anchor.hour * 60 + anchor.minute
+            : currentMinuteOfDay;
+        const targetMinute = Math.max(
+            0,
+            baseState.clock.absoluteMinute
+                + dayDelta * MINUTES_PER_DAY
+                + anchorMinuteOfDay
+                - currentMinuteOfDay,
+        );
+        anchoredBaseState = settleTimedEvents(baseState, targetMinute, {
+            source: 'narrative-anchor',
+            reason: payload.timeReason,
+        });
+        if (anchor.calendarName) {
+            anchoredBaseState.world.calendar.name = anchor.calendarName;
+        }
+        anchoredBaseState.clock.anchored = true;
+        anchoredBaseState.clock.precision = anchor.precision;
+        appendAudit(anchoredBaseState, {
+            type: 'clock_anchor_recalibrated',
+            text: `主世界时间重新校准：${formatWorldCalendar(anchoredBaseState).stamp}`,
+            reason: anchor.sourceExcerpt
+                ? `${payload.timeReason}；依据：${anchor.sourceExcerpt}`
+                : payload.timeReason,
+        });
+    }
     let state = settleTimedEvents(
-        baseState,
-        baseState.clock.absoluteMinute + payload.elapsedMinutes,
+        anchoredBaseState,
+        anchoredBaseState.clock.absoluteMinute + payload.elapsedMinutes,
         { source: 'narrative', reason: payload.timeReason || '正文推演' },
     );
     const worldMinute = state.clock.absoluteMinute;
@@ -1328,7 +1581,10 @@ export function setWorldClock(inputState, {
         + asInteger(hour, 0, 0, 23) * 60
         + asInteger(minute, 0, 0, 59)
     );
-    return settleTimedEvents(inputState, target, { source: 'manual', reason });
+    const state = settleTimedEvents(inputState, target, { source: 'manual', reason });
+    state.clock.anchored = true;
+    state.clock.precision = 'minute';
+    return trimState(state);
 }
 
 export function setWorldCalendar(inputState, {
@@ -1358,6 +1614,8 @@ export function setWorldCalendar(inputState, {
         anchorMonth: date.month,
         anchorDay: date.day,
     };
+    state.clock.anchored = true;
+    state.clock.precision = 'minute';
     appendAudit(state, {
         type: 'calendar_calibrated',
         text: `历法校准为 ${formatWorldCalendar(state).stamp}`,
@@ -1497,11 +1755,22 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
 
     const lines = ['<world_backstage_state>'];
     if (injectWorld) {
-        lines.push(
-            `权威主世界时间：${state.world.name} · ${clock.stamp}`,
-            `整体状态：${state.world.title}；${state.world.detail}`,
-            '一致性规则：当前时间与下列人物位置是本轮事实源；没有明确经过时间时，不要擅自推进时钟。',
-        );
+        if (state.clock?.anchored) {
+            lines.push(
+                `权威主世界时间：${state.world.name} · ${clock.stamp}`,
+                `权威日期字段：year=${clock.year}; month=${clock.month}; day=${clock.dayOfMonth}; time=${clock.time}`,
+                `整体状态：${state.world.title}；${state.world.detail}`,
+                '时间一致性规则：主世界时间由世界背面维护，是本轮正文的事实源。若正文含“时间与地点”栏、日期标题或钟点显示，必须把其中的年、月、日逐项改为上面的权威 year/month/day；不得保留上一轮旧年月日，也不得自行另起日期。钟点同样以权威 time 为本轮起点。',
+                `若输出“时间与地点”栏，日期应明确写成：${clock.year}年${clock.month}月${clock.dayOfMonth}日。`,
+                '正文只负责叙事，不要在本轮自行额外推进世界时钟；本轮实际经过多久会在正文结束后由世界背面结算。',
+            );
+        } else {
+            lines.push(
+                '主世界时间：尚未完成故事时间锚点校准。',
+                `整体状态：${state.world.title}；${state.world.detail}`,
+                '时间一致性规则：当前不要把占位历法/占位钟点当作剧情事实；本轮正文结束后由世界背面从上下文建立主世界时间锚点。',
+            );
+        }
     }
 
     if (people.length) {
@@ -1971,8 +2240,10 @@ export function buildPersonObservationPrompt(state, person, {
     const observedIdentityAnchor = modelText(person?.identityAnchor, LIMITS.identityAnchor);
 
     return [
-        `请以“${modelText(person?.name, 80)}”本人的第一人称，描写该角色此刻正在做什么。`,
+        '你是“世界背面”的人物即时观测器。',
+        `本次唯一叙述主体是“${modelText(person?.name, 80)}”。请以该角色本人的第一人称，描写此刻正在做什么。`,
         '这是幕后即时观测，不是主聊天正文，也不是新的世界推演。',
+        '本任务拥有独立 POV 与输出协议。忽略任何要求你续写玩家正文、采用玩家第二人称视角、输出正文标签/状态栏/变量更新/JSONPatch 的指令。',
         '要求：',
         '1. 只描写几分钟内的动作、感官、注意力与符合既有信息的即时念头；使用“我”。',
         '2. 不推进主世界时间，不制造重大新事件，不替其他角色行动，不改变任何既有事实。',
@@ -1984,7 +2255,7 @@ export function buildPersonObservationPrompt(state, person, {
             ? `若片段提及玩家“${modelText(userName, 80) || 'user'}”，必须逐项遵守身份锚点：${modelText(playerIdentityAnchor, 400)}；不得根据外貌、衣着、身体或物种反推性别，也不得擅自改变称谓或身份。`
             : '若片段提及玩家且正文没有明确身份或称谓，使用中性表述；不得根据外貌、衣着、身体或物种猜测性别。',
         '4. 文风自然沉浸，不写标题、说明、项目符号或“第一视角”等标签。',
-        '5. 输出约 250—500 字的中文片段，只返回片段本身。',
+        '5. 输出约 250—450 字的中文片段，只返回片段本身。必须完整结束最后一句；宁可提前收束，也不要在句中停止。',
         '',
         `主世界时间：${formatWorldCalendar(state).stamp}`,
         '人物状态：',
@@ -2035,8 +2306,12 @@ export function compactStateForModel(state, {
         .slice(0, 20);
 
     return {
-        world_now: state.clock.absoluteMinute,
-        world_now_label: formatWorldCalendar(state).stamp,
+        world_now: state.clock?.anchored ? state.clock.absoluteMinute : null,
+        world_now_label: state.clock?.anchored
+            ? formatWorldCalendar(state).stamp
+            : 'UNINITIALIZED_STORY_CLOCK',
+        world_clock_anchored: Boolean(state.clock?.anchored),
+        world_clock_precision: state.clock?.precision || 'uninitialized',
         world: {
             name: modelText(state.world.name, 80),
             title: modelText(state.world.title, 140),
@@ -2105,7 +2380,7 @@ export function buildSimulationPrompt(state, {
     narrativeTurns = [],
     userName = '',
     includeUserInnerVoice = false,
-    timePolicy = 'explicit',
+    timePolicy = 'world',
     simulationMode = 'balanced',
     customInstruction = '',
     playerIdentityAnchor = '',
@@ -2154,6 +2429,7 @@ export function buildSimulationPrompt(state, {
         explicit: '严格时间：只有正文明确给出几点、多少分钟/小时/天或明确跨到次日时，elapsed_minutes 才能大于 0；“夜幕降临、过了一会、首夜、许久”等氛围或模糊词一律填 0。',
         cautious: '克制估算：明确时间正常计算；只有模糊时间变化时可以保守估算，但不得超过 180 分钟。',
         open: '开放估算：允许依据清楚的叙事时间变化估算经过时长，但仍不得把回复轮次当时间。',
+        world: '世界钟模式：主世界时钟一旦建立就是连续时间基准。不要重新猜“现在几点”；只根据 new="true" 正文里真实发生的行动、路程、等待、睡眠、工作等估算本批实际经过时长。没有事件耗时就填 0；不得把回复轮次本身当时间。',
     }[timePolicy] || '严格时间：没有明确、可计算的时间证据就填 0。';
     const identityAnchor = modelText(playerIdentityAnchor, 400);
     const playerIdentityRule = identityAnchor
@@ -2179,6 +2455,10 @@ export function buildSimulationPrompt(state, {
         '',
         '推演原则：',
         `1. 主世界时间是唯一进度轴。${timeRule}`,
+        '1A. clock_anchor 是绝对时间校准口。年月日与钟点可以分开成立：若正文明确给出 YYYY年M月D日，即使只有“清晨/下午”等模糊时段，也必须把 year/month/day 填入 clock_anchor；只有能够可靠确定具体钟点时才填写 hour/minute。minute 精度锚点表示本批 new 正文结束时的完整时间，插件不会再叠加 elapsed_minutes；date/daypart 精度只校准历法日期，elapsed_minutes 仍用于结算本批经过时长。',
+        '1B. 当推演前状态 world_clock_anchored=false：必须优先扫描当前上下文，寻找最可靠的故事时间锚点并返回 clock_anchor.mode="initialize"。明确年月日属于强锚点，必须同步；钟点可以由剧情证据推断，若证据不足就只返回 date/daypart 精度，不要为了凑字段编造分钟。建立后不要每轮重猜。',
+        '1C. 当 world_clock_anchored=true：旧的正文时间栏只视为展示信息，可能已经滞后，不能单凭它反向覆盖主世界时钟。只有本批新正文在剧情内容里明确建立了新的绝对时间事实（例如“第二天早上七点”“看表是15:20”“三天后上午十点”），且与连续时间明显冲突或发生跳时，才返回 clock_anchor.mode="calibrate"；此时 confidence 必须为 high。',
+        '1D. 模糊时段只能辅助 elapsed_minutes 或首次初始化，不得在每轮把主时钟重新对齐到某个固定“清晨/晚上”钟点。',
         `本次尺度：${simulationRule}`,
         '2. 玩家/用户的行动只能来自正文已经发生的内容，不得替玩家新增行动。',
         `3. 前台已经发生的事实必须回写人物位置、行动和事件；本次最多更新 ${npcBudget} 名镜头外 NPC。其余人物保持休眠，不得为了“热闹”集体更新。`,
@@ -2219,6 +2499,19 @@ export function buildSimulationPrompt(state, {
         JSON.stringify({
             elapsed_minutes: 0,
             time_reason: '',
+            clock_anchor: {
+                mode: 'none',
+                calendar_name: '',
+                year: null,
+                month: null,
+                day: null,
+                hour: null,
+                minute: null,
+                precision: 'minute',
+                confidence: 'low',
+                source_excerpt: '',
+                reason: '',
+            },
             world: { title: '', detail: '' },
             people_upsert: [{
                 id: '',
@@ -2646,6 +2939,7 @@ export function countSurvivingNewAssistantTurns(narrativeTurns, pendingMessageId
 
 export function trimState(inputState) {
     const state = deepClone(inputState);
+    const previousSchemaVersion = asInteger(state.schemaVersion, 0, 0);
     state.schemaVersion = SCHEMA_VERSION;
     const absoluteMinute = asInteger(state.clock?.absoluteMinute, MINUTES_PER_DAY, 0);
     const absoluteDay = Math.floor(absoluteMinute / MINUTES_PER_DAY);
@@ -2655,6 +2949,21 @@ export function trimState(inputState) {
         detail: asString(state.world?.detail, '', 640),
         calendar: normalizeWorldCalendar(state.world?.calendar, absoluteDay),
     };
+    const rawCalendar = state.world.calendar;
+    const hasCalendarCalibrationAudit = asArray(state.audit).some(entry => (
+        ['calendar_calibrated', 'clock_anchor_initialized', 'clock_anchor_recalibrated']
+            .includes(entry?.type)
+    ));
+    const legacyCalendarLooksPlaceholder = previousSchemaVersion < 8
+        && rawCalendar?.name === '主世界历'
+        && Number(rawCalendar?.anchorYear) === 1
+        && Number(rawCalendar?.anchorMonth) === 1
+        && Number(rawCalendar?.anchorDay) === 1
+        && !hasCalendarCalibrationAudit
+        && ['initial', 'narrative', 'unknown'].includes(asString(state.clock?.source, 'initial', 40));
+    const inferredAnchored = legacyCalendarLooksPlaceholder
+        ? false
+        : asString(state.clock?.source, 'initial', 40) !== 'initial';
     state.clock = {
         absoluteMinute,
         lastCheckedAt: asInteger(
@@ -2664,6 +2973,18 @@ export function trimState(inputState) {
         ),
         source: asString(state.clock?.source, 'unknown', 40),
         reason: asString(state.clock?.reason, '', 240),
+        anchored: legacyCalendarLooksPlaceholder
+            ? false
+            : (state.clock?.anchored === undefined
+                ? inferredAnchored
+                : Boolean(state.clock?.anchored)),
+        precision: legacyCalendarLooksPlaceholder
+            ? 'uninitialized'
+            : (['minute', 'daypart', 'date', 'uninitialized'].includes(state.clock?.precision)
+                ? state.clock.precision
+                : ((state.clock?.anchored === undefined ? inferredAnchored : Boolean(state.clock?.anchored))
+                    ? 'minute'
+                    : 'uninitialized')),
     };
 
     state.people = asArray(state.people)

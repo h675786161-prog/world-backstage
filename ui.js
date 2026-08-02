@@ -73,12 +73,19 @@ function normalizeGroupLabel(value, fallback = '其他') {
     return label || fallback;
 }
 
-function groupItems(items, getLabel) {
+function groupItems(items, getGroup) {
     const groups = new Map();
     for (const item of items) {
-        const label = normalizeGroupLabel(getLabel(item));
-        const key = label.toLocaleLowerCase();
-        if (!groups.has(key)) groups.set(key, { label, items: [] });
+        const descriptor = getGroup(item);
+        const rawLabel = typeof descriptor === 'object' && descriptor
+            ? descriptor.label
+            : descriptor;
+        const label = normalizeGroupLabel(rawLabel);
+        const rawKey = typeof descriptor === 'object' && descriptor
+            ? descriptor.key
+            : label;
+        const key = normalizeGroupLabel(rawKey, label).toLocaleLowerCase();
+        if (!groups.has(key)) groups.set(key, { key, label, items: [] });
         groups.get(key).items.push(item);
     }
     return [...groups.values()];
@@ -1519,30 +1526,70 @@ function memoryItemMatches(item, query) {
     ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalized);
 }
 
-function resolvePersonDisplayName(state, value) {
+function resolvePersonEntity(state, value, { allowSubjectPrefix = false } = {}) {
     const raw = String(value || '').trim();
-    if (!raw) return '';
+    if (!raw) return null;
     const token = raw.toLocaleLowerCase();
-    const person = (state?.people || []).find(item => (
+    const people = state?.people || [];
+    const exact = people.find(item => (
         String(item?.id || '').trim().toLocaleLowerCase() === token
         || String(item?.name || '').trim().toLocaleLowerCase() === token
     ));
-    return person?.name || raw;
+    if (exact) return exact;
+    if (!allowSubjectPrefix) return null;
+    return [...people]
+        .filter(item => String(item?.name || '').trim())
+        .sort((a, b) => String(b.name).length - String(a.name).length)
+        .find(item => {
+            const name = String(item.name).trim();
+            return raw.startsWith(`${name}的`)
+                || raw.startsWith(`${name}·`)
+                || raw.startsWith(`${name}：`)
+                || raw.startsWith(`${name}:`);
+        }) || null;
 }
 
-function memoryFactGroupLabel(fact, state) {
-    if (Array.isArray(fact?.people) && fact.people.length) {
-        return resolvePersonDisplayName(state, fact.people[0]);
-    }
-    return resolvePersonDisplayName(state, fact?.subject || fact?.key) || '其他事实';
+function resolvePersonDisplayName(state, value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return resolvePersonEntity(state, raw)?.name || raw;
 }
 
-function memoryClueGroupLabel(clue, state) {
-    if (Array.isArray(clue?.people) && clue.people.length) {
-        return resolvePersonDisplayName(state, clue.people[0]);
+function memoryFactGroupDescriptor(fact, state) {
+    const linkedPerson = Array.isArray(fact?.people) && fact.people.length
+        ? resolvePersonEntity(state, fact.people[0])
+        : null;
+    const subjectPerson = linkedPerson || resolvePersonEntity(
+        state,
+        fact?.subject || fact?.key,
+        { allowSubjectPrefix: true },
+    );
+    if (subjectPerson) {
+        return {
+            key: `person:${subjectPerson.id || subjectPerson.name}`,
+            label: subjectPerson.name,
+        };
     }
-    if (Array.isArray(clue?.locations) && clue.locations.length) return clue.locations[0];
-    return clue?.title || '其他伏笔';
+    const label = String(fact?.subject || fact?.key || '').trim() || '其他事实';
+    return { key: `fact:${label}`, label };
+}
+
+function memoryClueGroupDescriptor(clue, state) {
+    const linkedPerson = Array.isArray(clue?.people) && clue.people.length
+        ? resolvePersonEntity(state, clue.people[0])
+        : null;
+    if (linkedPerson) {
+        return {
+            key: `person:${linkedPerson.id || linkedPerson.name}`,
+            label: linkedPerson.name,
+        };
+    }
+    if (Array.isArray(clue?.locations) && clue.locations.length) {
+        const label = String(clue.locations[0] || '').trim() || '其他伏笔';
+        return { key: `location:${label}`, label };
+    }
+    const label = String(clue?.title || '').trim() || '其他伏笔';
+    return { key: `clue:${label}`, label };
 }
 
 function renderMemoryActions(kind, item) {
@@ -1629,8 +1676,8 @@ function renderMemoryView(state, observerMode, {
     const shownFacts = facts.slice(0, maximum);
     const shownClues = clues.slice(0, maximum);
     const shownSummaries = summaries.slice(0, maximum);
-    const factGroups = groupItems(shownFacts, fact => memoryFactGroupLabel(fact, state));
-    const clueGroups = groupItems(shownClues, clue => memoryClueGroupLabel(clue, state));
+    const factGroups = groupItems(shownFacts, fact => memoryFactGroupDescriptor(fact, state));
+    const clueGroups = groupItems(shownClues, clue => memoryClueGroupDescriptor(clue, state));
     const resultCount = facts.length + clues.length + summaries.length;
     const shownCount = shownFacts.length + shownClues.length + shownSummaries.length;
     const hasMore = shownFacts.length < facts.length
@@ -1641,13 +1688,17 @@ function renderMemoryView(state, observerMode, {
             aria-pressed="${normalizedFilter === id}"
             class="${normalizedFilter === id ? 'is-active' : ''}">${label}</button>
     `;
-    const renderFactCard = fact => `
+    const renderFactCard = (fact, groupLabel = '') => {
+        const subject = String(fact.subject || fact.key || '').trim();
+        const normalizedGroup = String(groupLabel || '').trim();
+        const duplicateSubject = normalizedGroup && subject === normalizedGroup;
+        return `
         <article class="wb-memory-fact-card is-${escapeAttr(fact.status)}">
             <div class="wb-memory-fact-meta">
                 <span>${escapeHtml(memoryFactStatusLabel(fact.status))}</span>
                 <span>${escapeHtml(memoryConfidenceLabel(fact.confidence))} · 来源 ${escapeHtml(fact.sourceMessageId)}:${escapeHtml(fact.sourceSwipeId)}</span>
             </div>
-            <h4>${escapeHtml(fact.subject || fact.key)}</h4>
+            ${!duplicateSubject && subject ? `<h4>${escapeHtml(subject)}</h4>` : ''}
             ${fact.predicate ? `<small>${escapeHtml(fact.predicate)}</small>` : ''}
             <p>${escapeHtml(fact.value)}</p>
             ${fact.invalidationReason
@@ -1656,6 +1707,7 @@ function renderMemoryView(state, observerMode, {
             ${renderMemoryActions('fact', fact)}
         </article>
     `;
+    };
     const renderClueCard = clue => `
         <article class="wb-clue-card is-${escapeAttr(clue.status)}">
             <div class="wb-clue-meta">
@@ -1723,7 +1775,7 @@ function renderMemoryView(state, observerMode, {
                     </div>
                     <div class="wb-memory-group-list">
                         ${factGroups.map(group => {
-                            const foldKey = `memory:facts:${encodeURIComponent(group.label)}`;
+                            const foldKey = `memory:facts:${encodeURIComponent(group.key || group.label)}`;
                             return `
                                 <details class="wb-fold wb-memory-group" data-fold-key="${escapeAttr(foldKey)}"
                                     ${foldOpenAttr(openFolds, foldKey)}>
@@ -1735,7 +1787,7 @@ function renderMemoryView(state, observerMode, {
                                         <i class="wb-fold-chevron" aria-hidden="true"></i>
                                     </summary>
                                     <div class="wb-fold-body wb-memory-group-body">
-                                        ${group.items.map(renderFactCard).join('')}
+                                        ${group.items.map(item => renderFactCard(item, group.label)).join('')}
                                     </div>
                                 </details>
                             `;
@@ -1749,7 +1801,7 @@ function renderMemoryView(state, observerMode, {
                     </div>
                     <div class="wb-memory-group-list">
                         ${clueGroups.map(group => {
-                            const foldKey = `memory:clues:${encodeURIComponent(group.label)}`;
+                            const foldKey = `memory:clues:${encodeURIComponent(group.key || group.label)}`;
                             return `
                                 <details class="wb-fold wb-memory-group" data-fold-key="${escapeAttr(foldKey)}"
                                     ${foldOpenAttr(openFolds, foldKey)}>
@@ -2384,7 +2436,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                            <span class="wb-brand-line"><h1>世界背面</h1><i>正式版 1.0.1</i></span>
+                            <span class="wb-brand-line"><h1>世界背面</h1><i>正式版 1.0.2</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>

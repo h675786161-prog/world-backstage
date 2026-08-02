@@ -2550,6 +2550,100 @@ export function hashText(text) {
     return (hash >>> 0).toString(36);
 }
 
+function escapeRegExp(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export const DEFAULT_TAG_FILTER_RULES = Object.freeze([
+    Object.freeze({ open: '<options>', close: '</options>' }),
+    Object.freeze({ open: '<thinking>', close: '</thinking>' }),
+    Object.freeze({ open: '<think>', close: '</think>' }),
+]);
+
+export function normalizeTagFilterRules(rawRules) {
+    const list = Array.isArray(rawRules) ? rawRules : [];
+    const normalized = [];
+    for (const item of list) {
+        if (normalized.length >= 30) break;
+        const open = String(item?.open ?? '').trim().slice(0, 80);
+        const close = String(item?.close ?? '').trim().slice(0, 80);
+        if (!open && !close) continue;
+        normalized.push({ open, close });
+    }
+    return normalized;
+}
+
+export function filterNarrativeText(text, settings = {}) {
+    let result = String(text ?? '');
+    // Always strip well-formed HTML comments (non-greedy, dotAll).
+    result = result.replace(/<!--[\s\S]*?-->/g, '');
+
+    if (settings?.tagFilterEnabled === false) return result;
+
+    const rules = normalizeTagFilterRules(settings?.tagFilterRules);
+    for (const rule of rules) {
+        const { open, close } = rule;
+        if (open && close) {
+            const pattern = new RegExp(
+                `${escapeRegExp(open)}[\\s\\S]*?${escapeRegExp(close)}`,
+                'g',
+            );
+            let previous;
+            do {
+                previous = result;
+                result = result.replace(pattern, '');
+            } while (result !== previous);
+            continue;
+        }
+        if (!open && close) {
+            let previous;
+            do {
+                previous = result;
+                const index = result.indexOf(close);
+                if (index === -1) break;
+                result = result.slice(index + close.length);
+            } while (result !== previous);
+            continue;
+        }
+        if (open && !close) {
+            const index = result.indexOf(open);
+            if (index !== -1) result = result.slice(0, index);
+        }
+    }
+    return result;
+}
+
+/**
+ * Last `count` usable assistant message ids ending at `messageId` (ascending).
+ * Walks raw chat by index; does not consult narrativeContext (which drops empty-after-filter turns).
+ */
+export function selectPendingAssistantMessageIds(chat, messageId, count, isUsableAssistant) {
+    const list = asArray(chat);
+    const maxCount = Math.max(1, Number(count) || 1);
+    const target = Number(messageId);
+    const end = Number.isFinite(target)
+        ? Math.min(Math.max(0, target), Math.max(0, list.length - 1))
+        : list.length - 1;
+    const usable = typeof isUsableAssistant === 'function'
+        ? isUsableAssistant
+        : (message) => Boolean(message && !message.is_user && !message.is_system);
+    const ids = [];
+    if (!list.length || end < 0) return ids;
+    for (let index = end; index >= 0 && ids.length < maxCount; index -= 1) {
+        if (!usable(list[index])) continue;
+        ids.push(index);
+    }
+    return ids.reverse();
+}
+
+/** Count assistant narrative turns whose messageId is in the pending batch. */
+export function countSurvivingNewAssistantTurns(narrativeTurns, pendingMessageIds) {
+    const pending = new Set(asArray(pendingMessageIds).map(Number));
+    return asArray(narrativeTurns).filter(
+        turn => turn?.role === 'assistant' && pending.has(Number(turn.messageId)),
+    ).length;
+}
+
 export function trimState(inputState) {
     const state = deepClone(inputState);
     state.schemaVersion = SCHEMA_VERSION;

@@ -318,6 +318,13 @@ export async function requestCustomCompletion(settings, messages, {
             include_reasoning: false,
             ...body,
         };
+        if (useDeepSeekV4Compatibility) {
+            // The tavern's DeepSeek dispatcher rebuilds the upstream body from a
+            // whitelist and only emits `thinking` when reasoning_effort is present,
+            // so body.thinking alone is dropped on this path and V4 keeps thinking
+            // on until it burns the whole completion budget before writing content.
+            payload.reasoning_effort = 'none';
+        }
     }
 
     let response;

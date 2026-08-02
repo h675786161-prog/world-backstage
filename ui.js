@@ -1579,6 +1579,7 @@ export function createWorldBackstageUI({
     let settingsScrollTop = 0;
     let openSettingsGroups = new Set(['connection', 'simulation']);
     let eventFormDraft = null;
+    let clockFormDraft = null;
     let apiFormDraft = null;
     let skipApiDraftCapture = false;
     const viewScrollTop = new Map();
@@ -1655,6 +1656,7 @@ export function createWorldBackstageUI({
             settingsOpen = false;
             eventFormOpen = false;
             eventFormDraft = null;
+            clockFormDraft = null;
             memoryEditor = null;
             personEditor = null;
             selectedPersonId = null;
@@ -1681,6 +1683,10 @@ export function createWorldBackstageUI({
         const previousEventForm = root.querySelector('[data-wb-form="event"]');
         if (previousEventForm && eventFormOpen) {
             eventFormDraft = Object.fromEntries(new FormData(previousEventForm).entries());
+        }
+        const previousClockForm = root.querySelector('[data-wb-form="clock"]');
+        if (previousClockForm && settingsOpen) {
+            clockFormDraft = Object.fromEntries(new FormData(previousClockForm).entries());
         }
         const previousApiForm = root.querySelector('[data-wb-form="api"]');
         if (previousApiForm && !skipApiDraftCapture) {
@@ -1941,6 +1947,13 @@ export function createWorldBackstageUI({
                 if (field && 'value' in field) field.value = value;
             }
         }
+        const currentClockForm = root.querySelector('[data-wb-form="clock"]');
+        if (currentClockForm && clockFormDraft) {
+            for (const [name, value] of Object.entries(clockFormDraft)) {
+                const field = currentClockForm.elements.namedItem(name);
+                if (field && 'value' in field) field.value = value;
+            }
+        }
         if (previousFocus) {
             const selector = previousFocus.id
                 ? `#${globalThis.CSS?.escape?.(previousFocus.id) || previousFocus.id}`
@@ -2125,6 +2138,7 @@ export function createWorldBackstageUI({
         }
         if (action === 'toggle-settings') {
             settingsOpen = !settingsOpen;
+            if (!settingsOpen) clockFormDraft = null;
             render();
             return;
         }
@@ -2206,6 +2220,7 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'advance-clock') {
+            clockFormDraft = null;
             await invokeAction('advance-clock', { minutes: Number(target.dataset.minutes) || 0 });
             render();
             return;
@@ -2359,7 +2374,9 @@ export function createWorldBackstageUI({
         const data = Object.fromEntries(new FormData(form).entries());
 
         if (form.dataset.wbForm === 'clock') {
-            await invokeAction('set-clock', data);
+            clockFormDraft = { ...data };
+            const completed = await invokeAction('set-clock', data);
+            if (completed) clockFormDraft = null;
         }
         if (form.dataset.wbForm === 'api') {
             apiFormDraft = { ...data };
@@ -2432,7 +2449,10 @@ export function createWorldBackstageUI({
             eventFormOpen = false;
             eventFormDraft = null;
         }
-        else if (settingsOpen) settingsOpen = false;
+        else if (settingsOpen) {
+            settingsOpen = false;
+            clockFormDraft = null;
+        }
         else if (isOpen) {
             close();
             return;
@@ -2441,12 +2461,13 @@ export function createWorldBackstageUI({
     };
     const onResize = () => {
         syncVisualViewportInsets();
-        if (getSettings().orbPosition) render();
+        const position = getSettings().orbPosition;
+        if (position) positionOrbElements(position.x, position.y);
     };
     document.addEventListener('keydown', onKeydown);
     window.addEventListener('resize', onResize);
-    window.visualViewport?.addEventListener('resize', syncVisualViewportInsets);
-    window.visualViewport?.addEventListener('scroll', syncVisualViewportInsets);
+    window.visualViewport?.addEventListener('resize', onResize);
+    window.visualViewport?.addEventListener('scroll', onResize);
 
     render();
     return {
@@ -2461,8 +2482,8 @@ export function createWorldBackstageUI({
             window.clearTimeout(closeTimer);
             document.removeEventListener('keydown', onKeydown);
             window.removeEventListener('resize', onResize);
-            window.visualViewport?.removeEventListener('resize', syncVisualViewportInsets);
-            window.visualViewport?.removeEventListener('scroll', syncVisualViewportInsets);
+            window.visualViewport?.removeEventListener('resize', onResize);
+            window.visualViewport?.removeEventListener('scroll', onResize);
             root.remove();
         },
     };

@@ -42,7 +42,7 @@ import { buildBackstageMessages } from './prompt-bridge.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
-const PLUGIN_VERSION = '1.0.3';
+const PLUGIN_VERSION = '1.0.4';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 17,
     enabled: true,
@@ -1238,6 +1238,7 @@ async function backgroundSimulation(prompt, {
     temperature = 0.2,
     signal = null,
     taskKind = 'simulation',
+    rejectTruncated = false,
 } = {}) {
     const context = getContext();
     const settings = getSettings();

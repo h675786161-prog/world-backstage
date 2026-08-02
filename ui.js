@@ -379,7 +379,7 @@ function renderSyncStrip(syncStatus) {
     `;
 }
 
-function renderSettings(state, settings, syncStatus, openGroups = new Set(), apiDraft = null) {
+function renderSettings(state, settings, syncStatus, openGroups = new Set(), apiDraft = null, tagFilterRules = null) {
     const clock = formatWorldCalendar(state);
     const connection = syncStatus?.connection || {};
     const memory = syncStatus?.memory || {};
@@ -394,6 +394,9 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
     const latestRecovery = recovery.latest || null;
     const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
     const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
+    const rules = Array.isArray(tagFilterRules)
+        ? tagFilterRules
+        : (settings.tagFilterRules || []);
     const hasSavedApiKey = Boolean(settings.customApiKey);
     const apiValues = {
         customApiUrl: apiDraft?.customApiUrl ?? settings.customApiUrl,
@@ -687,6 +690,54 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), api
                 <p>严格模式下，没有明确几点或经过多少分钟/小时/天，世界时钟就保持不动。</p>
             </div>
 
+                </div>
+            </details>
+
+            <details class="wb-settings-group" data-settings-group="tagfilter" ${groupOpen('tagfilter')}>
+                <summary><span>标签过滤</span><small>剔除杂标签与注释后再推演 / 记忆</small></summary>
+                <div class="wb-settings-group-body">
+                    <div class="wb-setting-toggle">
+                        <div><strong>启用标签过滤</strong><span>关闭后仍会删除 HTML 注释 &lt;!-- --&gt;</span></div>
+                        <label class="wb-switch">
+                            <input type="checkbox" data-wb-setting="tagFilterEnabled"
+                                ${settings.tagFilterEnabled !== false ? 'checked' : ''}>
+                            <i></i>
+                        </label>
+                    </div>
+                    <div class="wb-setting-block">
+                        <p>HTML 注释 <code>&lt;!-- ... --&gt;</code> 始终整块删除。匹配为严格字面（区分大小写）。开头可空：只填结尾时删除该结尾及之前全部；只填开头时从开头删到本条末尾。</p>
+                        <div class="wb-tag-filter-list">
+                            ${rules.map((rule, index) => `
+                                <div class="wb-tag-filter-rule" data-tag-filter-index="${index}">
+                                    <div class="wb-tag-filter-rule-head">
+                                        <strong>规则 ${index + 1}</strong>
+                                        <button type="button" class="wb-tag-filter-remove is-delete"
+                                            data-wb-action="remove-tag-filter-rule"
+                                            data-index="${index}">删除</button>
+                                    </div>
+                                    <label>开头标签 <span>（可空）</span>
+                                        <input type="text" maxlength="80"
+                                            data-wb-tag-filter-field="open" data-index="${index}"
+                                            value="${escapeAttr(rule.open || '')}"
+                                            placeholder="例如 &lt;options&gt;"
+                                            autocomplete="off" spellcheck="false">
+                                    </label>
+                                    <label>结尾标签 <span>（可空）</span>
+                                        <input type="text" maxlength="80"
+                                            data-wb-tag-filter-field="close" data-index="${index}"
+                                            value="${escapeAttr(rule.close || '')}"
+                                            placeholder="例如 &lt;/options&gt;"
+                                            autocomplete="off" spellcheck="false">
+                                    </label>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <button type="button" class="wb-tag-filter-add"
+                            data-wb-action="add-tag-filter-rule"
+                            ${rules.filter(rule => String(rule.open || '').trim() || String(rule.close || '').trim()).length >= 30 ? 'disabled' : ''}>
+                            ＋ 添加规则
+                        </button>
+                    </div>
                 </div>
             </details>
 
@@ -1581,7 +1632,9 @@ export function createWorldBackstageUI({
     let eventFormDraft = null;
     let clockFormDraft = null;
     let apiFormDraft = null;
+    let tagFilterDraftRules = null; // null = use settings; array may include empty draft cards
     let skipApiDraftCapture = false;
+    let skipTagFilterDraftCapture = false;
     const viewScrollTop = new Map();
     let orbDrag = null;
     let suppressOrbClick = false;
@@ -1630,6 +1683,29 @@ export function createWorldBackstageUI({
         }
     }
 
+    function visibleTagFilterRules(settings) {
+        if (Array.isArray(tagFilterDraftRules)) return tagFilterDraftRules;
+        return Array.isArray(settings.tagFilterRules)
+            ? settings.tagFilterRules.map(rule => ({ open: rule.open, close: rule.close }))
+            : [];
+    }
+
+    async function persistTagFilterRules(rules) {
+        const persisted = rules
+            .map(rule => ({
+                open: String(rule.open || '').trim().slice(0, 80),
+                close: String(rule.close || '').trim().slice(0, 80),
+            }))
+            .filter(rule => rule.open || rule.close)
+            .slice(0, 30);
+        tagFilterDraftRules = rules.map(rule => ({
+            open: String(rule.open || ''),
+            close: String(rule.close || ''),
+        }));
+        skipTagFilterDraftCapture = true;
+        await invokeAction('update-settings', { tagFilterRules: persisted });
+    }
+
     function setBusy(value) {
         busy = Boolean(value);
         render();
@@ -1657,6 +1733,7 @@ export function createWorldBackstageUI({
             eventFormOpen = false;
             eventFormDraft = null;
             clockFormDraft = null;
+            tagFilterDraftRules = null;
             memoryEditor = null;
             personEditor = null;
             selectedPersonId = null;
@@ -1693,6 +1770,16 @@ export function createWorldBackstageUI({
             readApiForm(previousApiForm);
         }
         skipApiDraftCapture = false;
+        if (settingsOpen && !skipTagFilterDraftCapture) {
+            const previousTagFilterRules = root.querySelectorAll('.wb-tag-filter-rule');
+            if (previousTagFilterRules.length) {
+                tagFilterDraftRules = [...previousTagFilterRules].map(card => ({
+                    open: String(card.querySelector('[data-wb-tag-filter-field="open"]')?.value || ''),
+                    close: String(card.querySelector('[data-wb-tag-filter-field="close"]')?.value || ''),
+                }));
+            }
+        }
+        skipTagFilterDraftCapture = false;
         const previousFocus = root.contains(document.activeElement)
             ? {
                 id: document.activeElement.id || '',
@@ -1889,7 +1976,14 @@ export function createWorldBackstageUI({
                     </section>
                     ${settingsOpen ? `
                         <div class="wb-settings-layer">
-                            ${renderSettings(state, settings, syncStatus, openSettingsGroups, apiFormDraft)}
+                            ${renderSettings(
+                                state,
+                                settings,
+                                syncStatus,
+                                openSettingsGroups,
+                                apiFormDraft,
+                                visibleTagFilterRules(settings),
+                            )}
                         </div>
                     ` : ''}
                 </div>
@@ -2138,7 +2232,27 @@ export function createWorldBackstageUI({
         }
         if (action === 'toggle-settings') {
             settingsOpen = !settingsOpen;
-            if (!settingsOpen) clockFormDraft = null;
+            if (!settingsOpen) {
+                clockFormDraft = null;
+                tagFilterDraftRules = null;
+            }
+            render();
+            return;
+        }
+        if (action === 'add-tag-filter-rule') {
+            const settings = getSettings();
+            const current = visibleTagFilterRules(settings);
+            tagFilterDraftRules = [...current, { open: '', close: '' }];
+            skipTagFilterDraftCapture = true;
+            render();
+            return;
+        }
+        if (action === 'remove-tag-filter-rule') {
+            const index = Number(target.dataset.index);
+            const settings = getSettings();
+            const current = visibleTagFilterRules(settings).filter((_, i) => i !== index);
+            skipTagFilterDraftCapture = true;
+            await persistTagFilterRules(current);
             render();
             return;
         }
@@ -2331,6 +2445,21 @@ export function createWorldBackstageUI({
             return;
         }
 
+        const tagField = event.target.dataset?.wbTagFilterField;
+        if (tagField === 'open' || tagField === 'close') {
+            const index = Number(event.target.dataset.index);
+            const settings = getSettings();
+            const current = visibleTagFilterRules(settings).map(rule => ({ ...rule }));
+            if (!current[index]) return;
+            current[index] = {
+                ...current[index],
+                [tagField]: String(event.target.value || '').slice(0, 80),
+            };
+            await persistTagFilterRules(current);
+            render();
+            return;
+        }
+
         const setting = event.target.dataset.wbSetting;
         if (setting) {
             const value = event.target.type === 'checkbox'
@@ -2452,6 +2581,7 @@ export function createWorldBackstageUI({
         else if (settingsOpen) {
             settingsOpen = false;
             clockFormDraft = null;
+            tagFilterDraftRules = null;
         }
         else if (isOpen) {
             close();

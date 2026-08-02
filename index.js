@@ -14,10 +14,15 @@ import {
     buildSimulationPrompt,
     createInitialState,
     createSnapshot,
+    DEFAULT_TAG_FILTER_RULES,
     extractJsonObject,
+    filterNarrativeText,
+    countSurvivingNewAssistantTurns,
     hashText,
+    selectPendingAssistantMessageIds,
     listRecoveryPoints,
     markPendingSync,
+    normalizeTagFilterRules,
     recordDeliveryOffers,
     restoreSnapshot,
     restoreRecoveryPoint,
@@ -35,7 +40,7 @@ import { createWorldBackstageUI } from './ui.js';
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const PLUGIN_VERSION = '0.8.1';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 12,
+    settingsVersion: 13,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -65,6 +70,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     customApiTransport: 'proxy',
     customApiTimeoutMs: 120000,
     maxOutputTokens: 0,
+    tagFilterEnabled: true,
+    tagFilterRules: DEFAULT_TAG_FILTER_RULES.map(rule => ({ ...rule })),
 });
 
 const runtime = {
@@ -338,7 +345,13 @@ function getSettings() {
     settings.playerIdentityAnchor = String(
         settings.playerIdentityAnchor || '',
     ).trim().slice(0, 400);
-    settings.settingsVersion = 12;
+    settings.tagFilterEnabled = settings.tagFilterEnabled !== false;
+    if (!Array.isArray(settings.tagFilterRules)) {
+        settings.tagFilterRules = DEFAULT_TAG_FILTER_RULES.map(rule => ({ ...rule }));
+    } else {
+        settings.tagFilterRules = normalizeTagFilterRules(settings.tagFilterRules);
+    }
+    settings.settingsVersion = 13;
     if (!['explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'explicit';
     }
@@ -359,7 +372,7 @@ function getSettings() {
     );
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 12) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 13) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -916,7 +929,7 @@ function recentChatText(maximum = 8) {
     const chat = getContext()?.chat || [];
     return chat
         .slice(-maximum)
-        .map(message => String(message?.mes || ''))
+        .map(message => narrativeMessageText(message))
         .join('\n')
         .slice(-9000);
 }
@@ -926,6 +939,10 @@ function selectedMessageText(message) {
     if (message.is_user) return String(message.mes || '');
     const swipeId = Number(message.swipe_id ?? 0);
     return String(message.swipes?.[swipeId] ?? message.mes ?? '');
+}
+
+function narrativeMessageText(message) {
+    return filterNarrativeText(selectedMessageText(message), getSettings());
 }
 
 function hasUsableAssistantText(message) {
@@ -943,11 +960,11 @@ function narrativeContext(messageId, maximumTurns = 3) {
     let userText = '';
     for (let index = Number(messageId) - 1; index >= 0; index -= 1) {
         if (chat[index]?.is_user) {
-            userText = String(chat[index].mes || '');
+            userText = narrativeMessageText(chat[index]);
             break;
         }
     }
-    const assistantText = selectedMessageText(assistant);
+    const assistantText = narrativeMessageText(assistant);
 
     let startIndex = 0;
     let userTurns = 0;
@@ -968,7 +985,7 @@ function narrativeContext(messageId, maximumTurns = 3) {
             messageId: turnMessageId,
             swipeId: message.is_user ? 0 : Number(message.swipe_id ?? 0),
             role: message.is_user ? 'user' : 'assistant',
-            content: selectedMessageText(message),
+            content: narrativeMessageText(message),
         }))
         .filter(turn => turn.content);
 
@@ -1029,7 +1046,7 @@ function nextHistoryBatch(cursor, {
         if (!message || message.is_system) continue;
         const role = message.is_user ? 'user' : 'assistant';
         const maximum = role === 'user' ? 4000 : 7000;
-        const content = selectedMessageText(message).slice(0, maximum);
+        const content = narrativeMessageText(message).slice(0, maximum);
         if (!content) continue;
         const nextCharacters = characters + content.length;
         const nextUserTurns = userTurns + (role === 'user' ? 1 : 0);
@@ -1325,24 +1342,26 @@ async function runSimulationForMessage(messageId, {
         messageId,
         Math.max(settings.contextTurns, assistantTurnsToApply),
     );
-    const newAssistantTexts = narrative.turns
-        .filter(turn => turn.role === 'assistant')
-        .slice(-assistantTurnsToApply)
-        .map(turn => turn.content);
-    const prompt = buildSimulationPrompt(baseState, {
-        queuedEventIds: offeredEventIds,
-        trigger,
-        latestTurn: narrative.latestTurn,
-        narrativeTurns: narrative.turns,
-        userName: beforeContext?.name1 || '',
-        includeUserInnerVoice: settings.includeUserInnerVoice,
-        timePolicy: settings.timePolicy,
-        simulationMode: settings.autoSimulationMode,
-        customInstruction: settings.customSimulationInstruction,
-        playerIdentityAnchor: getPlayerIdentityAnchor(baseState),
-        newAssistantTurns: assistantTurnsToApply,
-        backgroundNpcBudget: settings.backgroundNpcBudget,
-    });
+    // Pending batch must come from raw chat ids (hasUsableAssistantText), not
+    // narrative.turns — narrativeContext already drops empty-after-filter turns,
+    // which would otherwise pull older assistants into the "new" slice.
+    const chatForPending = beforeContext?.chat || [];
+    const pendingMessageIds = selectPendingAssistantMessageIds(
+        chatForPending,
+        messageId,
+        assistantTurnsToApply,
+        hasUsableAssistantText,
+    );
+    const pendingFilteredTexts = pendingMessageIds.map(
+        id => narrativeMessageText(chatForPending[id]),
+    );
+    const survivingNewCount = countSurvivingNewAssistantTurns(
+        narrative.turns,
+        pendingMessageIds,
+    );
+    const newAssistantTexts = pendingFilteredTexts
+        .map(text => String(text || '').trim())
+        .filter(Boolean);
     const simulationModeLabel = {
         light: '轻量',
         balanced: '均衡',
@@ -1377,6 +1396,82 @@ async function runSimulationForMessage(messageId, {
         attemptedAt: new Date().toISOString(),
     });
     try {
+        // Short-circuit when every pending (queued) assistant filters to empty —
+        // not when narrative.turns' last-N assistants happen to be non-empty older turns.
+        if (!newAssistantTexts.length) {
+            // No valid narrative after filtering: do not consume delivery attempts
+            // or expire candidates via recordDeliveryOffers.
+            const resultState = markPendingSync(clone(baseState), false);
+            const nextInjection = buildInjectionPackage(resultState, settings, recentChatText());
+            const summary = simulationSummary(baseState, resultState, {
+                prompt: '',
+                raw: '',
+                attempts: 0,
+                tokenBudget: 0,
+                injection: nextInjection,
+            });
+            const target = locateTargetBranch(messageId, swipeId, expectedHash);
+            if (!target || currentChatToken() !== chatTokenAtStart) {
+                if (currentChatToken() === chatTokenAtStart) {
+                    setSyncStatus({
+                        phase: 'pending',
+                        message: '正文分支已变化，旧结果未提交；最新正文仍等待推演',
+                        error: '',
+                    });
+                }
+                return resultState;
+            }
+            const committed = {
+                ...prepared.data,
+                status: 'committed',
+                result: createSnapshot(resultState, {
+                    messageId,
+                    swipeId,
+                    sourceKey,
+                    kind: 'result',
+                }),
+                error: '',
+                summary,
+            };
+            attachBranchData(target.message, swipeId, committed);
+            const branchIsCurrent = (
+                Number(target.message.swipe_id ?? 0) === swipeId
+                && hashText(target.message.mes) === expectedHash
+            );
+            if (branchIsCurrent) {
+                const store = getStore();
+                store.currentState = trimState(resultState);
+                saveStore(store, { immediate: true });
+                refreshInjection();
+                runtime.ui?.render();
+            }
+            await target.context.saveChat?.();
+            setSyncStatus({
+                phase: 'success',
+                message: '过滤后无有效正文，本轮没有推进世界',
+                error: '',
+                succeededAt: new Date().toISOString(),
+                method: runtime.syncStatus.method,
+                summary,
+            });
+            return resultState;
+        }
+
+        const prompt = buildSimulationPrompt(baseState, {
+            queuedEventIds: offeredEventIds,
+            trigger,
+            latestTurn: narrative.latestTurn,
+            narrativeTurns: narrative.turns,
+            userName: beforeContext?.name1 || '',
+            includeUserInnerVoice: settings.includeUserInnerVoice,
+            timePolicy: settings.timePolicy,
+            simulationMode: settings.autoSimulationMode,
+            customInstruction: settings.customSimulationInstruction,
+            playerIdentityAnchor: getPlayerIdentityAnchor(baseState),
+            newAssistantTurns: Math.max(1, survivingNewCount),
+            backgroundNpcBudget: settings.backgroundNpcBudget,
+        });
+
         const automaticMaxTokens = settings.autoSimulationMode === 'deep'
             ? 4600
             : settings.autoSimulationMode === 'light'

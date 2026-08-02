@@ -2143,7 +2143,7 @@ export function createWorldBackstageUI({
     let recordEditor = null;
     let settingsScrollTop = 0;
     let openSettingsGroups = new Set(['connection', 'simulation']);
-    let openSettingsSubgroups = new Set();
+    let openSettingsSubgroups = new Set(['connection-main']);
     let openContentFolds = new Set();
     let eventFormDraft = null;
     let clockFormDraft = null;
@@ -2944,10 +2944,35 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'setting-button') {
+            const setting = target.dataset.setting;
+            const value = target.dataset.value;
             await invokeAction('update-settings', {
-                [target.dataset.setting]: target.dataset.value,
+                [setting]: value,
             });
             render();
+            // 选择“独立接口”后立即展开填写区，恢复一键进入配置的填写体验。
+            // 用户之后仍可手动收起；普通重渲染不会强制再次展开。
+            if (setting === 'apiMode' && value === 'custom') {
+                window.setTimeout(() => {
+                    const connectionGroup = root.querySelector('.wb-settings-group[data-settings-group="connection"]');
+                    const mainGroup = root.querySelector('.wb-settings-subgroup[data-settings-subgroup="connection-main"]');
+                    const customGroup = root.querySelector('.wb-settings-subgroup[data-settings-subgroup="connection-custom"]');
+                    if (connectionGroup) connectionGroup.open = true;
+                    if (mainGroup) mainGroup.open = true;
+                    if (customGroup) customGroup.open = true;
+                    openSettingsGroups.add('connection');
+                    openSettingsSubgroups.add('connection-main');
+                    openSettingsSubgroups.add('connection-custom');
+                    const form = root.querySelector('[data-wb-form="api"]');
+                    if (!form) return;
+                    const url = form.elements?.customApiUrl;
+                    const key = form.elements?.customApiCredential;
+                    const model = form.elements?.customApiModel;
+                    if (!String(url?.value || '').trim()) url?.focus();
+                    else if (!getSettings().customApiKey && !String(key?.value || '').trim()) key?.focus();
+                    else if (!String(model?.value || '').trim()) model?.focus();
+                }, 0);
+            }
             return;
         }
         if (action === 'cycle-theme') {
@@ -3034,8 +3059,19 @@ export function createWorldBackstageUI({
         if (action === 'pull-api-models') {
             const form = target.closest('[data-wb-form="api"]');
             if (form) {
-                if (!form.reportValidity()) return;
+                // 拉模型列表只需要地址 + Key；模型名本来就是要靠这一步获取，不能反过来要求先填模型。
+                const urlField = form.elements?.customApiUrl;
+                const keyField = form.elements?.customApiCredential;
+                if (urlField && !urlField.checkValidity()) {
+                    urlField.reportValidity();
+                    return;
+                }
                 const data = readApiForm(form);
+                if (!String(data.customApiCredential || '').trim() && !getSettings().customApiKey) {
+                    notify('请先填写独立 API Key，再拉取模型列表。', 'error');
+                    keyField?.focus();
+                    return;
+                }
                 const completed = await invokeAction('update-settings', apiSettingsFromDraft(data));
                 if (!completed) return;
                 forgetApiKeyDraft(data);

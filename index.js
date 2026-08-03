@@ -4714,7 +4714,7 @@ function installSettingsEntry() {
                     <input id="world-backstage-enabled" type="checkbox">
                     <span>启用世界背面</span>
                 </label>
-                <p class="notes">让镜头外的时间、人物与事件持续运转，并保持正文与世界事实一致。</p>
+                <p class="notes">镜头没照到的地方也会继续过日子～时间、人物和事件都会自己往前走 (｡•̀ᴗ-)✧</p>
                 <button id="world-backstage-open" class="menu_button" type="button">
                     打开世界背面
                 </button>

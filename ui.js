@@ -586,39 +586,39 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
         const key = String(value);
         const maps = {
             apiMode: {
-                tavern: '使用酒馆当前连接。',
-                custom: '使用世界背面的独立接口。',
+                tavern: '跟着酒馆当前连接走就好啦～主聊天换模型，这边也会一起跟着变 (｡•̀ᴗ-)✧',
+                custom: '世界背面自己走独立接口～不会碰主聊天连接。',
             },
             theme: {
-                auto: '跟随世界昼夜。',
-                day: '固定日间配色。',
-                night: '固定夜间配色。',
+                auto: '让界面跟着世界昼夜自己换衣服～',
+                day: '固定日间配色，亮堂堂的 (◕ᴗ◕✿)',
+                night: '固定夜间配色，适合深夜偷偷看世界（盯）',
             },
             uiScale: {
-                compact: '信息更紧凑。',
-                comfortable: '默认阅读密度。',
-                large: '放大阅读文字。',
+                compact: '信息挤紧一点～适合想一眼多看几样东西的时候。',
+                comfortable: '默认推荐～不挤也不空，看着刚刚好。',
+                large: '字再大一点～手机端和长时间盯后台会轻松些。',
             },
             deliveryDensity: {
-                restrained: '后台照常运行，只减少主动显露。',
-                balanced: '重要结果自然靠近当前镜头。',
-                active: '更积极寻找自然显露机会。',
+                restrained: '后台照常生活，只是少来抢镜头～',
+                balanced: '重要结果会自然靠近镜头～该出现的时候再出现。',
+                active: '会更积极找机会露个脸，世界存在感更强一点 ( •̀ ω •́ )✧',
             },
             autoSimulationMode: {
 
-                light: '只维护必要的镜头外变化。',
-                balanced: '默认强度，兼顾人物与事件。',
-                deep: '扩大镜头外维护范围与因果深度。',
+                light: '轻轻维护必要变化～安静一点，也更省调用。',
+                balanced: '默认推荐～人物和事件都会正常过自己的日子。',
+                deep: '会更认真照看镜头外的人和因果～复杂剧情更适合这个。',
             },
             timePolicy: {
-                world: '世界钟作为连续时间基准，并跟随正文可靠时间事实校准。',
-                explicit: '只接受明确可计算的时间。',
-                cautious: '允许小幅保守估算。',
-                open: '允许依据叙事自然估算更长时间。',
+                world: '世界钟负责盯住连续时间～正文给出可靠时间时会自己跟上。',
+                explicit: '只有明确算得出来的时间才会推进～最谨慎。',
+                cautious: '允许稍微估一点，但会很克制～',
+                open: '旅行、等待、工作这类长耗时也可以自然往前走～',
             },
             publicOpinionRevealMode: {
-                observe: '只在舆情页查看。',
-                relevant: '与当前镜头相关时可自然显露。',
+                observe: '安心吃瓜就好啦～新闻和论坛只待在舆情页 (˘▾˘)',
+                relevant: '真的和当前镜头沾边时，才让它自然露个脸～不会硬插播。',
             },
         };
         return maps[setting]?.[key] || '';
@@ -668,8 +668,8 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 </dl>
                 ${syncStatus?.error ? `<p>${escapeHtml(syncStatus.error)}</p>` : ''}
                 <small>${settings.apiMode === 'custom'
-                    ? '使用独立接口，不影响主聊天连接。'
-                    : '使用酒馆当前连接。'}</small>
+                    ? '世界背面走自己的接口～主聊天那边不会被打扰。'
+                    : '跟着酒馆当前连接走就好啦～'}</small>
             </div>
 
             <div class="wb-setting-block">
@@ -851,7 +851,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             </div>
 
             <div class="wb-setting-toggle">
-                <div><strong>后台结果自然显露</strong><span>只控制结果是否主动寻找进入正文的机会；已成立世界事实始终用于保持连续性</span></div>
+                <div><strong>后台结果自然显露</strong><span>关掉也不会让世界失忆～只是不主动把后台结果递进正文；已成立世界事实始终用于保持连续性。</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="worldPromptInjection"
                         ${settings.worldPromptInjection ? 'checked' : ''}>
@@ -874,13 +874,13 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             </details>
 
             <details class="wb-settings-group" data-settings-group="simulation" ${groupOpen('simulation')}>
-                <summary><span>世界运行</span><small>强度、频率与时间</small></summary>
+                <summary><span>世界运行</span><small>让镜头外的世界继续自己走～</small></summary>
                 <div class="wb-settings-group-body wb-settings-subgroup-stack">
                     <details class="wb-settings-subgroup" data-settings-subgroup="simulation-switches" ${subgroupOpen('simulation-switches')}>
-                        <summary><span>基础开关</span><small>启用或暂停世界引擎</small></summary>
+                        <summary><span>基础开关</span><small>要不要让后台继续转起来</small></summary>
                         <div class="wb-settings-subgroup-body">
             <div class="wb-setting-toggle">
-                <div><strong>启用世界引擎</strong><span>关闭后暂停世界推演与连续性注入，现有世界数据仍会保留</span></div>
+                <div><strong>启用世界引擎</strong><span>关掉就先让后台歇一会儿～现有世界不会丢</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="worldSimulationEnabled"
                         ${settings.worldSimulationEnabled ? 'checked' : ''}>
@@ -891,7 +891,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </details>
 
                     <details class="wb-settings-subgroup" data-settings-subgroup="simulation-trigger" ${subgroupOpen('simulation-trigger')}>
-                        <summary><span>运行方式</span><small>强度与累计频率</small></summary>
+                        <summary><span>运行方式</span><small>世界背面要多勤快～</small></summary>
                         <div class="wb-settings-subgroup-body">
             <div class="wb-setting-block">
                 <label>世界运转强度</label>
@@ -1140,16 +1140,16 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         <label>记忆整理</label>
                         <strong>${escapeHtml(
                             historyRunning
-                                ? memory.message || '正在整理'
-                                : '自动维护长期记忆',
+                                ? memory.message || '正在收拾记忆～'
+                                : '会自己收拾长期记忆～',
                         )}</strong>
                     </div>
-                    <span>${historyRunning ? `${historyPercent}%` : (Number(memory.pendingAssistantResponses || 0) > 0 ? '有新增正文' : '已跟上正文')}</span>
+                    <span>${historyRunning ? `${historyPercent}%` : (Number(memory.pendingAssistantResponses || 0) > 0 ? '有新增正文待收拾～' : '已经跟上正文啦～')}</span>
                 </div>
                 ${historyRunning ? `
                     <div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>
                 ` : ''}
-                <p>自动整理新增正文，保留重要事实、关系、承诺和未完成伏笔。</p>
+                <p>会自动整理新增正文～重要事实、关系、承诺和没收尾的伏笔会乖乖留下来 (｡•̀ᴗ-)✧</p>
                 <div class="wb-memory-queue">
                     <span>待整理 ${Math.max(0, Number(memory.pendingAssistantResponses || 0))} 条正文</span>
                     <strong>${settings.memoryAutoIndexInterval > 0
@@ -1207,7 +1207,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                             <button type="button" data-wb-action="sync-clock-from-story">与正文校准</button>
                             <button type="submit" class="wb-clock-manual-save">手动设定</button>
                         </div>
-                        <p class="wb-clock-sync-note">世界钟会随可靠正文时间自动校准；这里也可以手动补校准或快进。</p>
+                        <p class="wb-clock-sync-note">正文给出可靠时间时，世界钟会自己跟上～这里也可以手动校准或快进。</p>
                         <div class="wb-time-actions">
                             <button type="button" data-wb-action="advance-clock" data-minutes="60">+ 1 小时</button>
                             <button type="button" data-wb-action="advance-clock" data-minutes="360">+ 6 小时</button>
@@ -1568,14 +1568,14 @@ function renderNowView(state, observerMode, people, activeEvents) {
 function renderPeopleView(state, observerMode, people, openFolds = new Set()) {
     return `
         <div class="wb-view-intro">
-            <p>人物会在镜头外继续生活；位置和行动属于世界状态，认知与幕后独白仍保持边界。</p>
+            <p>每个人都会在镜头外继续过自己的日子啦～位置和行动会跟着世界一起变，没说出口的心声还是乖乖留在幕后 (｡•̀ᴗ-)✧</p>
             <div class="wb-memory-intro-actions">
                 <span>${people.length} 条可观测轨迹</span>
                 <button type="button" data-wb-action="open-person-editor">＋ 添加后台 NPC</button>
             </div>
         </div>
         <div class="wb-view-fold-head">
-            <span>先看当前位置和行动，需要时再展开更多状态。</span>
+            <span>先看她们现在在哪、在做什么就好～想深挖再慢慢展开。</span>
             ${renderFoldToolbar('people:')}
         </div>
         <div class="wb-people-grid">
@@ -1664,7 +1664,7 @@ function renderPersonEditorModal(state, editor) {
 function renderCurrentsView(state, activeEvents, openFolds = new Set(), settings = {}) {
     return `
         <div class="wb-view-intro">
-            <p>这里是仍在发展的世界进程；结果一旦确定，就会成为世界事实。</p>
+            <p>这里装的是还没走完的事情～它们会跟着世界继续发展，结果一旦落地就真的算数啦 ( •̀ ω •́ )✧</p>
             <div class="wb-view-inline-actions">
                 <label class="wb-view-toggle">
                     <span>自动运行</span>
@@ -1674,7 +1674,7 @@ function renderCurrentsView(state, activeEvents, openFolds = new Set(), settings
             </div>
         </div>
         <div class="wb-view-fold-head">
-            <span>查看状态、地点与剩余时间。</span>
+            <span>先扫一眼状态、地点和剩余时间～想看细节再展开就好。</span>
             ${renderFoldToolbar('currents:')}
         </div>
         <div class="wb-event-list is-full">
@@ -1687,11 +1687,11 @@ function renderCurrentsView(state, activeEvents, openFolds = new Set(), settings
 function renderEchoesView(state, outcomes, openFolds = new Set()) {
     return `
         <div class="wb-view-intro">
-            <p>已经形成结果的事情会在这里等待或记录它与正文的接触。</p>
+            <p>事情走到结果后会来到这里～有没有被正文看见是另一回事，结果本身可不会凭空消失 (｡•̀ᴗ-)✧</p>
             <span>最近结果</span>
         </div>
         <div class="wb-view-fold-head">
-            <span>结果是否存在，与正文是否看见，是两回事。</span>
+            <span>结果是否存在，与正文是否看见，是两回事～先看看有没有碰到镜头吧。</span>
             ${renderFoldToolbar('echoes:')}
         </div>
         <div class="wb-echo-timeline">
@@ -1765,7 +1765,7 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
     return `
         <div class="wb-opinion-toolbar">
             <div class="wb-opinion-summary">
-                <p>舆情只根据已经公开或可察觉的世界变化生成，不会反过来创造世界事实。</p>
+                <p>镜头外今天在聊什么～只拿世界里真的公开、能察觉到的变化来吃瓜，不会自己造新闻 (˘▾˘)</p>
                 <div class="wb-opinion-meta">
                     <span>快照 · ${escapeHtml(publicOpinionGeneratedLabel(opinion.generatedAt))}</span>
                     ${stale
@@ -1987,14 +1987,14 @@ function memoryClueGroupDescriptor(clue, state) {
 
 function memorySummaryLevelMeta(summary) {
     if (!summary?.hierarchyManaged) {
-        return { label: '旧版阶段', tone: 'legacy', description: '旧版阶段经历，会继续参与召回，但不会被自动批量回填压缩。' };
+        return { label: '旧版经历', tone: 'legacy', description: '以前留下的阶段经历～照样会好好记着。' };
     }
     const level = Math.max(0, Math.min(3, Number(summary?.level) || 0));
     const meta = [
-        { label: 'L0 · 单轮片段', tone: 'detail', description: '最靠近原正文的一层～需要具体细节时优先从这里找。' },
-        { label: 'L1 · 阶段小结', tone: 'stage', description: '由一组单轮片段压成的小阶段；旧碎片淡出后仍保留对应消息范围。' },
-        { label: 'L2 · 章节总结', tone: 'chapter', description: '更高一层的章节记忆，适合常驻维持长线连续性。' },
-        { label: 'L3 · 长期经历', tone: 'longterm', description: '最抽象的长期经历索引～只记真正跨阶段仍重要的变化。' },
+        { label: '近期片段', tone: 'detail', description: '离原正文最近的小片段～细节会比较多。' },
+        { label: '阶段小结', tone: 'stage', description: '一小段剧情的重点都收在这里啦～' },
+        { label: '章节经历', tone: 'chapter', description: '把更长一段经历收成重点～方便后面继续接上。' },
+        { label: '长期经历', tone: 'longterm', description: '真正跨过很久还重要的变化，会乖乖留在这里。' },
     ];
     return meta[level];
 }
@@ -2131,7 +2131,7 @@ function renderMemoryView(state, observerMode, {
     `;
     return `
         <div class="wb-view-intro wb-memory-intro">
-            <p>这里保存会影响后续剧情的长期事实、经历与未完成伏笔。</p>
+            <p>重要事实、经历和没收尾的伏笔会留在这里～不用管底下怎么收拾，记得住就好啦 (｡•̀ᴗ-)✧</p>
             <div class="wb-memory-intro-actions">
                 <span>${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条事实 · ${allClues.filter(clue => ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)).length} 条伏笔</span>
                 <button type="button" data-wb-action="open-memory-editor" data-memory-kind="fact">＋ 新增记忆</button>
@@ -2157,7 +2157,7 @@ function renderMemoryView(state, observerMode, {
                 <details class="wb-fold wb-memory-digest" data-fold-key="memory:metabolism"
                     ${foldOpenAttr(openFolds, 'memory:metabolism')}>
                     <summary class="wb-memory-digest-summary">
-                        <span><strong>最近整理</strong></span>
+                        <span><strong>最近收拾了什么～</strong></span>
                         <span class="wb-fold-meta"><small>${Math.min(12, (memory.metabolismLog || []).length)} 条最近变化</small><i class="wb-fold-chevron" aria-hidden="true"></i></span>
                     </summary>
                     <div class="wb-fold-body wb-memory-digest-body">
@@ -2171,7 +2171,7 @@ function renderMemoryView(state, observerMode, {
                     <summary class="wb-memory-digest-summary">
                         <span><strong>长期摘要</strong></span>
                         <span class="wb-fold-meta">
-                            <small>已自动整理</small>
+                            <small>已经乖乖整理好啦～</small>
                             <i class="wb-fold-chevron" aria-hidden="true"></i>
                         </span>
                     </summary>
@@ -2208,7 +2208,7 @@ function renderMemoryView(state, observerMode, {
                                     </div>
                                 </details>
                             `;
-                        }).join('') || renderEmpty('还没有长期事实', '明确成立且未来仍有用的信息会沉淀在这里。')}
+                        }).join('') || renderEmpty('还没有长期事实～', '以后真的重要、还会用到的事情会慢慢留在这里。')}
                     </div>
                 </section>
                 <section class="wb-memory-section ${shownClues.length ? '' : 'is-hidden'}">
@@ -2234,7 +2234,7 @@ function renderMemoryView(state, observerMode, {
                                     </div>
                                 </details>
                             `;
-                        }).join('') || renderEmpty('伏笔簿还是空的', '真正需要回收的线索会出现在这里。')}
+                        }).join('') || renderEmpty('伏笔簿还是空的～', '以后有需要惦记着回收的线索，它们会自己冒出来。')}
                     </div>
                 </section>
             </div>
@@ -2261,11 +2261,11 @@ function renderMemoryView(state, observerMode, {
                                 <div class="wb-fold-body wb-summary-card-body">
                                     <p>${escapeHtml(summary.summary)}</p>
                                     <details class="wb-memory-lineage">
-                                        <summary>来源</summary>
+                                        <summary>这段记忆从哪来～</summary>
                                         <div>
                                             <p>${escapeHtml(levelMeta.label)} · 消息 ${escapeHtml(summary.startMessageId)}—${escapeHtml(summary.endMessageId)}</p>
-                                            ${parent ? `<p>已归入：${escapeHtml(parent.title)}</p>` : ''}
-                                            ${sourceSummaries.length ? `<p>仍保留 ${sourceSummaries.length} 条下层来源</p>` : ''}
+                                            ${parent ? `<p>已经收进：${escapeHtml(parent.title)}</p>` : ''}
+                                            ${sourceSummaries.length ? `<p>还有 ${sourceSummaries.length} 条更细的来源可以追溯～</p>` : ''}
                                         </div>
                                     </details>
                                     ${renderMemoryActions('summary', summary)}
@@ -2274,7 +2274,7 @@ function renderMemoryView(state, observerMode, {
                         `;
                     }).join('') || renderEmpty(
                         observerMode === 'backstage' ? '还没有分层经历' : '分层经历只在幕后视角显示',
-                        observerMode === 'backstage' ? '正文整理后会先留下 L0，攒够一组再悄悄压成更高层～' : '',
+                        observerMode === 'backstage' ? '正文整理后，重要经历会慢慢出现在这里～' : '',
                     )}
                 </div>
             </section>
@@ -2342,12 +2342,12 @@ function renderArchiveView(state, openFolds = new Set()) {
     const archived = Array.isArray(state.archive) ? state.archive : [];
     return `
         <div class="wb-view-intro">
-            <p>这里保存已经发生、却最终没有被正文自然看见的世界历史。</p>
+            <p>没被镜头看见的事情也不会凭空蒸发～这里记着那些真的发生过、却悄悄错过正文的世界历史。</p>
             <span>世界账本</span>
         </div>
         <div class="wb-archive-ledger">
             ${archived.map(entry => renderArchiveEntry(entry, state, 'archive', openFolds)).join('')
-                || renderEmpty('纪事簿还是空的～', '没有遗漏到镜头外的历史。')}
+                || renderEmpty('纪事簿还是空的～', '还没有哪段世界历史悄悄错过镜头 (˘ω˘)')}
         </div>
     `;
 }

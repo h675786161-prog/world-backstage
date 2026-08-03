@@ -252,7 +252,7 @@ export function renderPersonCard(person, observerMode, worldMinute, openFolds = 
                     <button class="wb-card-action-button is-primary" type="button"
                         data-wb-action="select-person" data-person-id="${escapeAttr(person.id)}">查看人物详情</button>
                     <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-person-editor"
-                        data-person-id="${escapeAttr(person.id)}">编辑</button>
+                        data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}">编辑</button>
                 </div>
             </div>
         </details>
@@ -1225,7 +1225,7 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                 <h3>${escapeHtml(person.name)}</h3>
                 <p class="wb-drawer-place">${escapeHtml(person.location)}</p>
                 <button class="wb-person-edit-button" type="button" data-wb-action="open-person-editor"
-                    data-person-id="${escapeAttr(person.id)}">编辑人物卡</button>
+                    data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}">编辑人物卡</button>
                 <div class="wb-drawer-section"><span>正在做</span><strong>${escapeHtml(person.action)}</strong></div>
                 <div class="wb-drawer-section"><span>短期意图</span><strong>${escapeHtml(person.intent)}</strong></div>
                 ${person.longTermGoal ? `
@@ -1391,7 +1391,12 @@ function renderPeopleView(state, observerMode, people, openFolds = new Set()) {
 }
 
 function renderPersonEditorModal(state, editor) {
-    const person = state.people.find(item => item.id === editor?.id) || null;
+    const editorId = String(editor?.id || '');
+    const editorName = String(editor?.name || '');
+    const person = state.people.find(item => (
+        item.id === editorId
+        && (!editorName || item.name === editorName)
+    )) || state.people.find(item => item.id === editorId) || null;
     return `
         <div class="wb-drawer-scrim" data-wb-action="close-person-editor">
             <form class="wb-event-form wb-person-editor" data-wb-form="person">
@@ -1400,6 +1405,7 @@ function renderPersonEditorModal(state, editor) {
                     <button type="button" data-wb-action="close-person-editor">×</button>
                 </div>
                 <input type="hidden" name="id" value="${escapeAttr(person?.id || '')}">
+                <input type="hidden" name="originalName" value="${escapeAttr(person?.name || '')}">
                 <label>姓名<input name="name" required maxlength="80" value="${escapeAttr(person?.name || '')}"></label>
                 <label>当前位置<input name="location" maxlength="160" value="${escapeAttr(person?.location || '')}"></label>
                 <label>正在做<textarea name="action" maxlength="280" rows="2">${escapeHtml(person?.action || '')}</textarea></label>
@@ -2888,7 +2894,7 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'open-person-editor') {
-            personEditor = { id: target.dataset.personId || '' };
+            personEditor = { id: target.dataset.personId || '', name: target.dataset.personName || '' };
             selectedPersonId = null;
             personObservation = null;
             render();
@@ -3227,6 +3233,7 @@ export function createWorldBackstageUI({
         if (form.dataset.wbForm === 'person') {
             const completed = await invokeAction('save-manual-person', {
                 id: data.id || '',
+                originalName: data.originalName || '',
                 name: data.name || '',
                 location: data.location || '',
                 action: data.action || '',

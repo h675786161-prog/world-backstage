@@ -2987,9 +2987,25 @@ export function trimState(inputState) {
                     : 'uninitialized')),
     };
 
+    // 人物 ID 是 UI 编辑、观测与删除操作的稳定定位键。
+    // 旧状态或模型输出偶尔可能产生重复 ID；如果继续保留，点击 A 人物的操作
+    // 会命中数组中更早出现的 B 人物。载入/提交状态时统一修复冲突，保留首个
+    // ID，并为后续冲突项生成新的稳定 ID。
+    const seenPersonIds = new Set();
     state.people = asArray(state.people)
         .slice(-LIMITS.people)
-        .map(person => normalizePerson(person, person, state.clock.absoluteMinute));
+        .map(person => normalizePerson(person, person, state.clock.absoluteMinute))
+        .map(person => {
+            if (!seenPersonIds.has(person.id)) {
+                seenPersonIds.add(person.id);
+                return person;
+            }
+            let nextId = makeId('person');
+            while (seenPersonIds.has(nextId)) nextId = makeId('person');
+            person.id = nextId;
+            seenPersonIds.add(nextId);
+            return person;
+        });
 
     const events = asArray(state.events)
         .map(event => normalizeEvent(event, state.clock.absoluteMinute, event));

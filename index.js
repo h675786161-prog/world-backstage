@@ -42,7 +42,7 @@ import { buildBackstageMessages } from './prompt-bridge.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
-const PLUGIN_VERSION = '1.0.4';
+const PLUGIN_VERSION = '1.0.5';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 17,
     enabled: true,
@@ -3242,10 +3242,14 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'save-manual-person') {
         const id = String(payload.id || '');
+        const originalName = String(payload.originalName || '').trim();
         const name = String(payload.name || '').trim();
         if (!name) throw new Error('人物姓名不能为空');
         const next = clone(getState());
-        const existing = next.people.find(person => person.id === id);
+        const existing = next.people.find(person => (
+            person.id === id
+            && (!originalName || person.name === originalName)
+        )) || next.people.find(person => person.id === id);
         if (existing?.locked && payload.locked === false) {
             throw new Error('请先解锁人物卡，再修改核心设定');
         }

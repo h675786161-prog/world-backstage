@@ -1,7 +1,7 @@
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 11;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
 
@@ -10,7 +10,7 @@ const ACTIVE_EVENT_STATES = new Set(['active', 'waiting']);
 const VALID_CLOCK_MODES = new Set(['duration', 'active', 'scheduled', 'condition']);
 const VALID_VISIBILITY = new Set(['hidden', 'trace', 'known', 'direct']);
 const VALID_KNOWLEDGE = new Set(['hidden', 'known']);
-const VALID_CLUE_STATES = new Set(['open', 'developing', 'triggered', 'echoed', 'resolved', 'discarded']);
+const VALID_CLUE_STATES = new Set(['open', 'echoed', 'resolved', 'discarded']);
 const VALID_MEMORY_FACT_STATES = new Set(['active', 'disputed', 'superseded', 'invalidated']);
 const VALID_MEMORY_CONFIDENCE = new Set(['low', 'medium', 'high']);
 const MEMORY_SUMMARY_LEVELS = Object.freeze({
@@ -53,12 +53,10 @@ const LIMITS = Object.freeze({
     cognitiveRefs: 32,
     personState: 220,
     eventCause: 360,
-    eventPublicTrace: 260,
     storySummaries: 2400,
     clues: 480,
     memoryFacts: 720,
     memoryDigest: 2400,
-    metabolismLog: 180,
 });
 
 function deepClone(value) {
@@ -420,8 +418,6 @@ export function createInitialState({
             facts: [],
             summaries: [],
             clues: [],
-            metabolismLog: [],
-            lastMetabolismMessageId: -1,
         },
         audit: [],
         pendingSync: false,
@@ -479,14 +475,6 @@ function normalizeStorySummary(raw, existing = null) {
         locked: Boolean(raw?.locked ?? existing?.locked),
         important: Boolean(raw?.important ?? existing?.important),
         manual: Boolean(raw?.manual ?? existing?.manual),
-        retentionState: ['active', 'compacted'].includes(raw?.retention_state ?? raw?.retentionState)
-            ? (raw?.retention_state ?? raw?.retentionState)
-            : (existing?.retentionState || 'active'),
-        compactedReason: asString(
-            raw?.compacted_reason ?? raw?.compactedReason,
-            existing?.compactedReason || '',
-            260,
-        ),
         createdAt: asString(raw?.created_at ?? raw?.createdAt, existing?.createdAt || nowIso(), 40),
     };
 }
@@ -529,11 +517,6 @@ function normalizeClue(raw, existing = null, worldMinute = 0, {
         importance: asInteger(raw?.importance, existing?.importance ?? 1, 1, 3),
         visibility: normalizeVisibility(raw?.visibility ?? existing?.visibility ?? 'hidden'),
         resolution: asString(raw?.resolution, existing?.resolution || '', 520),
-        lifecycleReason: asString(
-            raw?.lifecycle_reason ?? raw?.lifecycleReason,
-            existing?.lifecycleReason || '',
-            360,
-        ),
         resolvedMessageId: raw?.resolved_message_id ?? raw?.resolvedMessageId
             ?? existing?.resolvedMessageId
             ?? null,
@@ -661,58 +644,45 @@ function retainMemoryFacts(items) {
 function retainStorySummaries(items) {
     const chronological = asArray(items)
         .sort((a, b) => Number(a.endMessageId || 0) - Number(b.endMessageId || 0));
-    if (!chronological.length) return chronological;
+    if (chronological.length <= LIMITS.storySummaries) return chronological;
 
-    // Memory is allowed to forget low-value detail after it has been safely rolled
-    // into a higher layer.  We keep the recent detail window, the story opening,
-    // manually protected items and all chapter/long-term summaries.  Older compacted
-    // L0/L1 nodes may leave the active store; their parent summaries still retain the
-    // covered message range, so the original chat remains traceable without keeping
-    // every intermediate summary forever.
-    const latestMessageId = Number(chronological.at(-1)?.endMessageId || 0);
-    const recentFloor = Math.max(0, latestMessageId - 480);
+    // Hierarchical memory keeps the lower-level source nodes behind every rollup.
+    // The limit is therefore a soft pool for unrelated/unmanaged summaries rather
+    // than a FIFO guillotine that would sever provenance chains.
+    const byId = new Map(chronological.map(item => [item.id, item]));
     const protectedIds = new Set();
-    const protect = item => {
-        if (item?.id) protectedIds.add(item.id);
+    const protectTree = id => {
+        if (!id || protectedIds.has(id)) return;
+        const item = byId.get(id);
+        if (!item) return;
+        protectedIds.add(id);
+        for (const sourceId of asArray(item.sourceSummaryIds)) protectTree(sourceId);
     };
-
     for (const item of chronological) {
-        const level = Number(item?.level || 0);
-        const recent = Number(item?.endMessageId || 0) >= recentFloor;
-        const activeUnrolled = !item?.parentId && item?.retentionState !== 'compacted';
         if (
             item?.locked
             || item?.important
             || item?.manual
-            || level >= MEMORY_SUMMARY_LEVELS.CHAPTER
-            || activeUnrolled
-            || recent
+            || Number(item?.level || 0) >= MEMORY_SUMMARY_LEVELS.CHAPTER
+            || item?.parentId
         ) {
-            protect(item);
+            protectTree(item.id);
         }
     }
-    // A tiny amount of opening detail is intentionally kept as a durable story anchor.
-    chronological.slice(0, 12).forEach(protect);
+    chronological.slice(0, 24).forEach(item => protectTree(item.id));
+    chronological.slice(-1200).forEach(item => protectTree(item.id));
 
     const keep = new Map();
-    for (const item of chronological) {
-        if (protectedIds.has(item.id)) keep.set(item.id, item);
+    for (const id of protectedIds) {
+        const item = byId.get(id);
+        if (item) keep.set(id, item);
     }
-
-    // Fill any remaining room with the newest useful summaries, but compacted old
-    // details lose to active/higher-level memory.  This makes LIMITS.storySummaries a
-    // real upper bound in ordinary cases instead of a pool that can grow forever.
-    const candidates = chronological
-        .filter(item => !keep.has(item.id) && item?.retentionState !== 'compacted')
-        .sort((a, b) => (
-            Number(b.level || 0) - Number(a.level || 0)
-            || Number(b.endMessageId || 0) - Number(a.endMessageId || 0)
-        ));
-    for (const item of candidates) {
-        if (keep.size >= LIMITS.storySummaries) break;
-        keep.set(item.id, item);
+    if (keep.size < LIMITS.storySummaries) {
+        for (let index = chronological.length - 1; index >= 0 && keep.size < LIMITS.storySummaries; index -= 1) {
+            const item = chronological[index];
+            if (item?.id) keep.set(item.id, item);
+        }
     }
-
     return [...keep.values()]
         .sort((a, b) => Number(a.endMessageId || 0) - Number(b.endMessageId || 0));
 }
@@ -723,7 +693,7 @@ function retainClues(items) {
         item?.locked
         || item?.important
         || item?.manual
-        || ['open', 'developing', 'echoed', 'triggered'].includes(item?.status)
+        || ['open', 'echoed'].includes(item?.status)
     ));
     const protectedIds = new Set(protectedItems.map(item => item.id));
     const remainder = normalized
@@ -767,80 +737,7 @@ function normalizeStoryMemory(raw, worldMinute = 0) {
         facts: retainMemoryFacts([...factMap.values()]),
         summaries: retainStorySummaries(summaries),
         clues: retainClues([...clueMap.values()]),
-        metabolismLog: asArray(raw?.metabolismLog ?? raw?.metabolism_log)
-            .slice(-LIMITS.metabolismLog)
-            .map(item => ({
-                id: asString(item?.id, makeId('metabolism'), 100),
-                kind: asString(item?.kind, 'memory', 30),
-                action: asString(item?.action, 'updated', 30),
-                targetId: asString(item?.targetId ?? item?.target_id, '', 120),
-                replacementId: asString(item?.replacementId ?? item?.replacement_id, '', 120),
-                reason: asString(item?.reason, '', 360),
-                sourceMessageId: asInteger(item?.sourceMessageId ?? item?.source_message_id, 0, 0),
-                worldMinute: asInteger(item?.worldMinute ?? item?.world_minute, worldMinute, 0),
-                createdAt: asString(item?.createdAt ?? item?.created_at, nowIso(), 40),
-            })),
-        lastMetabolismMessageId: asInteger(
-            raw?.lastMetabolismMessageId ?? raw?.last_metabolism_message_id,
-            -1,
-            -1,
-        ),
     };
-}
-
-function normalizeFactBeliefs(value, fallback = []) {
-    const byKey = new Map();
-    for (const raw of [...asArray(fallback), ...asArray(value)]) {
-        const key = asString(raw?.key, '', 180);
-        const valueText = asString(raw?.value, '', 520);
-        if (!key || !valueText) continue;
-        byKey.set(key, {
-            key,
-            value: valueText,
-            factId: asString(raw?.fact_id ?? raw?.factId, '', 120),
-            learnedAtMessageId: asInteger(raw?.learned_at_message_id ?? raw?.learnedAtMessageId, 0, 0),
-            updatedAt: asInteger(raw?.updated_at ?? raw?.updatedAt, 0, 0),
-        });
-    }
-    return [...byKey.values()].slice(-LIMITS.cognitiveRefs);
-}
-
-function activeFactByKey(state, key) {
-    const normalized = asString(key, '', 180);
-    if (!normalized) return null;
-    return asArray(state?.storyMemory?.facts)
-        .filter(fact => fact.key === normalized && ['active', 'disputed'].includes(fact.status))
-        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0] || null;
-}
-
-function setFactBelief(person, fact, messageId = 0) {
-    if (!person || !fact?.key || !fact?.value) return;
-    const beliefs = normalizeFactBeliefs(person.knownFactBeliefs);
-    const next = {
-        key: fact.key,
-        value: fact.value,
-        factId: fact.id || '',
-        learnedAtMessageId: asInteger(messageId, 0, 0),
-        updatedAt: asInteger(fact.updatedAt, 0, 0),
-    };
-    const index = beliefs.findIndex(item => item.key === next.key);
-    if (index >= 0) beliefs[index] = next;
-    else beliefs.push(next);
-    person.knownFactBeliefs = beliefs.slice(-LIMITS.cognitiveRefs);
-}
-
-function freezeKnownFactBeforeChange(state, fact) {
-    if (!fact?.key || !fact?.value) return;
-    for (const person of asArray(state?.people)) {
-        const knowsKey = asArray(person?.knownFactKeys).some(key => (
-            normalizedReference(key) === normalizedReference(fact.key)
-        ));
-        if (!knowsKey) continue;
-        const hasSnapshot = asArray(person?.knownFactBeliefs).some(item => (
-            normalizedReference(item?.key) === normalizedReference(fact.key)
-        ));
-        if (!hasSnapshot) setFactBelief(person, fact, person?.lastSeenMessageId || fact.sourceMessageId || 0);
-    }
 }
 
 function normalizePerson(raw, existing = null, worldMinute = 0, {
@@ -985,10 +882,6 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
             raw?.known_fact_keys ?? raw?.knownFactKeys,
             LIMITS.cognitiveRefs,
         ),
-        knownFactBeliefs: normalizeFactBeliefs(
-            raw?.known_fact_beliefs ?? raw?.knownFactBeliefs,
-            existing?.knownFactBeliefs,
-        ),
         knownClueIds: mergeUniqueStrings(
             existing?.knownClueIds,
             raw?.known_clue_ids ?? raw?.knownClueIds,
@@ -1112,13 +1005,6 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
             raw?.caused_by ?? raw?.causedBy,
             12,
         ),
-        publicTrace: visibility === 'hidden'
-            ? ''
-            : asString(
-                raw?.public_trace ?? raw?.publicTrace ?? existing?.publicTrace,
-                '',
-                LIMITS.eventPublicTrace,
-            ),
         visibility,
         delivery: {
             state: deliveryState,
@@ -1354,54 +1240,6 @@ function findClue(memory, raw) {
     )) || null;
 }
 
-function appendMemoryMetabolism(state, {
-    kind = 'memory',
-    action = 'updated',
-    targetId = '',
-    replacementId = '',
-    reason = '',
-    sourceMessageId = 0,
-} = {}) {
-    state.storyMemory ||= {};
-    state.storyMemory.metabolismLog = asArray(state.storyMemory.metabolismLog);
-    state.storyMemory.metabolismLog.push({
-        id: makeId('metabolism'),
-        kind: asString(kind, 'memory', 30),
-        action: asString(action, 'updated', 30),
-        targetId: asString(targetId, '', 120),
-        replacementId: asString(replacementId, '', 120),
-        reason: asString(reason, '', 360),
-        sourceMessageId: asInteger(sourceMessageId, 0, 0),
-        worldMinute: asInteger(state.clock?.absoluteMinute, 0, 0),
-        createdAt: nowIso(),
-    });
-    state.storyMemory.metabolismLog = state.storyMemory.metabolismLog.slice(-LIMITS.metabolismLog);
-    state.storyMemory.lastMetabolismMessageId = Math.max(
-        Number(state.storyMemory.lastMetabolismMessageId ?? -1),
-        asInteger(sourceMessageId, -1, -1),
-    );
-}
-
-function compactRolledUpSources(state, parentSummary, sources, { sourceMessageId = 0 } = {}) {
-    for (const source of sources) {
-        if (source.locked || source.important || source.manual) continue;
-        if (asArray(source.tags).length) continue;
-        if (Number(source.level || 0) >= MEMORY_SUMMARY_LEVELS.CHAPTER) continue;
-        if (source.retentionState === 'compacted') continue;
-        source.retentionState = 'compacted';
-        source.compactedReason = `细节已由 ${parentSummary.title || `L${parentSummary.level}`} 概括；原始正文仍可按消息范围回看。`;
-        source.summary = `细节已收进上层记忆；原始正文见消息 ${source.startMessageId}—${source.endMessageId}。`;
-        appendMemoryMetabolism(state, {
-            kind: 'episode',
-            action: 'compacted',
-            targetId: source.id,
-            replacementId: parentSummary.id,
-            reason: source.compactedReason,
-            sourceMessageId,
-        });
-    }
-}
-
 function findMemoryFact(memory, raw, {
     matchValue = true,
 } = {}) {
@@ -1471,19 +1309,9 @@ function applyMemoryFactUpdates(state, {
         } else {
             for (const conflict of conflicts) {
                 if (conflict.locked) continue;
-                freezeKnownFactBeforeChange(state, conflict);
                 conflict.status = 'superseded';
                 conflict.supersededBy = prepared.id;
-                conflict.invalidationReason = `已被后续事实“${prepared.value}”取代`;
                 conflict.updatedAt = state.clock.absoluteMinute;
-                appendMemoryMetabolism(state, {
-                    kind: 'fact',
-                    action: 'superseded',
-                    targetId: conflict.id,
-                    replacementId: prepared.id,
-                    reason: conflict.invalidationReason,
-                    sourceMessageId: sourceMessageId ?? prepared.sourceMessageId ?? 0,
-                });
             }
             prepared.supersedes = uniqueStrings([
                 ...prepared.supersedes,
@@ -1499,7 +1327,6 @@ function applyMemoryFactUpdates(state, {
             : rawInvalidation;
         const fact = findMemoryFact(state.storyMemory, invalidation, { matchValue: false });
         if (!fact || fact.locked) continue;
-        freezeKnownFactBeforeChange(state, fact);
         fact.status = 'invalidated';
         fact.invalidationReason = asString(
             invalidation?.reason ?? invalidation?.invalidation_reason,
@@ -1507,13 +1334,6 @@ function applyMemoryFactUpdates(state, {
             360,
         );
         fact.updatedAt = state.clock.absoluteMinute;
-        appendMemoryMetabolism(state, {
-            kind: 'fact',
-            action: 'invalidated',
-            targetId: fact.id,
-            reason: fact.invalidationReason,
-            sourceMessageId: sourceMessageId ?? fact.sourceMessageId ?? 0,
-        });
     }
 }
 
@@ -1548,13 +1368,8 @@ function applyClueUpdates(state, {
             : 'resolved';
         clue.resolution = asString(
             resolution?.resolution,
-            clue.resolution || (clue.status === 'discarded' ? '后续发展已证明这条线索无需继续追踪' : '已由后续正文呼应或解决'),
+            clue.resolution || '已由后续正文呼应或解决',
             520,
-        );
-        clue.lifecycleReason = asString(
-            resolution?.reason ?? resolution?.lifecycle_reason ?? resolution?.lifecycleReason,
-            clue.lifecycleReason || clue.resolution,
-            360,
         );
         clue.resolvedMessageId = asInteger(
             resolution?.message_id ?? resolution?.messageId,
@@ -1562,13 +1377,6 @@ function applyClueUpdates(state, {
             0,
         );
         clue.updatedAt = state.clock.absoluteMinute;
-        appendMemoryMetabolism(state, {
-            kind: 'clue',
-            action: clue.status,
-            targetId: clue.id,
-            reason: clue.lifecycleReason || clue.resolution,
-            sourceMessageId: sourceMessageId ?? clue.resolvedMessageId ?? 0,
-        });
     }
 }
 
@@ -1829,19 +1637,6 @@ export function applySimulationResult(baseState, rawPayload, {
     if (payload.world.title) state.world.title = payload.world.title;
     if (payload.world.detail) state.world.detail = payload.world.detail;
 
-    const preFactByKey = new Map(
-        asArray(state.storyMemory?.facts)
-            .filter(fact => ['active', 'disputed'].includes(fact.status))
-            .map(fact => [fact.key, deepClone(fact)]),
-    );
-    const cognitionBefore = new Map(
-        asArray(state.people).map(person => [person.id, {
-            knownFactKeys: [...asArray(person.knownFactKeys)],
-            knownFactBeliefs: normalizeFactBeliefs(person.knownFactBeliefs),
-        }]),
-    );
-    const pendingFactBeliefUpdates = [];
-
     let backgroundNpcUpdates = 0;
     const maximumBackgroundNpcUpdates = asInteger(
         backgroundNpcBudget,
@@ -1873,16 +1668,6 @@ export function applySimulationResult(baseState, rawPayload, {
         }
         const existing = findPerson(state, rawPerson);
         if (existing && !foregroundPerson && existing.simulationEnabled === false) continue;
-        const existingCognition = existing ? cognitionBefore.get(existing.id) : null;
-        const incomingFactKeys = uniqueStrings(rawPerson?.known_fact_keys ?? rawPerson?.knownFactKeys, LIMITS.cognitiveRefs);
-        const refreshFactKeys = uniqueStrings(rawPerson?.known_fact_refresh_keys ?? rawPerson?.knownFactRefreshKeys, LIMITS.cognitiveRefs);
-        pendingFactBeliefUpdates.push({
-            personId: existing?.id || normalizeId(rawPerson?.id || rawPerson?.name, 'person'),
-            incomingFactKeys,
-            refreshFactKeys,
-            previousKeys: existingCognition?.knownFactKeys || [],
-            previousBeliefs: existingCognition?.knownFactBeliefs || [],
-        });
         const person = normalizePerson(rawPerson, existing, worldMinute, {
             userName,
             allowUserInnerVoice,
@@ -1962,14 +1747,6 @@ export function applySimulationResult(baseState, rawPayload, {
             12,
         );
         if (update?.visibility) event.visibility = normalizeVisibility(update.visibility);
-        if (update?.public_trace !== undefined || update?.publicTrace !== undefined) {
-            event.publicTrace = asString(
-                update?.public_trace ?? update?.publicTrace,
-                event.publicTrace || '',
-                LIMITS.eventPublicTrace,
-            );
-        }
-        if (event.visibility === 'hidden') event.publicTrace = '';
         if (update?.delivery_route) {
             event.delivery.route = asString(update.delivery_route, event.delivery.route, 220);
         }
@@ -2028,24 +1805,6 @@ export function applySimulationResult(baseState, rawPayload, {
         sourceMessageId: messageId,
         sourceSwipeId: swipeId,
     });
-    for (const pending of pendingFactBeliefUpdates) {
-        const person = state.people.find(item => item.id === pending.personId);
-        if (!person) continue;
-        person.knownFactBeliefs = normalizeFactBeliefs(person.knownFactBeliefs, pending.previousBeliefs);
-        const previousKeys = new Set(pending.previousKeys.map(normalizedReference));
-        const previousBeliefKeys = new Set(pending.previousBeliefs.map(item => normalizedReference(item.key)));
-        const refreshKeys = new Set(pending.refreshFactKeys.map(normalizedReference));
-        for (const key of pending.incomingFactKeys) {
-            const normalizedKey = normalizedReference(key);
-            const alreadyKnown = previousKeys.has(normalizedKey);
-            const hasBelief = previousBeliefKeys.has(normalizedKey);
-            if (alreadyKnown && hasBelief && !refreshKeys.has(normalizedKey)) continue;
-            const fact = alreadyKnown && !hasBelief && !refreshKeys.has(normalizedKey)
-                ? preFactByKey.get(key)
-                : activeFactByKey(state, key);
-            if (fact) setFactBelief(person, fact, messageId);
-        }
-    }
     synchronizeCognitiveLedger(state);
 
     state.pendingSync = false;
@@ -2359,7 +2118,6 @@ export function planMemoryRollup(state) {
                 summary.hierarchyManaged
                 && !summary.manual
                 && Number(summary.level) === sourceLevel
-                && summary.retentionState !== 'compacted'
                 && !summary.parentId
             ))
             .sort((a, b) => (
@@ -2413,7 +2171,7 @@ export function buildMemoryRollupPrompt(state, plan, { compact = false } = {}) {
         '要求：',
         '1. 只能使用给出的下层摘要；禁止补写不存在的情节。',
         '2. 优先保留关系变化、长期目标、承诺、关键转折、持续冲突、重要物品与未解决问题。普通动作、重复气氛和已经失效的枝节可以舍弃。',
-        '3. 新摘要是上层长期索引。source_summary_ids 与消息范围会保留，但普通下层摘要在建立上层后可能被压成轻量占位；因此真正会影响未来理解的细节必须进入上层，不重要的枝节可以主动放下。',
+        '3. 新摘要只是上层索引。插件会完整保留下层 source_summary_ids，因此不要试图把每个细节都塞进上层。',
         '4. people / locations / tags 只保留真正贯穿这一段的重要项。',
         `5. ${lengthRule}`,
         '6. 只返回合法 JSON，不要代码围栏和解释。',
@@ -2472,13 +2230,6 @@ export function applyMemoryRollupResult(inputState, rawPayload, plan = {}) {
     if (existing) Object.assign(existing, normalized);
     else state.storyMemory.summaries.push(normalized);
     for (const source of sources) source.parentId = normalized.id;
-    compactRolledUpSources(state, normalized, sources, {
-        sourceMessageId: last.endMessageId,
-    });
-    state.storyMemory.lastMetabolismMessageId = Math.max(
-        Number(state.storyMemory.lastMetabolismMessageId || -1),
-        Number(last.endMessageId || -1),
-    );
     state.revision = asInteger(state.revision, 0, 0) + 1;
     state.updatedAt = nowIso();
     appendAudit(state, {
@@ -2541,8 +2292,7 @@ function memoryMatchScore(item, query, {
         score += Math.min(20, overlap * 2);
     }
     if (item?.status === 'open') score += 8;
-    if (item?.status === 'developing' || item?.status === 'echoed') score += 6;
-    if (item?.status === 'triggered') score += 9;
+    if (item?.status === 'echoed') score += 5;
     if (item?.status === 'active') score += 7;
     if (item?.status === 'disputed') score += 2;
     if (item?.confidence === 'high') score += 4;
@@ -2600,7 +2350,7 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
             recall_score: score,
         }));
     const clues = memory.clues
-        .filter(clue => !['resolved', 'discarded'].includes(clue.status))
+        .filter(clue => !['discarded'].includes(clue.status))
         .map(clue => ({
             clue,
             score: memoryMatchScore(clue, narrativeText, { referenceMessageId }),
@@ -2625,7 +2375,6 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
             resolution: modelText(clue.resolution, 260),
         }));
     const scoredSummaries = memory.summaries
-        .filter(summary => summary.retentionState !== 'compacted')
         .map(summary => ({
             summary,
             score: memoryMatchScore(summary, narrativeText, { referenceMessageId }),
@@ -2740,9 +2489,7 @@ export function buildHistoryIndexPrompt(state, {
         '4. 每类事实使用稳定 key（例如“人物:老白:真实身份”）。同一 key 出现新值时保留 key 并提交新 value；插件会把旧版本标为 superseded。真假仍无法判断时用 status=disputed，不要强行覆盖。',
         '5. 只提取真正可能在后文产生呼应的伏笔。普通环境描写、一次性动作和已经当场解释完的事实不要当作伏笔。',
         '6. 长期事实与伏笔必须记录最早或最清楚的来源消息 id、swipe，并保留不超过80字的原文摘录。',
-        '7. 记忆要会更迭，不要只增不减：旧伏笔开始推进时用原 ID 更新为 developing；关键条件真正触发时可更新为 triggered；确实完成/揭晓时放入 clues_resolve(status=resolved)；后文已经证明它不再需要、方向被废弃或只是误判的伏笔放入 clues_resolve(status=discarded) 并写清 reason。被正文明确否定或已经失效的长期事实放入 facts_invalidate。',
-        '7A. 同一长期事实出现新值时继续用同一稳定 key，插件会把旧值标为 superseded 并保留轻量变化链；不要让互相冲突的旧值同时保持 active。世界事实更新不会自动修改任何 NPC 的认知账本。',
-        '7B. 不需要保存所有东西。普通枝节、已被高层经历覆盖且未来无独立价值的信息可以从持续摘要中淡出；锁定、重要、长期关系、重大承诺、身份、关键限制与未完成线索必须保留。',
+        '7. 若旧伏笔在本批正文中被呼应但未解决，放入 clues_upsert 并把 status 改为 echoed；确实解决时放入 clues_resolve。被正文明确否定的长期事实放入 facts_invalidate。',
         '8. 不得把玩家未明说的想法写成事实。玩家角色名：'
             + `${modelText(userName, 80) || '未提供'}。`
             + (identityAnchor
@@ -2795,13 +2542,12 @@ export function buildHistoryIndexPrompt(state, {
                 text: '',
                 source_message_id: startMessageId,
                 source_excerpt: '',
-                status: 'open | developing | triggered',
+                status: 'open',
             }],
             clues_resolve: [{
                 id: '',
-                status: 'resolved | discarded',
+                status: 'resolved',
                 resolution: '',
-                reason: '',
                 message_id: endMessageId,
             }],
         }),
@@ -2946,41 +2692,14 @@ export function buildPersonObservationPrompt(state, person, {
             || listReferencesPerson(event?.actors, person)
         ));
 
-    if (cognitionReady) {
-        const beliefs = normalizeFactBeliefs(person?.knownFactBeliefs);
-        const beliefKeys = new Set(beliefs.map(item => normalizedReference(item.key)));
-        const beliefFacts = beliefs.map(belief => {
-            const historical = asArray(state?.storyMemory?.facts).find(fact => (
-                belief.factId && fact.id === belief.factId
-            )) || asArray(state?.storyMemory?.facts).find(fact => fact.key === belief.key);
-            return {
-                id: belief.factId || `belief_${hashText(`${belief.key}
-${belief.value}`)}`,
-                key: belief.key,
-                subject: historical?.subject || belief.key,
-                predicate: historical?.predicate || '',
-                value: belief.value,
-                people: historical?.people || [],
-                locations: historical?.locations || [],
-                tags: historical?.tags || [],
-                status: 'belief',
-                confidence: historical?.confidence || 'medium',
-                importance: historical?.importance || 2,
-                visibility: 'known',
-                source_message_id: belief.learnedAtMessageId || historical?.sourceMessageId || 0,
-                source_swipe_id: historical?.sourceSwipeId || 0,
-            };
-        });
-        const legacyFacts = relevantMemory.facts.filter(fact => (
-            knownFactKeys.has(normalizedReference(fact.key))
-            && !beliefKeys.has(normalizedReference(fact.key))
-        ));
-        relevantMemory.facts = [...beliefFacts, ...legacyFacts].slice(0, 16);
-    } else {
-        relevantMemory.facts = relevantMemory.facts.filter(fact => (
-            fact.visibility !== 'hidden' || fact.people.includes(person?.name)
-        ));
-    }
+    relevantMemory.facts = relevantMemory.facts.filter(fact => (
+        cognitionReady
+            ? knownFactKeys.has(normalizedReference(fact.key))
+            : (
+                fact.visibility !== 'hidden'
+                || fact.people.includes(person?.name)
+            )
+    ));
     relevantMemory.clues = relevantMemory.clues.filter(clue => (
         cognitionReady
             ? knownClueIds.has(normalizedReference(clue.id))
@@ -3059,7 +2778,6 @@ ${belief.value}`)}`,
             cognition_ready: person?.cognitionReady,
             known_event_ids: person?.knownEventIds,
             known_fact_keys: person?.knownFactKeys,
-            known_fact_beliefs: person?.knownFactBeliefs,
             known_clue_ids: person?.knownClueIds,
             physical_state: person?.physicalState,
             emotional_state: person?.emotionalState,
@@ -3140,7 +2858,6 @@ export function compactStateForModel(state, {
                 cognition_ready: person.cognitionReady,
                 known_event_ids: person.knownEventIds,
                 known_fact_keys: person.knownFactKeys,
-                known_fact_beliefs: person.knownFactBeliefs,
                 known_clue_ids: person.knownClueIds,
                 physical_state: modelText(person.physicalState, LIMITS.personState),
                 emotional_state: modelText(person.emotionalState, LIMITS.personState),
@@ -3170,7 +2887,6 @@ export function compactStateForModel(state, {
                 actors: event.actors,
                 known_by: event.knownBy,
                 caused_by: event.causedBy,
-                public_trace: modelText(event.publicTrace, LIMITS.eventPublicTrace),
                 visibility: event.visibility,
                 delivery_state: event.delivery.state,
             })),
@@ -3281,15 +2997,12 @@ export function buildSimulationPrompt(state, {
         '10. deliveries_confirmed 只填写本批新正文确实承接、感知或留下可见痕迹的事件ID。没有写进正文就不要确认。',
         newAssistantRule,
         '12. 相关旧记忆中的伏笔只能帮助保持因果连续；角色不知情的隐藏伏笔不能突然变成角色知识。',
-        '12A. NPC 认知由 known_event_ids / known_fact_keys / known_fact_beliefs / known_clue_ids 与事件 known_by 共同记录。只有亲历、被明确告知、主动调查得到、或通过该人物既有身份/渠道合理获得的信息才能加入；绝不能把玩家知道、旁白知道或后台知道的内容自动复制给 NPC。账本条目不会因为本轮未提及而自动遗忘。known_fact_beliefs 保存该人物实际获知时的事实版本；世界事实后续更迭时不得自动刷新。若人物本轮确实得知同一 key 的新版本，除了保留 known_fact_keys，还要把该 key 放进 known_fact_refresh_keys。对于本轮确实处理到的旧人物，在核对其当前认知后设置 cognition_ready=true；旧存档人物首次升级时不得把所有相关记忆批量回填，只能加入有证据支持其知情的条目。',
+        '12A. NPC 认知由 known_event_ids / known_fact_keys / known_clue_ids 与事件 known_by 共同记录。只有亲历、被明确告知、主动调查得到、或通过该人物既有身份/渠道合理获得的信息才能加入；绝不能把玩家知道、旁白知道或后台知道的内容自动复制给 NPC。账本条目不会因为本轮未提及而自动遗忘。对于本轮确实处理到的旧人物，在核对其当前认知后设置 cognition_ready=true；旧存档人物首次升级时不得把所有相关记忆批量回填，只能加入有证据支持其知情的条目。',
         '12B. event.visibility 只表示事件对前台/玩家的显露边界，不代表 NPC 是否知道；NPC 是否知情只看 known_by 与人物认知账本。known_by 优先填写已有人物 id，新人物尚无 id 时可暂填精确姓名。',
         '12C. physical_state / emotional_state / resource_state 是人物当前状态。状态变化必须真实影响 action、intent 与执行能力；受伤、疲劳、缺资源、权限不足或情绪压力不能下一轮凭空消失。不得发明角色卡、身份锚点、既有记忆未支持的技能、装备、权限或知识。玩家的 emotional_state 只有正文/玩家明确表达时才能更新，不得替玩家猜内心。',
         '12D. 新事件要写明 cause；若它由已有事件的行动、结果或后果继续发酵，必须在 caused_by 填上游事件 ID。actors 只列真实参与/经历该事件的人，known_by 只列确实知情的人。一个事件解决后如果产生了新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命；也不要为了制造“热闹”强行生成后续。',
-        '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
-        '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',
-        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。',
-        '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。长期事实必须更迭：同一稳定 key 出现新值时提交新值，让旧版本退出 active；明确失效/否定时写 facts_invalidate。不要让过期事实与新事实同时保持当前有效。',
-        '14A. 事实层更新只代表世界真相/档案更新，绝不能因此自动把新值塞进所有 NPC 的 known_fact_keys；NPC 认知仍只按 12A 的知情证据单独变化。',
+        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔被明确呼应或解决时使用原 ID 更新。',
+        '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。',
         '同一类事实使用稳定 key。正文给出新值时保留 key；插件会保留旧版本并标为 superseded。正文明确否定某条旧事实时写入 facts_invalidate；真假未定时用 status=disputed。',
         '人物 source 只有在本批 new="true" 正文真实描写到该人物时才填 foreground；镜头外人物必须填 background。present_in_scene 只有人物本人在当前场景中实际行动、说话或被直接感知时才为 true；仅被提及、回忆、谈论、作为目标或出现在内心想法里一律为 false。last_seen_message_id 必须填该人物最后实际出现的 assistant 消息 ID。',
         customRule
@@ -3342,7 +3055,6 @@ export function buildSimulationPrompt(state, {
                 cognition_ready: true,
                 known_event_ids: [],
                 known_fact_keys: [],
-                known_fact_refresh_keys: [],
                 known_clue_ids: [],
                 physical_state: '',
                 emotional_state: '',
@@ -3368,7 +3080,6 @@ export function buildSimulationPrompt(state, {
                 actors: [],
                 known_by: [],
                 caused_by: [],
-                public_trace: '',
                 visibility: 'hidden',
                 delivery_route: '',
             }],
@@ -3383,7 +3094,6 @@ export function buildSimulationPrompt(state, {
                 actors: [],
                 known_by: [],
                 caused_by: [],
-                public_trace: '',
                 visibility: 'hidden',
                 delivery_route: '',
             }],
@@ -3424,15 +3134,14 @@ export function buildSimulationPrompt(state, {
                     people: [],
                     locations: [],
                     tags: [],
-                    status: 'open | developing | triggered',
+                    status: 'open',
                     importance: 1,
                     visibility: 'hidden',
                 }],
                 clues_resolve: [{
                     id: '',
-                    status: 'resolved | discarded',
+                    status: 'resolved',
                     resolution: '',
-                    reason: '',
                 }],
             },
         }),
@@ -3583,63 +3292,6 @@ export function createSnapshot(state, meta = {}) {
         },
         state: trimState(deepClone(state)),
     };
-}
-
-// Message/swipe snapshots used to copy the entire hierarchical memory pool into
-// every turn. On very long chats that makes chat metadata grow roughly with
-// "turns × accumulated memory". Compact snapshots keep the branch-specific
-// world state plus only the summaries that end on the snapshot's own cutoff;
-// older summaries are reconstructed from one chat-level archive on restore.
-export function createCompactSnapshot(state, meta = {}) {
-    const trimmed = trimState(deepClone(state));
-    const summaries = asArray(trimmed.storyMemory?.summaries);
-    const explicitCutoff = Number.parseInt(meta.memorySummaryCutoffMessageId ?? meta.messageId, 10);
-    const inferredCutoff = summaries.reduce(
-        (maximum, summary) => Math.max(maximum, Number(summary?.endMessageId ?? -1)),
-        -1,
-    );
-    const cutoff = Number.isFinite(explicitCutoff) && explicitCutoff >= 0
-        ? explicitCutoff
-        : inferredCutoff;
-    const localSummaries = cutoff >= 0
-        ? summaries.filter(summary => Number(summary?.endMessageId ?? -1) === cutoff)
-        : [];
-    trimmed.storyMemory = {
-        ...trimmed.storyMemory,
-        summaries: deepClone(localSummaries),
-    };
-    return {
-        schemaVersion: SCHEMA_VERSION,
-        takenAt: nowIso(),
-        meta: {
-            messageId: meta.messageId ?? null,
-            swipeId: meta.swipeId ?? null,
-            sourceKey: asString(meta.sourceKey, '', 180),
-            kind: asString(meta.kind, 'result', 30),
-            compactMemory: true,
-            memorySummaryCutoffMessageId: cutoff,
-        },
-        state: trimmed,
-    };
-}
-
-export function restoreCompactSnapshot(snapshot, fallback = null, summaryPool = []) {
-    const restored = restoreSnapshot(snapshot, fallback);
-    if (!snapshot?.meta?.compactMemory) return restored;
-    const cutoff = asInteger(snapshot?.meta?.memorySummaryCutoffMessageId, -1, -1);
-    const localSummaries = asArray(snapshot?.state?.storyMemory?.summaries);
-    const localIds = new Set(localSummaries.map(summary => String(summary?.id || '')).filter(Boolean));
-    const archived = cutoff >= 0
-        ? asArray(summaryPool).filter(summary => (
-            Number(summary?.endMessageId ?? -1) < cutoff
-            && !localIds.has(String(summary?.id || ''))
-        ))
-        : [];
-    restored.storyMemory = {
-        ...restored.storyMemory,
-        summaries: [...archived, ...localSummaries],
-    };
-    return trimState(restored);
 }
 
 function normalizeRecoveryPoint(raw) {

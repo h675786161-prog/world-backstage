@@ -15,7 +15,7 @@ import {
     buildPersonObservationPrompt,
     buildSimulationPrompt,
     createInitialState,
-    createCompactSnapshot,
+    createSnapshot,
     DEFAULT_TAG_FILTER_RULES,
     extractJsonObject,
     extractTagFilterCandidates,
@@ -30,7 +30,7 @@ import {
     normalizeTagFilterRules,
     planMemoryRollup,
     recordDeliveryOffers,
-    restoreCompactSnapshot,
+    restoreSnapshot,
     restoreRecoveryPoint,
     setWorldCalendar,
     trimState,
@@ -47,18 +47,14 @@ import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 import { detectWorldbookCharacter, extractWorldbookCharacterProfile } from './worldbook.js';
 import {
     buildPublicOpinionPrompt,
-    buildPublicOpinionSandboxPrompt,
     eligiblePublicOpinionEvents,
     emptyPublicOpinionCache,
-    emptyPublicOpinionSandbox,
     normalizePublicOpinionCache,
     normalizePublicOpinionPayload,
-    normalizePublicOpinionSandbox,
-    normalizePublicOpinionSandboxPayload,
 } from './public-opinion.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
-const PLUGIN_VERSION = '1.2.1';
+const PLUGIN_VERSION = '1.1.3';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 18,
     enabled: true,
@@ -114,7 +110,6 @@ const runtime = {
     activeSimulation: null,
     activeHistoryScan: null,
     activePublicOpinion: null,
-    activePublicOpinionSandbox: null,
     pendingPublicOpinion: false,
     activeObservation: null,
     inBackgroundGeneration: false,
@@ -543,55 +538,11 @@ function makeStore() {
         initialState,
         currentState: clone(initialState),
         branchOverrides: {},
-        memorySummaryArchive: [],
         personObservations: {},
         publicOpinion: emptyPublicOpinionCache(),
-        publicOpinionSandbox: emptyPublicOpinionSandbox(),
         recoveryPoints: [],
         updatedAt: new Date().toISOString(),
     };
-}
-
-function mergeMemorySummaryArchive(store, state = store?.currentState) {
-    if (!store || typeof store !== 'object') return [];
-    const existing = Array.isArray(store.memorySummaryArchive) ? store.memorySummaryArchive : [];
-    const current = Array.isArray(state?.storyMemory?.summaries) ? state.storyMemory.summaries : [];
-    const byId = new Map();
-    for (const summary of [...existing, ...current]) {
-        const id = String(summary?.id || '').trim();
-        if (!id) continue;
-        byId.set(id, clone(summary));
-    }
-    const merged = [...byId.values()]
-        .sort((a, b) => Number(a?.endMessageId || 0) - Number(b?.endMessageId || 0));
-    // Keep one chat-level reservoir instead of duplicating the whole hierarchy
-    // in every message/swipe snapshot. The live state already applies its own
-    // retention policy; this extra headroom mainly preserves alternate swipes.
-    if (merged.length > 3600) {
-        const protectedItems = merged.filter(item => (
-            item?.locked || item?.important || item?.manual || Number(item?.level || 0) >= 2
-        ));
-        const protectedIds = new Set(protectedItems.map(item => item.id));
-        const remainder = merged.filter(item => !protectedIds.has(item.id)).slice(-Math.max(0, 3600 - protectedItems.length));
-        store.memorySummaryArchive = [...protectedItems, ...remainder]
-            .sort((a, b) => Number(a?.endMessageId || 0) - Number(b?.endMessageId || 0));
-    } else {
-        store.memorySummaryArchive = merged;
-    }
-    return store.memorySummaryArchive;
-}
-
-function createBranchSnapshot(state, meta = {}, store = getStore()) {
-    mergeMemorySummaryArchive(store, state);
-    return createCompactSnapshot(state, meta);
-}
-
-function restoreBranchSnapshot(snapshot, fallback = null, store = getStore()) {
-    return restoreCompactSnapshot(
-        snapshot,
-        fallback || store?.initialState || null,
-        store?.memorySummaryArchive || [],
-    );
 }
 
 function currentChatToken() {
@@ -669,10 +620,6 @@ function getStore({ create = true } = {}) {
     store.schemaVersion = SCHEMA_VERSION;
     store.initialState = trimState(store.initialState || createInitialState({ worldName: '主世界' }));
     store.currentState = trimState(store.currentState || store.initialState);
-    store.memorySummaryArchive = Array.isArray(store.memorySummaryArchive)
-        ? store.memorySummaryArchive
-        : [];
-    mergeMemorySummaryArchive(store, store.currentState);
     const settings = getSettings();
     const legacyPlayerIdentityAnchor = String(settings.playerIdentityAnchor || '').trim().slice(0, 400);
     const player = findPlayerPerson(store.currentState, context?.name1 || '');
@@ -692,7 +639,6 @@ function getStore({ create = true } = {}) {
         ? store.personObservations
         : {};
     store.publicOpinion = normalizePublicOpinionCache(store.publicOpinion || emptyPublicOpinionCache());
-    store.publicOpinionSandbox = normalizePublicOpinionSandbox(store.publicOpinionSandbox || emptyPublicOpinionSandbox());
     store.recoveryPoints = listRecoveryPoints(store);
     if ((createdMigrationRecovery || migratedLegacyPlayerIdentity) && context?.chatMetadata && hasChatContext()) {
         context.chatMetadata[STATE_KEY] = store;
@@ -703,7 +649,6 @@ function getStore({ create = true } = {}) {
 
 function saveStore(store, { immediate = false } = {}) {
     const context = getContext();
-    mergeMemorySummaryArchive(store, store.currentState);
     store.updatedAt = new Date().toISOString();
 
     if (!context?.chatMetadata || !hasChatContext()) {
@@ -962,9 +907,6 @@ function getSyncStatus() {
         publicOpinion: {
             ...getStore().publicOpinion,
             ...runtime.publicOpinionStatus,
-            sandbox: getStore().publicOpinionSandbox || emptyPublicOpinionSandbox(),
-            canonRunning: Boolean(runtime.activePublicOpinion && !runtime.activePublicOpinion?.controller?.signal?.aborted),
-            sandboxRunning: Boolean(runtime.activePublicOpinionSandbox && !runtime.activePublicOpinionSandbox?.controller?.signal?.aborted),
             stale: Number(getStore().publicOpinion?.sourceRevision ?? -1) !== Number(getState().revision ?? 0)
                 || Number(getStore().publicOpinion?.sourceWorldMinute ?? -1) !== Number(getState().clock?.absoluteMinute ?? 0),
         },
@@ -1152,10 +1094,10 @@ function findLatestResultSnapshot(beforeIndex = Infinity) {
 }
 
 function stateWithBranchOverride(snapshot, store = getStore()) {
-    const restored = restoreBranchSnapshot(snapshot, store.initialState);
+    const restored = restoreSnapshot(snapshot, store.initialState);
     const sourceKey = snapshot?.meta?.sourceKey || '';
     const override = sourceKey ? store.branchOverrides[sourceKey] : null;
-    return override ? restoreBranchSnapshot(override, restored) : restored;
+    return override ? restoreSnapshot(override, restored) : restored;
 }
 
 function currentAnchorKey() {
@@ -1172,7 +1114,7 @@ function setCurrentState(nextState, {
     store.currentState = trimState(nextState);
 
     if (overrideKey) {
-        store.branchOverrides[overrideKey] = createBranchSnapshot(store.currentState, {
+        store.branchOverrides[overrideKey] = createSnapshot(store.currentState, {
             sourceKey: overrideKey,
             kind: 'manual-override',
         });
@@ -1195,7 +1137,7 @@ function restoreLatestBranch({ pending = false } = {}) {
         ? stateWithBranchOverride(latest.snapshot, store)
         : (
             store.branchOverrides.root
-                ? restoreBranchSnapshot(store.branchOverrides.root, store.initialState)
+                ? restoreSnapshot(store.branchOverrides.root, store.initialState)
                 : clone(store.initialState)
         );
     if (pending) state = markPendingSync(state, true);
@@ -1459,9 +1401,6 @@ function preemptLowPriorityTasksForCore() {
         runtime.pendingPublicOpinion = true;
         runtime.activePublicOpinion.controller.abort();
     }
-    if (runtime.activePublicOpinionSandbox && !runtime.activePublicOpinionSandbox.controller.signal.aborted) {
-        runtime.activePublicOpinionSandbox.controller.abort();
-    }
     if (runtime.activeObservation && !runtime.activeObservation.controller.signal.aborted) {
         runtime.activeObservation.controller.abort();
     }
@@ -1526,7 +1465,7 @@ function markMessagePending(messageId, {
     let baseState = null;
     if (!deferBase) {
         if (existing?.base && !existing.stale) {
-            baseState = restoreBranchSnapshot(existing.base, getStore().initialState);
+            baseState = restoreSnapshot(existing.base, getStore().initialState);
         } else {
             const previous = findLatestResultSnapshot(messageId);
             baseState = previous
@@ -1541,7 +1480,7 @@ function markMessagePending(messageId, {
         sourceKey,
         trigger,
         offeredEventIds: [...new Set(offeredEventIds || [])],
-        base: baseState ? createBranchSnapshot(baseState, {
+        base: baseState ? createSnapshot(baseState, {
             messageId,
             swipeId,
             sourceKey,
@@ -1848,7 +1787,7 @@ async function runSimulationForMessage(messageId, {
             const committed = {
                 ...prepared.data,
                 status: 'committed',
-                result: createBranchSnapshot(resultState, {
+                result: createSnapshot(resultState, {
                     messageId,
                     swipeId,
                     sourceKey,
@@ -2002,7 +1941,7 @@ async function runSimulationForMessage(messageId, {
         const committed = {
             ...prepared.data,
             status: 'committed',
-            result: createBranchSnapshot(resultState, {
+            result: createSnapshot(resultState, {
                 messageId,
                 swipeId,
                 sourceKey,
@@ -2369,7 +2308,7 @@ function restoreExistingSwipe(messageId) {
     if (swipeId >= swipesLength) {
         const previous = findLatestResultSnapshot(Number(messageId));
         const base = data?.base && !data.stale
-            ? restoreBranchSnapshot(data.base, store.initialState)
+            ? restoreSnapshot(data.base, store.initialState)
             : (previous
                 ? stateWithBranchOverride(previous.snapshot, store)
                 : clone(store.initialState));
@@ -2380,7 +2319,7 @@ function restoreExistingSwipe(messageId) {
             sourceKey: `${messageId}:${swipeId}:pending`,
             trigger: 'swipe',
             offeredEventIds: clone(runtime.injection.eventIds || []),
-            base: createBranchSnapshot(base, {
+            base: createSnapshot(base, {
                 messageId: Number(messageId),
                 swipeId,
                 sourceKey: `${messageId}:${swipeId}:pending`,
@@ -2396,7 +2335,7 @@ function restoreExistingSwipe(messageId) {
         store.currentState = stateWithBranchOverride(data.result, store);
     } else if (data?.base && !data.stale) {
         store.currentState = markPendingSync(
-            restoreBranchSnapshot(data.base, store.initialState),
+            restoreSnapshot(data.base, store.initialState),
             true,
         );
         if (message.mes && message.mes !== '...' && getSettings().autoSync) {
@@ -2536,11 +2475,9 @@ function onMessageDeleted() {
 
 function onChatChanged() {
     runtime.activePublicOpinion?.controller?.abort?.();
-    runtime.activePublicOpinionSandbox?.controller?.abort?.();
     runtime.activeObservation?.controller?.abort?.();
     runtime.activeHistoryScan?.abort?.();
     runtime.activePublicOpinion = null;
-    runtime.activePublicOpinionSandbox = null;
     runtime.activeObservation = null;
     runtime.pendingPublicOpinion = false;
     runtime.ui?.ensureMounted?.();
@@ -2622,7 +2559,7 @@ function undoManualChange() {
     const store = getStore();
     store.currentState = trimState(undo.state);
     if (undo.previousInitialState) store.initialState = trimState(undo.previousInitialState);
-    store.branchOverrides[undo.key] = createBranchSnapshot(store.currentState, {
+    store.branchOverrides[undo.key] = createSnapshot(store.currentState, {
         sourceKey: undo.key,
         kind: 'manual-undo',
     });
@@ -2669,7 +2606,7 @@ function restoreLatestSavedRecovery() {
     store = restored.store;
     const key = currentAnchorKey();
     store.branchOverrides ||= {};
-    store.branchOverrides[key] = createBranchSnapshot(store.currentState, {
+    store.branchOverrides[key] = createSnapshot(store.currentState, {
         sourceKey: key,
         kind: 'recovery-restore',
     });
@@ -2861,7 +2798,7 @@ function importState(text) {
     const key = currentAnchorKey();
     store.currentState = imported;
     if (!findLatestResultSnapshot()) store.initialState = clone(imported);
-    store.branchOverrides[key] = createBranchSnapshot(imported, {
+    store.branchOverrides[key] = createSnapshot(imported, {
         sourceKey: key,
         kind: 'import',
     });
@@ -2970,72 +2907,6 @@ async function pullApiProfileModels(profileId) {
             phase: 'success',
             message: `找到 ${models.length} 个模型啦～还是可以手动填写哦`,
         };
-        return models;
-    } catch (error) {
-        runtime.modelPullStatus = { phase: 'error', message: describeError(error) };
-        throw error;
-    } finally {
-        runtime.ui?.render();
-    }
-}
-
-function settingsFromApiDraft(payload = {}, { requireModel = true } = {}) {
-    const base = getSettings();
-    const url = String(payload.url || payload.customApiUrl || '').trim().slice(0, 500);
-    const key = String(payload.key || payload.customApiKey || '').trim().slice(0, 1000);
-    const model = String(payload.model || payload.customApiModel || '').trim().slice(0, 180);
-    const transport = ['proxy', 'direct'].includes(payload.transport || payload.customApiTransport)
-        ? (payload.transport || payload.customApiTransport)
-        : 'proxy';
-    if (!url) throw new Error('还没填接口地址呢～');
-    if (!key) throw new Error('还缺 API Key 哦～');
-    if (requireModel && !model) throw new Error('还没选模型呢～');
-    return {
-        ...base,
-        apiMode: 'custom',
-        customApiUrl: url,
-        customApiKey: key,
-        customApiModel: model,
-        customApiTransport: transport,
-    };
-}
-
-async function testApiDraftConnection(payload = {}) {
-    const requestSettings = settingsFromApiDraft(payload, { requireModel: true });
-    const context = getContext();
-    setBusy(true);
-    try {
-        const reply = await requestCustomCompletion(requestSettings, buildBackstageMessages('这是连接测试。请只回复：连接成功'), {
-            fetchImpl: globalThis.fetch.bind(globalThis),
-            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
-            maxTokens: 80,
-            temperature: 0,
-        });
-        if (!String(reply || '').trim()) throw new Error('接口没有返回内容');
-        toast(`${String(payload.label || '这个接口').slice(0, 80)}连接成功啦～`, 'success');
-        return true;
-    } finally {
-        setBusy(false);
-    }
-}
-
-async function pullApiDraftModels(payload = {}) {
-    const requestSettings = settingsFromApiDraft(payload, { requireModel: false });
-    const label = String(payload.label || '这个接口').slice(0, 80);
-    runtime.modelPullStatus = { phase: 'running', message: `正在翻${label}的模型列表～` };
-    runtime.ui?.render();
-    try {
-        const context = getContext();
-        const models = await requestCustomModels(requestSettings, {
-            fetchImpl: globalThis.fetch.bind(globalThis),
-            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
-        });
-        runtime.customModels = models;
-        runtime.modelPullStatus = {
-            phase: 'success',
-            message: `找到 ${models.length} 个模型啦～不会改动默认接口`,
-        };
-        toast(`找到 ${models.length} 个可用模型啦～`, 'success');
         return models;
     } catch (error) {
         runtime.modelPullStatus = { phase: 'error', message: describeError(error) };
@@ -3205,11 +3076,6 @@ async function scanHistoryArchive({
             + '这会产生额外 API 调用，但每批成功后都会立即保存进度。是否继续？',
         );
         if (confirmed === false) return false;
-        const protectedStore = addRecoveryPoint(getStore(), {
-            reason: 'before-memory-maintenance',
-            label: '手动整理记忆前自动保存',
-        });
-        saveStore(protectedStore, { immediate: true });
     }
 
     runtime.historyProgress = {
@@ -3335,7 +3201,7 @@ async function scanHistoryArchive({
 
             const store = getStore();
             store.currentState = state;
-            store.branchOverrides[currentAnchorKey()] = createBranchSnapshot(state, {
+            store.branchOverrides[currentAnchorKey()] = createSnapshot(state, {
                 sourceKey: currentAnchorKey(),
                 kind: 'history-index',
             });
@@ -3352,7 +3218,7 @@ async function scanHistoryArchive({
         if (rolledUp) {
             const store = getStore();
             store.currentState = state;
-            store.branchOverrides[currentAnchorKey()] = createBranchSnapshot(state, {
+            store.branchOverrides[currentAnchorKey()] = createSnapshot(state, {
                 sourceKey: currentAnchorKey(),
                 kind: 'memory-rollup',
             });
@@ -3731,13 +3597,6 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
     const generatedAt = new Date().toISOString();
 
     if (!candidates.length) {
-        const visibilityCounts = (state.events || []).reduce((counts, event) => {
-            const key = ['hidden', 'trace', 'known', 'direct'].includes(String(event?.visibility || ''))
-                ? String(event.visibility)
-                : 'hidden';
-            counts[key] += 1;
-            return counts;
-        }, { hidden: 0, trace: 0, known: 0, direct: 0 });
         store.publicOpinion = emptyPublicOpinionCache({
             generatedAt,
             sourceRevision: state.revision,
@@ -3746,13 +3605,12 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
         saveStore(store);
         refreshInjection();
         runtime.publicOpinionStatus = {
-            phase: 'running',
-            message: `正史这轮没什么能传开的～公开 ${visibilityCounts.known + visibilityCounts.direct} · 痕迹 ${visibilityCounts.trace} · 隐藏 ${visibilityCounts.hidden}。那就顺手去街上捞点无关主线的小瓜吧 (ﾉ◕ヮ◕)ﾉ`,
+            phase: 'success',
+            message: '今天没什么值得传开的事～世界意外地很安静 (˘ω˘)',
             error: '',
         };
         runtime.ui?.render();
-        const sandbox = await generatePublicOpinionSandbox();
-        return sandbox ? { kind: 'sandbox', sandbox, fallback: 'no-candidates' } : null;
+        return store.publicOpinion;
     }
 
     const controller = new AbortController();
@@ -3822,7 +3680,6 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
 
         const cache = normalizePublicOpinionPayload(parsed, {
             validEventIds: candidates.map(item => item.id),
-            eventVisibilityById: Object.fromEntries(candidates.map(item => [item.id, item.visibility])),
             sourceRevision: state.revision,
             sourceWorldMinute: state.clock?.absoluteMinute ?? -1,
             generatedAt,
@@ -3831,19 +3688,11 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
         latestStore.publicOpinion = cache;
         saveStore(latestStore);
         refreshInjection();
-        if (!cache.news.length && !cache.forums.length) {
-            runtime.publicOpinionStatus = {
-                phase: 'running',
-                message: '正史候选明明有，但这次没扒出合格舆情～不让你空手回去，顺手切到闲逛捞点瓜 `(•̀ᴗ•́)و`',
-                error: '',
-            };
-            runtime.ui?.render();
-            const sandbox = await generatePublicOpinionSandbox();
-            return sandbox ? { kind: 'sandbox', sandbox, fallback: 'empty-canon-result' } : cache;
-        }
         runtime.publicOpinionStatus = {
             phase: 'success',
-            message: `扒到 ${cache.news.length} 条新闻 · ${cache.forums.length} 个论坛话题～`,
+            message: cache.news.length || cache.forums.length
+                ? `扒到 ${cache.news.length} 条新闻 · ${cache.forums.length} 个论坛话题～`
+                : '没有事情值得上新闻～今天先安静吃瓜吧 (˘▾˘)',
             error: '',
         };
         runtime.ui?.render();
@@ -3876,83 +3725,6 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
             runtime.activePublicOpinion = null;
         }
     }
-}
-
-async function generatePublicOpinionSandbox() {
-    const chatTokenAtStart = currentChatToken();
-    if (coreSimulationBusy()) throw new Error('世界主线还在推演～先等核心状态接稳，再来闲逛一下吧');
-    const state = getState();
-    const controller = new AbortController();
-    const activeSandbox = { controller, chatToken: chatTokenAtStart };
-    runtime.activePublicOpinionSandbox = activeSandbox;
-    const generatedAt = new Date().toISOString();
-    runtime.publicOpinionStatus = { phase: 'running', message: '正在街上随便逛逛～看看今天有什么无关紧要的小热闹 `(ﾉ◕ヮ◕)ﾉ`', error: '' };
-    runtime.ui?.render();
-    try {
-        const prompt = buildPublicOpinionSandboxPrompt(state, { clockLabel: formatWorldCalendar(state)?.stamp || '' });
-        const settings = getSettings();
-        const sandbox = await runWithRetries(
-            async () => {
-                const raw = await backgroundSimulation(prompt, {
-                    maxTokens: 2800,
-                    temperature: 0.9,
-                    taskKind: 'public-opinion',
-                    rejectTruncated: true,
-                    signal: controller.signal,
-                });
-                const parsed = extractJsonObject(raw);
-                if (!parsed) throw new Error('闲逛舆情没有返回可解析的 JSON');
-                const normalized = normalizePublicOpinionSandboxPayload(parsed, { generatedAt });
-                if (!normalized.news.length && !normalized.forums.length) {
-                    throw new Error('闲逛舆情返回了空内容');
-                }
-                return normalized;
-            },
-            {
-                retries: Math.min(1, settings.autoRetryCount),
-                delayMs: 520,
-                shouldRetry: error => /JSON|空内容|截断|长度上限|empty|No message generated/i.test(String(error?.message || error || '')),
-                signal: controller.signal,
-            },
-        );
-        if (currentChatToken() !== chatTokenAtStart) return null;
-        const store = getStore();
-        store.publicOpinionSandbox = sandbox;
-        saveStore(store);
-        runtime.publicOpinionStatus = {
-            phase: 'success',
-            message: `随便逛到 ${sandbox.news.length} 条小新闻 · ${sandbox.forums.length} 个闲聊话题～这些都不算正史哦`,
-            error: '',
-        };
-        runtime.ui?.render();
-        return sandbox;
-    } catch (error) {
-        if (isAbortError(error) || controller.signal.aborted) {
-            if (currentChatToken() === chatTokenAtStart) {
-                runtime.publicOpinionStatus = { phase: 'idle', message: '主线有新动静啦～闲逛先收摊，不跟核心推演抢路 `(｡•̀ᴗ-)✧`', error: '' };
-                runtime.ui?.render();
-            }
-            return null;
-        }
-        if (currentChatToken() === chatTokenAtStart) {
-            runtime.publicOpinionStatus = { phase: 'error', message: '今天闲逛没逛出东西 QAQ', error: describeError(error) };
-            runtime.ui?.render();
-        }
-        throw error;
-    } finally {
-        if (runtime.activePublicOpinionSandbox === activeSandbox) runtime.activePublicOpinionSandbox = null;
-    }
-}
-
-function clearPublicOpinionSandbox() {
-    runtime.activePublicOpinionSandbox?.controller?.abort?.();
-    runtime.activePublicOpinionSandbox = null;
-    const store = getStore();
-    store.publicOpinionSandbox = emptyPublicOpinionSandbox();
-    saveStore(store);
-    runtime.publicOpinionStatus = { phase: 'idle', message: '闲逛小报收起来啦～', error: '' };
-    runtime.ui?.render();
-    return true;
 }
 
 function clearPublicOpinionSnapshot() {
@@ -4060,24 +3832,8 @@ async function handleUiAction(action, payload = {}) {
         return await pullApiProfileModels(payload.profileId);
     }
 
-    if (action === 'test-api-draft') {
-        return await testApiDraftConnection(payload);
-    }
-
-    if (action === 'pull-api-draft-models') {
-        return await pullApiDraftModels(payload);
-    }
-
     if (action === 'scan-history') {
         return scanHistoryArchive();
-    }
-
-    if (action === 'generate-public-opinion-sandbox') {
-        return generatePublicOpinionSandbox();
-    }
-
-    if (action === 'clear-public-opinion-sandbox') {
-        return clearPublicOpinionSandbox();
     }
 
     if (action === 'observe-person') {

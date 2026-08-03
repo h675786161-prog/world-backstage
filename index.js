@@ -8,12 +8,14 @@ import {
     advanceWorldClock,
     applySimulationResult,
     applyHistoryIndexResult,
+    applyMemoryRollupResult,
     buildInjectionPackage,
     buildHistoryIndexPrompt,
+    buildMemoryRollupPrompt,
     buildPersonObservationPrompt,
     buildSimulationPrompt,
     createInitialState,
-    createSnapshot,
+    createCompactSnapshot,
     DEFAULT_TAG_FILTER_RULES,
     extractJsonObject,
     extractTagFilterCandidates,
@@ -26,8 +28,9 @@ import {
     listRecoveryPoints,
     markPendingSync,
     normalizeTagFilterRules,
+    planMemoryRollup,
     recordDeliveryOffers,
-    restoreSnapshot,
+    restoreCompactSnapshot,
     restoreRecoveryPoint,
     setWorldCalendar,
     trimState,
@@ -42,11 +45,22 @@ import { createWorldBackstageUI } from './ui.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 import { detectWorldbookCharacter, extractWorldbookCharacterProfile } from './worldbook.js';
+import {
+    buildPublicOpinionPrompt,
+    buildPublicOpinionSandboxPrompt,
+    eligiblePublicOpinionEvents,
+    emptyPublicOpinionCache,
+    emptyPublicOpinionSandbox,
+    normalizePublicOpinionCache,
+    normalizePublicOpinionPayload,
+    normalizePublicOpinionSandbox,
+    normalizePublicOpinionSandboxPayload,
+} from './public-opinion.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
-const PLUGIN_VERSION = '1.0.8';
+const PLUGIN_VERSION = '1.2.1';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 17,
+    settingsVersion: 18,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -68,6 +82,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     includeUserInnerVoice: false,
     uiScale: 'comfortable',
     contextTurns: 5,
+    customContextTurns: 8,
     timePolicy: 'world',
     apiMode: 'tavern',
     customApiUrl: '',
@@ -75,6 +90,14 @@ const DEFAULT_SETTINGS = Object.freeze({
     customApiModel: '',
     customApiTransport: 'proxy',
     customApiTimeoutMs: 120000,
+    apiProfiles: [],
+    apiModuleRoutes: {
+        simulation: 'default',
+        observation: 'default',
+        history: 'default',
+        opinion: 'default',
+    },
+    publicOpinionRevealMode: 'observe',
     maxOutputTokens: 0,
     tagFilterEnabled: true,
     tagFilterRules: DEFAULT_TAG_FILTER_RULES.map(rule => ({ ...rule })),
@@ -90,6 +113,10 @@ const runtime = {
     simulationCount: 0,
     activeSimulation: null,
     activeHistoryScan: null,
+    activePublicOpinion: null,
+    activePublicOpinionSandbox: null,
+    pendingPublicOpinion: false,
+    activeObservation: null,
     inBackgroundGeneration: false,
     activeChatToken: '',
     queuedSimulations: new Map(),
@@ -100,6 +127,12 @@ const runtime = {
     customModels: [],
     modelPullStatus: { phase: 'idle', message: '' },
     lastPromptBridge: null,
+    lastTaskConnection: null,
+    publicOpinionStatus: {
+        phase: 'idle',
+        message: '舆情还没开张呢～',
+        error: '',
+    },
     worldbookScan: {
         phase: 'idle',
         message: '',
@@ -114,7 +147,7 @@ const runtime = {
     },
     syncStatus: {
         phase: 'idle',
-        message: '尚未进行世界推演',
+        message: '还没推演过～世界先在这里等你',
         error: '',
         attemptedAt: '',
         succeededAt: '',
@@ -152,13 +185,13 @@ function worldbookEntryLabel(entry) {
 async function scanWorldbook(bookName) {
     const name = String(bookName || '').trim();
     const context = getContext();
-    if (!name) throw new Error('请先选择一本世界书');
+    if (!name) throw new Error('先挑一本世界书给我看看嘛～');
     if (typeof context?.loadWorldInfo !== 'function') {
         throw new Error('当前酒馆版本没有开放世界书读取接口');
     }
     runtime.worldbookScan = {
         phase: 'running',
-        message: `正在读取《${name}》`,
+        message: `正在翻《${name}》～稍等一下下`,
         bookName: name,
         entries: [],
     };
@@ -205,8 +238,8 @@ async function scanWorldbook(bookName) {
         runtime.worldbookScan = {
             phase: 'success',
             message: entries.length
-                ? `已读取 ${entries.length} 条，其中自动识别 ${entries.filter(entry => entry.likelyPerson).length} 条疑似人物；请确认后再导入`
-                : '这本世界书没有可读取的内容条目',
+                ? `翻到 ${entries.length} 条内容啦～其中 ${entries.filter(entry => entry.likelyPerson).length} 条看起来像人物，确认一下再导入就好`
+                : '这本世界书里暂时没翻到能读的内容哦～',
             bookName: name,
             entries,
         };
@@ -214,7 +247,7 @@ async function scanWorldbook(bookName) {
     } catch (error) {
         runtime.worldbookScan = {
             phase: 'error',
-            message: `读取失败：${describeError(error)}`,
+            message: `没读成功 QAQ：${describeError(error)}`,
             bookName: name,
             entries: [],
         };
@@ -335,6 +368,47 @@ function normalizeOrbPosition(value) {
     };
 }
 
+function normalizeApiProfiles(value) {
+    const seen = new Set();
+    const result = [];
+    for (const raw of Array.isArray(value) ? value : []) {
+        if (!raw || typeof raw !== 'object') continue;
+        const id = String(raw.id || '').trim().slice(0, 80);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const name = String(raw.name || '未命名方案').trim().slice(0, 80) || '未命名方案';
+        const url = String(raw.url || raw.customApiUrl || '').trim().slice(0, 500);
+        const key = String(raw.key || raw.customApiKey || '').trim().slice(0, 1000);
+        const model = String(raw.model || raw.customApiModel || '').trim().slice(0, 180);
+        const transport = ['proxy', 'direct'].includes(raw.transport || raw.customApiTransport)
+            ? (raw.transport || raw.customApiTransport)
+            : 'proxy';
+        result.push({ id, name, url, key, model, transport });
+        if (result.length >= 20) break;
+    }
+    return result;
+}
+
+function normalizeApiModuleRoutes(value, profiles = []) {
+    const validProfiles = new Set(profiles.map(profile => `profile:${profile.id}`));
+    const normalizeRoute = route => {
+        const text = String(route || 'default');
+        if (text === 'default' || text === 'tavern') return text;
+        return validProfiles.has(text) ? text : 'default';
+    };
+    const raw = value && typeof value === 'object' ? value : {};
+    return {
+        simulation: normalizeRoute(raw.simulation),
+        observation: normalizeRoute(raw.observation),
+        history: normalizeRoute(raw.history),
+        opinion: normalizeRoute(raw.opinion),
+    };
+}
+
+function makeApiProfileId() {
+    return `api_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function getSettings() {
     const context = getContext();
     if (!context?.extensionSettings) return { ...DEFAULT_SETTINGS };
@@ -368,9 +442,17 @@ function getSettings() {
     if (!['compact', 'comfortable', 'large'].includes(settings.uiScale)) {
         settings.uiScale = 'comfortable';
     }
-    settings.contextTurns = [1, 3, 5].includes(Number(settings.contextTurns))
-        ? Number(settings.contextTurns)
-        : 5;
+    settings.contextTurns = Math.min(
+        30,
+        Math.max(1, Number.parseInt(settings.contextTurns, 10) || 5),
+    );
+    settings.customContextTurns = Math.min(
+        30,
+        Math.max(1, Number.parseInt(settings.customContextTurns, 10) || 8),
+    );
+    if (![1, 3, 5].includes(settings.contextTurns)) {
+        settings.customContextTurns = settings.contextTurns;
+    }
     if (previousSettingsVersion < 4) settings.contextTurns = 5;
     if (previousSettingsVersion < 8) settings.orbPosition = null;
     if (previousSettingsVersion < 5) {
@@ -419,7 +501,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 17;
+    settings.settingsVersion = 18;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -434,13 +516,18 @@ function getSettings() {
         300000,
         Math.max(15000, Number(settings.customApiTimeoutMs) || 120000),
     );
+    settings.apiProfiles = normalizeApiProfiles(settings.apiProfiles);
+    settings.apiModuleRoutes = normalizeApiModuleRoutes(settings.apiModuleRoutes, settings.apiProfiles);
+    if (!['observe', 'relevant'].includes(settings.publicOpinionRevealMode)) {
+        settings.publicOpinionRevealMode = 'observe';
+    }
     settings.maxOutputTokens = Math.min(
         16000,
         Math.max(0, Number.parseInt(settings.maxOutputTokens, 10) || 0),
     );
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 14) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 18) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -456,10 +543,55 @@ function makeStore() {
         initialState,
         currentState: clone(initialState),
         branchOverrides: {},
+        memorySummaryArchive: [],
         personObservations: {},
+        publicOpinion: emptyPublicOpinionCache(),
+        publicOpinionSandbox: emptyPublicOpinionSandbox(),
         recoveryPoints: [],
         updatedAt: new Date().toISOString(),
     };
+}
+
+function mergeMemorySummaryArchive(store, state = store?.currentState) {
+    if (!store || typeof store !== 'object') return [];
+    const existing = Array.isArray(store.memorySummaryArchive) ? store.memorySummaryArchive : [];
+    const current = Array.isArray(state?.storyMemory?.summaries) ? state.storyMemory.summaries : [];
+    const byId = new Map();
+    for (const summary of [...existing, ...current]) {
+        const id = String(summary?.id || '').trim();
+        if (!id) continue;
+        byId.set(id, clone(summary));
+    }
+    const merged = [...byId.values()]
+        .sort((a, b) => Number(a?.endMessageId || 0) - Number(b?.endMessageId || 0));
+    // Keep one chat-level reservoir instead of duplicating the whole hierarchy
+    // in every message/swipe snapshot. The live state already applies its own
+    // retention policy; this extra headroom mainly preserves alternate swipes.
+    if (merged.length > 3600) {
+        const protectedItems = merged.filter(item => (
+            item?.locked || item?.important || item?.manual || Number(item?.level || 0) >= 2
+        ));
+        const protectedIds = new Set(protectedItems.map(item => item.id));
+        const remainder = merged.filter(item => !protectedIds.has(item.id)).slice(-Math.max(0, 3600 - protectedItems.length));
+        store.memorySummaryArchive = [...protectedItems, ...remainder]
+            .sort((a, b) => Number(a?.endMessageId || 0) - Number(b?.endMessageId || 0));
+    } else {
+        store.memorySummaryArchive = merged;
+    }
+    return store.memorySummaryArchive;
+}
+
+function createBranchSnapshot(state, meta = {}, store = getStore()) {
+    mergeMemorySummaryArchive(store, state);
+    return createCompactSnapshot(state, meta);
+}
+
+function restoreBranchSnapshot(snapshot, fallback = null, store = getStore()) {
+    return restoreCompactSnapshot(
+        snapshot,
+        fallback || store?.initialState || null,
+        store?.memorySummaryArchive || [],
+    );
 }
 
 function currentChatToken() {
@@ -537,6 +669,10 @@ function getStore({ create = true } = {}) {
     store.schemaVersion = SCHEMA_VERSION;
     store.initialState = trimState(store.initialState || createInitialState({ worldName: '主世界' }));
     store.currentState = trimState(store.currentState || store.initialState);
+    store.memorySummaryArchive = Array.isArray(store.memorySummaryArchive)
+        ? store.memorySummaryArchive
+        : [];
+    mergeMemorySummaryArchive(store, store.currentState);
     const settings = getSettings();
     const legacyPlayerIdentityAnchor = String(settings.playerIdentityAnchor || '').trim().slice(0, 400);
     const player = findPlayerPerson(store.currentState, context?.name1 || '');
@@ -555,6 +691,8 @@ function getStore({ create = true } = {}) {
     store.personObservations = store.personObservations && typeof store.personObservations === 'object'
         ? store.personObservations
         : {};
+    store.publicOpinion = normalizePublicOpinionCache(store.publicOpinion || emptyPublicOpinionCache());
+    store.publicOpinionSandbox = normalizePublicOpinionSandbox(store.publicOpinionSandbox || emptyPublicOpinionSandbox());
     store.recoveryPoints = listRecoveryPoints(store);
     if ((createdMigrationRecovery || migratedLegacyPlayerIdentity) && context?.chatMetadata && hasChatContext()) {
         context.chatMetadata[STATE_KEY] = store;
@@ -565,6 +703,7 @@ function getStore({ create = true } = {}) {
 
 function saveStore(store, { immediate = false } = {}) {
     const context = getContext();
+    mergeMemorySummaryArchive(store, store.currentState);
     store.updatedAt = new Date().toISOString();
 
     if (!context?.chatMetadata || !hasChatContext()) {
@@ -602,6 +741,56 @@ function latestAssistantEntry() {
         if (hasUsableAssistantText(message)) return { message, index };
     }
     return null;
+}
+
+function taskRouteKey(taskKind = 'simulation') {
+    if (taskKind === 'person-observation') return 'observation';
+    if (taskKind === 'public-opinion') return 'opinion';
+    if (taskKind === 'history' || taskKind === 'history-index' || taskKind === 'memory') return 'history';
+    return 'simulation';
+}
+
+function settingsForApiProfile(baseSettings, profile) {
+    return {
+        ...baseSettings,
+        apiMode: 'custom',
+        customApiUrl: String(profile?.url || ''),
+        customApiKey: String(profile?.key || ''),
+        customApiModel: String(profile?.model || ''),
+        customApiTransport: ['proxy', 'direct'].includes(profile?.transport) ? profile.transport : 'proxy',
+    };
+}
+
+function resolveTaskConnection(settings, taskKind = 'simulation') {
+    const routeKey = taskRouteKey(taskKind);
+    const route = String(settings.apiModuleRoutes?.[routeKey] || 'default');
+    if (route === 'tavern') {
+        return { mode: 'tavern', route, routeKey, label: '跟随当前酒馆', settings };
+    }
+    if (route.startsWith('profile:')) {
+        const id = route.slice('profile:'.length);
+        const profile = settings.apiProfiles?.find(item => item.id === id);
+        if (profile) {
+            return {
+                mode: 'custom',
+                route,
+                routeKey,
+                label: profile.name || '已保存方案',
+                profile,
+                settings: settingsForApiProfile(settings, profile),
+            };
+        }
+    }
+    if (settings.apiMode === 'custom') {
+        return {
+            mode: 'custom',
+            route: 'default',
+            routeKey,
+            label: '默认独立接口',
+            settings,
+        };
+    }
+    return { mode: 'tavern', route: 'default', routeKey, label: '跟随当前酒馆', settings };
 }
 
 function getConnectionInfo() {
@@ -723,12 +912,19 @@ function getSyncStatus() {
         ...runtime.syncStatus,
         ...derived,
         connection: getConnectionInfo(),
+        lastConnection: runtime.lastTaskConnection ? { ...runtime.lastTaskConnection } : null,
         pluginVersion: PLUGIN_VERSION,
         userName: String(getContext()?.name1 || ''),
         memory: {
             indexedThroughMessageId: Number(getState().storyMemory?.indexedThroughMessageId ?? -1),
             facts: getState().storyMemory?.facts?.length || 0,
             summaries: getState().storyMemory?.summaries?.length || 0,
+            summaryLevels: [0, 1, 2, 3].map(level => (
+                (getState().storyMemory?.summaries || []).filter(summary => (
+                    summary?.hierarchyManaged && Number(summary?.level || 0) === level
+                )).length
+            )),
+            pendingRollup: Boolean(planMemoryRollup(getState())),
             clues: getState().storyMemory?.clues?.length || 0,
             hasDigest: Boolean(getState().storyMemory?.digest?.text),
             pendingAssistantResponses: unindexedAssistantCount(),
@@ -762,6 +958,15 @@ function getSyncStatus() {
             truncated: false,
             internalCompatChars: String(INTERNAL_COMPAT_SYSTEM_PROMPT || '').trim().length,
             at: '',
+        },
+        publicOpinion: {
+            ...getStore().publicOpinion,
+            ...runtime.publicOpinionStatus,
+            sandbox: getStore().publicOpinionSandbox || emptyPublicOpinionSandbox(),
+            canonRunning: Boolean(runtime.activePublicOpinion && !runtime.activePublicOpinion?.controller?.signal?.aborted),
+            sandboxRunning: Boolean(runtime.activePublicOpinionSandbox && !runtime.activePublicOpinionSandbox?.controller?.signal?.aborted),
+            stale: Number(getStore().publicOpinion?.sourceRevision ?? -1) !== Number(getState().revision ?? 0)
+                || Number(getStore().publicOpinion?.sourceWorldMinute ?? -1) !== Number(getState().clock?.absoluteMinute ?? 0),
         },
         worldbook: {
             ...runtime.worldbookScan,
@@ -947,10 +1152,10 @@ function findLatestResultSnapshot(beforeIndex = Infinity) {
 }
 
 function stateWithBranchOverride(snapshot, store = getStore()) {
-    const restored = restoreSnapshot(snapshot, store.initialState);
+    const restored = restoreBranchSnapshot(snapshot, store.initialState);
     const sourceKey = snapshot?.meta?.sourceKey || '';
     const override = sourceKey ? store.branchOverrides[sourceKey] : null;
-    return override ? restoreSnapshot(override, restored) : restored;
+    return override ? restoreBranchSnapshot(override, restored) : restored;
 }
 
 function currentAnchorKey() {
@@ -967,7 +1172,7 @@ function setCurrentState(nextState, {
     store.currentState = trimState(nextState);
 
     if (overrideKey) {
-        store.branchOverrides[overrideKey] = createSnapshot(store.currentState, {
+        store.branchOverrides[overrideKey] = createBranchSnapshot(store.currentState, {
             sourceKey: overrideKey,
             kind: 'manual-override',
         });
@@ -990,7 +1195,7 @@ function restoreLatestBranch({ pending = false } = {}) {
         ? stateWithBranchOverride(latest.snapshot, store)
         : (
             store.branchOverrides.root
-                ? restoreSnapshot(store.branchOverrides.root, store.initialState)
+                ? restoreBranchSnapshot(store.branchOverrides.root, store.initialState)
                 : clone(store.initialState)
         );
     if (pending) state = markPendingSync(state, true);
@@ -1156,17 +1361,70 @@ function nextHistoryBatch(cursor, {
     };
 }
 
+function publicOpinionRevealInjection(state, cache, settings, recentText = '') {
+    if (settings.publicOpinionRevealMode !== 'relevant') return '';
+    const opinion = normalizePublicOpinionCache(cache || {});
+    const stale = Number(opinion.sourceRevision ?? -1) !== Number(state?.revision ?? 0);
+    if (!opinion.generatedAt || stale) return '';
+    const text = String(recentText || '').toLocaleLowerCase();
+    const events = new Map((state.events || []).map(event => [String(event.id), event]));
+    const peopleNames = (state.people || []).map(person => String(person.name || '').trim()).filter(Boolean);
+    const isRelevant = item => {
+        const event = events.get(String(item.relatedEventId || ''));
+        if (!event) return false;
+        const terms = [
+            event.title,
+            event.place,
+            ...(item.audienceTags || []),
+            ...peopleNames.filter(name => (
+                String(event.summary || '').includes(name)
+                || String(event.expectedResult || '').includes(name)
+                || String(event.result || '').includes(name)
+            )),
+        ]
+            .map(value => String(value || '').trim().toLocaleLowerCase())
+            .filter(value => value.length >= 2);
+        return terms.some(term => text.includes(term));
+    };
+    const news = (opinion.news || []).filter(isRelevant).slice(0, 2);
+    const forums = (opinion.forums || []).filter(isRelevant).slice(0, 2);
+    if (!news.length && !forums.length) return '';
+    const lines = [
+        '<world_public_opinion>',
+        '以下是与当前镜头确实相关的公开舆情候选。只有角色存在自然接触渠道（手机、电视、路人讨论、工作消息等）时才允许顺手显露；不得为了播报而打断当前剧情，也不得把论坛猜测当成世界事实。',
+    ];
+    for (const item of news) {
+        const audience = (item.audienceTags || []).slice(0, 4).join('、');
+        lines.push(`新闻｜${item.headline}｜${item.summary}｜来源：${item.source || '公开信息'}｜来源层级：${item.sourceType || 'official'}${audience ? `｜可能关注：${audience}` : ''}`);
+    }
+    for (const item of forums) {
+        const audience = (item.audienceTags || []).slice(0, 4).join('、');
+        lines.push(`论坛｜${item.title}｜${item.summary}｜性质：${item.claimStatus || 'mixed'}｜来源层级：${item.sourceType || 'unofficial'}${audience ? `｜可能关注：${audience}` : ''}`);
+    }
+    lines.push('</world_public_opinion>');
+    return lines.join('\n');
+}
+
 function refreshInjection() {
     const context = getContext();
     if (!context?.setExtensionPrompt) return;
 
     const settings = getSettings();
-    const packet = buildInjectionPackage(getState(), settings, recentChatText());
-    runtime.injection = packet;
+    const state = getState();
+    const recentText = recentChatText();
+    const packet = buildInjectionPackage(state, settings, recentText);
+    const opinionInjection = publicOpinionRevealInjection(
+        state,
+        getStore().publicOpinion,
+        settings,
+        recentText,
+    );
+    const text = [packet.text, opinionInjection].filter(Boolean).join('\n\n');
+    runtime.injection = { ...packet, text };
 
     context.setExtensionPrompt(
         PROMPT_KEY,
-        packet.text,
+        text,
         1,
         0,
         false,
@@ -1183,6 +1441,54 @@ function setBusy(value) {
     runtime.simulationCount += value ? 1 : -1;
     runtime.simulationCount = Math.max(0, runtime.simulationCount);
     runtime.ui?.setBusy(runtime.simulationCount > 0);
+}
+
+function coreSimulationBusy() {
+    return Boolean(runtime.activeSimulation || runtime.queuedSimulations.size > 0);
+}
+
+function latestAssistantSourceStamp() {
+    const latest = latestAssistantEntry();
+    if (!latest) return '';
+    const swipeId = Number(latest.message?.swipe_id ?? 0);
+    return branchSourceKey(latest.index, latest.message, swipeId);
+}
+
+function preemptLowPriorityTasksForCore() {
+    if (runtime.activePublicOpinion && !runtime.activePublicOpinion.controller.signal.aborted) {
+        runtime.pendingPublicOpinion = true;
+        runtime.activePublicOpinion.controller.abort();
+    }
+    if (runtime.activePublicOpinionSandbox && !runtime.activePublicOpinionSandbox.controller.signal.aborted) {
+        runtime.activePublicOpinionSandbox.controller.abort();
+    }
+    if (runtime.activeObservation && !runtime.activeObservation.controller.signal.aborted) {
+        runtime.activeObservation.controller.abort();
+    }
+    if (runtime.activeHistoryScan && !runtime.activeHistoryScan.signal.aborted) {
+        runtime.activeHistoryScan.abort();
+        runtime.historyProgress = {
+            ...runtime.historyProgress,
+            message: '新正文来啦～先把世界主线追上，记忆会从已保存批次继续整理',
+        };
+        runtime.ui?.render();
+    }
+}
+
+function scheduleDeferredPublicOpinion(delay = 220) {
+    if (!runtime.pendingPublicOpinion) return;
+    window.setTimeout(() => {
+        if (!runtime.pendingPublicOpinion || coreSimulationBusy()) return;
+        runtime.pendingPublicOpinion = false;
+        void generatePublicOpinionSnapshot({ allowDefer: true }).catch(error => {
+            if (!isAbortError(error)) console.warn('[世界背面] 延后舆情生成失败', error);
+        });
+    }, delay);
+}
+
+function hasNewerAssistantReply(messageId) {
+    const latest = latestAssistantEntry();
+    return Boolean(latest && Number(latest.index) > Number(messageId));
 }
 
 function cancelActiveSimulation() {
@@ -1220,7 +1526,7 @@ function markMessagePending(messageId, {
     let baseState = null;
     if (!deferBase) {
         if (existing?.base && !existing.stale) {
-            baseState = restoreSnapshot(existing.base, getStore().initialState);
+            baseState = restoreBranchSnapshot(existing.base, getStore().initialState);
         } else {
             const previous = findLatestResultSnapshot(messageId);
             baseState = previous
@@ -1235,7 +1541,7 @@ function markMessagePending(messageId, {
         sourceKey,
         trigger,
         offeredEventIds: [...new Set(offeredEventIds || [])],
-        base: baseState ? createSnapshot(baseState, {
+        base: baseState ? createBranchSnapshot(baseState, {
             messageId,
             swipeId,
             sourceKey,
@@ -1298,19 +1604,35 @@ async function backgroundSimulation(prompt, {
 } = {}) {
     const context = getContext();
     const settings = getSettings();
+    const route = resolveTaskConnection(settings, taskKind);
+    const requestSettings = route.settings;
+    const tavernConnection = route.mode === 'tavern' ? getConnectionInfo() : null;
+    runtime.lastTaskConnection = {
+        taskKind,
+        routeKey: route.routeKey,
+        route: route.route,
+        apiLabel: route.mode === 'custom' ? route.label : '跟随当前酒馆',
+        model: route.mode === 'custom'
+            ? String(requestSettings.customApiModel || '模型尚未配置')
+            : String(tavernConnection?.model || '跟随酒馆当前模型'),
+        method: route.mode === 'custom'
+            ? (requestSettings.customApiTransport === 'direct' ? '浏览器直连' : '酒馆转发')
+            : '酒馆独立上下文',
+        source: route.mode === 'custom' ? 'custom-independent' : tavernConnection?.source || 'tavern',
+    };
     const messages = backgroundRequestMessages(prompt, settings, { taskKind });
     if (signal?.aborted) {
         const error = new Error('推演已由用户取消');
         error.name = 'AbortError';
         throw error;
     }
-    if (settings.apiMode === 'custom') {
+    if (route.mode === 'custom') {
         runtime.inBackgroundGeneration = true;
         try {
-            runtime.syncStatus.method = settings.customApiTransport === 'direct'
-                ? '独立 API 浏览器直连'
-                : '独立 API 经酒馆转发';
-            return await requestCustomCompletion(settings, messages, {
+            runtime.syncStatus.method = requestSettings.customApiTransport === 'direct'
+                ? `${route.label} · 浏览器直连`
+                : `${route.label} · 酒馆转发`;
+            return await requestCustomCompletion(requestSettings, messages, {
                 fetchImpl: globalThis.fetch.bind(globalThis),
                 getRequestHeaders: () => context?.getRequestHeaders?.() || {},
                 maxTokens,
@@ -1483,7 +1805,7 @@ async function runSimulationForMessage(messageId, {
         chatToken: chatTokenAtStart,
         sourceKey,
         newAssistantCount: assistantTurnsToApply,
-        apiMode: settings.apiMode,
+        apiMode: resolveTaskConnection(settings, 'simulation').mode,
         cancelled: false,
     };
     runtime.activeSimulation = activeSimulation;
@@ -1526,7 +1848,7 @@ async function runSimulationForMessage(messageId, {
             const committed = {
                 ...prepared.data,
                 status: 'committed',
-                result: createSnapshot(resultState, {
+                result: createBranchSnapshot(resultState, {
                     messageId,
                     swipeId,
                     sourceKey,
@@ -1540,7 +1862,8 @@ async function runSimulationForMessage(messageId, {
                 Number(target.message.swipe_id ?? 0) === swipeId
                 && hashText(target.message.mes) === expectedHash
             );
-            if (branchIsCurrent) {
+            const supersededByNewerReply = hasNewerAssistantReply(messageId);
+            if (branchIsCurrent && !supersededByNewerReply) {
                 const store = getStore();
                 store.currentState = trimState(resultState);
                 saveStore(store, { immediate: true });
@@ -1549,10 +1872,12 @@ async function runSimulationForMessage(messageId, {
             }
             await target.context.saveChat?.();
             setSyncStatus({
-                phase: 'success',
-                message: '过滤后无有效正文，本轮没有推进世界',
+                phase: supersededByNewerReply ? 'pending' : 'success',
+                message: supersededByNewerReply
+                    ? '这一轮结果已安全存档，但更新正文已经出现～先不写进当前状态，正在追赶最新一轮'
+                    : '过滤后无有效正文，本轮没有推进世界',
                 error: '',
-                succeededAt: new Date().toISOString(),
+                succeededAt: supersededByNewerReply ? '' : new Date().toISOString(),
                 method: runtime.syncStatus.method,
                 summary,
             });
@@ -1677,7 +2002,7 @@ async function runSimulationForMessage(messageId, {
         const committed = {
             ...prepared.data,
             status: 'committed',
-            result: createSnapshot(resultState, {
+            result: createBranchSnapshot(resultState, {
                 messageId,
                 swipeId,
                 sourceKey,
@@ -1692,7 +2017,8 @@ async function runSimulationForMessage(messageId, {
             Number(target.message.swipe_id ?? 0) === swipeId
             && hashText(target.message.mes) === expectedHash
         );
-        if (branchIsCurrent) {
+        const supersededByNewerReply = hasNewerAssistantReply(messageId);
+        if (branchIsCurrent && !supersededByNewerReply) {
             const store = getStore();
             store.currentState = trimState(resultState);
             saveStore(store, { immediate: true });
@@ -1702,10 +2028,12 @@ async function runSimulationForMessage(messageId, {
 
         await target.context.saveChat?.();
         setSyncStatus({
-            phase: 'success',
-            message: '最新正文已完成推演',
+            phase: supersededByNewerReply ? 'pending' : 'success',
+            message: supersededByNewerReply
+                ? '这一轮推演已经安全存档～但你已经走到更新正文啦，旧结果不会盖住当前状态，接下来直接追最新一轮'
+                : '最新正文已完成推演',
             error: '',
-            succeededAt: new Date().toISOString(),
+            succeededAt: supersededByNewerReply ? '' : new Date().toISOString(),
             method: runtime.syncStatus.method,
             summary,
         });
@@ -1832,6 +2160,7 @@ function queueSimulation(messageId, options = {}) {
                 runtime.queuedSimulations.delete(queueKey);
             }
             window.setTimeout(schedulePendingCatchUp, 40);
+            window.setTimeout(scheduleDeferredPublicOpinion, 180);
             window.setTimeout(scheduleAutoMemoryIndex, 700);
         },
         error => {
@@ -1844,6 +2173,7 @@ function queueSimulation(messageId, options = {}) {
                     40,
                 );
             }
+            window.setTimeout(scheduleDeferredPublicOpinion, 180);
         },
     );
     return task;
@@ -1904,6 +2234,7 @@ function scheduleAutoSync(messageId, type) {
         return;
     }
     if (workAlreadyRunning) {
+        preemptLowPriorityTasksForCore();
         const activeForCurrentChat = runtime.activeSimulation?.chatToken === chatToken
             ? runtime.activeSimulation
             : null;
@@ -1933,6 +2264,7 @@ function scheduleAutoSync(messageId, type) {
         return;
     }
 
+    preemptLowPriorityTasksForCore();
     void queueSimulation(messageId, {
         trigger: type || 'reply',
         newAssistantCount: pending.length,
@@ -1977,7 +2309,9 @@ function scheduleAutoMemoryIndex() {
     const settings = getSettings();
     const interval = settings.memoryAutoIndexInterval;
     if (!settings.enabled || !settings.memorySystemEnabled || interval <= 0) return;
-    if (unindexedAssistantCount() < interval) return;
+    const hasNewHistory = unindexedAssistantCount() >= interval;
+    const hasPendingRollup = Boolean(planMemoryRollup(getState()));
+    if (!hasNewHistory && !hasPendingRollup) return;
     if (runtime.autoMemoryTimer !== null) return;
 
     runtime.autoMemoryTimer = window.setTimeout(() => {
@@ -1994,7 +2328,7 @@ function scheduleAutoMemoryIndex() {
             automatic: true,
             maximumBatches: 1,
         }).catch(() => undefined);
-    }, 900);
+    }, hasNewHistory ? 900 : 1600);
 }
 
 function onMessageReceived(messageId, type) {
@@ -2035,7 +2369,7 @@ function restoreExistingSwipe(messageId) {
     if (swipeId >= swipesLength) {
         const previous = findLatestResultSnapshot(Number(messageId));
         const base = data?.base && !data.stale
-            ? restoreSnapshot(data.base, store.initialState)
+            ? restoreBranchSnapshot(data.base, store.initialState)
             : (previous
                 ? stateWithBranchOverride(previous.snapshot, store)
                 : clone(store.initialState));
@@ -2046,7 +2380,7 @@ function restoreExistingSwipe(messageId) {
             sourceKey: `${messageId}:${swipeId}:pending`,
             trigger: 'swipe',
             offeredEventIds: clone(runtime.injection.eventIds || []),
-            base: createSnapshot(base, {
+            base: createBranchSnapshot(base, {
                 messageId: Number(messageId),
                 swipeId,
                 sourceKey: `${messageId}:${swipeId}:pending`,
@@ -2062,7 +2396,7 @@ function restoreExistingSwipe(messageId) {
         store.currentState = stateWithBranchOverride(data.result, store);
     } else if (data?.base && !data.stale) {
         store.currentState = markPendingSync(
-            restoreSnapshot(data.base, store.initialState),
+            restoreBranchSnapshot(data.base, store.initialState),
             true,
         );
         if (message.mes && message.mes !== '...' && getSettings().autoSync) {
@@ -2201,6 +2535,14 @@ function onMessageDeleted() {
 }
 
 function onChatChanged() {
+    runtime.activePublicOpinion?.controller?.abort?.();
+    runtime.activePublicOpinionSandbox?.controller?.abort?.();
+    runtime.activeObservation?.controller?.abort?.();
+    runtime.activeHistoryScan?.abort?.();
+    runtime.activePublicOpinion = null;
+    runtime.activePublicOpinionSandbox = null;
+    runtime.activeObservation = null;
+    runtime.pendingPublicOpinion = false;
     runtime.ui?.ensureMounted?.();
     installSettingsEntry();
     if (runtime.autoMemoryTimer !== null) {
@@ -2219,6 +2561,11 @@ function onChatChanged() {
         processed: 0,
         total: getContext()?.chat?.length || 0,
         message: '',
+    };
+    runtime.publicOpinionStatus = {
+        phase: 'idle',
+        message: '尚未生成舆情快照',
+        error: '',
     };
     runtime.syncStatus = {
         phase: 'idle',
@@ -2275,7 +2622,7 @@ function undoManualChange() {
     const store = getStore();
     store.currentState = trimState(undo.state);
     if (undo.previousInitialState) store.initialState = trimState(undo.previousInitialState);
-    store.branchOverrides[undo.key] = createSnapshot(store.currentState, {
+    store.branchOverrides[undo.key] = createBranchSnapshot(store.currentState, {
         sourceKey: undo.key,
         kind: 'manual-undo',
     });
@@ -2300,7 +2647,7 @@ function createManualRecoveryPoint() {
     });
     saveStore(store, { immediate: true });
     runtime.ui?.render();
-    toast('恢复点已经保存，放心继续探索吧。', 'success');
+    toast('恢复点存好啦～放心继续折腾 `(｡•̀ᴗ-)✧`', 'success');
     return listRecoveryPoints(store).at(-1) || null;
 }
 
@@ -2322,7 +2669,7 @@ function restoreLatestSavedRecovery() {
     store = restored.store;
     const key = currentAnchorKey();
     store.branchOverrides ||= {};
-    store.branchOverrides[key] = createSnapshot(store.currentState, {
+    store.branchOverrides[key] = createBranchSnapshot(store.currentState, {
         sourceKey: key,
         kind: 'recovery-restore',
     });
@@ -2335,8 +2682,12 @@ function restoreLatestSavedRecovery() {
 
 function redactDiagnosticText(value) {
     let text = String(value || '');
-    const key = String(getSettings().customApiKey || '');
-    if (key.length >= 4) text = text.split(key).join('[API Key 已隐藏]');
+    const settings = getSettings();
+    const keys = [
+        String(settings.customApiKey || ''),
+        ...(settings.apiProfiles || []).map(profile => String(profile.key || '')),
+    ].filter(key => key.length >= 4);
+    for (const key of keys) text = text.split(key).join('[API Key 已隐藏]');
     return text
         .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [已隐藏]')
         .replace(/https?:\/\/[^\s"'<>]+/gi, '[接口地址已隐藏]')
@@ -2408,6 +2759,9 @@ function buildDiagnosticReport() {
             contextTurns: settings.contextTurns,
             npcBudget: settings.backgroundNpcBudget,
             uiScale: settings.uiScale,
+            publicOpinionRevealMode: settings.publicOpinionRevealMode,
+            apiProfileCount: settings.apiProfiles?.length || 0,
+            apiModuleRoutes: { ...(settings.apiModuleRoutes || {}) },
         },
         state: {
             revision: state.revision,
@@ -2433,6 +2787,9 @@ function buildDiagnosticReport() {
             attemptedAt: runtime.syncStatus.attemptedAt,
             succeededAt: runtime.syncStatus.succeededAt,
             method: runtime.syncStatus.method,
+            route: runtime.lastTaskConnection?.apiLabel || '',
+            model: redactDiagnosticText(runtime.lastTaskConnection?.model || ''),
+            taskKind: runtime.lastTaskConnection?.taskKind || '',
             memoryPhase: runtime.historyProgress.phase,
             memoryMessageType: classifyDiagnosticIssue(runtime.historyProgress.message),
         },
@@ -2504,7 +2861,7 @@ function importState(text) {
     const key = currentAnchorKey();
     store.currentState = imported;
     if (!findLatestResultSnapshot()) store.initialState = clone(imported);
-    store.branchOverrides[key] = createSnapshot(imported, {
+    store.branchOverrides[key] = createBranchSnapshot(imported, {
         sourceKey: key,
         kind: 'import',
     });
@@ -2516,7 +2873,176 @@ function importState(text) {
         label: '撤销状态导入',
         previousInitialState,
     });
-    toast('世界状态已导入。', 'success');
+    toast('世界状态搬进来啦～一切都在原位。', 'success');
+}
+
+function saveApiProfile(payload = {}) {
+    const context = getContext();
+    const settings = getSettings();
+    const id = String(payload.id || '').trim() || makeApiProfileId();
+    const existing = settings.apiProfiles.find(item => item.id === id);
+    const name = String(payload.name || existing?.name || '我的独立 API').trim().slice(0, 80) || '我的独立 API';
+    const url = String(payload.url || payload.customApiUrl || existing?.url || '').trim().slice(0, 500);
+    const replacementKey = String(payload.key || payload.customApiKey || '').trim();
+    const key = (replacementKey || existing?.key || '').slice(0, 1000);
+    const model = String(payload.model || payload.customApiModel || existing?.model || '').trim().slice(0, 180);
+    const transportValue = payload.transport || payload.customApiTransport || existing?.transport || 'proxy';
+    const transport = ['proxy', 'direct'].includes(transportValue) ? transportValue : 'proxy';
+    if (!url) throw new Error('先填一下接口地址吧～');
+    if (!key) throw new Error('这个方案还缺 API Key 哦');
+    if (!model) throw new Error('还没选模型呢～');
+    const profile = { id, name, url, key, model, transport };
+    const next = settings.apiProfiles.filter(item => item.id !== id);
+    next.push(profile);
+    settings.apiProfiles = normalizeApiProfiles(next);
+    settings.apiModuleRoutes = normalizeApiModuleRoutes(settings.apiModuleRoutes, settings.apiProfiles);
+    context.extensionSettings[MODULE_ID] = settings;
+    saveSettings();
+    runtime.ui?.render();
+    toast(`“${name}”已经乖乖存好啦～`, 'success');
+    return { ...profile, key: '' };
+}
+
+function deleteApiProfile(profileId) {
+    const context = getContext();
+    const settings = getSettings();
+    const id = String(profileId || '').trim();
+    const existing = settings.apiProfiles.find(item => item.id === id);
+    if (!existing) throw new Error('没有找到这个 API 方案');
+    settings.apiProfiles = settings.apiProfiles.filter(item => item.id !== id);
+    settings.apiModuleRoutes = normalizeApiModuleRoutes(settings.apiModuleRoutes, settings.apiProfiles);
+    context.extensionSettings[MODULE_ID] = settings;
+    saveSettings();
+    runtime.ui?.render();
+    toast(`“${existing.name}”已经删掉啦～`, 'success');
+    return true;
+}
+
+function duplicateApiProfile(profileId) {
+    const settings = getSettings();
+    const existing = settings.apiProfiles.find(item => item.id === String(profileId || ''));
+    if (!existing) throw new Error('没有找到这个 API 方案');
+    return saveApiProfile({
+        ...existing,
+        id: '',
+        name: `${existing.name} · 副本`.slice(0, 80),
+    });
+}
+
+function profileRequestSettings(profileId) {
+    const settings = getSettings();
+    const profile = settings.apiProfiles.find(item => item.id === String(profileId || ''));
+    if (!profile) throw new Error('没有找到这个 API 方案');
+    return { settings, profile, requestSettings: settingsForApiProfile(settings, profile) };
+}
+
+async function testApiProfileConnection(profileId) {
+    const { profile, requestSettings } = profileRequestSettings(profileId);
+    const context = getContext();
+    setBusy(true);
+    try {
+        const reply = await requestCustomCompletion(requestSettings, buildBackstageMessages('这是连接测试。请只回复：连接成功'), {
+            fetchImpl: globalThis.fetch.bind(globalThis),
+            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+            maxTokens: 80,
+            temperature: 0,
+        });
+        if (!String(reply || '').trim()) throw new Error('接口没有返回内容');
+        toast(`“${profile.name}”连接成功啦～`, 'success');
+        return true;
+    } finally {
+        setBusy(false);
+    }
+}
+
+async function pullApiProfileModels(profileId) {
+    const { profile, requestSettings } = profileRequestSettings(profileId);
+    runtime.modelPullStatus = { phase: 'running', message: `正在读取“${profile.name}”的模型列表` };
+    runtime.ui?.render();
+    try {
+        const context = getContext();
+        const models = await requestCustomModels(requestSettings, {
+            fetchImpl: globalThis.fetch.bind(globalThis),
+            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+        });
+        runtime.customModels = models;
+        runtime.modelPullStatus = {
+            phase: 'success',
+            message: `找到 ${models.length} 个模型啦～还是可以手动填写哦`,
+        };
+        return models;
+    } catch (error) {
+        runtime.modelPullStatus = { phase: 'error', message: describeError(error) };
+        throw error;
+    } finally {
+        runtime.ui?.render();
+    }
+}
+
+function settingsFromApiDraft(payload = {}, { requireModel = true } = {}) {
+    const base = getSettings();
+    const url = String(payload.url || payload.customApiUrl || '').trim().slice(0, 500);
+    const key = String(payload.key || payload.customApiKey || '').trim().slice(0, 1000);
+    const model = String(payload.model || payload.customApiModel || '').trim().slice(0, 180);
+    const transport = ['proxy', 'direct'].includes(payload.transport || payload.customApiTransport)
+        ? (payload.transport || payload.customApiTransport)
+        : 'proxy';
+    if (!url) throw new Error('还没填接口地址呢～');
+    if (!key) throw new Error('还缺 API Key 哦～');
+    if (requireModel && !model) throw new Error('还没选模型呢～');
+    return {
+        ...base,
+        apiMode: 'custom',
+        customApiUrl: url,
+        customApiKey: key,
+        customApiModel: model,
+        customApiTransport: transport,
+    };
+}
+
+async function testApiDraftConnection(payload = {}) {
+    const requestSettings = settingsFromApiDraft(payload, { requireModel: true });
+    const context = getContext();
+    setBusy(true);
+    try {
+        const reply = await requestCustomCompletion(requestSettings, buildBackstageMessages('这是连接测试。请只回复：连接成功'), {
+            fetchImpl: globalThis.fetch.bind(globalThis),
+            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+            maxTokens: 80,
+            temperature: 0,
+        });
+        if (!String(reply || '').trim()) throw new Error('接口没有返回内容');
+        toast(`${String(payload.label || '这个接口').slice(0, 80)}连接成功啦～`, 'success');
+        return true;
+    } finally {
+        setBusy(false);
+    }
+}
+
+async function pullApiDraftModels(payload = {}) {
+    const requestSettings = settingsFromApiDraft(payload, { requireModel: false });
+    const label = String(payload.label || '这个接口').slice(0, 80);
+    runtime.modelPullStatus = { phase: 'running', message: `正在翻${label}的模型列表～` };
+    runtime.ui?.render();
+    try {
+        const context = getContext();
+        const models = await requestCustomModels(requestSettings, {
+            fetchImpl: globalThis.fetch.bind(globalThis),
+            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+        });
+        runtime.customModels = models;
+        runtime.modelPullStatus = {
+            phase: 'success',
+            message: `找到 ${models.length} 个模型啦～不会改动默认接口`,
+        };
+        toast(`找到 ${models.length} 个可用模型啦～`, 'success');
+        return models;
+    } catch (error) {
+        runtime.modelPullStatus = { phase: 'error', message: describeError(error) };
+        throw error;
+    } finally {
+        runtime.ui?.render();
+    }
 }
 
 async function testCustomApiConnection() {
@@ -2527,30 +3053,40 @@ async function testCustomApiConnection() {
     setBusy(true);
     setSyncStatus({
         phase: 'running',
-        message: '正在测试独立 API',
+        message: '正在戳一下独立 API，看看它醒不醒～',
         error: '',
         attemptedAt: new Date().toISOString(),
     });
     try {
-        const reply = await backgroundSimulation(
-            '这是连接测试。请只回复：连接成功',
-            { maxTokens: 80, temperature: 0 },
+        const context = getContext();
+        runtime.syncStatus.method = settings.customApiTransport === 'direct'
+            ? '默认独立接口 · 浏览器直连'
+            : '默认独立接口 · 酒馆转发';
+        const reply = await requestCustomCompletion(
+            settings,
+            buildBackstageMessages('这是连接测试。请只回复：连接成功'),
+            {
+                fetchImpl: globalThis.fetch.bind(globalThis),
+                getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+                maxTokens: 80,
+                temperature: 0,
+            },
         );
         if (!String(reply || '').trim()) throw new Error('接口没有返回内容');
         setSyncStatus({
             phase: 'success',
-            message: '独立 API 连接测试成功',
+            message: '独立 API 连接成功啦～',
             error: '',
             succeededAt: new Date().toISOString(),
             method: runtime.syncStatus.method,
         });
-        toast('独立 API 已经可以使用。', 'success');
+        toast('独立 API 通啦～可以开工 `(•̀ᴗ•́)و`', 'success');
         return true;
     } catch (error) {
         const errorMessage = describeError(error);
         setSyncStatus({
             phase: 'error',
-            message: '独立 API 连接测试失败',
+            message: '独立 API 没接上 QAQ',
             error: errorMessage,
             method: runtime.syncStatus.method,
         });
@@ -2565,7 +3101,7 @@ async function pullCustomApiModels() {
     if (settings.apiMode !== 'custom') {
         throw new Error('请先把世界推演连接切换为“独立接口”');
     }
-    runtime.modelPullStatus = { phase: 'running', message: '正在读取模型列表' };
+    runtime.modelPullStatus = { phase: 'running', message: '正在翻模型列表～' };
     runtime.ui?.render();
     try {
         const context = getContext();
@@ -2576,9 +3112,9 @@ async function pullCustomApiModels() {
         runtime.customModels = models;
         runtime.modelPullStatus = {
             phase: 'success',
-            message: `已读取 ${models.length} 个模型；仍可手动填写`,
+            message: `找到 ${models.length} 个模型啦～还是可以手动填写`,
         };
-        toast(`已读取 ${models.length} 个可用模型。`, 'success');
+        toast(`找到 ${models.length} 个可用模型啦～`, 'success');
         return models;
     } catch (error) {
         runtime.modelPullStatus = {
@@ -2589,6 +3125,54 @@ async function pullCustomApiModels() {
     } finally {
         runtime.ui?.render();
     }
+}
+
+async function runOneMemoryRollup(state, controller) {
+    const plan = planMemoryRollup(state);
+    if (!plan) return { state, rolledUp: false };
+    if (controller?.signal?.aborted) {
+        const error = new Error('记忆整理已停止');
+        error.name = 'AbortError';
+        throw error;
+    }
+    runtime.historyProgress = {
+        ...runtime.historyProgress,
+        phase: 'running',
+        message: `正在把 ${plan.sourceSummaryIds.length} 条 L${plan.sourceLevel} 记忆压成 L${plan.targetLevel}～`,
+    };
+    runtime.ui?.render();
+    const payload = await runWithRetries(async attempt => {
+        const prompt = buildMemoryRollupPrompt(state, plan, { compact: attempt > 0 });
+        const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
+            maxTokens: retryTokenBudget(2400, attempt),
+            temperature: attempt > 0 ? 0.03 : 0.08,
+            signal: controller?.signal,
+            taskKind: 'history',
+        });
+        const parsed = extractJsonObject(raw);
+        if (parsed) return parsed;
+        throw unreadableJsonError(raw, '记忆压缩模型');
+    }, {
+        retries: getSettings().autoRetryCount,
+        shouldRetry: error => !(
+            /请先填写独立 API|HTTP 40[0134]|没有提供安静生成接口/
+                .test(describeError(error))
+        ),
+        onRetry: ({ attempt, total }) => {
+            runtime.historyProgress.message = `记忆压缩没收好，正在用更紧凑格式重试 ${attempt}/${total}`;
+            runtime.ui?.render();
+        },
+        signal: controller?.signal,
+    });
+    if (controller?.signal?.aborted) {
+        const error = new Error('记忆整理已停止');
+        error.name = 'AbortError';
+        throw error;
+    }
+    return {
+        state: applyMemoryRollupResult(state, payload, plan),
+        rolledUp: true,
+    };
 }
 
 async function scanHistoryArchive({
@@ -2610,23 +3194,31 @@ async function scanHistoryArchive({
 
     let state = getState();
     let cursor = Math.max(0, Number(state.storyMemory?.indexedThroughMessageId ?? -1) + 1);
-    if (cursor >= chatLength) {
-        if (!automatic) toast('历史档案已经扫描到当前最新消息。', 'info');
+    const initialRollupPlan = planMemoryRollup(state);
+    if (cursor >= chatLength && !initialRollupPlan) {
+        if (!automatic) toast('历史档案已经追到最新一层啦～', 'info');
         return true;
     }
-    if (!automatic) {
+    if (!automatic && cursor < chatLength) {
         const confirmed = globalThis.confirm?.(
             `( •ᴗ• )  将从第 ${cursor} 层开始分批读取当前分支，共约 ${chatLength - cursor} 条消息。\n`
             + '这会产生额外 API 调用，但每批成功后都会立即保存进度。是否继续？',
         );
         if (confirmed === false) return false;
+        const protectedStore = addRecoveryPoint(getStore(), {
+            reason: 'before-memory-maintenance',
+            label: '手动整理记忆前自动保存',
+        });
+        saveStore(protectedStore, { immediate: true });
     }
 
     runtime.historyProgress = {
         phase: 'running',
         processed: cursor,
         total: chatLength,
-        message: automatic ? '正在自动整理新增记忆' : '正在建立历史档案',
+        message: cursor < chatLength
+            ? (automatic ? '正在悄悄整理新增记忆～' : '正在给历史档案归档～')
+            : '正文已经追平啦～顺手把旧经历再压一层',
     };
     const controller = new AbortController();
     runtime.activeHistoryScan = controller;
@@ -2661,7 +3253,7 @@ async function scanHistoryArchive({
                 phase: 'running',
                 processed: batch.startMessageId,
                 total: chatLength,
-                message: `正在整理消息 ${batch.startMessageId}—${batch.endMessageId}`,
+                message: `正在收拾消息 ${batch.startMessageId}—${batch.endMessageId}～`,
             };
             runtime.ui?.render();
 
@@ -2681,9 +3273,27 @@ async function scanHistoryArchive({
                         maxTokens: retryTokenBudget(historyBaseTokens, attempt),
                         temperature: attempt > 0 ? 0.05 : 0.1,
                         signal: controller.signal,
+                        taskKind: 'history',
                     });
                     const parsed = extractJsonObject(raw);
-                    if (parsed) return parsed;
+                    if (parsed) {
+                        const assistantIds = batch.messages
+                            .filter(message => message.role === 'assistant')
+                            .map(message => Number(message.id));
+                        const summarizedIds = new Set(
+                            (Array.isArray(parsed.turn_summaries) ? parsed.turn_summaries : parsed.turnSummaries || [])
+                                .map(item => Number(item?.source_message_id ?? item?.sourceMessageId ?? item?.message_id ?? item?.messageId))
+                                .filter(Number.isFinite),
+                        );
+                        const missingIds = assistantIds.filter(id => !summarizedIds.has(id));
+                        const fallbackSummary = parsed?.chapter_summary ?? parsed?.chapterSummary;
+                        if (missingIds.length && !(assistantIds.length === 1 && fallbackSummary?.summary)) {
+                            const error = new Error(`L0摘要缺失：消息 ${missingIds.join(', ')}`);
+                            error.code = 'MEMORY_L0_MISSING';
+                            throw error;
+                        }
+                        return parsed;
+                    }
                     throw unreadableJsonError(raw, '记忆整理模型');
                 }, {
                     retries: getSettings().autoRetryCount,
@@ -2700,7 +3310,7 @@ async function scanHistoryArchive({
             } catch (error) {
                 const assistantTurns = batch.messages.filter(message => message.role === 'assistant').length;
                 const canSplit = assistantTurns > 1 && (
-                    /JSON|截断|长度上限|No message generated|没有返回最终正文|没有可读取的最终正文/i
+                    /JSON|L0摘要缺失|截断|长度上限|No message generated|没有返回最终正文|没有可读取的最终正文/i
                         .test(describeError(error))
                 );
                 if (canSplit) {
@@ -2725,12 +3335,28 @@ async function scanHistoryArchive({
 
             const store = getStore();
             store.currentState = state;
-            store.branchOverrides[currentAnchorKey()] = createSnapshot(state, {
+            store.branchOverrides[currentAnchorKey()] = createBranchSnapshot(state, {
                 sourceKey: currentAnchorKey(),
                 kind: 'history-index',
             });
             saveStore(store);
             runtime.historyProgress.processed = Math.min(chatLength, cursor);
+            refreshInjection();
+            runtime.ui?.render();
+        }
+
+        let rolledUp = false;
+        const rollup = await runOneMemoryRollup(state, controller);
+        state = rollup.state;
+        rolledUp = rollup.rolledUp;
+        if (rolledUp) {
+            const store = getStore();
+            store.currentState = state;
+            store.branchOverrides[currentAnchorKey()] = createBranchSnapshot(state, {
+                sourceKey: currentAnchorKey(),
+                kind: 'memory-rollup',
+            });
+            saveStore(store, { immediate: true });
             refreshInjection();
             runtime.ui?.render();
         }
@@ -2750,7 +3376,9 @@ async function scanHistoryArchive({
             processed: Math.min(chatLength, cursor),
             total: chatLength,
             message: caughtUp
-                ? (automatic ? '新增记忆已自动整理' : '当前分支的历史档案已经建立')
+                ? (rolledUp
+                    ? '正文记忆已追平，上层经历也顺手整理好一层～'
+                    : (automatic ? '新增记忆已自动整理' : '当前分支的历史档案已经建立'))
                 : `已整理至消息 ${state.storyMemory.indexedThroughMessageId}`,
         };
         refreshInjection();
@@ -2759,9 +3387,11 @@ async function scanHistoryArchive({
             toast(
                 `记忆建档完成：${state.storyMemory.facts.length} 条长期事实，`
                 + `${state.storyMemory.clues.length} 条伏笔，`
-                + `${state.storyMemory.summaries.length} 段经历。`,
+                + `${state.storyMemory.summaries.length} 段分层经历。`,
                 'success',
             );
+        } else {
+            scheduleAutoMemoryIndex();
         }
         return true;
     } catch (error) {
@@ -2920,7 +3550,7 @@ function personObservationLooksComplete(text) {
     return /[。！？!?…」』”’）)\]】]$/.test(value);
 }
 
-async function generateIndependentPersonObservation(prompt, person, settings) {
+async function generateIndependentPersonObservation(prompt, person, settings, { signal } = {}) {
     runtime.syncStatus.method = settings.apiMode === 'custom'
         ? '人物观测 · 世界背面独立接口'
         : '人物观测 · 世界背面独立上下文';
@@ -2943,6 +3573,7 @@ async function generateIndependentPersonObservation(prompt, person, settings) {
                 // Custom APIs expose finish_reason, so reject MAX_TOKENS/length
                 // immediately instead of accepting a visibly cut-off paragraph.
                 rejectTruncated: true,
+                signal,
             }) || '');
             const filtered = filterNarrativeText(raw, settings).trim();
             if (!filtered) {
@@ -2978,6 +3609,9 @@ async function generateIndependentPersonObservation(prompt, person, settings) {
 
 async function observePerson(personId, { force = false } = {}) {
     const state = getState();
+    const baselineRevision = Number(state.revision || 0);
+    const baselineChatToken = currentChatToken();
+    const baselineAssistantStamp = latestAssistantSourceStamp();
     const person = state.people.find(item => item.id === personId);
     if (!person) throw new Error('没有找到这个人物');
     if (person.isUser) throw new Error('玩家角色不使用镜头外人物观测');
@@ -2999,6 +3633,15 @@ async function observePerson(personId, { force = false } = {}) {
         playerIdentityAnchor: getPlayerIdentityAnchor(state),
     });
 
+    const controller = new AbortController();
+    const activeObservation = {
+        controller,
+        personId: person.id,
+        chatToken: baselineChatToken,
+        revision: baselineRevision,
+        assistantStamp: baselineAssistantStamp,
+    };
+    runtime.activeObservation = activeObservation;
     setBusy(true);
     setSyncStatus({
         phase: 'running',
@@ -3007,7 +3650,17 @@ async function observePerson(personId, { force = false } = {}) {
         attemptedAt: new Date().toISOString(),
     });
     try {
-        const text = await generateIndependentPersonObservation(prompt, person, settings);
+        const text = await generateIndependentPersonObservation(prompt, person, settings, { signal: controller.signal });
+        const stale = (
+            currentChatToken() !== baselineChatToken
+            || Number(getState().revision || 0) !== baselineRevision
+            || latestAssistantSourceStamp() !== baselineAssistantStamp
+        );
+        if (stale) {
+            const error = new Error('观测期间世界已经往前走啦～旧结果没有保存，重新看一次就会以最新状态为准');
+            error.code = 'STALE_BACKGROUND_TASK';
+            throw error;
+        }
         setSyncStatus({
             phase: 'success',
             message: `${person.name} 的即时观测已经生成`,
@@ -3030,19 +3683,294 @@ async function observePerson(personId, { force = false } = {}) {
         saveStore(store);
         return result;
     } catch (error) {
+        if (isAbortError(error) || controller.signal.aborted) {
+            setSyncStatus({
+                phase: 'pending',
+                message: '新正文来啦～旧人物观测先停掉，不会保存过期结果',
+                error: '',
+                method: runtime.syncStatus.method,
+            });
+            throw error;
+        }
         const errorMessage = describeError(error);
         setSyncStatus({
-            phase: 'error',
-            message: '人物即时观测没有完成',
+            phase: error?.code === 'STALE_BACKGROUND_TASK' ? 'pending' : 'error',
+            message: error?.code === 'STALE_BACKGROUND_TASK'
+                ? '人物观测已经过期，没有写入缓存'
+                : '人物即时观测没有完成',
             error: errorMessage,
             method: runtime.syncStatus.method,
         });
         throw error;
     } finally {
+        if (runtime.activeObservation === activeObservation) runtime.activeObservation = null;
         setBusy(false);
     }
 }
 
+
+
+async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
+    const chatTokenAtStart = currentChatToken();
+    if (allowDefer && coreSimulationBusy()) {
+        runtime.pendingPublicOpinion = true;
+        runtime.publicOpinionStatus = {
+            phase: 'queued',
+            message: '世界主线还在推演～舆情先排到后面，等核心状态追上就自动继续 `(•̀ᴗ•́)و`',
+            error: '',
+        };
+        runtime.ui?.render();
+        return null;
+    }
+
+    const state = getState();
+    const sourceRevision = Number(state.revision || 0);
+    const sourceAssistantStamp = latestAssistantSourceStamp();
+    const candidates = eligiblePublicOpinionEvents(state);
+    const store = getStore();
+    const generatedAt = new Date().toISOString();
+
+    if (!candidates.length) {
+        const visibilityCounts = (state.events || []).reduce((counts, event) => {
+            const key = ['hidden', 'trace', 'known', 'direct'].includes(String(event?.visibility || ''))
+                ? String(event.visibility)
+                : 'hidden';
+            counts[key] += 1;
+            return counts;
+        }, { hidden: 0, trace: 0, known: 0, direct: 0 });
+        store.publicOpinion = emptyPublicOpinionCache({
+            generatedAt,
+            sourceRevision: state.revision,
+            sourceWorldMinute: state.clock?.absoluteMinute ?? -1,
+        });
+        saveStore(store);
+        refreshInjection();
+        runtime.publicOpinionStatus = {
+            phase: 'running',
+            message: `正史这轮没什么能传开的～公开 ${visibilityCounts.known + visibilityCounts.direct} · 痕迹 ${visibilityCounts.trace} · 隐藏 ${visibilityCounts.hidden}。那就顺手去街上捞点无关主线的小瓜吧 (ﾉ◕ヮ◕)ﾉ`,
+            error: '',
+        };
+        runtime.ui?.render();
+        const sandbox = await generatePublicOpinionSandbox();
+        return sandbox ? { kind: 'sandbox', sandbox, fallback: 'no-candidates' } : null;
+    }
+
+    const controller = new AbortController();
+    const activePublicOpinion = {
+        controller,
+        chatToken: chatTokenAtStart,
+        sourceRevision,
+        assistantStamp: sourceAssistantStamp,
+    };
+    runtime.activePublicOpinion = activePublicOpinion;
+    runtime.pendingPublicOpinion = false;
+    runtime.publicOpinionStatus = {
+        phase: 'running',
+        message: '正在扒拉新闻和论坛～看看外面都在聊什么',
+        error: '',
+    };
+    runtime.ui?.render();
+
+    const prompt = buildPublicOpinionPrompt(state, {
+        clockLabel: formatWorldCalendar(state)?.stamp || '',
+    });
+    const settings = getSettings();
+    const baseTokens = settings.maxOutputTokens > 0
+        ? Math.max(2800, Math.min(6000, settings.maxOutputTokens))
+        : 3600;
+
+    try {
+        const raw = await runWithRetries(
+            () => backgroundSimulation(prompt, {
+                maxTokens: baseTokens,
+                temperature: 0.65,
+                taskKind: 'public-opinion',
+                rejectTruncated: true,
+                signal: controller.signal,
+            }),
+            {
+                retries: Math.min(1, settings.autoRetryCount),
+                delayMs: 650,
+                shouldRetry: error => /JSON|截断|长度上限|empty|No message generated|没有返回最终正文/i.test(String(error?.message || error || '')),
+                signal: controller.signal,
+            },
+        );
+        const parsed = extractJsonObject(raw);
+        if (!parsed) throw new Error('舆情接口没有返回可解析的 JSON');
+        if (controller.signal.aborted) {
+            const error = new Error('舆情任务已取消');
+            error.name = 'AbortError';
+            throw error;
+        }
+
+        const stale = (
+            currentChatToken() !== chatTokenAtStart
+            || Number(getState().revision || 0) !== sourceRevision
+            || latestAssistantSourceStamp() !== sourceAssistantStamp
+        );
+        if (stale) {
+            runtime.pendingPublicOpinion = currentChatToken() === chatTokenAtStart;
+            runtime.publicOpinionStatus = {
+                phase: 'pending',
+                message: '世界已经往前走啦～刚才那份旧舆情直接丢掉，不拿过期新闻追着新剧情跑 `(｡•̀ᴗ-)✧`',
+                error: '',
+            };
+            runtime.ui?.render();
+            scheduleDeferredPublicOpinion(260);
+            return null;
+        }
+
+        const cache = normalizePublicOpinionPayload(parsed, {
+            validEventIds: candidates.map(item => item.id),
+            eventVisibilityById: Object.fromEntries(candidates.map(item => [item.id, item.visibility])),
+            sourceRevision: state.revision,
+            sourceWorldMinute: state.clock?.absoluteMinute ?? -1,
+            generatedAt,
+        });
+        const latestStore = getStore();
+        latestStore.publicOpinion = cache;
+        saveStore(latestStore);
+        refreshInjection();
+        if (!cache.news.length && !cache.forums.length) {
+            runtime.publicOpinionStatus = {
+                phase: 'running',
+                message: '正史候选明明有，但这次没扒出合格舆情～不让你空手回去，顺手切到闲逛捞点瓜 `(•̀ᴗ•́)و`',
+                error: '',
+            };
+            runtime.ui?.render();
+            const sandbox = await generatePublicOpinionSandbox();
+            return sandbox ? { kind: 'sandbox', sandbox, fallback: 'empty-canon-result' } : cache;
+        }
+        runtime.publicOpinionStatus = {
+            phase: 'success',
+            message: `扒到 ${cache.news.length} 条新闻 · ${cache.forums.length} 个论坛话题～`,
+            error: '',
+        };
+        runtime.ui?.render();
+        return cache;
+    } catch (error) {
+        if (isAbortError(error) || controller.signal.aborted) {
+            if (currentChatToken() === chatTokenAtStart) {
+                runtime.pendingPublicOpinion = true;
+                runtime.publicOpinionStatus = {
+                    phase: 'queued',
+                    message: '新正文抢先到啦～旧舆情先停掉，等世界推演追上后再看新的',
+                    error: '',
+                };
+                runtime.ui?.render();
+                scheduleDeferredPublicOpinion(260);
+            }
+            return null;
+        }
+        if (currentChatToken() === chatTokenAtStart) {
+            runtime.publicOpinionStatus = {
+                phase: 'error',
+                message: '舆情这次没扒完 QAQ',
+                error: describeError(error),
+            };
+            runtime.ui?.render();
+        }
+        throw error;
+    } finally {
+        if (runtime.activePublicOpinion === activePublicOpinion) {
+            runtime.activePublicOpinion = null;
+        }
+    }
+}
+
+async function generatePublicOpinionSandbox() {
+    const chatTokenAtStart = currentChatToken();
+    if (coreSimulationBusy()) throw new Error('世界主线还在推演～先等核心状态接稳，再来闲逛一下吧');
+    const state = getState();
+    const controller = new AbortController();
+    const activeSandbox = { controller, chatToken: chatTokenAtStart };
+    runtime.activePublicOpinionSandbox = activeSandbox;
+    const generatedAt = new Date().toISOString();
+    runtime.publicOpinionStatus = { phase: 'running', message: '正在街上随便逛逛～看看今天有什么无关紧要的小热闹 `(ﾉ◕ヮ◕)ﾉ`', error: '' };
+    runtime.ui?.render();
+    try {
+        const prompt = buildPublicOpinionSandboxPrompt(state, { clockLabel: formatWorldCalendar(state)?.stamp || '' });
+        const settings = getSettings();
+        const sandbox = await runWithRetries(
+            async () => {
+                const raw = await backgroundSimulation(prompt, {
+                    maxTokens: 2800,
+                    temperature: 0.9,
+                    taskKind: 'public-opinion',
+                    rejectTruncated: true,
+                    signal: controller.signal,
+                });
+                const parsed = extractJsonObject(raw);
+                if (!parsed) throw new Error('闲逛舆情没有返回可解析的 JSON');
+                const normalized = normalizePublicOpinionSandboxPayload(parsed, { generatedAt });
+                if (!normalized.news.length && !normalized.forums.length) {
+                    throw new Error('闲逛舆情返回了空内容');
+                }
+                return normalized;
+            },
+            {
+                retries: Math.min(1, settings.autoRetryCount),
+                delayMs: 520,
+                shouldRetry: error => /JSON|空内容|截断|长度上限|empty|No message generated/i.test(String(error?.message || error || '')),
+                signal: controller.signal,
+            },
+        );
+        if (currentChatToken() !== chatTokenAtStart) return null;
+        const store = getStore();
+        store.publicOpinionSandbox = sandbox;
+        saveStore(store);
+        runtime.publicOpinionStatus = {
+            phase: 'success',
+            message: `随便逛到 ${sandbox.news.length} 条小新闻 · ${sandbox.forums.length} 个闲聊话题～这些都不算正史哦`,
+            error: '',
+        };
+        runtime.ui?.render();
+        return sandbox;
+    } catch (error) {
+        if (isAbortError(error) || controller.signal.aborted) {
+            if (currentChatToken() === chatTokenAtStart) {
+                runtime.publicOpinionStatus = { phase: 'idle', message: '主线有新动静啦～闲逛先收摊，不跟核心推演抢路 `(｡•̀ᴗ-)✧`', error: '' };
+                runtime.ui?.render();
+            }
+            return null;
+        }
+        if (currentChatToken() === chatTokenAtStart) {
+            runtime.publicOpinionStatus = { phase: 'error', message: '今天闲逛没逛出东西 QAQ', error: describeError(error) };
+            runtime.ui?.render();
+        }
+        throw error;
+    } finally {
+        if (runtime.activePublicOpinionSandbox === activeSandbox) runtime.activePublicOpinionSandbox = null;
+    }
+}
+
+function clearPublicOpinionSandbox() {
+    runtime.activePublicOpinionSandbox?.controller?.abort?.();
+    runtime.activePublicOpinionSandbox = null;
+    const store = getStore();
+    store.publicOpinionSandbox = emptyPublicOpinionSandbox();
+    saveStore(store);
+    runtime.publicOpinionStatus = { phase: 'idle', message: '闲逛小报收起来啦～', error: '' };
+    runtime.ui?.render();
+    return true;
+}
+
+function clearPublicOpinionSnapshot() {
+    runtime.activePublicOpinion?.controller?.abort?.();
+    runtime.activePublicOpinion = null;
+    runtime.pendingPublicOpinion = false;
+    const store = getStore();
+    store.publicOpinion = emptyPublicOpinionCache();
+    saveStore(store);
+    refreshInjection();
+    runtime.publicOpinionStatus = {
+        phase: 'idle',
+        message: '舆情快照清空啦～',
+        error: '',
+    };
+    runtime.ui?.render();
+    return true;
+}
 
 function recentRawAssistantTexts(count = 1) {
     const chat = getContext()?.chat || [];
@@ -3112,8 +4040,44 @@ async function handleUiAction(action, payload = {}) {
         return pullCustomApiModels();
     }
 
+    if (action === 'save-api-profile') {
+        return saveApiProfile(payload);
+    }
+
+    if (action === 'delete-api-profile') {
+        return deleteApiProfile(payload.profileId);
+    }
+
+    if (action === 'duplicate-api-profile') {
+        return duplicateApiProfile(payload.profileId);
+    }
+
+    if (action === 'test-api-profile') {
+        return await testApiProfileConnection(payload.profileId);
+    }
+
+    if (action === 'pull-api-profile-models') {
+        return await pullApiProfileModels(payload.profileId);
+    }
+
+    if (action === 'test-api-draft') {
+        return await testApiDraftConnection(payload);
+    }
+
+    if (action === 'pull-api-draft-models') {
+        return await pullApiDraftModels(payload);
+    }
+
     if (action === 'scan-history') {
         return scanHistoryArchive();
+    }
+
+    if (action === 'generate-public-opinion-sandbox') {
+        return generatePublicOpinionSandbox();
+    }
+
+    if (action === 'clear-public-opinion-sandbox') {
+        return clearPublicOpinionSandbox();
     }
 
     if (action === 'observe-person') {
@@ -3270,6 +4234,10 @@ async function handleUiAction(action, payload = {}) {
                 summary: content.slice(0, 1400),
                 startMessageId: existing?.startMessageId ?? anchor,
                 endMessageId: existing?.endMessageId ?? anchor,
+                level: existing?.level ?? 1,
+                hierarchyManaged: existing?.hierarchyManaged ?? false,
+                parentId: existing?.parentId || '',
+                sourceSummaryIds: existing?.sourceSummaryIds || [],
                 createdAt: existing?.createdAt || new Date().toISOString(),
             };
         }
@@ -3309,6 +4277,16 @@ async function handleUiAction(action, payload = {}) {
         const index = collection?.findIndex(entry => entry.id === String(payload.id || '')) ?? -1;
         if (index < 0) throw new Error('没有找到这条记忆');
         if (collection[index].locked) throw new Error('锁定的记忆不能删除，请先解锁');
+        const removed = collection[index];
+        if (kind === 'summary') {
+            const summaries = next.storyMemory?.summaries || [];
+            for (const summary of summaries) {
+                if (summary.parentId === removed.id) summary.parentId = '';
+                if (Array.isArray(summary.sourceSummaryIds) && summary.sourceSummaryIds.includes(removed.id)) {
+                    summary.sourceSummaryIds = summary.sourceSummaryIds.filter(id => id !== removed.id);
+                }
+            }
+        }
         collection.splice(index, 1);
         commitManualState(next, '记忆已经删除。');
         return;
@@ -3544,6 +4522,14 @@ async function handleUiAction(action, payload = {}) {
                 : `已取消“${event.title}”的下一轮显露。`,
         );
         return;
+    }
+
+    if (action === 'generate-public-opinion') {
+        return await generatePublicOpinionSnapshot();
+    }
+
+    if (action === 'clear-public-opinion') {
+        return clearPublicOpinionSnapshot();
     }
 
     if (action === 'scan-tag-candidates') {

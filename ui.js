@@ -6,6 +6,7 @@ import {
     isActiveEvent,
     isTerminalEvent,
 } from './core.js';
+import { filterWorldbookEntries } from './worldbook.js';
 
 const VIEWS = [
     { id: 'now', label: '此刻', eyebrow: 'NOW' },
@@ -530,7 +531,7 @@ function renderSyncStrip(syncStatus) {
     `;
 }
 
-function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null) {
+function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}) {
     const clock = formatWorldCalendar(state);
     const clockLabel = worldClockLabel(state, clock);
     const connection = syncStatus?.connection || {};
@@ -546,6 +547,18 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
     const latestRecovery = recovery.latest || null;
     const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
     const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
+    const worldbookQuery = String(worldbookUi.query || '').slice(0, 120);
+    const worldbookOnlyPeople = Boolean(worldbookUi.onlyPeople);
+    const worldbookOnlyEnabled = Boolean(worldbookUi.onlyEnabled);
+    const worldbookSelectedIds = worldbookUi.selectedIds instanceof Set
+        ? worldbookUi.selectedIds
+        : new Set(Array.isArray(worldbookUi.selectedIds) ? worldbookUi.selectedIds.map(String) : []);
+    const filteredWorldbookEntries = filterWorldbookEntries(worldbookEntries, {
+        query: worldbookQuery,
+        onlyPeople: worldbookOnlyPeople,
+        onlyEnabled: worldbookOnlyEnabled,
+    });
+    const worldbookSelectedCount = worldbookSelectedIds.size;
     const rules = Array.isArray(tagFilterRules)
         ? tagFilterRules
         : (settings.tagFilterRules || []);
@@ -587,9 +600,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             <details class="wb-settings-group" data-settings-group="connection" ${groupOpen('connection')}>
                 <summary><span>连接</span><small>API 与模型</small></summary>
                 <div class="wb-settings-group-body wb-settings-subgroup-stack">
-                    <details class="wb-settings-subgroup" data-settings-subgroup="connection-main" ${subgroupOpen('connection-main')}>
-                        <summary><span>连接方式</span><small>当前 API、模型与运行方式</small></summary>
-                        <div class="wb-settings-subgroup-body">
+                    <div class="wb-settings-flat-section">
             <div class="wb-connection-card is-${escapeAttr(phase)}">
                 <div>
                     <span>世界推演连接</span>
@@ -615,8 +626,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 </div>
                 <p>独立接口只用于世界推演、历史建档和人物观测，不会改变主聊天连接。</p>
             </div>
-                        </div>
-                    </details>
+                    </div>
             ${settings.apiMode === 'custom' ? `
                     <details class="wb-settings-subgroup" data-settings-subgroup="connection-custom" ${subgroupOpen('connection-custom')}>
                         <summary><span>独立接口配置</span><small>地址、Key、模型与连接方式</small></summary>
@@ -896,11 +906,9 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             </details>
 
             <details class="wb-settings-group" data-settings-group="worldbook" ${groupOpen('worldbook')}>
-                <summary><span>世界书人物</span><small>手动读取、预览与选择</small></summary>
-                <div class="wb-settings-group-body wb-settings-subgroup-stack">
-                    <details class="wb-settings-subgroup" data-settings-subgroup="worldbook-import" ${subgroupOpen('worldbook-import')}>
-                        <summary><span>人物导入</span><small>选择世界书、预览并勾选人物</small></summary>
-                        <div class="wb-settings-subgroup-body">
+                <summary><span>世界书人物</span><small>搜索、识别与批量导入</small></summary>
+                <div class="wb-settings-group-body">
+                    <div class="wb-settings-flat-section">
                     <form class="wb-worldbook-import" data-wb-form="worldbook">
                         <label>选择世界书
                             <select name="bookName" ${worldbookBooks.length ? '' : 'disabled'}>
@@ -910,30 +918,67 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                     : '<option value="">酒馆当前没有可读取的世界书</option>'}
                             </select>
                         </label>
-                        <button type="button" data-wb-action="scan-worldbook"
+                        <button class="wb-worldbook-scan-button" type="button" data-wb-action="scan-worldbook"
                             ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
-                            ${worldbook.phase === 'running' ? '正在读取…' : '读取条目预览'}
+                            ${worldbook.phase === 'running' ? '正在读取…' : '读取并识别人物'}
                         </button>
-                        <p>插件只在你点击时读取一次，不会每轮扫描世界书，也不会自动把所有条目当成 NPC。</p>
+                        <p>只在你点击时读取一次。识别结果只是候选标记，不会自动导入，也不会修改原世界书。</p>
                         ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
                         ${worldbookEntries.length ? `
-                            <div class="wb-worldbook-entry-list">
-                                ${worldbookEntries.map(entry => `
-                                    <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''}">
-                                        <input type="checkbox" name="entryIds" value="${escapeAttr(entry.uid)}">
-                                        <span>
-                                            <strong>${escapeHtml(entry.name)}</strong>
-                                            <small>${entry.disabled ? '世界书中已停用 · ' : ''}${escapeHtml((entry.keys || []).join('、') || `UID ${entry.uid}`)}</small>
-                                            <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? '…' : ''}</p>
-                                        </span>
+                            <div class="wb-worldbook-browser">
+                                <label class="wb-worldbook-search">
+                                    <span>搜索条目</span>
+                                    <input type="search" name="worldbookSearch" data-wb-worldbook-search value="${escapeAttr(worldbookQuery)}"
+                                        placeholder="搜人物名、条目名、关键词或正文">
+                                </label>
+                                <div class="wb-worldbook-filter-row">
+                                    <label class="wb-worldbook-filter-chip ${worldbookOnlyPeople ? 'is-active' : ''}">
+                                        <input type="checkbox" data-wb-worldbook-filter="people" ${worldbookOnlyPeople ? 'checked' : ''}>
+                                        <span>只看疑似人物</span>
                                     </label>
-                                `).join('')}
+                                    <label class="wb-worldbook-filter-chip ${worldbookOnlyEnabled ? 'is-active' : ''}">
+                                        <input type="checkbox" data-wb-worldbook-filter="enabled" ${worldbookOnlyEnabled ? 'checked' : ''}>
+                                        <span>只看启用条目</span>
+                                    </label>
+                                </div>
+                                <div class="wb-worldbook-toolbar">
+                                    <span>共 ${worldbookEntries.length} 条 · 当前 ${filteredWorldbookEntries.length} 条 · 已选 ${worldbookSelectedCount} 条</span>
+                                    <div>
+                                        <button type="button" data-wb-action="select-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>全选当前</button>
+                                        <button type="button" data-wb-action="clear-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>取消当前</button>
+                                    </div>
+                                </div>
+                                <div class="wb-worldbook-entry-list">
+                                    ${filteredWorldbookEntries.length ? filteredWorldbookEntries.map(entry => `
+                                        <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''} ${entry.likelyPerson ? 'is-person-candidate' : ''}">
+                                            <input id="wb-worldbook-entry-${escapeAttr(entry.uid)}" type="checkbox" name="entryIds" data-wb-worldbook-entry-id="${escapeAttr(entry.uid)}"
+                                                value="${escapeAttr(entry.uid)}" ${worldbookSelectedIds.has(String(entry.uid)) ? 'checked' : ''}>
+                                            <span>
+                                                <span class="wb-worldbook-entry-heading">
+                                                    <strong>${escapeHtml(entry.parsedName || entry.name)}</strong>
+                                                    ${entry.likelyPerson ? '<em>疑似人物</em>' : ''}
+                                                    ${entry.disabled ? '<em class="is-muted">已停用</em>' : ''}
+                                                </span>
+                                                ${entry.parsedName && entry.parsedName !== entry.name
+                                                    ? `<small>条目：${escapeHtml(entry.name)} · ${escapeHtml((entry.keys || []).join('、') || `UID ${entry.uid}`)}</small>`
+                                                    : `<small>${escapeHtml((entry.keys || []).join('、') || `UID ${entry.uid}`)}</small>`}
+                                                ${entry.profile?.matchedFields?.length
+                                                    ? `<div class="wb-worldbook-profile-hints">已识别：${escapeHtml(entry.profile.matchedFields.slice(0, 6).map(field => ({
+                                                        name: '姓名', nickname: '别称', gender: '性别', age: '年龄', birthday: '生日', species: '种族', identity: '身份', personality: '人格', values: '偏好', mbti: 'MBTI', appearance: '外貌', height: '身高', body: '体型', clothing: '穿着', background: '背景', relations: '关系', speech: '说话', behavior: '行为边界',
+                                                    }[field] || field)).join('、'))}</div>`
+                                                    : ''}
+                                                <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? '…' : ''}</p>
+                                            </span>
+                                        </label>
+                                    `).join('') : `<div class="wb-worldbook-empty">当前筛选下没有条目。可以取消筛选或换个关键词。</div>`}
+                                </div>
+                                <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>
+                                    ${worldbookSelectedCount ? `导入已选人物（${worldbookSelectedCount}）` : '请选择要导入的人物'}
+                                </button>
                             </div>
-                            <button class="wb-primary-button" type="submit">导入勾选人物</button>
                         ` : ''}
                     </form>
-                        </div>
-                    </details>
+                    </div>
                 </div>
             </details>
 
@@ -1107,6 +1152,32 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                 </div>
                             `).join('')}
                         </div>
+                        <div class="wb-tag-auto-tools">
+                            <div class="wb-tag-auto-head">
+                                <div><strong>自动提取候选</strong><span>只扫描，不会自动加入规则</span></div>
+                                <div class="wb-tag-auto-actions">
+                                    <button type="button" data-wb-action="scan-tag-candidates" data-count="1">扫描最新正文</button>
+                                    <button type="button" data-wb-action="scan-tag-candidates" data-count="5">扫描最近 5 条</button>
+                                </div>
+                            </div>
+                            ${tagCandidates.length ? `
+                                <div class="wb-tag-candidate-list">
+                                    ${tagCandidates.map((item, index) => `
+                                        <label class="wb-tag-candidate ${item.broad ? 'is-risky' : ''} ${item.alreadyAdded ? 'is-added' : ''}">
+                                            <input type="checkbox" data-wb-tag-candidate-index="${index}"
+                                                ${item.recommended ? 'checked' : ''} ${item.alreadyAdded ? 'disabled' : ''}>
+                                            <span>
+                                                <strong>&lt;${escapeHtml(item.tagName)}&gt;${item.alreadyAdded ? ' · 已添加' : ''}</strong>
+                                                <small>${item.count} 次${item.broad ? ' · 范围较宽，建议确认后再加' : ''}</small>
+                                                <code>${escapeHtml(item.open)} … ${escapeHtml(item.close)}</code>
+                                            </span>
+                                        </label>
+                                    `).join('')}
+                                </div>
+                                <button type="button" class="wb-tag-filter-add" data-wb-action="apply-tag-candidates">添加选中候选</button>
+                            ` : '<p class="wb-tag-auto-empty">点击扫描后，插件会把疑似成对标签列出来供你确认。</p>'}
+                        </div>
+
                         <button type="button" class="wb-tag-filter-add"
                             data-wb-action="add-tag-filter-rule"
                             ${rules.filter(rule => String(rule.open || '').trim() || String(rule.close || '').trim()).length >= 30 ? 'disabled' : ''}>
@@ -1234,14 +1305,26 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                 ${person.identityAnchor ? `
                     <div class="wb-drawer-section is-character-anchor"><span>身份锚点</span><strong>${escapeHtml(person.identityAnchor)}</strong></div>
                 ` : ''}
+                ${person.appearanceProfile ? `
+                    <div class="wb-drawer-section is-character-anchor"><span>外貌设定</span><strong>${escapeHtml(person.appearanceProfile)}</strong></div>
+                ` : ''}
                 ${person.personalityAnchor ? `
                     <div class="wb-drawer-section is-character-anchor"><span>人格锚点</span><strong>${escapeHtml(person.personalityAnchor)}</strong></div>
+                ` : ''}
+                ${person.backgroundProfile ? `
+                    <div class="wb-drawer-section is-character-anchor"><span>背景与关系</span><strong>${escapeHtml(person.backgroundProfile)}</strong></div>
                 ` : ''}
                 ${person.speakingStyle ? `
                     <div class="wb-drawer-section is-character-anchor"><span>说话习惯</span><strong>${escapeHtml(person.speakingStyle)}</strong></div>
                 ` : ''}
                 ${person.behaviorBoundaries ? `
                     <div class="wb-drawer-section is-character-anchor"><span>行为边界</span><strong>${escapeHtml(person.behaviorBoundaries)}</strong></div>
+                ` : ''}
+                ${person.worldbookRaw ? `
+                    <details class="wb-worldbook-source-profile">
+                        <summary><span>世界书原始设定</span><small>${String(person.worldbookRaw).length} 字 · 点击查看</small></summary>
+                        <pre>${escapeHtml(person.worldbookRaw)}</pre>
+                    </details>
                 ` : ''}
                 ${person.trace ? `
                     <div class="wb-drawer-section"><span>最近轨迹</span><strong>${escapeHtml(person.trace)}</strong></div>
@@ -1415,10 +1498,14 @@ function renderPersonEditorModal(state, editor) {
                     <legend><span>角色约束</span><small>推演与即时观测都会遵守，AI 不会自动改写</small></legend>
                     <label>角色身份锚点<textarea name="identityAnchor" maxlength="500" rows="3"
                         placeholder="例如：男性，外表偏女性，使用“他”和男性称谓；狐族人外。也可填写非二元、无性别或自定义称谓。">${escapeHtml(person?.identityAnchor || '')}</textarea>
-                        <small>自由填写性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段与社会身份；不限制为男女二选一。</small>
+                        <small>自由填写性别身份、称谓/代词、物种、年龄阶段与社会身份；外貌请单独写在“外貌设定”。不限制为男女二选一。</small>
                     </label>
+                    <label>外貌设定<textarea name="appearanceProfile" maxlength="700" rows="3"
+                        placeholder="例如：黑色短发，身高185cm，常穿深色衬衫。">${escapeHtml(person?.appearanceProfile || '')}</textarea></label>
                     <label>人格锚点<textarea name="personalityAnchor" maxlength="600" rows="3"
                         placeholder="例如：外冷内热，警惕权威；重视承诺，但不轻易示弱。">${escapeHtml(person?.personalityAnchor || '')}</textarea></label>
+                    <label>背景与关系<textarea name="backgroundProfile" maxlength="900" rows="4"
+                        placeholder="例如：成长经历、家庭关系、社会关系和既有重要经历。">${escapeHtml(person?.backgroundProfile || '')}</textarea></label>
                     <label>说话习惯<textarea name="speakingStyle" maxlength="360" rows="2"
                         placeholder="例如：句子简短，很少使用感叹号；紧张时会转移话题。">${escapeHtml(person?.speakingStyle || '')}</textarea></label>
                     <label>行为边界<textarea name="behaviorBoundaries" maxlength="500" rows="3"
@@ -1446,7 +1533,7 @@ function renderPersonEditorModal(state, editor) {
                 </div>
                 <div class="wb-form-note">关闭“参与镜头外推演”后，人物仍保存在名单里；只有正文让其出场时才更新。</div>
                 <div class="wb-person-editor-actions">
-                    ${person ? `<button type="button" data-wb-action="delete-manual-person"
+                    ${person ? `<button class="wb-person-delete-button" type="button" data-wb-action="delete-manual-person"
                         data-person-id="${escapeAttr(person.id)}" ${person.locked ? 'disabled' : ''}>删除人物</button>` : ''}
                     <button class="wb-primary-button" type="submit">${person ? '保存人物卡' : '加入后台名单'}</button>
                 </div>
@@ -2104,6 +2191,7 @@ export function createWorldBackstageUI({
     getSettings,
     getSyncStatus = () => ({ phase: 'idle', message: '尚未进行世界推演' }),
     onAction,
+    pluginVersion = '',
 }) {
     const root = document.createElement('div');
     root.id = 'world-backstage-root';
@@ -2123,6 +2211,15 @@ export function createWorldBackstageUI({
         root.style.setProperty('--wb-visual-height', `${Math.round(viewportHeight)}px`);
     }
     syncVisualViewportInsets();
+
+    function ensureMounted() {
+        if (!root.isConnected) document.body.appendChild(root);
+        syncVisualViewportInsets();
+        const position = getSettings().orbPosition;
+        if (position && root.querySelector('.wb-world-orb')) positionOrbElements(position.x, position.y);
+        if (!root.querySelector('.wb-world-orb')) render();
+        return root.isConnected;
+    }
 
     let activeView = 'now';
     let renderedView = activeView;
@@ -2149,12 +2246,18 @@ export function createWorldBackstageUI({
     let recordEditor = null;
     let settingsScrollTop = 0;
     let openSettingsGroups = new Set(['connection', 'simulation']);
-    let openSettingsSubgroups = new Set(['connection-main']);
+    let openSettingsSubgroups = new Set();
     let openContentFolds = new Set();
     let eventFormDraft = null;
     let clockFormDraft = null;
     let apiFormDraft = null;
     let tagFilterDraftRules = null; // null = use settings; array may include empty draft cards
+    let tagFilterCandidates = [];
+    let worldbookQuery = '';
+    let worldbookOnlyPeople = false;
+    let worldbookOnlyEnabled = false;
+    let worldbookSelectedIds = new Set();
+    let worldbookSearchTimer = null;
     let skipApiDraftCapture = false;
     let skipTagFilterDraftCapture = false;
     const viewScrollTop = new Map();
@@ -2442,7 +2545,7 @@ export function createWorldBackstageUI({
                             <div class="wb-brand">
                                 ${renderBrandMark()}
                                 <div>
-                            <span class="wb-brand-line"><h1>世界背面</h1><i>正式版 1.0.2</i></span>
+                            <span class="wb-brand-line"><h1>世界背面</h1><i>正式版 ${escapeHtml(pluginVersion || '1.0.8')}</i></span>
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
@@ -2544,6 +2647,13 @@ export function createWorldBackstageUI({
                                 openSettingsSubgroups,
                                 apiFormDraft,
                                 visibleTagFilterRules(settings),
+                                tagFilterCandidates,
+                                {
+                                    query: worldbookQuery,
+                                    onlyPeople: worldbookOnlyPeople,
+                                    onlyEnabled: worldbookOnlyEnabled,
+                                    selectedIds: worldbookSelectedIds,
+                                },
                             )}
                         </div>
                     ` : ''}
@@ -2847,6 +2957,7 @@ export function createWorldBackstageUI({
             if (!settingsOpen) {
                 clockFormDraft = null;
                 tagFilterDraftRules = null;
+                tagFilterCandidates = [];
             }
             render();
             return;
@@ -2865,6 +2976,42 @@ export function createWorldBackstageUI({
             const current = visibleTagFilterRules(settings).filter((_, i) => i !== index);
             skipTagFilterDraftCapture = true;
             await persistTagFilterRules(current);
+            render();
+            return;
+        }
+        if (action === 'scan-tag-candidates') {
+            const result = await invokeAction('scan-tag-candidates', {
+                count: Number(target.dataset.count) || 1,
+            });
+            tagFilterCandidates = Array.isArray(result) ? result : [];
+            openSettingsGroups.add('advanced');
+            openSettingsSubgroups.add('advanced-tagfilter');
+            render();
+            return;
+        }
+        if (action === 'apply-tag-candidates') {
+            const settings = getSettings();
+            const current = visibleTagFilterRules(settings).map(rule => ({ ...rule }));
+            const selected = [...root.querySelectorAll('[data-wb-tag-candidate-index]:checked')]
+                .map(input => tagFilterCandidates[Number(input.dataset.wbTagCandidateIndex)])
+                .filter(Boolean)
+                .filter(item => !item.alreadyAdded);
+            const seen = new Set(current.map(rule => `${String(rule.open || '').trim()}\u0000${String(rule.close || '').trim()}`));
+            let added = 0;
+            for (const item of selected) {
+                const key = `${item.open}\u0000${item.close}`;
+                if (seen.has(key) || current.length >= 30) continue;
+                current.push({ open: item.open, close: item.close });
+                seen.add(key);
+                added += 1;
+            }
+            await persistTagFilterRules(current);
+            tagFilterCandidates = tagFilterCandidates.map(item => ({
+                ...item,
+                alreadyAdded: item.alreadyAdded || seen.has(`${item.open}\u0000${item.close}`),
+                recommended: false,
+            }));
+            notify(added ? `已加入 ${added} 条过滤规则。` : '没有新的候选需要加入。', added ? 'success' : 'info');
             render();
             return;
         }
@@ -2961,13 +3108,10 @@ export function createWorldBackstageUI({
             if (setting === 'apiMode' && value === 'custom') {
                 window.setTimeout(() => {
                     const connectionGroup = root.querySelector('.wb-settings-group[data-settings-group="connection"]');
-                    const mainGroup = root.querySelector('.wb-settings-subgroup[data-settings-subgroup="connection-main"]');
                     const customGroup = root.querySelector('.wb-settings-subgroup[data-settings-subgroup="connection-custom"]');
                     if (connectionGroup) connectionGroup.open = true;
-                    if (mainGroup) mainGroup.open = true;
                     if (customGroup) customGroup.open = true;
                     openSettingsGroups.add('connection');
-                    openSettingsSubgroups.add('connection-main');
                     openSettingsSubgroups.add('connection-custom');
                     const form = root.querySelector('[data-wb-form="api"]');
                     if (!form) return;
@@ -3006,9 +3150,32 @@ export function createWorldBackstageUI({
         }
         if (action === 'scan-worldbook') {
             const form = target.closest('[data-wb-form="worldbook"]');
-            await invokeAction('scan-worldbook', {
+            worldbookSelectedIds = new Set();
+            const result = await invokeAction('scan-worldbook', {
                 bookName: form?.elements?.bookName?.value || '',
             });
+            if (result && Array.isArray(result.entries)) {
+                const likelyCount = result.entries.filter(entry => entry.likelyPerson).length;
+                if (likelyCount > 0 && likelyCount < result.entries.length) worldbookOnlyPeople = true;
+            }
+            render();
+            return;
+        }
+        if (action === 'select-worldbook-visible' || action === 'clear-worldbook-visible') {
+            const entries = Array.isArray(getSyncStatus()?.worldbook?.entries)
+                ? getSyncStatus().worldbook.entries
+                : [];
+            const visible = filterWorldbookEntries(entries, {
+                query: worldbookQuery,
+                onlyPeople: worldbookOnlyPeople,
+                onlyEnabled: worldbookOnlyEnabled,
+            });
+            const next = new Set(worldbookSelectedIds);
+            for (const entry of visible) {
+                if (action === 'select-worldbook-visible') next.add(String(entry.uid));
+                else next.delete(String(entry.uid));
+            }
+            worldbookSelectedIds = next;
             render();
             return;
         }
@@ -3121,6 +3288,23 @@ export function createWorldBackstageUI({
             return;
         }
 
+        if (event.target.matches?.('[data-wb-worldbook-entry-id]')) {
+            const uid = String(event.target.dataset.wbWorldbookEntryId || '');
+            const next = new Set(worldbookSelectedIds);
+            if (event.target.checked) next.add(uid);
+            else next.delete(uid);
+            worldbookSelectedIds = next;
+            render();
+            return;
+        }
+        const worldbookFilter = event.target.dataset?.wbWorldbookFilter;
+        if (worldbookFilter === 'people' || worldbookFilter === 'enabled') {
+            if (worldbookFilter === 'people') worldbookOnlyPeople = Boolean(event.target.checked);
+            if (worldbookFilter === 'enabled') worldbookOnlyEnabled = Boolean(event.target.checked);
+            render();
+            return;
+        }
+
         const tagField = event.target.dataset?.wbTagFilterField;
         if (tagField === 'open' || tagField === 'close') {
             const index = Number(event.target.dataset.index);
@@ -3165,6 +3349,12 @@ export function createWorldBackstageUI({
             return;
         }
 
+        if (event.target.matches?.('[data-wb-worldbook-search]')) {
+            worldbookQuery = String(event.target.value || '').slice(0, 120);
+            window.clearTimeout(worldbookSearchTimer);
+            worldbookSearchTimer = window.setTimeout(render, 100);
+            return;
+        }
         if (!event.target.matches?.('[data-wb-memory-search]')) return;
         memoryQuery = String(event.target.value || '').slice(0, 80);
         memoryVisibleCount = 12;
@@ -3241,6 +3431,8 @@ export function createWorldBackstageUI({
                 longTermGoal: data.longTermGoal || '',
                 identityAnchor: data.identityAnchor || '',
                 personalityAnchor: data.personalityAnchor || '',
+                appearanceProfile: data.appearanceProfile || '',
+                backgroundProfile: data.backgroundProfile || '',
                 speakingStyle: data.speakingStyle || '',
                 behaviorBoundaries: data.behaviorBoundaries || '',
                 knowledge: data.knowledge || 'backstage',
@@ -3252,10 +3444,11 @@ export function createWorldBackstageUI({
         }
         if (form.dataset.wbForm === 'worldbook') {
             const formData = new FormData(form);
-            await invokeAction('import-worldbook-people', {
+            const completed = await invokeAction('import-worldbook-people', {
                 bookName: String(formData.get('bookName') || ''),
-                entryIds: formData.getAll('entryIds').map(String),
+                entryIds: [...worldbookSelectedIds],
             });
+            if (completed) worldbookSelectedIds = new Set();
         }
         render();
     });
@@ -3294,7 +3487,12 @@ export function createWorldBackstageUI({
         const position = getSettings().orbPosition;
         if (position) positionOrbElements(position.x, position.y);
     };
+    const selfHealTimer = window.setInterval(ensureMounted, 1800);
+    const onPageVisible = () => ensureMounted();
     document.addEventListener('keydown', onKeydown);
+    document.addEventListener('visibilitychange', onPageVisible);
+    window.addEventListener('focus', onPageVisible);
+    window.addEventListener('pageshow', onPageVisible);
     window.addEventListener('resize', onResize);
     window.visualViewport?.addEventListener('resize', onResize);
     window.visualViewport?.addEventListener('scroll', onResize);
@@ -3302,6 +3500,7 @@ export function createWorldBackstageUI({
     render();
     return {
         render,
+        ensureMounted,
         notify,
         setBusy,
         open,
@@ -3310,7 +3509,11 @@ export function createWorldBackstageUI({
             window.clearTimeout(toastTimer);
             window.clearTimeout(memorySearchTimer);
             window.clearTimeout(closeTimer);
+            window.clearInterval(selfHealTimer);
             document.removeEventListener('keydown', onKeydown);
+            document.removeEventListener('visibilitychange', onPageVisible);
+            window.removeEventListener('focus', onPageVisible);
+            window.removeEventListener('pageshow', onPageVisible);
             window.removeEventListener('resize', onResize);
             window.visualViewport?.removeEventListener('resize', onResize);
             window.visualViewport?.removeEventListener('scroll', onResize);

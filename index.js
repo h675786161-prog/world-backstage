@@ -16,6 +16,7 @@ import {
     createSnapshot,
     DEFAULT_TAG_FILTER_RULES,
     extractJsonObject,
+    extractTagFilterCandidates,
     extractNarrativeTimeAnchor,
     filterNarrativeText,
     formatWorldCalendar,
@@ -40,9 +41,10 @@ import {
 import { createWorldBackstageUI } from './ui.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
+import { detectWorldbookCharacter, extractWorldbookCharacterProfile } from './worldbook.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
-const PLUGIN_VERSION = '1.0.5';
+const PLUGIN_VERSION = '1.0.8';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 17,
     enabled: true,
@@ -165,23 +167,45 @@ async function scanWorldbook(bookName) {
         const data = await context.loadWorldInfo(name);
         const entries = Object.values(data?.entries || {})
             .filter(entry => entry && String(entry.content || '').trim())
-            .map(entry => ({
-                uid: String(entry.uid ?? ''),
-                name: worldbookEntryLabel(entry),
-                content: String(entry.content || '').trim().slice(0, 4000),
-                keys: (Array.isArray(entry.key) ? entry.key : [entry.key])
-                    .map(key => String(key || '').trim())
-                    .filter(Boolean)
-                    .slice(0, 8),
-                disabled: Boolean(entry.disable),
-                order: Number(entry.order) || 0,
-            }))
+            .map(entry => {
+                const name = worldbookEntryLabel(entry);
+                const content = String(entry.content || '').trim().slice(0, 4000);
+                const keys = [...new Set([
+                    ...(Array.isArray(entry.key) ? entry.key : [entry.key]),
+                    ...(Array.isArray(entry.keysecondary) ? entry.keysecondary : [entry.keysecondary]),
+                ].map(key => String(key || '').trim()).filter(Boolean))].slice(0, 12);
+                const tags = [...new Set([
+                    entry.group,
+                    entry.position,
+                    entry.role,
+                ].map(tag => String(tag || '').trim()).filter(Boolean))].slice(0, 8);
+                const formatHints = [...new Set(
+                    [...content.matchAll(/<\s*([a-zA-Z][\w:-]*)\b/g)]
+                        .map(match => String(match[1] || '').toLocaleLowerCase())
+                        .filter(Boolean),
+                )].slice(0, 12);
+                const profile = extractWorldbookCharacterProfile(content, name);
+                const detection = detectWorldbookCharacter({ name, content, keys, tags, formatHints }, profile);
+                return {
+                    uid: String(entry.uid ?? ''),
+                    name,
+                    parsedName: profile.explicitName ? profile.name : '',
+                    content,
+                    keys,
+                    tags,
+                    formatHints,
+                    disabled: Boolean(entry.disable),
+                    order: Number(entry.order) || 0,
+                    profile,
+                    ...detection,
+                };
+            })
             .sort((a, b) => Number(a.disabled) - Number(b.disabled) || b.order - a.order)
-            .slice(0, 240);
+            .slice(0, 1000);
         runtime.worldbookScan = {
             phase: 'success',
             message: entries.length
-                ? `已读取 ${entries.length} 条；请只勾选确实代表人物的条目`
+                ? `已读取 ${entries.length} 条，其中自动识别 ${entries.filter(entry => entry.likelyPerson).length} 条疑似人物；请确认后再导入`
                 : '这本世界书没有可读取的内容条目',
             bookName: name,
             entries,
@@ -200,6 +224,15 @@ async function scanWorldbook(bookName) {
     }
 }
 
+function looksLikeLegacyWorldbookPersonalityDump(value, candidateContent = '') {
+    const text = String(value || '').trim();
+    const raw = String(candidateContent || '').trim();
+    if (!text) return false;
+    if (raw && text === raw.slice(0, 600)) return true;
+    const markerHits = (text.match(/(?:<\/?(?:info|character)\b|中文名|姓名|昵称|gender|性别|age|年龄|birthday|生日|identity|身份|background|背景|appearance|外貌|height|身高)/giu) || []).length;
+    return markerHits >= 3;
+}
+
 function importWorldbookPeople(bookName, entryIds = []) {
     const name = String(bookName || '').trim();
     if (runtime.worldbookScan.bookName !== name) {
@@ -214,13 +247,33 @@ function importWorldbookPeople(bookName, entryIds = []) {
     let updated = 0;
     for (const candidate of selected) {
         const reference = `${name}::${candidate.uid}`;
+        const profile = candidate.profile || extractWorldbookCharacterProfile(candidate.content, candidate.name);
+        const importedName = String(profile.name || candidate.parsedName || candidate.name || '').trim().slice(0, 80);
+        if (!importedName) continue;
         const existing = next.people.find(person => (
             person.worldbookRef === reference
+            || person.name.toLocaleLowerCase() === importedName.toLocaleLowerCase()
             || person.name.toLocaleLowerCase() === candidate.name.toLocaleLowerCase()
         ));
-        const personalityAnchor = candidate.content.slice(0, 600);
         if (existing) {
-            existing.personalityAnchor = personalityAnchor || existing.personalityAnchor || '';
+            const fillIfBlank = (field, value) => {
+                if (value && !String(existing[field] || '').trim()) existing[field] = value;
+            };
+            fillIfBlank('identityAnchor', profile.identityAnchor);
+            if (
+                profile.personalityAnchor
+                && (
+                    !String(existing.personalityAnchor || '').trim()
+                    || looksLikeLegacyWorldbookPersonalityDump(existing.personalityAnchor, candidate.content)
+                )
+            ) {
+                existing.personalityAnchor = profile.personalityAnchor;
+            }
+            fillIfBlank('appearanceProfile', profile.appearanceProfile);
+            fillIfBlank('backgroundProfile', profile.backgroundProfile);
+            fillIfBlank('speakingStyle', profile.speakingStyle);
+            fillIfBlank('behaviorBoundaries', profile.behaviorBoundaries);
+            existing.worldbookRaw = profile.worldbookRaw || existing.worldbookRaw || '';
             existing.worldbookRef = reference;
             existing.manual = true;
             existing.updatedAt = next.clock.absoluteMinute;
@@ -229,16 +282,19 @@ function importWorldbookPeople(bookName, entryIds = []) {
         }
         next.people.push({
             id: `person_worldbook_${hashText(reference)}`,
-            name: candidate.name,
-            monogram: candidate.name.slice(0, 1),
+            name: importedName,
+            monogram: importedName.slice(0, 1),
             location: '位置待确认',
             action: '当前行动待确认',
             intent: '短期意图待确认',
             longTermGoal: '',
-            identityAnchor: '',
-            personalityAnchor,
-            speakingStyle: '',
-            behaviorBoundaries: '',
+            identityAnchor: profile.identityAnchor,
+            personalityAnchor: profile.personalityAnchor,
+            appearanceProfile: profile.appearanceProfile,
+            backgroundProfile: profile.backgroundProfile,
+            worldbookRaw: profile.worldbookRaw,
+            speakingStyle: profile.speakingStyle,
+            behaviorBoundaries: profile.behaviorBoundaries,
             trace: '',
             innerVoice: '',
             innerVoiceAt: next.clock.absoluteMinute,
@@ -2145,6 +2201,8 @@ function onMessageDeleted() {
 }
 
 function onChatChanged() {
+    runtime.ui?.ensureMounted?.();
+    installSettingsEntry();
     if (runtime.autoMemoryTimer !== null) {
         window.clearTimeout(runtime.autoMemoryTimer);
         runtime.autoMemoryTimer = null;
@@ -2985,6 +3043,22 @@ async function observePerson(personId, { force = false } = {}) {
     }
 }
 
+
+function recentRawAssistantTexts(count = 1) {
+    const chat = getContext()?.chat || [];
+    const limit = Math.max(1, Math.min(20, Number(count) || 1));
+    const result = [];
+    for (let index = chat.length - 1; index >= 0 && result.length < limit; index -= 1) {
+        const message = chat[index];
+        if (!message || message.is_user || message.is_system) continue;
+        const swipeId = Number(message.swipe_id ?? 0);
+        const text = String(message.swipes?.[swipeId] ?? message.mes ?? '');
+        if (!text.trim()) continue;
+        result.unshift(text);
+    }
+    return result;
+}
+
 async function handleUiAction(action, payload = {}) {
     if (action === 'undo-manual') {
         undoManualChange();
@@ -3264,6 +3338,8 @@ async function handleUiAction(action, payload = {}) {
             longTermGoal: String(payload.longTermGoal || '').trim().slice(0, 420),
             identityAnchor: String(payload.identityAnchor || '').trim().slice(0, 500),
             personalityAnchor: String(payload.personalityAnchor || '').trim().slice(0, 600),
+            appearanceProfile: String(payload.appearanceProfile || '').trim().slice(0, 700),
+            backgroundProfile: String(payload.backgroundProfile || '').trim().slice(0, 900),
             speakingStyle: String(payload.speakingStyle || '').trim().slice(0, 360),
             behaviorBoundaries: String(payload.behaviorBoundaries || '').trim().slice(0, 500),
             knowledge: payload.knowledge === 'known' ? 'known' : 'backstage',
@@ -3470,6 +3546,11 @@ async function handleUiAction(action, payload = {}) {
         return;
     }
 
+    if (action === 'scan-tag-candidates') {
+        const texts = recentRawAssistantTexts(payload.count || 1);
+        return extractTagFilterCandidates(texts, getSettings().tagFilterRules || []);
+    }
+
     if (action === 'scan-worldbook') {
         return await scanWorldbook(payload.bookName);
     }
@@ -3638,6 +3719,7 @@ function initialize() {
         getSettings,
         getSyncStatus,
         onAction: handleUiAction,
+        pluginVersion: PLUGIN_VERSION,
     });
 
     installSettingsEntry();

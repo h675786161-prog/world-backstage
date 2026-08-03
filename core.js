@@ -1,7 +1,7 @@
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
 
@@ -34,8 +34,14 @@ const LIMITS = Object.freeze({
     longTermGoal: 360,
     identityAnchor: 500,
     personalityAnchor: 600,
+    appearanceProfile: 700,
+    backgroundProfile: 900,
+    worldbookRaw: 4000,
     speakingStyle: 360,
     behaviorBoundaries: 500,
+    cognitiveRefs: 32,
+    personState: 220,
+    eventCause: 360,
     storySummaries: 72,
     clues: 180,
     memoryFacts: 240,
@@ -69,6 +75,13 @@ function uniqueStrings(value, maximum = 12) {
         .map(item => asString(item, '', 120))
         .filter(Boolean))]
         .slice(0, maximum);
+}
+
+function mergeUniqueStrings(previous, incoming, maximum = 12) {
+    return uniqueStrings([
+        ...asArray(previous),
+        ...asArray(incoming),
+    ], maximum);
 }
 
 function nowIso() {
@@ -633,6 +646,27 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         '',
         LIMITS.personalityAnchor,
     );
+    const appearanceProfile = asString(
+        existing
+            ? existing.appearanceProfile
+            : (raw?.appearance_profile ?? raw?.appearanceProfile),
+        '',
+        LIMITS.appearanceProfile,
+    );
+    const backgroundProfile = asString(
+        existing
+            ? existing.backgroundProfile
+            : (raw?.background_profile ?? raw?.backgroundProfile),
+        '',
+        LIMITS.backgroundProfile,
+    );
+    const worldbookRaw = asString(
+        existing
+            ? existing.worldbookRaw
+            : (raw?.worldbook_raw ?? raw?.worldbookRaw),
+        '',
+        LIMITS.worldbookRaw,
+    );
     const speakingStyle = asString(
         existing
             ? existing.speakingStyle
@@ -688,6 +722,9 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         longTermGoal: longTermGoal || asString(existing?.longTermGoal, '', LIMITS.longTermGoal),
         identityAnchor,
         personalityAnchor,
+        appearanceProfile,
+        backgroundProfile,
+        worldbookRaw,
         speakingStyle,
         behaviorBoundaries,
         simulationEnabled: Boolean(
@@ -706,6 +743,42 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
             ? asInteger(suppliedInnerVoiceAt, worldMinute, 0)
             : asInteger(existing?.innerVoiceAt, worldMinute, 0),
         knowledge: normalizeKnowledge(raw?.knowledge ?? existing?.knowledge),
+        cognitionReady: Boolean(
+            raw?.cognition_ready
+            ?? raw?.cognitionReady
+            ?? existing?.cognitionReady
+            ?? false,
+        ),
+        knownEventIds: mergeUniqueStrings(
+            existing?.knownEventIds,
+            raw?.known_event_ids ?? raw?.knownEventIds,
+            LIMITS.cognitiveRefs,
+        ),
+        knownFactKeys: mergeUniqueStrings(
+            existing?.knownFactKeys,
+            raw?.known_fact_keys ?? raw?.knownFactKeys,
+            LIMITS.cognitiveRefs,
+        ),
+        knownClueIds: mergeUniqueStrings(
+            existing?.knownClueIds,
+            raw?.known_clue_ids ?? raw?.knownClueIds,
+            LIMITS.cognitiveRefs,
+        ),
+        physicalState: asString(
+            raw?.physical_state ?? raw?.physicalState ?? existing?.physicalState,
+            '',
+            LIMITS.personState,
+        ),
+        emotionalState: asString(
+            raw?.emotional_state ?? raw?.emotionalState ?? existing?.emotionalState,
+            '',
+            LIMITS.personState,
+        ),
+        resourceState: asString(
+            raw?.resource_state ?? raw?.resourceState ?? existing?.resourceState,
+            '',
+            LIMITS.personState,
+        ),
         relevance: asInteger(raw?.relevance, existing?.relevance ?? 1, 0, 3),
         source: ['foreground', 'background', 'manual'].includes(raw?.source)
             ? raw.source
@@ -793,6 +866,22 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
             0,
         ),
         prerequisites: uniqueStrings(raw?.prerequisites ?? existing?.prerequisites, 12),
+        cause: asString(
+            raw?.cause ?? existing?.cause,
+            '',
+            LIMITS.eventCause,
+        ),
+        actors: mergeUniqueStrings(existing?.actors, raw?.actors, 16),
+        knownBy: mergeUniqueStrings(
+            existing?.knownBy,
+            raw?.known_by ?? raw?.knownBy,
+            LIMITS.cognitiveRefs,
+        ),
+        causedBy: mergeUniqueStrings(
+            existing?.causedBy,
+            raw?.caused_by ?? raw?.causedBy,
+            12,
+        ),
         visibility,
         delivery: {
             state: deliveryState,
@@ -956,6 +1045,51 @@ function findEvent(state, raw) {
         && (!place || event.place === place)
         && !TERMINAL_EVENT_STATES.has(event.status)
     ));
+}
+
+function normalizedReference(value) {
+    return asString(value, '', 120).toLocaleLowerCase();
+}
+
+function listReferencesPerson(value, person) {
+    const id = normalizedReference(person?.id);
+    const name = normalizedReference(person?.name);
+    return asArray(value).some(item => {
+        const ref = normalizedReference(item);
+        return Boolean(ref && (ref === id || ref === name));
+    });
+}
+
+function eventKnownToPerson(event, person) {
+    const eventId = normalizedReference(event?.id);
+    const personalLedger = asArray(person?.knownEventIds)
+        .some(id => normalizedReference(id) === eventId);
+    return personalLedger
+        || listReferencesPerson(event?.knownBy, person)
+        || listReferencesPerson(event?.actors, person);
+}
+
+function synchronizeCognitiveLedger(state) {
+    for (const event of asArray(state?.events)) {
+        for (const person of asArray(state?.people)) {
+            if (eventKnownToPerson(event, person)) {
+                person.knownEventIds = mergeUniqueStrings(
+                    person.knownEventIds,
+                    [event.id],
+                    LIMITS.cognitiveRefs,
+                );
+            }
+            if (asArray(person?.knownEventIds).some(
+                id => normalizedReference(id) === normalizedReference(event?.id),
+            )) {
+                event.knownBy = mergeUniqueStrings(
+                    event.knownBy,
+                    [person.id],
+                    LIMITS.cognitiveRefs,
+                );
+            }
+        }
+    }
 }
 
 function markTerminal(event, status, worldMinute, result = '') {
@@ -1475,6 +1609,20 @@ export function applySimulationResult(baseState, rawPayload, {
 
         if (update?.summary) event.summary = asString(update.summary, event.summary, 420);
         if (update?.consequence) event.consequence = asString(update.consequence, event.consequence, 420);
+        if (update?.cause !== undefined) {
+            event.cause = asString(update.cause, event.cause || '', LIMITS.eventCause);
+        }
+        event.actors = mergeUniqueStrings(event.actors, update?.actors, 16);
+        event.knownBy = mergeUniqueStrings(
+            event.knownBy,
+            update?.known_by ?? update?.knownBy,
+            LIMITS.cognitiveRefs,
+        );
+        event.causedBy = mergeUniqueStrings(
+            event.causedBy,
+            update?.caused_by ?? update?.causedBy,
+            12,
+        );
         if (update?.visibility) event.visibility = normalizeVisibility(update.visibility);
         if (update?.delivery_route) {
             event.delivery.route = asString(update.delivery_route, event.delivery.route, 220);
@@ -1534,6 +1682,7 @@ export function applySimulationResult(baseState, rawPayload, {
         sourceMessageId: messageId,
         sourceSwipeId: swipeId,
     });
+    synchronizeCognitiveLedger(state);
 
     state.pendingSync = false;
     state.lastCommit = {
@@ -2212,21 +2361,47 @@ export function buildPersonObservationPrompt(state, person, {
     );
     relevantMemory.digest = null;
     relevantMemory.summaries = [];
+    const knownFactKeys = new Set(
+        asArray(person?.knownFactKeys).map(item => normalizedReference(item)),
+    );
+    const knownClueIds = new Set(
+        asArray(person?.knownClueIds).map(item => normalizedReference(item)),
+    );
+    const cognitionReady = Boolean(person?.cognitionReady);
+    const hasEventLedger = cognitionReady
+        || asArray(person?.knownEventIds).length > 0
+        || state.events.some(event => (
+            listReferencesPerson(event?.knownBy, person)
+            || listReferencesPerson(event?.actors, person)
+        ));
+
     relevantMemory.facts = relevantMemory.facts.filter(fact => (
-        fact.visibility !== 'hidden'
-        || fact.people.includes(person?.name)
+        cognitionReady
+            ? knownFactKeys.has(normalizedReference(fact.key))
+            : (
+                fact.visibility !== 'hidden'
+                || fact.people.includes(person?.name)
+            )
     ));
     relevantMemory.clues = relevantMemory.clues.filter(clue => (
-        clue.visibility !== 'hidden'
-        || clue.people.includes(person?.name)
+        cognitionReady
+            ? knownClueIds.has(normalizedReference(clue.id))
+            : (
+                clue.visibility !== 'hidden'
+                || clue.people.includes(person?.name)
+            )
     ));
     const relevantEvents = state.events
         .filter(event => (
             !TERMINAL_EVENT_STATES.has(event.status)
             && (
-                event.place === person?.location
-                || String(event.summary || '').includes(person?.name || '')
-                || String(event.title || '').includes(person?.name || '')
+                hasEventLedger
+                    ? eventKnownToPerson(event, person)
+                    : (
+                        event.place === person?.location
+                        || String(event.summary || '').includes(person?.name || '')
+                        || String(event.title || '').includes(person?.name || '')
+                    )
             )
         ))
         .slice(0, 8)
@@ -2238,6 +2413,8 @@ export function buildPersonObservationPrompt(state, person, {
             visibility: event.visibility,
         }));
     const observedIdentityAnchor = modelText(person?.identityAnchor, LIMITS.identityAnchor);
+    const observedAppearanceProfile = modelText(person?.appearanceProfile, LIMITS.appearanceProfile);
+    const observedBackgroundProfile = modelText(person?.backgroundProfile, LIMITS.backgroundProfile);
 
     return [
         '你是“世界背面”的人物即时观测器。',
@@ -2248,9 +2425,17 @@ export function buildPersonObservationPrompt(state, person, {
         '1. 只描写几分钟内的动作、感官、注意力与符合既有信息的即时念头；使用“我”。',
         '2. 不推进主世界时间，不制造重大新事件，不替其他角色行动，不改变任何既有事实。',
         '3. 严守该角色的知识边界；幕后伏笔若角色并不知道，不得让该角色突然知晓。',
+        '3A. 人物认知账本 known_event_ids / known_fact_keys / known_clue_ids 优先于“玩家已知”或“后台存在”。最近正文只提供时间线背景；若该人物没有亲历、被告知、调查获得或通过既有信息渠道接触，就不得把其中内容当成该人物知识。',
+        '3B. physical_state / emotional_state / resource_state 是当前状态约束。行动、注意力和即时判断必须受伤势、疲劳、情绪与资源限制影响；不得凭空获得能力、装备、权限或知识。',
         observedIdentityAnchor
-            ? `该角色的身份锚点：${observedIdentityAnchor}。性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段与社会身份必须逐项遵守，不得根据其他表面特征擅自改写。`
+            ? `该角色的身份锚点：${observedIdentityAnchor}。性别身份、称谓/代词、物种、年龄阶段与社会身份必须逐项遵守，不得根据外貌或其他表面特征擅自改写。`
             : '该角色没有设置身份锚点；正文也未明确时使用中性表述，不得根据外貌、衣着、身体或物种猜测其性别与称谓。',
+        observedAppearanceProfile
+            ? `该角色的稳定外貌设定：${observedAppearanceProfile}。观测时保持一致，不要把外貌特征混写成人格或身份。`
+            : '该角色没有额外外貌设定；不要为了画面感凭空补充关键身体特征。',
+        observedBackgroundProfile
+            ? `该角色的背景与关系设定：${observedBackgroundProfile}。只用于保持经历与关系连续，不得因此让角色知道认知账本之外的信息。`
+            : '该角色没有额外背景资料；不要自行补造重要经历或关系。',
         modelText(playerIdentityAnchor, 400)
             ? `若片段提及玩家“${modelText(userName, 80) || 'user'}”，必须逐项遵守身份锚点：${modelText(playerIdentityAnchor, 400)}；不得根据外貌、衣着、身体或物种反推性别，也不得擅自改变称谓或身份。`
             : '若片段提及玩家且正文没有明确身份或称谓，使用中性表述；不得根据外貌、衣着、身体或物种猜测性别。',
@@ -2267,10 +2452,19 @@ export function buildPersonObservationPrompt(state, person, {
             long_term_goal: person?.longTermGoal,
             identity_anchor: person?.identityAnchor,
             personality_anchor: person?.personalityAnchor,
+            appearance_profile: person?.appearanceProfile,
+            background_profile: person?.backgroundProfile,
             speaking_style: person?.speakingStyle,
             behavior_boundaries: person?.behaviorBoundaries,
             inner_voice: person?.innerVoice,
             knowledge: person?.knowledge,
+            cognition_ready: person?.cognitionReady,
+            known_event_ids: person?.knownEventIds,
+            known_fact_keys: person?.knownFactKeys,
+            known_clue_ids: person?.knownClueIds,
+            physical_state: person?.physicalState,
+            emotional_state: person?.emotionalState,
+            resource_state: person?.resourceState,
         }),
         '同地点或相关进行中事件：',
         JSON.stringify(relevantEvents),
@@ -2335,6 +2529,8 @@ export function compactStateForModel(state, {
                 long_term_goal: modelText(person.longTermGoal, 220),
                 identity_anchor: modelText(person.identityAnchor, LIMITS.identityAnchor),
                 personality_anchor: modelText(person.personalityAnchor, LIMITS.personalityAnchor),
+                appearance_profile: modelText(person.appearanceProfile, 360),
+                background_profile: modelText(person.backgroundProfile, 500),
                 speaking_style: modelText(person.speakingStyle, LIMITS.speakingStyle),
                 behavior_boundaries: modelText(person.behaviorBoundaries, LIMITS.behaviorBoundaries),
                 inner_voice: isUser && !includeUserInnerVoice
@@ -2342,6 +2538,13 @@ export function compactStateForModel(state, {
                     : modelText(person.innerVoice, 160),
                 inner_voice_at: person.innerVoiceAt,
                 knowledge: person.knowledge,
+                cognition_ready: person.cognitionReady,
+                known_event_ids: person.knownEventIds,
+                known_fact_keys: person.knownFactKeys,
+                known_clue_ids: person.knownClueIds,
+                physical_state: modelText(person.physicalState, LIMITS.personState),
+                emotional_state: modelText(person.emotionalState, LIMITS.personState),
+                resource_state: modelText(person.resourceState, LIMITS.personState),
                 relevance: person.relevance,
                 background_simulation: person.simulationEnabled !== false,
                 locked_profile: Boolean(person.locked),
@@ -2363,6 +2566,10 @@ export function compactStateForModel(state, {
                 duration_minutes: event.durationMinutes,
                 accrued_minutes: event.accruedMinutes,
                 prerequisites: event.prerequisites,
+                cause: modelText(event.cause, LIMITS.eventCause),
+                actors: event.actors,
+                known_by: event.knownBy,
+                caused_by: event.causedBy,
                 visibility: event.visibility,
                 delivery_state: event.delivery.state,
             })),
@@ -2466,13 +2673,17 @@ export function buildSimulationPrompt(state, {
         '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
         '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在该人物的处境、目标或情绪有真实变化时更新。不要让所有人物每轮集体独白。',
-        '人物状态中的 identity_anchor、personality_anchor、speaking_style 与 behavior_boundaries 是用户维护的角色约束：必须遵守，不得在 people_upsert 中重写。identity_anchor 可包含任意性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段与社会身份；不得根据外貌、衣着、身体或物种反推或改写身份。没有身份锚点且正文也不明确时使用中性表述。',
+        '人物状态中的 identity_anchor、personality_anchor、appearance_profile、background_profile、speaking_style 与 behavior_boundaries 是用户维护的稳定角色设定：必须遵守，不得在 people_upsert 中重写。identity_anchor 可包含任意性别身份、称谓/代词、物种、年龄阶段与社会身份；appearance_profile 负责外貌与身体特征；background_profile 负责背景、经历与关系。不得根据外貌、衣着、身体或物种反推或改写身份。没有身份锚点且正文也不明确时使用中性表述。',
         `7. ${userVoiceRule} ${playerIdentityRule}`,
         '8. long_term_goal 是人物较稳定的长期方向；只有目标真正建立、完成、放弃或转向时才更新，不能把本轮动作重复填进去。',
         '9. inner_voice 是幕后观测信息，不得当作主角已知事实，也不得写入 deliveries_confirmed。',
         '10. deliveries_confirmed 只填写本批新正文确实承接、感知或留下可见痕迹的事件ID。没有写进正文就不要确认。',
         newAssistantRule,
         '12. 相关旧记忆中的伏笔只能帮助保持因果连续；角色不知情的隐藏伏笔不能突然变成角色知识。',
+        '12A. NPC 认知由 known_event_ids / known_fact_keys / known_clue_ids 与事件 known_by 共同记录。只有亲历、被明确告知、主动调查得到、或通过该人物既有身份/渠道合理获得的信息才能加入；绝不能把玩家知道、旁白知道或后台知道的内容自动复制给 NPC。账本条目不会因为本轮未提及而自动遗忘。对于本轮确实处理到的旧人物，在核对其当前认知后设置 cognition_ready=true；旧存档人物首次升级时不得把所有相关记忆批量回填，只能加入有证据支持其知情的条目。',
+        '12B. event.visibility 只表示事件对前台/玩家的显露边界，不代表 NPC 是否知道；NPC 是否知情只看 known_by 与人物认知账本。known_by 优先填写已有人物 id，新人物尚无 id 时可暂填精确姓名。',
+        '12C. physical_state / emotional_state / resource_state 是人物当前状态。状态变化必须真实影响 action、intent 与执行能力；受伤、疲劳、缺资源、权限不足或情绪压力不能下一轮凭空消失。不得发明角色卡、身份锚点、既有记忆未支持的技能、装备、权限或知识。玩家的 emotional_state 只有正文/玩家明确表达时才能更新，不得替玩家猜内心。',
+        '12D. 新事件要写明 cause；若它由已有事件的行动、结果或后果继续发酵，必须在 caused_by 填上游事件 ID。actors 只列真实参与/经历该事件的人，known_by 只列确实知情的人。一个事件解决后如果产生了新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命；也不要为了制造“热闹”强行生成后续。',
         '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔被明确呼应或解决时使用原 ID 更新。',
         '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。',
         '同一类事实使用稳定 key。正文给出新值时保留 key；插件会保留旧版本并标为 superseded。正文明确否定某条旧事实时写入 facts_invalidate；真假未定时用 status=disputed。',
@@ -2524,6 +2735,13 @@ export function buildSimulationPrompt(state, {
                 trace: '',
                 inner_voice: '',
                 knowledge: 'hidden',
+                cognition_ready: true,
+                known_event_ids: [],
+                known_fact_keys: [],
+                known_clue_ids: [],
+                physical_state: '',
+                emotional_state: '',
+                resource_state: '',
                 relevance: 1,
                 source: 'foreground',
                 present_in_scene: false,
@@ -2541,6 +2759,10 @@ export function buildSimulationPrompt(state, {
                 duration_minutes: 0,
                 scheduled_at: null,
                 prerequisites: [],
+                cause: '',
+                actors: [],
+                known_by: [],
+                caused_by: [],
                 visibility: 'hidden',
                 delivery_route: '',
             }],
@@ -2551,6 +2773,10 @@ export function buildSimulationPrompt(state, {
                 result: '',
                 summary: '',
                 consequence: '',
+                cause: '',
+                actors: [],
+                known_by: [],
+                caused_by: [],
                 visibility: 'hidden',
                 delivery_route: '',
             }],
@@ -2866,6 +3092,78 @@ export function normalizeTagFilterRules(rawRules) {
     return normalized;
 }
 
+
+
+export function extractTagFilterCandidates(texts, existingRules = []) {
+    const sources = Array.isArray(texts) ? texts : [texts];
+    const existing = new Set(
+        normalizeTagFilterRules(existingRules)
+            .map(rule => `${rule.open}\u0000${rule.close}`),
+    );
+    const byName = new Map();
+    const broadNames = new Set([
+        'div', 'span', 'p', 'a', 'section', 'article', 'main', 'header', 'footer',
+        'details', 'summary', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'ul', 'ol', 'li',
+        'style', 'script', 'content',
+    ]);
+    const recommendedNames = new Set([
+        'think', 'thinking', 'analysis', 'options', 'updatevariable', 'jsonpatch', 'json_patch',
+    ]);
+
+    for (const source of sources) {
+        const text = String(source ?? '');
+        const opens = [];
+        const openPattern = /<([^\s<>\/!]+)(?:\s[^<>]*?)?>/g;
+        let match;
+        while ((match = openPattern.exec(text))) {
+            const token = match[0];
+            if (/\/$/.test(token.slice(0, -1))) continue;
+            const name = String(match[1] || '');
+            if (!name) continue;
+            opens.push({ name, token, index: match.index });
+        }
+        for (const item of opens) {
+            const closePattern = new RegExp(`</${escapeRegExp(item.name)}\\s*>`, 'g');
+            closePattern.lastIndex = item.index + item.token.length;
+            const closeMatch = closePattern.exec(text);
+            if (!closeMatch) continue;
+            const key = item.name;
+            const current = byName.get(key) || {
+                name: key,
+                open: item.token,
+                close: closeMatch[0],
+                count: 0,
+                variants: new Set(),
+            };
+            current.count += 1;
+            current.variants.add(item.token);
+            byName.set(key, current);
+        }
+    }
+
+    return [...byName.values()]
+        .map(item => {
+            const lower = item.name.toLocaleLowerCase();
+            const open = item.variants.size > 1 && /\s/.test(item.open)
+                ? item.open
+                : item.open;
+            const close = item.close;
+            const alreadyAdded = existing.has(`${open}\u0000${close}`);
+            const broad = broadNames.has(lower) || item.variants.size > 1;
+            return {
+                id: hashText(`${open}\u0000${close}`),
+                tagName: item.name,
+                open,
+                close,
+                count: item.count,
+                broad,
+                alreadyAdded,
+                recommended: !alreadyAdded && recommendedNames.has(lower) && !broad,
+            };
+        })
+        .sort((a, b) => Number(b.recommended) - Number(a.recommended) || b.count - a.count || a.tagName.localeCompare(b.tagName));
+}
+
 export function filterNarrativeText(text, settings = {}) {
     let result = String(text ?? '');
     // Always strip well-formed HTML comments (non-greedy, dotAll).
@@ -3017,6 +3315,7 @@ export function trimState(inputState) {
         ...active.slice(-LIMITS.events),
         ...terminal.slice(0, Math.max(0, LIMITS.events - active.length)),
     ];
+    synchronizeCognitiveLedger(state);
 
     state.echoes = asArray(state.echoes).slice(0, LIMITS.echoes);
     state.archive = asArray(state.archive).slice(0, LIMITS.archive);

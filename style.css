@@ -5762,3 +5762,413 @@
         font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px) !important;
     }
 }
+
+
+/* 1.0.6 settings simplification + tag discovery */
+#world-backstage-root .wb-settings-flat-section {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-tag-auto-tools {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--wb-panel-faint) 84%, transparent);
+}
+
+#world-backstage-root .wb-tag-auto-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+#world-backstage-root .wb-tag-auto-head > div:first-child {
+    display: grid;
+    gap: 3px;
+}
+
+#world-backstage-root .wb-tag-auto-head strong {
+    color: var(--wb-text-soft);
+    font-size: 12px;
+}
+
+#world-backstage-root .wb-tag-auto-head span,
+#world-backstage-root .wb-tag-auto-empty {
+    color: var(--wb-text-faint);
+    font-size: 10px;
+}
+
+#world-backstage-root .wb-tag-auto-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+#world-backstage-root .wb-tag-auto-actions button {
+    min-height: 30px;
+    padding: 6px 10px !important;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 999px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+}
+
+#world-backstage-root .wb-tag-candidate-list {
+    display: grid;
+    gap: 7px;
+}
+
+#world-backstage-root .wb-tag-candidate {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 9px;
+    padding: 9px 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 10px;
+    background: var(--wb-bg-soft);
+}
+
+#world-backstage-root .wb-tag-candidate > span {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+}
+
+#world-backstage-root .wb-tag-candidate strong {
+    color: var(--wb-text-soft);
+    font-size: 11px;
+}
+
+#world-backstage-root .wb-tag-candidate small,
+#world-backstage-root .wb-tag-candidate code {
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    overflow-wrap: anywhere;
+}
+
+#world-backstage-root .wb-tag-candidate.is-risky {
+    border-color: color-mix(in srgb, var(--wb-amber) 35%, var(--wb-line));
+}
+
+#world-backstage-root .wb-tag-candidate.is-added {
+    opacity: 0.62;
+}
+
+@media (max-width: 560px) {
+    #world-backstage-root .wb-tag-auto-head {
+        display: grid;
+    }
+    #world-backstage-root .wb-tag-auto-actions {
+        justify-content: stretch;
+    }
+    #world-backstage-root .wb-tag-auto-actions button {
+        flex: 1 1 auto;
+    }
+}
+
+/* 1.0.8 · 世界书人物浏览与人物资料展示 */
+#world-backstage-root .wb-worldbook-import > label:first-child {
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+}
+
+#world-backstage-root .wb-worldbook-import > p,
+#world-backstage-root .wb-worldbook-status,
+#world-backstage-root .wb-worldbook-entry small,
+#world-backstage-root .wb-worldbook-entry p {
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+}
+
+#world-backstage-root .wb-worldbook-scan-button {
+    min-height: 40px !important;
+    padding: 0 14px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 28%, var(--wb-line-strong)) !important;
+    border-radius: 12px !important;
+    background: color-mix(in srgb, var(--wb-accent-soft) 44%, var(--wb-panel)) !important;
+    color: var(--wb-text) !important;
+    font-weight: 650;
+    transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+
+#world-backstage-root .wb-worldbook-scan-button:hover:not(:disabled),
+#world-backstage-root .wb-worldbook-scan-button:focus-visible:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-accent) 58%, var(--wb-line)) !important;
+    background: var(--wb-accent-soft) !important;
+    transform: translateY(-1px);
+}
+
+#world-backstage-root .wb-worldbook-browser {
+    display: grid;
+    gap: 10px;
+    padding-top: 2px;
+}
+
+#world-backstage-root .wb-worldbook-search {
+    display: grid;
+    gap: 6px;
+    color: var(--wb-text-faint);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-worldbook-search input {
+    width: 100%;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--wb-line-strong);
+    border-radius: 12px;
+    background: var(--wb-panel);
+    color: var(--wb-text);
+    font: inherit;
+    outline: none;
+}
+
+#world-backstage-root .wb-worldbook-search input:focus {
+    border-color: color-mix(in srgb, var(--wb-accent) 60%, var(--wb-line));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent-soft) 58%, transparent);
+}
+
+#world-backstage-root .wb-worldbook-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+#world-backstage-root .wb-worldbook-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 31px;
+    padding: 0 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-faint);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    cursor: pointer;
+    user-select: none;
+}
+
+#world-backstage-root .wb-worldbook-filter-chip input {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    accent-color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-worldbook-filter-chip.is-active {
+    border-color: color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-accent-soft) 46%, var(--wb-panel));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-worldbook-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 11px;
+    background: var(--wb-panel-faint);
+}
+
+#world-backstage-root .wb-worldbook-toolbar > span {
+    color: var(--wb-text-faint);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+}
+
+#world-backstage-root .wb-worldbook-toolbar > div {
+    display: flex;
+    gap: 6px;
+}
+
+#world-backstage-root .wb-worldbook-toolbar button {
+    min-height: 29px;
+    padding: 0 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+    font-family: var(--wb-font);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+}
+
+#world-backstage-root .wb-worldbook-toolbar button:hover:not(:disabled),
+#world-backstage-root .wb-worldbook-toolbar button:focus-visible:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-worldbook-entry-list {
+    max-height: 390px;
+}
+
+#world-backstage-root .wb-worldbook-entry {
+    padding: 11px 12px;
+    border-radius: 12px;
+}
+
+#world-backstage-root .wb-worldbook-entry.is-person-candidate {
+    border-color: color-mix(in srgb, var(--wb-jade) 25%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-entry-heading {
+    display: flex !important;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+#world-backstage-root .wb-worldbook-entry-heading strong {
+    display: inline !important;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 15px);
+}
+
+#world-backstage-root .wb-worldbook-entry-heading em {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 0 7px;
+    border: 1px solid color-mix(in srgb, var(--wb-jade) 34%, var(--wb-line));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-jade) 8%, var(--wb-panel));
+    color: var(--wb-jade);
+    font-size: 9px;
+    font-style: normal;
+    font-weight: 650;
+}
+
+#world-backstage-root .wb-worldbook-entry-heading em.is-muted {
+    border-color: var(--wb-line);
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-faint);
+}
+
+#world-backstage-root .wb-worldbook-profile-hints {
+    margin-top: 5px;
+    color: var(--wb-accent);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px);
+    line-height: 1.45;
+}
+
+#world-backstage-root .wb-worldbook-empty {
+    padding: 18px 12px;
+    border: 1px dashed var(--wb-line);
+    border-radius: 11px;
+    color: var(--wb-text-faint);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    text-align: center;
+}
+
+#world-backstage-root .wb-worldbook-import-button {
+    min-height: 42px !important;
+    border-radius: 999px !important;
+}
+
+#world-backstage-root .wb-worldbook-source-profile {
+    border: 1px solid var(--wb-line);
+    border-radius: 11px;
+    background: var(--wb-panel-faint);
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-worldbook-source-profile > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    color: var(--wb-text-soft);
+    cursor: pointer;
+    list-style: none;
+}
+
+#world-backstage-root .wb-worldbook-source-profile > summary::-webkit-details-marker {
+    display: none;
+}
+
+#world-backstage-root .wb-worldbook-source-profile > summary span {
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 15px);
+    font-weight: 650;
+}
+
+#world-backstage-root .wb-worldbook-source-profile > summary small {
+    color: var(--wb-text-faint);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px);
+}
+
+#world-backstage-root .wb-worldbook-source-profile pre {
+    max-height: 260px;
+    margin: 0;
+    padding: 12px;
+    overflow: auto;
+    border-top: 1px solid var(--wb-line);
+    background: color-mix(in srgb, var(--wb-panel) 76%, transparent);
+    color: var(--wb-text-soft);
+    font-family: var(--wb-font);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* 人物编辑底栏：删除是低权重危险操作，默认克制，悬停才显红。 */
+#world-backstage-root .wb-person-editor .wb-person-editor-actions .wb-person-delete-button {
+    min-height: 39px !important;
+    padding: 0 14px !important;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 999px !important;
+    background: var(--wb-panel-faint) !important;
+    color: var(--wb-text-faint) !important;
+    font-family: var(--wb-font) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px) !important;
+    font-weight: 650 !important;
+    letter-spacing: 0.03em;
+    box-shadow: none !important;
+    transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease, color 140ms ease;
+}
+
+#world-backstage-root .wb-person-editor .wb-person-editor-actions .wb-person-delete-button:hover:not(:disabled),
+#world-backstage-root .wb-person-editor .wb-person-editor-actions .wb-person-delete-button:focus-visible:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-danger) 44%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-danger) 8%, var(--wb-panel)) !important;
+    color: var(--wb-danger) !important;
+    transform: translateY(-1px);
+}
+
+#world-backstage-root .wb-person-editor .wb-person-editor-actions .wb-person-delete-button:active:not(:disabled) {
+    transform: translateY(0) scale(0.98);
+}
+
+#world-backstage-root .wb-person-editor .wb-person-editor-actions .wb-primary-button {
+    min-height: 40px !important;
+    padding-inline: 17px !important;
+    border-radius: 999px !important;
+}
+
+@media (max-width: 560px) {
+    #world-backstage-root .wb-worldbook-toolbar {
+        align-items: stretch;
+    }
+
+    #world-backstage-root .wb-worldbook-toolbar > span {
+        width: 100%;
+    }
+
+    #world-backstage-root .wb-worldbook-toolbar > div {
+        width: 100%;
+    }
+
+    #world-backstage-root .wb-worldbook-toolbar button {
+        flex: 1 1 0;
+    }
+}

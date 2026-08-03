@@ -1,7 +1,7 @@
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 14;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
 
@@ -10,7 +10,7 @@ const ACTIVE_EVENT_STATES = new Set(['active', 'waiting']);
 const VALID_CLOCK_MODES = new Set(['duration', 'active', 'scheduled', 'condition']);
 const VALID_VISIBILITY = new Set(['hidden', 'trace', 'known', 'direct']);
 const VALID_KNOWLEDGE = new Set(['hidden', 'known']);
-const VALID_CLUE_STATES = new Set(['open', 'echoed', 'resolved', 'discarded']);
+const VALID_CLUE_STATES = new Set(['open', 'developing', 'triggered', 'echoed', 'resolved', 'discarded']);
 const VALID_MEMORY_FACT_STATES = new Set(['active', 'disputed', 'superseded', 'invalidated']);
 const VALID_MEMORY_CONFIDENCE = new Set(['low', 'medium', 'high']);
 const MEMORY_SUMMARY_LEVELS = Object.freeze({
@@ -39,6 +39,8 @@ const LIMITS = Object.freeze({
     archive: 120,
     echoes: 80,
     foregroundFacts: 24,
+    worldFacts: 160,
+    consistencyConflicts: 32,
     audit: 40,
     text: 800,
     innerVoice: 240,
@@ -53,10 +55,12 @@ const LIMITS = Object.freeze({
     cognitiveRefs: 32,
     personState: 220,
     eventCause: 360,
+    eventPublicTrace: 260,
     storySummaries: 2400,
     clues: 480,
     memoryFacts: 720,
     memoryDigest: 2400,
+    metabolismLog: 180,
 });
 
 function deepClone(value) {
@@ -294,6 +298,7 @@ export function extractNarrativeTimeAnchor(text = '') {
         hour: exact?.hour ?? null,
         minute: exact?.minute ?? null,
         daypart,
+        structured: detailMatches.length > 0,
         precision: date && exact ? 'minute' : date ? (daypart ? 'daypart' : 'date') : 'minute',
         excerpt: [date?.excerpt, exact?.excerpt, daypart].filter(Boolean).join(' · ').slice(0, 240),
     };
@@ -362,6 +367,185 @@ export function formatDuration(minutes) {
     return parts.join(' ');
 }
 
+
+const VALID_WORLD_FACT_SOURCES = new Set(['narrative', 'simulation', 'manual', 'event-settlement']);
+const VALID_WORLD_FACT_CONFIDENCE = new Set(['low', 'medium', 'high']);
+
+function worldFactStableKey(raw = {}) {
+    const explicit = asString(raw?.key, '', 180);
+    if (explicit) return explicit;
+    const subjectType = asString(raw?.subject_type ?? raw?.subjectType, 'world', 40) || 'world';
+    const subjectId = asString(
+        raw?.subject_id ?? raw?.subjectId ?? raw?.subject ?? raw?.name,
+        'world',
+        120,
+    ) || 'world';
+    const field = asString(raw?.field, 'state', 80) || 'state';
+    return `${subjectType}:${subjectId}:${field}`;
+}
+
+export function normalizeWorldFact(raw, existing = null, worldMinute = 0) {
+    const key = worldFactStableKey(raw || existing || {});
+    const source = asString(raw?.source, existing?.source || 'simulation', 40);
+    const confidence = asString(raw?.confidence, existing?.confidence || 'high', 20);
+    return {
+        id: normalizeId(raw?.id || existing?.id || `world_fact_${hashText(key)}`, 'world_fact'),
+        key,
+        subjectType: asString(
+            raw?.subject_type ?? raw?.subjectType,
+            existing?.subjectType || 'world',
+            40,
+        ) || 'world',
+        subjectId: asString(
+            raw?.subject_id ?? raw?.subjectId,
+            existing?.subjectId || '',
+            120,
+        ),
+        subject: asString(raw?.subject, existing?.subject || '', 140),
+        field: asString(raw?.field, existing?.field || 'state', 80) || 'state',
+        value: asString(raw?.value, existing?.value || '', 520),
+        source: VALID_WORLD_FACT_SOURCES.has(source) ? source : 'simulation',
+        confidence: VALID_WORLD_FACT_CONFIDENCE.has(confidence) ? confidence : 'high',
+        visibility: normalizeVisibility(raw?.visibility ?? existing?.visibility ?? 'hidden'),
+        eventId: asString(
+            raw?.event_id ?? raw?.eventId,
+            existing?.eventId || '',
+            120,
+        ),
+        messageId: asInteger(
+            raw?.message_id ?? raw?.messageId,
+            existing?.messageId ?? -1,
+            -1,
+        ),
+        settledAt: asInteger(
+            raw?.settled_at ?? raw?.settledAt,
+            existing?.settledAt ?? worldMinute,
+            0,
+        ),
+        updatedAt: asInteger(
+            raw?.updated_at ?? raw?.updatedAt,
+            worldMinute,
+            0,
+        ),
+    };
+}
+
+function upsertWorldFact(state, raw, {
+    worldMinute = state?.clock?.absoluteMinute || 0,
+    source = '',
+    messageId = null,
+} = {}) {
+    if (!raw || typeof raw !== 'object') return null;
+    const prepared = {
+        ...raw,
+        ...(source ? { source } : {}),
+        ...(messageId !== null && messageId !== undefined ? { message_id: messageId } : {}),
+    };
+    const key = worldFactStableKey(prepared);
+    const existing = asArray(state.worldFacts).find(item => item.key === key) || null;
+    const fact = normalizeWorldFact(prepared, existing, worldMinute);
+    if (!fact.value) return null;
+    if (existing) Object.assign(existing, fact);
+    else state.worldFacts.unshift(fact);
+    state.worldFacts = state.worldFacts.slice(0, LIMITS.worldFacts);
+    return fact;
+}
+
+function settlePersonStateFacts(state, person, source, messageId = null) {
+    if (!person?.id) return;
+    const fields = [
+        ['location', '位置', person.location, 'hidden'],
+        ['action', '当前行动', person.action, 'hidden'],
+        ['physicalState', '身体状态', person.physicalState, 'hidden'],
+        ['resourceState', '资源状态', person.resourceState, 'hidden'],
+    ];
+    for (const [field, label, value, visibility] of fields) {
+        const text = asString(value, '', 520);
+        if (!text || /待确认$/.test(text)) continue;
+        upsertWorldFact(state, {
+            key: `person:${person.id}:${field}`,
+            subject_type: 'person',
+            subject_id: person.id,
+            subject: person.name,
+            field,
+            value: text,
+            visibility,
+            confidence: 'high',
+        }, {
+            source,
+            messageId,
+        });
+    }
+}
+
+export function settlePersonWorldState(inputState, personId, {
+    source = 'manual',
+    messageId = null,
+} = {}) {
+    const state = deepClone(inputState);
+    const person = asArray(state.people).find(item => item.id === String(personId || ''));
+    if (!person) return trimState(state);
+    settlePersonStateFacts(state, person, source, messageId);
+    state.revision = asInteger(state.revision, 0, 0) + 1;
+    state.updatedAt = nowIso();
+    return trimState(state);
+}
+
+function settleEventResultFact(state, event, messageId = null) {
+    if (!event?.id || !TERMINAL_EVENT_STATES.has(event.status)) return;
+    const result = asString(event.result || event.consequence || event.summary, '', 520);
+    if (!result) return;
+    upsertWorldFact(state, {
+        key: `event:${event.id}:result`,
+        subject_type: 'event',
+        subject_id: event.id,
+        subject: event.title,
+        field: 'result',
+        value: result,
+        visibility: event.visibility,
+        event_id: event.id,
+        confidence: 'high',
+    }, {
+        source: 'event-settlement',
+        messageId,
+    });
+}
+
+function normalizeConsistencyConflict(raw, worldMinute = 0, messageId = null) {
+    return {
+        id: normalizeId(raw?.id || `conflict_${hashText(JSON.stringify(raw || {}))}`, 'conflict'),
+        subject: asString(raw?.subject, '世界状态', 140),
+        field: asString(raw?.field, 'state', 80),
+        expected: asString(raw?.expected ?? raw?.previous_value ?? raw?.previousValue, '', 420),
+        observed: asString(raw?.observed ?? raw?.narrative_value ?? raw?.narrativeValue, '', 420),
+        resolution: ['accept-narrative', 'keep-world', 'transition'].includes(raw?.resolution)
+            ? raw.resolution
+            : 'keep-world',
+        reason: asString(raw?.reason, '', 360),
+        messageId: asInteger(raw?.message_id ?? raw?.messageId, messageId ?? -1, -1),
+        at: worldMinute,
+    };
+}
+
+function selectRelevantWorldFacts(state, recentText = '', maximum = 12) {
+    const text = String(recentText || '').toLocaleLowerCase();
+    return asArray(state?.worldFacts)
+        .map(fact => {
+            const terms = [fact.subject, fact.subjectId, fact.field, fact.value]
+                .filter(Boolean)
+                .map(value => String(value).toLocaleLowerCase());
+            let score = Number(fact.updatedAt || fact.settledAt || 0) / 1_000_000;
+            if (terms.some(term => term.length >= 2 && text.includes(term))) score += 120;
+            if (fact.source === 'narrative') score += 25;
+            if (fact.source === 'event-settlement') score += 20;
+            if (fact.confidence === 'high') score += 8;
+            return { fact, score };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, Math.max(0, maximum))
+        .map(item => item.fact);
+}
+
 export function createInitialState({
     worldName = '未命名世界',
     day = 1,
@@ -404,6 +588,9 @@ export function createInitialState({
         echoes: [],
         archive: [],
         foregroundFacts: [],
+        worldFacts: [],
+        consistencyConflicts: [],
+        needsReconciliation: false,
         storyMemory: {
             indexedThroughMessageId: -1,
             indexedAt: '',
@@ -418,6 +605,8 @@ export function createInitialState({
             facts: [],
             summaries: [],
             clues: [],
+            metabolismLog: [],
+            lastMetabolismMessageId: -1,
         },
         audit: [],
         pendingSync: false,
@@ -475,6 +664,14 @@ function normalizeStorySummary(raw, existing = null) {
         locked: Boolean(raw?.locked ?? existing?.locked),
         important: Boolean(raw?.important ?? existing?.important),
         manual: Boolean(raw?.manual ?? existing?.manual),
+        retentionState: ['active', 'compacted'].includes(raw?.retention_state ?? raw?.retentionState)
+            ? (raw?.retention_state ?? raw?.retentionState)
+            : (existing?.retentionState || 'active'),
+        compactedReason: asString(
+            raw?.compacted_reason ?? raw?.compactedReason,
+            existing?.compactedReason || '',
+            260,
+        ),
         createdAt: asString(raw?.created_at ?? raw?.createdAt, existing?.createdAt || nowIso(), 40),
     };
 }
@@ -517,6 +714,11 @@ function normalizeClue(raw, existing = null, worldMinute = 0, {
         importance: asInteger(raw?.importance, existing?.importance ?? 1, 1, 3),
         visibility: normalizeVisibility(raw?.visibility ?? existing?.visibility ?? 'hidden'),
         resolution: asString(raw?.resolution, existing?.resolution || '', 520),
+        lifecycleReason: asString(
+            raw?.lifecycle_reason ?? raw?.lifecycleReason,
+            existing?.lifecycleReason || '',
+            360,
+        ),
         resolvedMessageId: raw?.resolved_message_id ?? raw?.resolvedMessageId
             ?? existing?.resolvedMessageId
             ?? null,
@@ -644,45 +846,58 @@ function retainMemoryFacts(items) {
 function retainStorySummaries(items) {
     const chronological = asArray(items)
         .sort((a, b) => Number(a.endMessageId || 0) - Number(b.endMessageId || 0));
-    if (chronological.length <= LIMITS.storySummaries) return chronological;
+    if (!chronological.length) return chronological;
 
-    // Hierarchical memory keeps the lower-level source nodes behind every rollup.
-    // The limit is therefore a soft pool for unrelated/unmanaged summaries rather
-    // than a FIFO guillotine that would sever provenance chains.
-    const byId = new Map(chronological.map(item => [item.id, item]));
+    // Memory is allowed to forget low-value detail after it has been safely rolled
+    // into a higher layer.  We keep the recent detail window, the story opening,
+    // manually protected items and all chapter/long-term summaries.  Older compacted
+    // L0/L1 nodes may leave the active store; their parent summaries still retain the
+    // covered message range, so the original chat remains traceable without keeping
+    // every intermediate summary forever.
+    const latestMessageId = Number(chronological.at(-1)?.endMessageId || 0);
+    const recentFloor = Math.max(0, latestMessageId - 480);
     const protectedIds = new Set();
-    const protectTree = id => {
-        if (!id || protectedIds.has(id)) return;
-        const item = byId.get(id);
-        if (!item) return;
-        protectedIds.add(id);
-        for (const sourceId of asArray(item.sourceSummaryIds)) protectTree(sourceId);
+    const protect = item => {
+        if (item?.id) protectedIds.add(item.id);
     };
+
     for (const item of chronological) {
+        const level = Number(item?.level || 0);
+        const recent = Number(item?.endMessageId || 0) >= recentFloor;
+        const activeUnrolled = !item?.parentId && item?.retentionState !== 'compacted';
         if (
             item?.locked
             || item?.important
             || item?.manual
-            || Number(item?.level || 0) >= MEMORY_SUMMARY_LEVELS.CHAPTER
-            || item?.parentId
+            || level >= MEMORY_SUMMARY_LEVELS.CHAPTER
+            || activeUnrolled
+            || recent
         ) {
-            protectTree(item.id);
+            protect(item);
         }
     }
-    chronological.slice(0, 24).forEach(item => protectTree(item.id));
-    chronological.slice(-1200).forEach(item => protectTree(item.id));
+    // A tiny amount of opening detail is intentionally kept as a durable story anchor.
+    chronological.slice(0, 12).forEach(protect);
 
     const keep = new Map();
-    for (const id of protectedIds) {
-        const item = byId.get(id);
-        if (item) keep.set(id, item);
+    for (const item of chronological) {
+        if (protectedIds.has(item.id)) keep.set(item.id, item);
     }
-    if (keep.size < LIMITS.storySummaries) {
-        for (let index = chronological.length - 1; index >= 0 && keep.size < LIMITS.storySummaries; index -= 1) {
-            const item = chronological[index];
-            if (item?.id) keep.set(item.id, item);
-        }
+
+    // Fill any remaining room with the newest useful summaries, but compacted old
+    // details lose to active/higher-level memory.  This makes LIMITS.storySummaries a
+    // real upper bound in ordinary cases instead of a pool that can grow forever.
+    const candidates = chronological
+        .filter(item => !keep.has(item.id) && item?.retentionState !== 'compacted')
+        .sort((a, b) => (
+            Number(b.level || 0) - Number(a.level || 0)
+            || Number(b.endMessageId || 0) - Number(a.endMessageId || 0)
+        ));
+    for (const item of candidates) {
+        if (keep.size >= LIMITS.storySummaries) break;
+        keep.set(item.id, item);
     }
+
     return [...keep.values()]
         .sort((a, b) => Number(a.endMessageId || 0) - Number(b.endMessageId || 0));
 }
@@ -693,7 +908,7 @@ function retainClues(items) {
         item?.locked
         || item?.important
         || item?.manual
-        || ['open', 'echoed'].includes(item?.status)
+        || ['open', 'developing', 'echoed', 'triggered'].includes(item?.status)
     ));
     const protectedIds = new Set(protectedItems.map(item => item.id));
     const remainder = normalized
@@ -737,7 +952,80 @@ function normalizeStoryMemory(raw, worldMinute = 0) {
         facts: retainMemoryFacts([...factMap.values()]),
         summaries: retainStorySummaries(summaries),
         clues: retainClues([...clueMap.values()]),
+        metabolismLog: asArray(raw?.metabolismLog ?? raw?.metabolism_log)
+            .slice(-LIMITS.metabolismLog)
+            .map(item => ({
+                id: asString(item?.id, makeId('metabolism'), 100),
+                kind: asString(item?.kind, 'memory', 30),
+                action: asString(item?.action, 'updated', 30),
+                targetId: asString(item?.targetId ?? item?.target_id, '', 120),
+                replacementId: asString(item?.replacementId ?? item?.replacement_id, '', 120),
+                reason: asString(item?.reason, '', 360),
+                sourceMessageId: asInteger(item?.sourceMessageId ?? item?.source_message_id, 0, 0),
+                worldMinute: asInteger(item?.worldMinute ?? item?.world_minute, worldMinute, 0),
+                createdAt: asString(item?.createdAt ?? item?.created_at, nowIso(), 40),
+            })),
+        lastMetabolismMessageId: asInteger(
+            raw?.lastMetabolismMessageId ?? raw?.last_metabolism_message_id,
+            -1,
+            -1,
+        ),
     };
+}
+
+function normalizeFactBeliefs(value, fallback = []) {
+    const byKey = new Map();
+    for (const raw of [...asArray(fallback), ...asArray(value)]) {
+        const key = asString(raw?.key, '', 180);
+        const valueText = asString(raw?.value, '', 520);
+        if (!key || !valueText) continue;
+        byKey.set(key, {
+            key,
+            value: valueText,
+            factId: asString(raw?.fact_id ?? raw?.factId, '', 120),
+            learnedAtMessageId: asInteger(raw?.learned_at_message_id ?? raw?.learnedAtMessageId, 0, 0),
+            updatedAt: asInteger(raw?.updated_at ?? raw?.updatedAt, 0, 0),
+        });
+    }
+    return [...byKey.values()].slice(-LIMITS.cognitiveRefs);
+}
+
+function activeFactByKey(state, key) {
+    const normalized = asString(key, '', 180);
+    if (!normalized) return null;
+    return asArray(state?.storyMemory?.facts)
+        .filter(fact => fact.key === normalized && ['active', 'disputed'].includes(fact.status))
+        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0] || null;
+}
+
+function setFactBelief(person, fact, messageId = 0) {
+    if (!person || !fact?.key || !fact?.value) return;
+    const beliefs = normalizeFactBeliefs(person.knownFactBeliefs);
+    const next = {
+        key: fact.key,
+        value: fact.value,
+        factId: fact.id || '',
+        learnedAtMessageId: asInteger(messageId, 0, 0),
+        updatedAt: asInteger(fact.updatedAt, 0, 0),
+    };
+    const index = beliefs.findIndex(item => item.key === next.key);
+    if (index >= 0) beliefs[index] = next;
+    else beliefs.push(next);
+    person.knownFactBeliefs = beliefs.slice(-LIMITS.cognitiveRefs);
+}
+
+function freezeKnownFactBeforeChange(state, fact) {
+    if (!fact?.key || !fact?.value) return;
+    for (const person of asArray(state?.people)) {
+        const knowsKey = asArray(person?.knownFactKeys).some(key => (
+            normalizedReference(key) === normalizedReference(fact.key)
+        ));
+        if (!knowsKey) continue;
+        const hasSnapshot = asArray(person?.knownFactBeliefs).some(item => (
+            normalizedReference(item?.key) === normalizedReference(fact.key)
+        ));
+        if (!hasSnapshot) setFactBelief(person, fact, person?.lastSeenMessageId || fact.sourceMessageId || 0);
+    }
 }
 
 function normalizePerson(raw, existing = null, worldMinute = 0, {
@@ -882,6 +1170,10 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
             raw?.known_fact_keys ?? raw?.knownFactKeys,
             LIMITS.cognitiveRefs,
         ),
+        knownFactBeliefs: normalizeFactBeliefs(
+            raw?.known_fact_beliefs ?? raw?.knownFactBeliefs,
+            existing?.knownFactBeliefs,
+        ),
         knownClueIds: mergeUniqueStrings(
             existing?.knownClueIds,
             raw?.known_clue_ids ?? raw?.knownClueIds,
@@ -1005,6 +1297,13 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
             raw?.caused_by ?? raw?.causedBy,
             12,
         ),
+        publicTrace: visibility === 'hidden'
+            ? ''
+            : asString(
+                raw?.public_trace ?? raw?.publicTrace ?? existing?.publicTrace,
+                '',
+                LIMITS.eventPublicTrace,
+            ),
         visibility,
         delivery: {
             state: deliveryState,
@@ -1240,6 +1539,54 @@ function findClue(memory, raw) {
     )) || null;
 }
 
+function appendMemoryMetabolism(state, {
+    kind = 'memory',
+    action = 'updated',
+    targetId = '',
+    replacementId = '',
+    reason = '',
+    sourceMessageId = 0,
+} = {}) {
+    state.storyMemory ||= {};
+    state.storyMemory.metabolismLog = asArray(state.storyMemory.metabolismLog);
+    state.storyMemory.metabolismLog.push({
+        id: makeId('metabolism'),
+        kind: asString(kind, 'memory', 30),
+        action: asString(action, 'updated', 30),
+        targetId: asString(targetId, '', 120),
+        replacementId: asString(replacementId, '', 120),
+        reason: asString(reason, '', 360),
+        sourceMessageId: asInteger(sourceMessageId, 0, 0),
+        worldMinute: asInteger(state.clock?.absoluteMinute, 0, 0),
+        createdAt: nowIso(),
+    });
+    state.storyMemory.metabolismLog = state.storyMemory.metabolismLog.slice(-LIMITS.metabolismLog);
+    state.storyMemory.lastMetabolismMessageId = Math.max(
+        Number(state.storyMemory.lastMetabolismMessageId ?? -1),
+        asInteger(sourceMessageId, -1, -1),
+    );
+}
+
+function compactRolledUpSources(state, parentSummary, sources, { sourceMessageId = 0 } = {}) {
+    for (const source of sources) {
+        if (source.locked || source.important || source.manual) continue;
+        if (asArray(source.tags).length) continue;
+        if (Number(source.level || 0) >= MEMORY_SUMMARY_LEVELS.CHAPTER) continue;
+        if (source.retentionState === 'compacted') continue;
+        source.retentionState = 'compacted';
+        source.compactedReason = `细节已由 ${parentSummary.title || `L${parentSummary.level}`} 概括；原始正文仍可按消息范围回看。`;
+        source.summary = `细节已收进上层记忆；原始正文见消息 ${source.startMessageId}—${source.endMessageId}。`;
+        appendMemoryMetabolism(state, {
+            kind: 'episode',
+            action: 'compacted',
+            targetId: source.id,
+            replacementId: parentSummary.id,
+            reason: source.compactedReason,
+            sourceMessageId,
+        });
+    }
+}
+
 function findMemoryFact(memory, raw, {
     matchValue = true,
 } = {}) {
@@ -1309,9 +1656,19 @@ function applyMemoryFactUpdates(state, {
         } else {
             for (const conflict of conflicts) {
                 if (conflict.locked) continue;
+                freezeKnownFactBeforeChange(state, conflict);
                 conflict.status = 'superseded';
                 conflict.supersededBy = prepared.id;
+                conflict.invalidationReason = `已被后续事实“${prepared.value}”取代`;
                 conflict.updatedAt = state.clock.absoluteMinute;
+                appendMemoryMetabolism(state, {
+                    kind: 'fact',
+                    action: 'superseded',
+                    targetId: conflict.id,
+                    replacementId: prepared.id,
+                    reason: conflict.invalidationReason,
+                    sourceMessageId: sourceMessageId ?? prepared.sourceMessageId ?? 0,
+                });
             }
             prepared.supersedes = uniqueStrings([
                 ...prepared.supersedes,
@@ -1327,6 +1684,7 @@ function applyMemoryFactUpdates(state, {
             : rawInvalidation;
         const fact = findMemoryFact(state.storyMemory, invalidation, { matchValue: false });
         if (!fact || fact.locked) continue;
+        freezeKnownFactBeforeChange(state, fact);
         fact.status = 'invalidated';
         fact.invalidationReason = asString(
             invalidation?.reason ?? invalidation?.invalidation_reason,
@@ -1334,6 +1692,13 @@ function applyMemoryFactUpdates(state, {
             360,
         );
         fact.updatedAt = state.clock.absoluteMinute;
+        appendMemoryMetabolism(state, {
+            kind: 'fact',
+            action: 'invalidated',
+            targetId: fact.id,
+            reason: fact.invalidationReason,
+            sourceMessageId: sourceMessageId ?? fact.sourceMessageId ?? 0,
+        });
     }
 }
 
@@ -1368,8 +1733,13 @@ function applyClueUpdates(state, {
             : 'resolved';
         clue.resolution = asString(
             resolution?.resolution,
-            clue.resolution || '已由后续正文呼应或解决',
+            clue.resolution || (clue.status === 'discarded' ? '后续发展已证明这条线索无需继续追踪' : '已由后续正文呼应或解决'),
             520,
+        );
+        clue.lifecycleReason = asString(
+            resolution?.reason ?? resolution?.lifecycle_reason ?? resolution?.lifecycleReason,
+            clue.lifecycleReason || clue.resolution,
+            360,
         );
         clue.resolvedMessageId = asInteger(
             resolution?.message_id ?? resolution?.messageId,
@@ -1377,6 +1747,13 @@ function applyClueUpdates(state, {
             0,
         );
         clue.updatedAt = state.clock.absoluteMinute;
+        appendMemoryMetabolism(state, {
+            kind: 'clue',
+            action: clue.status,
+            targetId: clue.id,
+            reason: clue.lifecycleReason || clue.resolution,
+            sourceMessageId: sourceMessageId ?? clue.resolvedMessageId ?? 0,
+        });
     }
 }
 
@@ -1451,6 +1828,12 @@ function normalizeSimulationResult(payload) {
             24,
         ),
         foregroundFacts: asArray(payload?.front_facts ?? payload?.frontFacts).slice(0, 16),
+        worldFactsUpsert: asArray(
+            payload?.world_facts_upsert ?? payload?.worldFactsUpsert,
+        ).slice(0, 32),
+        consistencyConflicts: asArray(
+            payload?.consistency_conflicts ?? payload?.consistencyConflicts,
+        ).slice(0, 24),
         memoryUpdates: {
             factsUpsert: asArray(
                 payload?.memory_update?.facts_upsert
@@ -1472,6 +1855,47 @@ function normalizeSimulationResult(payload) {
     };
 }
 
+function conflictKeepsPersonField(rawConflicts, person, field) {
+    const aliases = new Set([
+        String(person?.id || '').toLocaleLowerCase(),
+        String(person?.name || '').toLocaleLowerCase(),
+    ].filter(Boolean));
+    return asArray(rawConflicts).some(raw => {
+        const subject = String(raw?.subject_id ?? raw?.subjectId ?? raw?.subject ?? '')
+            .trim().toLocaleLowerCase();
+        const rawField = String(raw?.field || '').trim();
+        const resolution = String(raw?.resolution || '').trim();
+        return aliases.has(subject) && rawField === field && resolution === 'keep-world';
+    });
+}
+
+function narrativeSupportsLocationValue(narrativeText, value) {
+    const text = String(narrativeText || '').replace(/\s+/g, '');
+    const compactValue = String(value || '').replace(/\s+/g, '').trim();
+    if (!text || compactValue.length < 2) return false;
+    const terms = uniqueStrings([
+        compactValue,
+        ...compactValue.split(/[的、,，/·|｜]/g),
+    ], 12).filter(term => term.length >= 2);
+    for (const term of terms) {
+        let index = text.indexOf(term);
+        while (index >= 0) {
+            const window = text.slice(Math.max(0, index - 28), Math.min(text.length, index + term.length + 18));
+            if (
+                /(?:地点|位置|所在地|场景)[：:]/.test(window)
+                || /(?:在|位于|身处|来到|到达|抵达|回到|返回|进入|走进|前往|赶到|去了|住在|留在|待在|躺在|坐在|站在|出现在|离开)[^。！？!?]{0,22}/.test(window)
+            ) return true;
+            index = text.indexOf(term, index + term.length);
+        }
+    }
+    return false;
+}
+
+function authoritativePersonFact(state, personId, field) {
+    const key = `person:${personId}:${field}`;
+    return asArray(state?.worldFacts).find(fact => fact?.key === key && fact?.confidence === 'high') || null;
+}
+
 export function applySimulationResult(baseState, rawPayload, {
     messageId = null,
     swipeId = null,
@@ -1486,6 +1910,80 @@ export function applySimulationResult(baseState, rawPayload, {
     const baseClockAnchored = Boolean(baseState?.clock?.anchored);
     const anchor = payload.clockAnchor;
     const narrativeCalendar = extractExplicitCalendarDate(narrativeText);
+    const narrativeAnchor = extractNarrativeTimeAnchor(narrativeText);
+
+    // A date explicitly written by the foreground is authoritative even after
+    // the world clock has already been initialized. Dedicated “time & place”
+    // details are also treated as a strong same-day clock source: when they move
+    // forward on the current date, the backstage clock follows deterministically
+    // instead of hoping the simulation model converts the timestamp to elapsed time.
+    const currentCalendar = formatWorldCalendar(baseState);
+    const currentMinuteOfDay = currentCalendar.hour * 60 + currentCalendar.minute;
+    const narrativeMinuteOfDay = narrativeAnchor
+        && narrativeAnchor.hour !== null
+        && narrativeAnchor.minute !== null
+        ? Number(narrativeAnchor.hour) * 60 + Number(narrativeAnchor.minute)
+        : null;
+    const structuredForwardExact = Boolean(
+        baseClockAnchored
+        && narrativeAnchor?.structured
+        && Number.isFinite(narrativeMinuteOfDay)
+        && narrativeMinuteOfDay >= currentMinuteOfDay
+    );
+
+    if (narrativeCalendar) {
+        const dateChanged = (
+            currentCalendar.year !== narrativeCalendar.year
+            || currentCalendar.month !== narrativeCalendar.month
+            || currentCalendar.dayOfMonth !== narrativeCalendar.day
+        );
+        const reliableExact = Boolean(
+            narrativeAnchor
+            && narrativeAnchor.hour !== null
+            && narrativeAnchor.minute !== null
+            && (
+                !baseClockAnchored
+                || dateChanged
+                || structuredForwardExact
+                || /→|->|至|到/.test(narrativeAnchor.excerpt || '')
+            )
+        );
+        if (!anchor?.hasDate || dateChanged || reliableExact) {
+            anchor.mode = baseClockAnchored ? 'calibrate' : 'initialize';
+            anchor.year = narrativeCalendar.year;
+            anchor.month = narrativeCalendar.month;
+            anchor.day = narrativeCalendar.day;
+            anchor.hasDate = true;
+            if (reliableExact) {
+                anchor.hour = narrativeAnchor.hour;
+                anchor.minute = narrativeAnchor.minute;
+                anchor.hasTime = true;
+                anchor.precision = 'minute';
+            } else if (!anchor.hasTime) {
+                anchor.precision = narrativeAnchor?.daypart ? 'daypart' : 'date';
+            }
+            anchor.confidence = 'high';
+            anchor.sourceExcerpt = anchor.sourceExcerpt || narrativeAnchor?.excerpt || narrativeCalendar.excerpt;
+            anchor.reason = anchor.reason || (
+                baseClockAnchored
+                    ? '正文给出新的明确时间信息，自动校准主世界时间'
+                    : '从正文中的明确时间信息建立主世界时间锚点'
+            );
+        }
+    } else if (structuredForwardExact) {
+        anchor.mode = 'calibrate';
+        anchor.year = currentCalendar.year;
+        anchor.month = currentCalendar.month;
+        anchor.day = currentCalendar.dayOfMonth;
+        anchor.hour = narrativeAnchor.hour;
+        anchor.minute = narrativeAnchor.minute;
+        anchor.hasDate = true;
+        anchor.hasTime = true;
+        anchor.precision = 'minute';
+        anchor.confidence = 'high';
+        anchor.sourceExcerpt = anchor.sourceExcerpt || narrativeAnchor.excerpt;
+        anchor.reason = anchor.reason || '正文时间栏给出更晚的明确钟点，自动校准主世界时间';
+    }
 
     // Date and clock time are intentionally separate. A story may give an
     // authoritative YYYY/M/D while only saying “清晨/下午” for the time of day.
@@ -1630,13 +2128,30 @@ export function applySimulationResult(baseState, rawPayload, {
     let state = settleTimedEvents(
         anchoredBaseState,
         anchoredBaseState.clock.absoluteMinute + payload.elapsedMinutes,
-        { source: 'narrative', reason: payload.timeReason || '正文推演' },
+        {
+            source: anchorApplied ? anchoredBaseState.clock.source : 'narrative',
+            reason: payload.timeReason || '正文推演',
+        },
     );
     const worldMinute = state.clock.absoluteMinute;
 
     if (payload.world.title) state.world.title = payload.world.title;
     if (payload.world.detail) state.world.detail = payload.world.detail;
 
+    const preFactByKey = new Map(
+        asArray(state.storyMemory?.facts)
+            .filter(fact => ['active', 'disputed'].includes(fact.status))
+            .map(fact => [fact.key, deepClone(fact)]),
+    );
+    const cognitionBefore = new Map(
+        asArray(state.people).map(person => [person.id, {
+            knownFactKeys: [...asArray(person.knownFactKeys)],
+            knownFactBeliefs: normalizeFactBeliefs(person.knownFactBeliefs),
+        }]),
+    );
+    const pendingFactBeliefUpdates = [];
+
+    const generatedConsistencyConflicts = [];
     let backgroundNpcUpdates = 0;
     const maximumBackgroundNpcUpdates = asInteger(
         backgroundNpcBudget,
@@ -1668,11 +2183,56 @@ export function applySimulationResult(baseState, rawPayload, {
         }
         const existing = findPerson(state, rawPerson);
         if (existing && !foregroundPerson && existing.simulationEnabled === false) continue;
+        const existingCognition = existing ? cognitionBefore.get(existing.id) : null;
+        const incomingFactKeys = uniqueStrings(rawPerson?.known_fact_keys ?? rawPerson?.knownFactKeys, LIMITS.cognitiveRefs);
+        const refreshFactKeys = uniqueStrings(rawPerson?.known_fact_refresh_keys ?? rawPerson?.knownFactRefreshKeys, LIMITS.cognitiveRefs);
+        pendingFactBeliefUpdates.push({
+            personId: existing?.id || normalizeId(rawPerson?.id || rawPerson?.name, 'person'),
+            incomingFactKeys,
+            refreshFactKeys,
+            previousKeys: existingCognition?.knownFactKeys || [],
+            previousBeliefs: existingCognition?.knownFactBeliefs || [],
+        });
         const person = normalizePerson(rawPerson, existing, worldMinute, {
             userName,
             allowUserInnerVoice,
             sourceMessageId: messageId,
         });
+        if (existing && foregroundPerson && !baseState?.needsReconciliation) {
+            const authoritativeLocation = authoritativePersonFact(state, existing.id, 'location');
+            const requestedLocation = asString(
+                rawPerson?.location,
+                existing.location || '',
+                160,
+            );
+            const locationChanged = Boolean(
+                requestedLocation
+                && authoritativeLocation?.value
+                && requestedLocation !== authoritativeLocation.value
+            );
+            const explicitKeep = conflictKeepsPersonField(
+                payload.consistencyConflicts,
+                existing,
+                'location',
+            );
+            const narrativeSupport = locationChanged
+                ? narrativeSupportsLocationValue(narrativeText, requestedLocation)
+                : true;
+            if (locationChanged && (explicitKeep || !narrativeSupport)) {
+                person.location = authoritativeLocation.value;
+                generatedConsistencyConflicts.push({
+                    subject: existing.name,
+                    field: 'location',
+                    previous_value: authoritativeLocation.value,
+                    narrative_value: requestedLocation,
+                    resolution: 'keep-world',
+                    reason: explicitKeep
+                        ? '推演识别到正文与权威位置无过渡冲突，保持既有世界事实'
+                        : '正文没有找到足够明确的位置变化证据，拒绝用模型推断无过渡覆盖权威位置',
+                    message_id: messageId,
+                });
+            }
+        }
         if (existing) {
             if (existing.locked) {
                 person.name = existing.name;
@@ -1683,20 +2243,46 @@ export function applySimulationResult(baseState, rawPayload, {
                 person.manual = existing.manual;
             }
             Object.assign(existing, person);
+            settlePersonStateFacts(
+                state,
+                existing,
+                foregroundPerson ? 'narrative' : 'simulation',
+                messageId,
+            );
         } else {
             state.people.push(person);
+            settlePersonStateFacts(
+                state,
+                person,
+                foregroundPerson ? 'narrative' : 'simulation',
+                messageId,
+            );
         }
     }
 
     if (payload.peopleRemove.length) {
         const removed = new Set(payload.peopleRemove.map(item => item.toLowerCase()));
+        const removedPersonIds = new Set(
+            state.people
+                .filter(person => (
+                    !person.locked
+                    && (
+                        removed.has(person.id.toLowerCase())
+                        || removed.has(person.name.toLowerCase())
+                    )
+                ))
+                .map(person => person.id),
+        );
         state.people = state.people.filter(person => (
             person.locked
-            || (
-                !removed.has(person.id.toLowerCase())
-                && !removed.has(person.name.toLowerCase())
-            )
+            || !removedPersonIds.has(person.id)
         ));
+        if (removedPersonIds.size) {
+            state.worldFacts = asArray(state.worldFacts).filter(fact => !(
+                fact?.subjectType === 'person'
+                && removedPersonIds.has(fact?.subjectId)
+            ));
+        }
     }
 
     for (const rawEvent of payload.eventsCreate) {
@@ -1747,6 +2333,14 @@ export function applySimulationResult(baseState, rawPayload, {
             12,
         );
         if (update?.visibility) event.visibility = normalizeVisibility(update.visibility);
+        if (update?.public_trace !== undefined || update?.publicTrace !== undefined) {
+            event.publicTrace = asString(
+                update?.public_trace ?? update?.publicTrace,
+                event.publicTrace || '',
+                LIMITS.eventPublicTrace,
+            );
+        }
+        if (event.visibility === 'hidden') event.publicTrace = '';
         if (update?.delivery_route) {
             event.delivery.route = asString(update.delivery_route, event.delivery.route, 220);
         }
@@ -1767,6 +2361,40 @@ export function applySimulationResult(baseState, rawPayload, {
         if (event.status === 'ready' && event.result) {
             markTerminal(event, 'resolved', worldMinute, event.result);
         }
+        if (TERMINAL_EVENT_STATES.has(event.status)) {
+            settleEventResultFact(state, event, messageId);
+        }
+    }
+
+    for (const rawFact of payload.worldFactsUpsert) {
+        const source = ['foreground', 'narrative'].includes(rawFact?.source)
+            ? 'narrative'
+            : 'simulation';
+        upsertWorldFact(state, rawFact, {
+            source,
+            messageId,
+        });
+    }
+
+    const allConsistencyConflicts = [
+        ...generatedConsistencyConflicts,
+        ...payload.consistencyConflicts,
+    ];
+    if (allConsistencyConflicts.length) {
+        const seen = new Set();
+        const conflicts = allConsistencyConflicts
+            .map(raw => normalizeConsistencyConflict(raw, worldMinute, messageId))
+            .filter(conflict => {
+                if (!conflict.expected && !conflict.observed) return false;
+                const key = `${conflict.subject}\u0000${conflict.field}\u0000${conflict.expected}\u0000${conflict.observed}\u0000${conflict.messageId}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        state.consistencyConflicts = [
+            ...conflicts,
+            ...asArray(state.consistencyConflicts),
+        ].slice(0, LIMITS.consistencyConflicts);
     }
 
     for (const rawId of payload.deliveriesConfirmed) {
@@ -1795,6 +2423,19 @@ export function applySimulationResult(baseState, rawPayload, {
             affects: uniqueStrings(rawFact?.affects, 10),
             visibility: normalizeVisibility(rawFact?.visibility ?? 'known'),
         });
+        upsertWorldFact(state, {
+            key: rawFact?.key || `foreground:${hashText(text)}`,
+            subject_type: rawFact?.subject_type || 'world',
+            subject_id: rawFact?.subject_id || '',
+            subject: rawFact?.subject || '正文事实',
+            field: rawFact?.field || 'state',
+            value: text,
+            visibility: rawFact?.visibility ?? 'known',
+            confidence: 'high',
+        }, {
+            source: 'narrative',
+            messageId,
+        });
     }
 
     applyMemoryFactUpdates(state, payload.memoryUpdates, {
@@ -1805,8 +2446,27 @@ export function applySimulationResult(baseState, rawPayload, {
         sourceMessageId: messageId,
         sourceSwipeId: swipeId,
     });
+    for (const pending of pendingFactBeliefUpdates) {
+        const person = state.people.find(item => item.id === pending.personId);
+        if (!person) continue;
+        person.knownFactBeliefs = normalizeFactBeliefs(person.knownFactBeliefs, pending.previousBeliefs);
+        const previousKeys = new Set(pending.previousKeys.map(normalizedReference));
+        const previousBeliefKeys = new Set(pending.previousBeliefs.map(item => normalizedReference(item.key)));
+        const refreshKeys = new Set(pending.refreshFactKeys.map(normalizedReference));
+        for (const key of pending.incomingFactKeys) {
+            const normalizedKey = normalizedReference(key);
+            const alreadyKnown = previousKeys.has(normalizedKey);
+            const hasBelief = previousBeliefKeys.has(normalizedKey);
+            if (alreadyKnown && hasBelief && !refreshKeys.has(normalizedKey)) continue;
+            const fact = alreadyKnown && !hasBelief && !refreshKeys.has(normalizedKey)
+                ? preFactByKey.get(key)
+                : activeFactByKey(state, key);
+            if (fact) setFactBelief(person, fact, messageId);
+        }
+    }
     synchronizeCognitiveLedger(state);
 
+    state.needsReconciliation = false;
     state.pendingSync = false;
     state.lastCommit = {
         messageId,
@@ -1996,15 +2656,22 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
         return { text: '', eventIds: [] };
     }
 
-    const injectWorld = settings.worldSimulationEnabled !== false
-        && settings.worldPromptInjection !== false;
+    // Authoritative world state is a continuity contract, not an optional reveal.
+    // `worldPromptInjection` is kept as the legacy setting key, but from schema 14
+    // onward it only controls whether settled outcomes may proactively surface in
+    // the foreground. While the world engine itself is enabled, time / person state
+    // / settled facts always participate in the prompt so the model cannot silently
+    // fork a second world by ignoring backstage facts.
+    const injectWorldState = settings.worldSimulationEnabled !== false;
+    const injectWorldReveals = injectWorldState && settings.worldPromptInjection !== false;
     const injectMemory = settings.memorySystemEnabled !== false
         && settings.memoryPromptInjection !== false;
-    if (!injectWorld && !injectMemory) return { text: '', eventIds: [] };
+    if (!injectWorldState && !injectMemory) return { text: '', eventIds: [] };
 
     const clock = formatWorldCalendar(state);
-    const people = injectWorld ? selectRelevantPeople(state, recentText) : [];
-    const deliveries = injectWorld ? selectDeliveryCandidates(state, settings) : [];
+    const people = injectWorldState ? selectRelevantPeople(state, recentText) : [];
+    const authoritativeFacts = injectWorldState ? selectRelevantWorldFacts(state, recentText, 12) : [];
+    const deliveries = injectWorldReveals ? selectDeliveryCandidates(state, settings) : [];
     const recalledMemory = injectMemory ? selectRelevantStoryMemory(state, recentText, {
         maximumFacts: 6,
         maximumClues: 3,
@@ -2026,7 +2693,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
     }[settings.sceneTiming] || '只在自然时机显露，不要后台播报。';
 
     const lines = ['<world_backstage_state>'];
-    if (injectWorld) {
+    if (injectWorldState) {
         if (state.clock?.anchored) {
             lines.push(
                 `权威主世界时间：${state.world.name} · ${clock.stamp}`,
@@ -2046,11 +2713,32 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
     }
 
     if (people.length) {
-        lines.push('当前人物状态（仅用于保持连续性，不等于主角知道全部后台信息）：');
+        if (state.needsReconciliation) {
+            lines.push(
+                '旧存档人物状态（等待一次前台重新校准）：',
+                '这些状态来自升级前的后台记录；若与最近正文的明确事实冲突，以正文为准。首次成功世界推演后会重新结算为权威状态。',
+            );
+        } else {
+            lines.push(
+                '当前人物权威状态（必须保持连续性；不等于主角知道全部后台信息）：',
+                '若正文没有明确写出新的移动、离场、返回或状态变化，不得把人物无理由放到与这里冲突的位置；若正文明确发生了新变化，则按新变化继续，并由世界背面回写。',
+            );
+        }
         for (const person of people) {
             const boundary = person.knowledge === 'known' ? '可知' : '幕后';
             lines.push(`- ${person.name}｜${person.location}｜${person.action}｜${boundary}`);
         }
+    }
+
+    if (authoritativeFacts.length) {
+        lines.push(
+            '已结算世界事实（这是世界客观状态，不是可选剧情建议；必须保持一致，但角色是否知道仍看认知边界）：',
+        );
+        for (const fact of authoritativeFacts) {
+            const subject = fact.subject || fact.subjectId || '世界';
+            lines.push(`- ${subject}｜${fact.field}：${fact.value}｜显露=${fact.visibility}`);
+        }
+        lines.push('显露度只决定这些事实如何进入镜头，不决定它们是否存在。隐藏事实可以约束连续性，但不得因此让不知情角色突然知晓。');
     }
 
     if (knownFacts.length || knownClues.length) {
@@ -2118,6 +2806,7 @@ export function planMemoryRollup(state) {
                 summary.hierarchyManaged
                 && !summary.manual
                 && Number(summary.level) === sourceLevel
+                && summary.retentionState !== 'compacted'
                 && !summary.parentId
             ))
             .sort((a, b) => (
@@ -2171,7 +2860,7 @@ export function buildMemoryRollupPrompt(state, plan, { compact = false } = {}) {
         '要求：',
         '1. 只能使用给出的下层摘要；禁止补写不存在的情节。',
         '2. 优先保留关系变化、长期目标、承诺、关键转折、持续冲突、重要物品与未解决问题。普通动作、重复气氛和已经失效的枝节可以舍弃。',
-        '3. 新摘要只是上层索引。插件会完整保留下层 source_summary_ids，因此不要试图把每个细节都塞进上层。',
+        '3. 新摘要是上层长期索引。source_summary_ids 与消息范围会保留，但普通下层摘要在建立上层后可能被压成轻量占位；因此真正会影响未来理解的细节必须进入上层，不重要的枝节可以主动放下。',
         '4. people / locations / tags 只保留真正贯穿这一段的重要项。',
         `5. ${lengthRule}`,
         '6. 只返回合法 JSON，不要代码围栏和解释。',
@@ -2230,6 +2919,13 @@ export function applyMemoryRollupResult(inputState, rawPayload, plan = {}) {
     if (existing) Object.assign(existing, normalized);
     else state.storyMemory.summaries.push(normalized);
     for (const source of sources) source.parentId = normalized.id;
+    compactRolledUpSources(state, normalized, sources, {
+        sourceMessageId: last.endMessageId,
+    });
+    state.storyMemory.lastMetabolismMessageId = Math.max(
+        Number(state.storyMemory.lastMetabolismMessageId || -1),
+        Number(last.endMessageId || -1),
+    );
     state.revision = asInteger(state.revision, 0, 0) + 1;
     state.updatedAt = nowIso();
     appendAudit(state, {
@@ -2292,7 +2988,8 @@ function memoryMatchScore(item, query, {
         score += Math.min(20, overlap * 2);
     }
     if (item?.status === 'open') score += 8;
-    if (item?.status === 'echoed') score += 5;
+    if (item?.status === 'developing' || item?.status === 'echoed') score += 6;
+    if (item?.status === 'triggered') score += 9;
     if (item?.status === 'active') score += 7;
     if (item?.status === 'disputed') score += 2;
     if (item?.confidence === 'high') score += 4;
@@ -2350,7 +3047,7 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
             recall_score: score,
         }));
     const clues = memory.clues
-        .filter(clue => !['discarded'].includes(clue.status))
+        .filter(clue => !['resolved', 'discarded'].includes(clue.status))
         .map(clue => ({
             clue,
             score: memoryMatchScore(clue, narrativeText, { referenceMessageId }),
@@ -2375,6 +3072,7 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
             resolution: modelText(clue.resolution, 260),
         }));
     const scoredSummaries = memory.summaries
+        .filter(summary => summary.retentionState !== 'compacted')
         .map(summary => ({
             summary,
             score: memoryMatchScore(summary, narrativeText, { referenceMessageId }),
@@ -2489,7 +3187,9 @@ export function buildHistoryIndexPrompt(state, {
         '4. 每类事实使用稳定 key（例如“人物:老白:真实身份”）。同一 key 出现新值时保留 key 并提交新 value；插件会把旧版本标为 superseded。真假仍无法判断时用 status=disputed，不要强行覆盖。',
         '5. 只提取真正可能在后文产生呼应的伏笔。普通环境描写、一次性动作和已经当场解释完的事实不要当作伏笔。',
         '6. 长期事实与伏笔必须记录最早或最清楚的来源消息 id、swipe，并保留不超过80字的原文摘录。',
-        '7. 若旧伏笔在本批正文中被呼应但未解决，放入 clues_upsert 并把 status 改为 echoed；确实解决时放入 clues_resolve。被正文明确否定的长期事实放入 facts_invalidate。',
+        '7. 记忆要会更迭，不要只增不减：旧伏笔开始推进时用原 ID 更新为 developing；关键条件真正触发时可更新为 triggered；确实完成/揭晓时放入 clues_resolve(status=resolved)；后文已经证明它不再需要、方向被废弃或只是误判的伏笔放入 clues_resolve(status=discarded) 并写清 reason。被正文明确否定或已经失效的长期事实放入 facts_invalidate。',
+        '7A. 同一长期事实出现新值时继续用同一稳定 key，插件会把旧值标为 superseded 并保留轻量变化链；不要让互相冲突的旧值同时保持 active。世界事实更新不会自动修改任何 NPC 的认知账本。',
+        '7B. 不需要保存所有东西。普通枝节、已被高层经历覆盖且未来无独立价值的信息可以从持续摘要中淡出；锁定、重要、长期关系、重大承诺、身份、关键限制与未完成线索必须保留。',
         '8. 不得把玩家未明说的想法写成事实。玩家角色名：'
             + `${modelText(userName, 80) || '未提供'}。`
             + (identityAnchor
@@ -2542,12 +3242,13 @@ export function buildHistoryIndexPrompt(state, {
                 text: '',
                 source_message_id: startMessageId,
                 source_excerpt: '',
-                status: 'open',
+                status: 'open | developing | triggered',
             }],
             clues_resolve: [{
                 id: '',
-                status: 'resolved',
+                status: 'resolved | discarded',
                 resolution: '',
+                reason: '',
                 message_id: endMessageId,
             }],
         }),
@@ -2692,14 +3393,41 @@ export function buildPersonObservationPrompt(state, person, {
             || listReferencesPerson(event?.actors, person)
         ));
 
-    relevantMemory.facts = relevantMemory.facts.filter(fact => (
-        cognitionReady
-            ? knownFactKeys.has(normalizedReference(fact.key))
-            : (
-                fact.visibility !== 'hidden'
-                || fact.people.includes(person?.name)
-            )
-    ));
+    if (cognitionReady) {
+        const beliefs = normalizeFactBeliefs(person?.knownFactBeliefs);
+        const beliefKeys = new Set(beliefs.map(item => normalizedReference(item.key)));
+        const beliefFacts = beliefs.map(belief => {
+            const historical = asArray(state?.storyMemory?.facts).find(fact => (
+                belief.factId && fact.id === belief.factId
+            )) || asArray(state?.storyMemory?.facts).find(fact => fact.key === belief.key);
+            return {
+                id: belief.factId || `belief_${hashText(`${belief.key}
+${belief.value}`)}`,
+                key: belief.key,
+                subject: historical?.subject || belief.key,
+                predicate: historical?.predicate || '',
+                value: belief.value,
+                people: historical?.people || [],
+                locations: historical?.locations || [],
+                tags: historical?.tags || [],
+                status: 'belief',
+                confidence: historical?.confidence || 'medium',
+                importance: historical?.importance || 2,
+                visibility: 'known',
+                source_message_id: belief.learnedAtMessageId || historical?.sourceMessageId || 0,
+                source_swipe_id: historical?.sourceSwipeId || 0,
+            };
+        });
+        const legacyFacts = relevantMemory.facts.filter(fact => (
+            knownFactKeys.has(normalizedReference(fact.key))
+            && !beliefKeys.has(normalizedReference(fact.key))
+        ));
+        relevantMemory.facts = [...beliefFacts, ...legacyFacts].slice(0, 16);
+    } else {
+        relevantMemory.facts = relevantMemory.facts.filter(fact => (
+            fact.visibility !== 'hidden' || fact.people.includes(person?.name)
+        ));
+    }
     relevantMemory.clues = relevantMemory.clues.filter(clue => (
         cognitionReady
             ? knownClueIds.has(normalizedReference(clue.id))
@@ -2778,6 +3506,7 @@ export function buildPersonObservationPrompt(state, person, {
             cognition_ready: person?.cognitionReady,
             known_event_ids: person?.knownEventIds,
             known_fact_keys: person?.knownFactKeys,
+            known_fact_beliefs: person?.knownFactBeliefs,
             known_clue_ids: person?.knownClueIds,
             physical_state: person?.physicalState,
             emotional_state: person?.emotionalState,
@@ -2858,6 +3587,7 @@ export function compactStateForModel(state, {
                 cognition_ready: person.cognitionReady,
                 known_event_ids: person.knownEventIds,
                 known_fact_keys: person.knownFactKeys,
+                known_fact_beliefs: person.knownFactBeliefs,
                 known_clue_ids: person.knownClueIds,
                 physical_state: modelText(person.physicalState, LIMITS.personState),
                 emotional_state: modelText(person.emotionalState, LIMITS.personState),
@@ -2887,6 +3617,7 @@ export function compactStateForModel(state, {
                 actors: event.actors,
                 known_by: event.knownBy,
                 caused_by: event.causedBy,
+                public_trace: modelText(event.publicTrace, LIMITS.eventPublicTrace),
                 visibility: event.visibility,
                 delivery_state: event.delivery.state,
             })),
@@ -2975,7 +3706,7 @@ export function buildSimulationPrompt(state, {
         : `11. 只处理标记 new="true" 的最后 ${newAssistantIndexSet.size} 个 assistant_turn，并按消息顺序合并变化；new="false" 的轮次只用于理解因果，不得重复计算。`;
 
     return [
-        '你是“世界背面”的世界状态推演器。你不写小说正文，不总结长期记忆，只处理标记为 new="true" 的 AI 正文新造成的世界变化。',
+        '你是“世界背面”的世界状态引擎。你维护一个持续运转的世界，不是正文纪要器。正文只是当前镜头；镜头外已经结算的结果同样属于真实世界。你不续写小说正文，只处理标记为 new="true" 的正文变化，并继续维护必要的镜头外因果。',
         '',
         '推演原则：',
         `1. 主世界时间是唯一进度轴。${timeRule}`,
@@ -2985,7 +3716,10 @@ export function buildSimulationPrompt(state, {
         '1D. 模糊时段只能辅助 elapsed_minutes 或首次初始化，不得在每轮把主时钟重新对齐到某个固定“清晨/晚上”钟点。',
         `本次尺度：${simulationRule}`,
         '2. 玩家/用户的行动只能来自正文已经发生的内容，不得替玩家新增行动。',
-        `3. 前台已经发生的事实必须回写人物位置、行动和事件；本次最多更新 ${npcBudget} 名镜头外 NPC。其余人物保持休眠，不得为了“热闹”集体更新。`,
+        `3. 先做“前台事实协调”：new="true" 正文明确写出的时间、人物位置/移动、行动、身体状态、物品或环境变化必须回写。这个步骤不受后台 NPC 预算限制。完成前台协调后，本次最多更新 ${npcBudget} 名镜头外 NPC。`,
+        '3A. 推演前权威状态不是可选建议。若新正文没有描写移动/返回/离场等过渡，却把人物放到与权威位置矛盾的地方，不要默默覆盖世界状态；把它写入 consistency_conflicts，并保持原世界事实。只有正文明确建立了新的过渡或可靠新事实，才接受正文并更新状态。',
+        '3B. 后台推演也可以形成真实世界事实。事件一旦 resolved/cancelled/missed，或镜头外行动已经客观完成，就必须把结果结算进人物/事件状态；无法落到现有字段的稳定结果写入 world_facts_upsert。不要等正文重复确认它才算发生。',
+        '3C. 结算结果如果改变了人物位置、当前行动、身体/资源状态等已有结构字段，必须同步写入对应 people_upsert；不能只在 event.result 里写“已经到达卧室”，却继续让人物权威位置停在工作室。事件结果与人物/地点状态必须彼此一致。',
         '大量同阵营或同地点 NPC 的共同变化优先合并成势力/地点事件；名字重新出现、地点接近、关联事件到时或伏笔命中时再唤醒个人。',
         '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
@@ -2994,15 +3728,18 @@ export function buildSimulationPrompt(state, {
         `7. ${userVoiceRule} ${playerIdentityRule}`,
         '8. long_term_goal 是人物较稳定的长期方向；只有目标真正建立、完成、放弃或转向时才更新，不能把本轮动作重复填进去。',
         '9. inner_voice 是幕后观测信息，不得当作主角已知事实，也不得写入 deliveries_confirmed。',
-        '10. deliveries_confirmed 只填写本批新正文确实承接、感知或留下可见痕迹的事件ID。没有写进正文就不要确认。',
+        '10. deliveries_confirmed 只表示“正文是否看见了结果”，绝不决定结果是否存在。已经结算的世界事实即使没有显露也仍然有效；只有本批新正文确实承接、感知或留下可见痕迹时才填写对应事件ID。',
         newAssistantRule,
         '12. 相关旧记忆中的伏笔只能帮助保持因果连续；角色不知情的隐藏伏笔不能突然变成角色知识。',
-        '12A. NPC 认知由 known_event_ids / known_fact_keys / known_clue_ids 与事件 known_by 共同记录。只有亲历、被明确告知、主动调查得到、或通过该人物既有身份/渠道合理获得的信息才能加入；绝不能把玩家知道、旁白知道或后台知道的内容自动复制给 NPC。账本条目不会因为本轮未提及而自动遗忘。对于本轮确实处理到的旧人物，在核对其当前认知后设置 cognition_ready=true；旧存档人物首次升级时不得把所有相关记忆批量回填，只能加入有证据支持其知情的条目。',
+        '12A. NPC 认知由 known_event_ids / known_fact_keys / known_fact_beliefs / known_clue_ids 与事件 known_by 共同记录。只有亲历、被明确告知、主动调查得到、或通过该人物既有身份/渠道合理获得的信息才能加入；绝不能把玩家知道、旁白知道或后台知道的内容自动复制给 NPC。账本条目不会因为本轮未提及而自动遗忘。known_fact_beliefs 保存该人物实际获知时的事实版本；世界事实后续更迭时不得自动刷新。若人物本轮确实得知同一 key 的新版本，除了保留 known_fact_keys，还要把该 key 放进 known_fact_refresh_keys。对于本轮确实处理到的旧人物，在核对其当前认知后设置 cognition_ready=true；旧存档人物首次升级时不得把所有相关记忆批量回填，只能加入有证据支持其知情的条目。',
         '12B. event.visibility 只表示事件对前台/玩家的显露边界，不代表 NPC 是否知道；NPC 是否知情只看 known_by 与人物认知账本。known_by 优先填写已有人物 id，新人物尚无 id 时可暂填精确姓名。',
         '12C. physical_state / emotional_state / resource_state 是人物当前状态。状态变化必须真实影响 action、intent 与执行能力；受伤、疲劳、缺资源、权限不足或情绪压力不能下一轮凭空消失。不得发明角色卡、身份锚点、既有记忆未支持的技能、装备、权限或知识。玩家的 emotional_state 只有正文/玩家明确表达时才能更新，不得替玩家猜内心。',
         '12D. 新事件要写明 cause；若它由已有事件的行动、结果或后果继续发酵，必须在 caused_by 填上游事件 ID。actors 只列真实参与/经历该事件的人，known_by 只列确实知情的人。一个事件解决后如果产生了新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命；也不要为了制造“热闹”强行生成后续。',
-        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔被明确呼应或解决时使用原 ID 更新。',
-        '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。',
+        '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
+        '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',
+        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。',
+        '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。长期事实必须更迭：同一稳定 key 出现新值时提交新值，让旧版本退出 active；明确失效/否定时写 facts_invalidate。不要让过期事实与新事实同时保持当前有效。',
+        '14A. 事实层更新只代表世界真相/档案更新，绝不能因此自动把新值塞进所有 NPC 的 known_fact_keys；NPC 认知仍只按 12A 的知情证据单独变化。',
         '同一类事实使用稳定 key。正文给出新值时保留 key；插件会保留旧版本并标为 superseded。正文明确否定某条旧事实时写入 facts_invalidate；真假未定时用 status=disputed。',
         '人物 source 只有在本批 new="true" 正文真实描写到该人物时才填 foreground；镜头外人物必须填 background。present_in_scene 只有人物本人在当前场景中实际行动、说话或被直接感知时才为 true；仅被提及、回忆、谈论、作为目标或出现在内心想法里一律为 false。last_seen_message_id 必须填该人物最后实际出现的 assistant 消息 ID。',
         customRule
@@ -3055,6 +3792,7 @@ export function buildSimulationPrompt(state, {
                 cognition_ready: true,
                 known_event_ids: [],
                 known_fact_keys: [],
+                known_fact_refresh_keys: [],
                 known_clue_ids: [],
                 physical_state: '',
                 emotional_state: '',
@@ -3080,6 +3818,7 @@ export function buildSimulationPrompt(state, {
                 actors: [],
                 known_by: [],
                 caused_by: [],
+                public_trace: '',
                 visibility: 'hidden',
                 delivery_route: '',
             }],
@@ -3094,6 +3833,7 @@ export function buildSimulationPrompt(state, {
                 actors: [],
                 known_by: [],
                 caused_by: [],
+                public_trace: '',
                 visibility: 'hidden',
                 delivery_route: '',
             }],
@@ -3102,6 +3842,26 @@ export function buildSimulationPrompt(state, {
                 text: '',
                 affects: [],
                 visibility: 'known',
+            }],
+            world_facts_upsert: [{
+                key: 'person:人物ID:location',
+                subject_type: 'person | event | world | location | item | organization | other',
+                subject_id: '',
+                subject: '',
+                field: 'location | state | result | owner | condition | other',
+                value: '',
+                source: 'simulation | foreground',
+                visibility: 'hidden | trace | known | direct',
+                confidence: 'high',
+                event_id: '',
+            }],
+            consistency_conflicts: [{
+                subject: '',
+                field: '',
+                previous_value: '',
+                narrative_value: '',
+                resolution: 'keep-world | accept-narrative | transition',
+                reason: '',
             }],
             memory_update: {
                 facts_upsert: [{
@@ -3134,14 +3894,15 @@ export function buildSimulationPrompt(state, {
                     people: [],
                     locations: [],
                     tags: [],
-                    status: 'open',
+                    status: 'open | developing | triggered',
                     importance: 1,
                     visibility: 'hidden',
                 }],
                 clues_resolve: [{
                     id: '',
-                    status: 'resolved',
+                    status: 'resolved | discarded',
                     resolution: '',
+                    reason: '',
                 }],
             },
         }),
@@ -3292,6 +4053,63 @@ export function createSnapshot(state, meta = {}) {
         },
         state: trimState(deepClone(state)),
     };
+}
+
+// Message/swipe snapshots used to copy the entire hierarchical memory pool into
+// every turn. On very long chats that makes chat metadata grow roughly with
+// "turns × accumulated memory". Compact snapshots keep the branch-specific
+// world state plus only the summaries that end on the snapshot's own cutoff;
+// older summaries are reconstructed from one chat-level archive on restore.
+export function createCompactSnapshot(state, meta = {}) {
+    const trimmed = trimState(deepClone(state));
+    const summaries = asArray(trimmed.storyMemory?.summaries);
+    const explicitCutoff = Number.parseInt(meta.memorySummaryCutoffMessageId ?? meta.messageId, 10);
+    const inferredCutoff = summaries.reduce(
+        (maximum, summary) => Math.max(maximum, Number(summary?.endMessageId ?? -1)),
+        -1,
+    );
+    const cutoff = Number.isFinite(explicitCutoff) && explicitCutoff >= 0
+        ? explicitCutoff
+        : inferredCutoff;
+    const localSummaries = cutoff >= 0
+        ? summaries.filter(summary => Number(summary?.endMessageId ?? -1) === cutoff)
+        : [];
+    trimmed.storyMemory = {
+        ...trimmed.storyMemory,
+        summaries: deepClone(localSummaries),
+    };
+    return {
+        schemaVersion: SCHEMA_VERSION,
+        takenAt: nowIso(),
+        meta: {
+            messageId: meta.messageId ?? null,
+            swipeId: meta.swipeId ?? null,
+            sourceKey: asString(meta.sourceKey, '', 180),
+            kind: asString(meta.kind, 'result', 30),
+            compactMemory: true,
+            memorySummaryCutoffMessageId: cutoff,
+        },
+        state: trimmed,
+    };
+}
+
+export function restoreCompactSnapshot(snapshot, fallback = null, summaryPool = []) {
+    const restored = restoreSnapshot(snapshot, fallback);
+    if (!snapshot?.meta?.compactMemory) return restored;
+    const cutoff = asInteger(snapshot?.meta?.memorySummaryCutoffMessageId, -1, -1);
+    const localSummaries = asArray(snapshot?.state?.storyMemory?.summaries);
+    const localIds = new Set(localSummaries.map(summary => String(summary?.id || '')).filter(Boolean));
+    const archived = cutoff >= 0
+        ? asArray(summaryPool).filter(summary => (
+            Number(summary?.endMessageId ?? -1) < cutoff
+            && !localIds.has(String(summary?.id || ''))
+        ))
+        : [];
+    restored.storyMemory = {
+        ...restored.storyMemory,
+        summaries: [...archived, ...localSummaries],
+    };
+    return trimState(restored);
 }
 
 function normalizeRecoveryPoint(raw) {
@@ -3637,6 +4455,38 @@ export function trimState(inputState) {
     state.echoes = asArray(state.echoes).slice(0, LIMITS.echoes);
     state.archive = asArray(state.archive).slice(0, LIMITS.archive);
     state.foregroundFacts = asArray(state.foregroundFacts).slice(0, LIMITS.foregroundFacts);
+
+    const normalizedWorldFacts = [];
+    for (const rawFact of asArray(state.worldFacts).slice(0, LIMITS.worldFacts)) {
+        const existing = normalizedWorldFacts.find(item => item.key === worldFactStableKey(rawFact));
+        const fact = normalizeWorldFact(rawFact, existing, state.clock.absoluteMinute);
+        if (!fact.value) continue;
+        if (existing) Object.assign(existing, fact);
+        else normalizedWorldFacts.push(fact);
+    }
+    state.worldFacts = normalizedWorldFacts;
+
+    // Schema 14 introduces an explicit authoritative fact layer. Old person
+    // locations may already lag behind the latest foreground, so migration does
+    // not immediately promote them to hard facts. Terminal event results are safe
+    // to retain; person state becomes authoritative after the first successful
+    // 1.3 reconciliation pass.
+    if (previousSchemaVersion < 14) {
+        state.needsReconciliation = true;
+        if (!state.worldFacts.length) {
+            for (const event of state.events) settleEventResultFact(state, event, null);
+        }
+    } else {
+        state.needsReconciliation = Boolean(state.needsReconciliation);
+    }
+
+    state.consistencyConflicts = asArray(state.consistencyConflicts)
+        .map(conflict => normalizeConsistencyConflict(
+            conflict,
+            state.clock.absoluteMinute,
+            conflict?.messageId ?? null,
+        ))
+        .slice(0, LIMITS.consistencyConflicts);
     state.storyMemory = normalizeStoryMemory(state.storyMemory, state.clock.absoluteMinute);
     state.audit = asArray(state.audit).slice(0, LIMITS.audit);
     state.revision = asInteger(state.revision, 0, 0);

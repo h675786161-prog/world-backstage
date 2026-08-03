@@ -506,15 +506,13 @@ function renderSyncStrip(syncStatus) {
         : '';
     const summaryHtml = summary ? `
         <details class="wb-sync-summary">
-            <summary>本次变化与用量</summary>
+            <summary>本次变化</summary>
             <div>
                 <span>世界时间</span><strong>${summary.elapsedMinutes > 0 ? `+${escapeHtml(formatDuration(summary.elapsedMinutes))}` : '未推进'}</strong>
                 <span>人物变化</span><strong>${summary.peopleChanged || 0} 人 ${changedNames}</strong>
                 <span>事件变化</span><strong>新增 ${summary.eventsAdded || 0} · 更新 ${summary.eventsUpdated || 0} ${eventNames}</strong>
                 <span>记忆变化</span><strong>新增 ${summary.memoryAdded || 0} · 更新 ${summary.memoryUpdated || 0}</strong>
-                <span>推演上下文</span><strong>约 ${summary.promptTokens || 0} token · ${summary.promptCharacters || 0} 字符</strong>
-                <span>模型输出</span><strong>约 ${summary.outputTokens || 0} / ${summary.outputBudget || 0} token · ${summary.attempts || 1} 次请求</strong>
-                <span>正文注入</span><strong>${summary.injectionCharacters || 0} 字符 · ${summary.injectionEvents || 0} 个事件${summary.omittedInjectionLines ? ` · 压缩 ${summary.omittedInjectionLines} 行` : ''}</strong>
+                <span>正文显露</span><strong>${summary.injectionEvents || 0} 个事件</strong>
             </div>
         </details>
     ` : '';
@@ -588,39 +586,39 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
         const key = String(value);
         const maps = {
             apiMode: {
-                tavern: '跟着酒馆当前连接走就好啦～最省心，主聊天换模型时这里也会一起跟着变 `(｡•̀ᴗ-)✧`',
-                custom: '世界背面改用自己的独立接口，不会动主聊天连接。也可以把常用接口保存成方案，再分给不同模块使用～',
+                tavern: '使用酒馆当前连接。',
+                custom: '使用世界背面的独立接口。',
             },
             theme: {
-                auto: '让界面跟着世界昼夜自己换衣服～只改外观，不会碰世界时间。',
-                day: '固定日间配色，亮一点、清清爽爽 (◕ᴗ◕✿)',
-                night: '固定夜间配色，适合深夜修世界……虽然不建议又熬到天亮（盯）',
+                auto: '跟随世界昼夜。',
+                day: '固定日间配色。',
+                night: '固定夜间配色。',
             },
             uiScale: {
-                compact: '信息会更紧一些，适合大屏同时看很多内容。字体仍会保持可读，不会缩成蚂蚁字。',
-                comfortable: '默认推荐～阅读和信息密度比较平衡，大多数屏幕都舒服。',
-                large: '把阅读文字整体放大，手机端或长时间看后台会轻松很多。',
+                compact: '信息更紧凑。',
+                comfortable: '默认阅读密度。',
+                large: '放大阅读文字。',
             },
             deliveryDensity: {
-                restrained: '后台照常生活，但尽量别来抢镜头～只有真的值得递到前台时才露面。',
-                balanced: '重要变化会更自然地靠近镜头，日常和主线之间取个中间值。',
-                active: '更积极地让后台结果寻找显露机会，适合想让世界存在感强一点的时候。',
+                restrained: '后台照常运行，只减少主动显露。',
+                balanced: '重要结果自然靠近当前镜头。',
+                active: '更积极寻找自然显露机会。',
             },
             autoSimulationMode: {
-                manual: '只记下“这里还没推演”，等你自己点按钮再跑。最可控，也最省调用。',
-                light: '轻量维护必要状态，少扩展新支线，适合安静日常和省 Token。',
-                balanced: '默认推荐～人物、事件和记忆都会正常维护，不会故意把世界搅得很吵。',
-                deep: '会更认真梳理人物与因果，适合复杂多人剧情；对应的上下文和输出预算也更高。',
+
+                light: '只维护必要的镜头外变化。',
+                balanced: '默认强度，兼顾人物与事件。',
+                deep: '扩大镜头外维护范围与因果深度。',
             },
             timePolicy: {
-                world: '世界钟做唯一权威～根据本轮真实发生的事情估算耗时，再让正文时间跟着它走。',
-                explicit: '只有出现明确、可计算的时间证据才推进。最保守，几乎不猜时间。',
-                cautious: '允许合理估算，但会把幅度压小，适合慢节奏日常和细致互动。',
-                open: '允许旅行、工作、等待这类事件自然跨过更长时间，适合时间跨度大的剧情。',
+                world: '世界钟作为连续时间基准，并跟随正文可靠时间事实校准。',
+                explicit: '只接受明确可计算的时间。',
+                cautious: '允许小幅保守估算。',
+                open: '允许依据叙事自然估算更长时间。',
             },
             publicOpinionRevealMode: {
-                observe: '安心吃瓜就好啦～新闻和论坛只待在舆情页，不会跑去打扰正文 (˘▾˘)',
-                relevant: '只有和当前人物、地点或事件真的沾边，而且存在自然接触渠道时，舆情才有机会在正文里露个脸。不会硬插播～',
+                observe: '只在舆情页查看。',
+                relevant: '与当前镜头相关时可自然显露。',
             },
         };
         return maps[setting]?.[key] || '';
@@ -670,8 +668,8 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 </dl>
                 ${syncStatus?.error ? `<p>${escapeHtml(syncStatus.error)}</p>` : ''}
                 <small>${settings.apiMode === 'custom'
-                    ? '独立接口仍使用自己的模型与 Key。世界背面使用内置兼容 system 与任务专用 system；人物即时观测保持独立 POV。'
-                    : '当前跟随酒馆主 API。世界背面使用内置兼容 system 与任务专用 system；人物即时观测保持独立 POV。'}</small>
+                    ? '使用独立接口，不影响主聊天连接。'
+                    : '使用酒馆当前连接。'}</small>
             </div>
 
             <div class="wb-setting-block">
@@ -740,10 +738,10 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </label>
                     <p>只是临时试接口的话不用管这里～想以后直接复用，就填个名字再点「保存为方案」。</p>
                     <div class="wb-api-actions">
-                        <button type="submit">保存默认独立接口</button>
-                        <button type="button" data-wb-action="save-api-profile-from-form">${apiValues.profileId ? '保存方案修改' : '保存为方案'}</button>
-                        <button type="button" data-wb-action="test-api">测试连接</button>
-                        <button type="button" data-wb-action="pull-api-models"
+                        <button class="wb-api-action is-primary" type="submit">保存默认独立接口</button>
+                        <button class="wb-api-action is-accent" type="button" data-wb-action="save-api-profile-from-form">${apiValues.profileId ? '保存方案修改' : '保存为方案'}</button>
+                        <button class="wb-api-action" type="button" data-wb-action="test-api">测试连接</button>
+                        <button class="wb-api-action" type="button" data-wb-action="pull-api-models"
                             ${modelPull.phase === 'running' ? 'disabled' : ''}>
                             ${modelPull.phase === 'running' ? '正在拉取…' : '拉取模型列表'}
                         </button>
@@ -765,10 +763,11 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                                 <span>${escapeHtml(profile.model || '未选模型')} · ${escapeHtml(profile.transport === 'direct' ? '浏览器直连' : '酒馆转发')}</span>
                                             </div>
                                             <div class="wb-api-profile-actions">
-                                                <button type="button" data-wb-action="edit-api-profile" data-profile-id="${escapeAttr(profile.id)}">编辑</button>
-                                                <button type="button" data-wb-action="test-api-profile" data-profile-id="${escapeAttr(profile.id)}">测试</button>
-                                                <button type="button" data-wb-action="duplicate-api-profile" data-profile-id="${escapeAttr(profile.id)}">复制</button>
-                                                <button type="button" data-wb-action="delete-api-profile" data-profile-id="${escapeAttr(profile.id)}">删除</button>
+                                                <button class="wb-api-profile-chip is-accent" type="button" data-wb-action="edit-api-profile" data-profile-id="${escapeAttr(profile.id)}">编辑</button>
+                                                <button class="wb-api-profile-chip" type="button" data-wb-action="test-api-profile" data-profile-id="${escapeAttr(profile.id)}">测试</button>
+                                                <button class="wb-api-profile-chip" type="button" data-wb-action="pull-api-profile-models" data-profile-id="${escapeAttr(profile.id)}">模型</button>
+                                                <button class="wb-api-profile-chip" type="button" data-wb-action="duplicate-api-profile" data-profile-id="${escapeAttr(profile.id)}">复制</button>
+                                                <button class="wb-api-profile-chip is-danger" type="button" data-wb-action="delete-api-profile" data-profile-id="${escapeAttr(profile.id)}">删除</button>
                                             </div>
                                         </article>
                                     `).join('')}
@@ -795,7 +794,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                     <select data-wb-api-route="opinion">${routeOptions(apiModuleRoutes.opinion || 'default')}</select>
                                 </label>
                             </div>
-                            <p>优先级：模块指定方案 ＞ 模块明确跟随酒馆 ＞ 世界背面默认连接。实际调用来源会继续显示在状态栏里，排 bug 不靠猜～</p>
                         </div>
                     </details>
 
@@ -852,6 +850,15 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 </select>
             </div>
 
+            <div class="wb-setting-toggle">
+                <div><strong>后台结果自然显露</strong><span>只控制结果是否主动寻找进入正文的机会；已成立世界事实始终用于保持连续性</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="worldPromptInjection"
+                        ${settings.worldPromptInjection ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+
             <div class="wb-setting-block">
                 <label>舆情是否靠近主线</label>
                 <div class="wb-option-row">
@@ -867,24 +874,16 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             </details>
 
             <details class="wb-settings-group" data-settings-group="simulation" ${groupOpen('simulation')}>
-                <summary><span>自动推演</span><small>频率、重试、NPC 与时间</small></summary>
+                <summary><span>世界运行</span><small>强度、频率与时间</small></summary>
                 <div class="wb-settings-group-body wb-settings-subgroup-stack">
                     <details class="wb-settings-subgroup" data-settings-subgroup="simulation-switches" ${subgroupOpen('simulation-switches')}>
-                        <summary><span>推演开关</span><small>启用状态与正文注入</small></summary>
+                        <summary><span>基础开关</span><small>启用或暂停世界引擎</small></summary>
                         <div class="wb-settings-subgroup-body">
             <div class="wb-setting-toggle">
-                <div><strong>启用世界推演</strong><span>关闭后不再生成或推进，但保留现有世界数据</span></div>
+                <div><strong>启用世界引擎</strong><span>关闭后暂停世界推演与连续性注入，现有世界数据仍会保留</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="worldSimulationEnabled"
                         ${settings.worldSimulationEnabled ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-            <div class="wb-setting-toggle">
-                <div><strong>推演结果注入正文</strong><span>关闭后后台世界照常运行，只是不参与主对话生成</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="worldPromptInjection"
-                        ${settings.worldPromptInjection ? 'checked' : ''}>
                     <i></i>
                 </label>
             </div>
@@ -892,12 +891,11 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </details>
 
                     <details class="wb-settings-subgroup" data-settings-subgroup="simulation-trigger" ${subgroupOpen('simulation-trigger')}>
-                        <summary><span>自动触发</span><small>模式与累计频率</small></summary>
+                        <summary><span>运行方式</span><small>强度与累计频率</small></summary>
                         <div class="wb-settings-subgroup-body">
             <div class="wb-setting-block">
-                <label>自动推演方式</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'manual', '手动')}
+                <label>世界运转强度</label>
+                <div class="wb-option-row">
                     ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'light', '轻量')}
                     ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'balanced', '均衡')}
                     ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'deep', '深入')}
@@ -916,7 +914,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         data-wb-setting="autoSimulationInterval"
                         value="${escapeAttr(settings.autoSimulationInterval)}">
                 </label>
-                <p>设成 N 轮后，会把这 N 轮新正文按顺序一起吃进去再推演～不会只盯着最后一条。</p>
             </div>
                         </div>
                     </details>
@@ -938,7 +935,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         data-wb-setting="autoRetryCount"
                         value="${escapeAttr(settings.autoRetryCount)}">
                 </label>
-                <p>重试会一直抱着同一份推演前快照跑～只有拿到合法结果才提交，所以不会越重试时间越往前窜。</p>
                 <label>单次最大输出</label>
                 <div class="wb-option-row wb-option-row-four">
                     ${settingButton('maxOutputTokens', settings.maxOutputTokens, 0, '自动')}
@@ -952,7 +948,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         data-wb-setting="maxOutputTokens"
                         value="${escapeAttr(settings.maxOutputTokens)}">
                 </label>
-                <p>碰到 JSON 被截断、模型喊“写不下啦”的时候可以往上加～设成 0 就交给轻量 / 均衡 / 深入档位自己分配。</p>
                 <label class="wb-custom-instruction">
                     自定义推演要求
                     <textarea data-wb-setting="customSimulationInstruction" maxlength="1000" rows="3"
@@ -979,7 +974,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         data-wb-setting="backgroundNpcBudget"
                         value="${escapeAttr(settings.backgroundNpcBudget)}">
                 </label>
-                <p>已经在镜头里的角色照常更新～这个上限只管镜头外 NPC。没轮到的人会先安静过日子，群体变化会尽量合并成势力或地点事件。</p>
             </div>
 
             <div class="wb-setting-toggle">
@@ -1053,7 +1047,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                             ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
                             ${worldbook.phase === 'running' ? '正在读取…' : '读取并识别人物'}
                         </button>
-                        <p>只有你点了才会扫描～识别出来的只是候选人物，不会擅自导入，更不会碰原世界书 (•̀ᴗ•́)و</p>
                         ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
                         ${worldbookEntries.length ? `
                             <div class="wb-worldbook-browser">
@@ -1139,33 +1132,31 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </details>
 
                     <details class="wb-settings-subgroup" data-settings-subgroup="memory-history" ${subgroupOpen('memory-history')}>
-                        <summary><span>历史档案</span><small>自动整理、进度与手动建档</small></summary>
+                        <summary><span>自动整理</span><small>进度与手动整理</small></summary>
                         <div class="wb-settings-subgroup-body">
             <div class="wb-history-settings">
                 <div class="wb-history-heading">
                     <div>
-                        <label>长篇历史档案</label>
+                        <label>记忆整理</label>
                         <strong>${escapeHtml(
                             historyRunning
-                                ? memory.message || '正在扫描'
-                                : `${memory.facts || 0} 条事实 · ${memory.clues || 0} 条伏笔 · ${memory.summaries || 0} 段分层经历`,
+                                ? memory.message || '正在整理'
+                                : '自动维护长期记忆',
                         )}</strong>
                     </div>
-                    <span>${historyRunning ? `${historyPercent}%` : `已到第 ${Math.max(-1, Number(memory.indexedThroughMessageId ?? -1))} 层`}</span>
+                    <span>${historyRunning ? `${historyPercent}%` : (Number(memory.pendingAssistantResponses || 0) > 0 ? '有新增正文' : '已跟上正文')}</span>
                 </div>
                 ${historyRunning ? `
                     <div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>
                 ` : ''}
-                <p>第一次会分批把当前重抽分支收拾一遍～以后只追新增正文。每条 AI 正文先留下 L0 单轮片段；攒够 12 条会压成 L1，6 个 L1 再压成 L2，3 个 L2 再收成 L3。压缩只建上层索引，下层来源不会偷偷消失。</p>
-                <p class="wb-memory-retention-note">记得多 ≠ 每轮全塞给模型哦～平时常驻的是更高层经历，再按当前人物 / 地点 / 事件把相关 L0/L1 细节叫回来；锁定事实、未回收伏笔和来源链也会优先保留 (｡•̀ᴗ-)✧</p>
-                ${Array.isArray(memory.summaryLevels) ? `<p class="wb-memory-retention-note">当前分层：L0 ${memory.summaryLevels[0] || 0} · L1 ${memory.summaryLevels[1] || 0} · L2 ${memory.summaryLevels[2] || 0} · L3 ${memory.summaryLevels[3] || 0}${memory.pendingRollup ? ' · 还有一组等着压缩～' : ''}</p>` : ''}
+                <p>自动整理新增正文，保留重要事实、关系、承诺和未完成伏笔。</p>
                 <div class="wb-memory-queue">
-                    <span>尚有 ${Math.max(0, Number(memory.pendingAssistantResponses || 0))} 条 AI 正文未整理</span>
+                    <span>待整理 ${Math.max(0, Number(memory.pendingAssistantResponses || 0))} 条正文</span>
                     <strong>${settings.memoryAutoIndexInterval > 0
-                        ? `自动阈值 ${settings.memoryAutoIndexInterval} 条`
-                        : '当前仅手动整理'}</strong>
+                        ? `自动 · 每 ${settings.memoryAutoIndexInterval} 轮`
+                        : '手动整理'}</strong>
                 </div>
-                <label>自动整理记忆</label>
+                <label>整理方式</label>
                 <div class="wb-option-row wb-option-row-four">
                     ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 0, '手动')}
                     ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 5, '每 5 轮')}
@@ -1173,15 +1164,14 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 20, '每 20 轮')}
                 </div>
                 <label class="wb-number-setting">
-                    自定义新增回复数
+                    自定义间隔（轮）
                     <input type="number" min="0" max="50" step="1"
                         data-wb-setting="memoryAutoIndexInterval"
                         value="${escapeAttr(settings.memoryAutoIndexInterval)}">
                 </label>
-                <p>设成 N 后，每攒够 N 条还没整理的 AI 正文就自动收拾一批～设成 0 就完全手动。</p>
                 <button type="button" data-wb-action="scan-history"
                     ${historyRunning || !settings.memorySystemEnabled ? 'disabled' : ''}>
-                    ${Number(memory.indexedThroughMessageId ?? -1) < 0 ? '建立初始记忆档案' : '立即整理新增正文'}
+                    ${Number(memory.indexedThroughMessageId ?? -1) < 0 ? '整理当前记忆' : '立即整理'}
                 </button>
             </div>
                         </div>
@@ -1191,61 +1181,57 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             </details>
 
             <details class="wb-settings-group" data-settings-group="calendar" ${groupOpen('calendar')}>
-                <summary><span>日历与数据</span><small>日期校准、导入与导出</small></summary>
-                <div class="wb-settings-group-body wb-settings-subgroup-stack">
-                    <details class="wb-settings-subgroup" data-settings-subgroup="calendar-clock" ${subgroupOpen('calendar-clock')}>
-                        <summary><span>主世界日历</span><small>正文校准、手动设定与快进</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <form class="wb-clock-form" data-wb-form="clock">
-                <div class="wb-clock-form-heading">
-                    <div><label>主世界日历</label><strong>${escapeHtml(clockLabel)}</strong></div>
-                    <span>每个聊天独立保存</span>
-                </div>
-                <label class="wb-calendar-name-field">
-                    历法名称
-                    <input name="calendarName" maxlength="40"
-                        value="${escapeAttr(clock.calendarName)}" placeholder="例如：帝国历">
-                </label>
-                <div class="wb-calendar-date-fields">
-                    <label><input name="year" type="number" min="1" max="9999"
-                        value="${clock.year}"> 年</label>
-                    <label><input name="month" type="number" min="1" max="12"
-                        value="${clock.month}"> 月</label>
-                    <label><input name="day" type="number" min="1" max="31"
-                        value="${clock.dayOfMonth}"> 日</label>
-                </div>
-                <div class="wb-clock-fields">
-                    <label><input name="hour" type="number" min="0" max="23" value="${clock.hour}"> 时</label>
-                    <label><input name="minute" type="number" min="0" max="59" value="${clock.minute}"> 分</label>
-                    <button type="button" data-wb-action="sync-clock-from-story">与正文校准</button>
-                    <button type="submit" class="wb-clock-manual-save">手动设定</button>
-                </div>
-                <p class="wb-clock-sync-note">“与正文校准”只读取最新一条有效正文；识别不到明确年月日或钟点时不会改动世界钟。</p>
-                <div class="wb-time-actions">
-                    <button type="button" data-wb-action="advance-clock" data-minutes="60">+ 1 小时</button>
-                    <button type="button" data-wb-action="advance-clock" data-minutes="360">+ 6 小时</button>
-                    <button type="button" data-wb-action="advance-clock" data-minutes="1440">+ 1 天</button>
-                </div>
-            </form>
+                <summary><span>日历</span><small>主世界时间、校准与快进</small></summary>
+                <div class="wb-settings-group-body">
+                    <form class="wb-clock-form" data-wb-form="clock">
+                        <div class="wb-clock-form-heading">
+                            <div><label>主世界日历</label><strong>${escapeHtml(clockLabel)}</strong></div>
+                            <span>每个聊天独立保存</span>
                         </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="calendar-data" ${subgroupOpen('calendar-data')}>
-                        <summary><span>数据备份</span><small>导出与导入当前世界</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-actions">
-                <button type="button" data-wb-action="export-state">导出当前世界</button>
-                <button type="button" data-wb-action="import-state">导入世界状态</button>
-                <input class="wb-import-input" type="file" accept=".json,application/json">
-            </div>
+                        <label class="wb-calendar-name-field">
+                            历法名称
+                            <input name="calendarName" maxlength="40"
+                                value="${escapeAttr(clock.calendarName)}" placeholder="例如：帝国历">
+                        </label>
+                        <div class="wb-calendar-date-fields">
+                            <label><input name="year" type="number" min="1" max="9999"
+                                value="${clock.year}"> 年</label>
+                            <label><input name="month" type="number" min="1" max="12"
+                                value="${clock.month}"> 月</label>
+                            <label><input name="day" type="number" min="1" max="31"
+                                value="${clock.dayOfMonth}"> 日</label>
                         </div>
-                    </details>
+                        <div class="wb-clock-fields">
+                            <label><input name="hour" type="number" min="0" max="23" value="${clock.hour}"> 时</label>
+                            <label><input name="minute" type="number" min="0" max="59" value="${clock.minute}"> 分</label>
+                            <button type="button" data-wb-action="sync-clock-from-story">与正文校准</button>
+                            <button type="submit" class="wb-clock-manual-save">手动设定</button>
+                        </div>
+                        <p class="wb-clock-sync-note">世界钟会随可靠正文时间自动校准；这里也可以手动补校准或快进。</p>
+                        <div class="wb-time-actions">
+                            <button type="button" data-wb-action="advance-clock" data-minutes="60">+ 1 小时</button>
+                            <button type="button" data-wb-action="advance-clock" data-minutes="360">+ 6 小时</button>
+                            <button type="button" data-wb-action="advance-clock" data-minutes="1440">+ 1 天</button>
+                        </div>
+                    </form>
                 </div>
             </details>
 
             <details class="wb-settings-group" data-settings-group="advanced" ${groupOpen('advanced')}>
                 <summary><span>高级与维护</span><small>过滤、恢复与诊断</small></summary>
                 <div class="wb-settings-group-body wb-advanced-settings-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-data" ${subgroupOpen('advanced-data')}>
+                        <summary><span>数据备份</span><small>导出与导入当前世界</small></summary>
+                        <div class="wb-settings-subgroup-body">
+                            <div class="wb-setting-actions">
+                                <button type="button" data-wb-action="export-state">导出当前世界</button>
+                                <button type="button" data-wb-action="import-state">导入世界状态</button>
+                                <input class="wb-import-input" type="file" accept=".json,application/json">
+                            </div>
+                            <p>要搬家、测试或大改前，先给当前世界留个备份吧～ (｡•̀ᴗ-)✧</p>
+                        </div>
+                    </details>
+
                     <details class="wb-settings-subgroup" data-settings-subgroup="advanced-tagfilter" ${subgroupOpen('advanced-tagfilter')}>
                         <summary><span>标签过滤</span><small>清理杂标签与 HTML 注释</small></summary>
                         <div class="wb-settings-subgroup-body">
@@ -1545,7 +1531,7 @@ function renderNowView(state, observerMode, people, activeEvents) {
                 </div>
                 <div class="wb-world-pulse" aria-hidden="true">
                     <i></i><i></i><span></span>
-                    <strong>${state.pendingSync ? '待推演' : '持续中'}</strong>
+                    <strong>${state.needsReconciliation ? '待校准' : state.pendingSync ? '待推演' : '持续中'}</strong>
                 </div>
             </section>
 
@@ -1582,14 +1568,14 @@ function renderNowView(state, observerMode, people, activeEvents) {
 function renderPeopleView(state, observerMode, people, openFolds = new Set()) {
     return `
         <div class="wb-view-intro">
-            <p>每个人都先过自己的日子啦～没说出口的心声会乖乖留在幕后，不会偷偷塞进主角脑袋里 (｡•̀ᴗ-)✧</p>
+            <p>人物会在镜头外继续生活；位置和行动属于世界状态，认知与幕后独白仍保持边界。</p>
             <div class="wb-memory-intro-actions">
                 <span>${people.length} 条可观测轨迹</span>
                 <button type="button" data-wb-action="open-person-editor">＋ 添加后台 NPC</button>
             </div>
         </div>
         <div class="wb-view-fold-head">
-            <span>先看她们现在在哪、在做什么就好～想深挖再展开意图、长期目标和幕后独白。</span>
+            <span>先看当前位置和行动，需要时再展开更多状态。</span>
             ${renderFoldToolbar('people:')}
         </div>
         <div class="wb-people-grid">
@@ -1675,14 +1661,20 @@ function renderPersonEditorModal(state, editor) {
     `;
 }
 
-function renderCurrentsView(state, activeEvents, openFolds = new Set()) {
+function renderCurrentsView(state, activeEvents, openFolds = new Set(), settings = {}) {
     return `
         <div class="wb-view-intro">
-            <p>暗流都拴在主世界钟上～AI 回复只是触发检查，时间没走，它们也不会偷偷靠轮数长大。</p>
-            <button class="wb-inline-add" type="button" data-wb-action="open-event-form">＋ 放入一条暗流</button>
+            <p>这里是仍在发展的世界进程；结果一旦确定，就会成为世界事实。</p>
+            <div class="wb-view-inline-actions">
+                <label class="wb-view-toggle">
+                    <span>自动运行</span>
+                    <input type="checkbox" data-wb-setting="worldAutoEnabled" ${settings.worldAutoEnabled ? 'checked' : ''}>
+                </label>
+                <button class="wb-inline-add" type="button" data-wb-action="open-event-form">＋ 放入一条暗流</button>
+            </div>
         </div>
         <div class="wb-view-fold-head">
-            <span>先扫一眼状态、地点和剩余时间～想看细节再展开，不用一上来被信息糊脸。</span>
+            <span>查看状态、地点与剩余时间。</span>
             ${renderFoldToolbar('currents:')}
         </div>
         <div class="wb-event-list is-full">
@@ -1695,11 +1687,11 @@ function renderCurrentsView(state, activeEvents, openFolds = new Set()) {
 function renderEchoesView(state, outcomes, openFolds = new Set()) {
     return `
         <div class="wb-view-intro">
-            <p>事情走到结果后会来到这里～只有正文真的接住过它，才会盖上“已由正文承接”的章。</p>
+            <p>已经形成结果的事情会在这里等待或记录它与正文的接触。</p>
             <span>最近结果</span>
         </div>
         <div class="wb-view-fold-head">
-            <span>先看结果和有没有递到前台，需要的时候再翻完整记录就好～</span>
+            <span>结果是否存在，与正文是否看见，是两回事。</span>
             ${renderFoldToolbar('echoes:')}
         </div>
         <div class="wb-echo-timeline">
@@ -1752,11 +1744,18 @@ function publicOpinionGeneratedLabel(value) {
 function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = {}) {
     const news = Array.isArray(opinion.news) ? opinion.news : [];
     const forums = Array.isArray(opinion.forums) ? opinion.forums : [];
-    const running = opinion.phase === 'running';
+    const canonRunning = Boolean(opinion.canonRunning);
+    const sandboxRunning = Boolean(opinion.sandboxRunning);
+    const running = canonRunning || sandboxRunning || opinion.phase === 'running';
     const stale = Boolean(opinion.stale && opinion.generatedAt);
     const relatedEvents = new Map((state.events || []).map(event => [event.id, event]));
-    const activeMode = mode === 'forum' ? 'forum' : 'news';
+    const sandbox = opinion.sandbox && typeof opinion.sandbox === 'object' ? opinion.sandbox : { news: [], forums: [], generatedAt: '' };
+    const sandboxItems = [...(sandbox.news || []), ...(sandbox.forums || [])];
+    const activeMode = ['forum', 'sandbox'].includes(mode) ? mode : 'news';
     const statusMessage = opinion.error || opinion.message || '';
+    const hasMainOpinion = news.length > 0 || forums.length > 0;
+    const hasSandboxOpinion = sandboxItems.length > 0;
+    const showStatusMessage = Boolean(statusMessage && (opinion.phase === 'error' || activeMode !== 'sandbox' || !hasSandboxOpinion));
     const renderRelated = item => {
         const event = relatedEvents.get(item.relatedEventId);
         return event
@@ -1764,9 +1763,9 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
             : '';
     };
     return `
-        <div class="wb-view-intro wb-opinion-intro">
-            <div>
-                <p>来看看镜头之外的人们都在聊些什么吧～ (ﾉ◕ヮ◕)ﾉ 新闻和论坛只是传播载体；“官方 / 非官方”看消息从哪来，“可能关注”则告诉你哪些圈子更容易在意它。</p>
+        <div class="wb-opinion-toolbar">
+            <div class="wb-opinion-summary">
+                <p>舆情只根据已经公开或可察觉的世界变化生成，不会反过来创造世界事实。</p>
                 <div class="wb-opinion-meta">
                     <span>快照 · ${escapeHtml(publicOpinionGeneratedLabel(opinion.generatedAt))}</span>
                     ${stale
@@ -1775,9 +1774,14 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                 </div>
             </div>
             <div class="wb-opinion-actions">
+                <label class="wb-view-toggle">
+                    <span>自动更新</span>
+                    <input type="checkbox" data-wb-setting="publicOpinionAutoEnabled" ${settings.publicOpinionAutoEnabled ? 'checked' : ''}>
+                </label>
                 ${opinion.generatedAt ? `<button type="button" data-wb-action="clear-public-opinion" ${running ? 'disabled' : ''}>清空</button>` : ''}
+                <button type="button" data-wb-action="generate-public-opinion-sandbox" ${running ? 'disabled' : ''}>${sandboxRunning ? '正在闲逛…' : '随便逛逛～'}</button>
                 <button class="wb-inline-add" type="button" data-wb-action="generate-public-opinion" ${running ? 'disabled' : ''}>
-                    ${running ? '正在整理…' : (opinion.generatedAt ? '刷新舆情' : '生成当前舆情')}
+                    ${canonRunning ? '正在刷新世界舆情…' : (opinion.generatedAt ? '刷新世界舆情' : '生成当前舆情')}
                 </button>
             </div>
         </div>
@@ -1786,8 +1790,10 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                 aria-selected="${activeMode === 'news'}" class="${activeMode === 'news' ? 'is-active' : ''}">📰 新闻 <small>${news.length}</small></button>
             <button type="button" role="tab" data-wb-action="set-public-opinion-mode" data-mode="forum"
                 aria-selected="${activeMode === 'forum'}" class="${activeMode === 'forum' ? 'is-active' : ''}">💬 论坛 <small>${forums.length}</small></button>
+            <button type="button" role="tab" data-wb-action="set-public-opinion-mode" data-mode="sandbox"
+                aria-selected="${activeMode === 'sandbox'}" class="${activeMode === 'sandbox' ? 'is-active' : ''}">🍿 闲逛 <small>${sandboxItems.length}</small></button>
         </div>
-        ${statusMessage ? `<div class="wb-opinion-status is-${escapeAttr(opinion.phase || 'idle')}">${escapeHtml(statusMessage)}</div>` : ''}
+        ${showStatusMessage ? `<div class="wb-opinion-status is-${escapeAttr(opinion.phase || 'idle')} ${hasMainOpinion || hasSandboxOpinion ? 'is-compact' : ''}">${escapeHtml(statusMessage)}</div>` : ''}
         ${activeMode === 'news' ? `
             <div class="wb-news-grid">
                 ${news.map(item => `
@@ -1809,7 +1815,7 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                     </article>
                 `).join('') || renderEmpty('今天的世界有点安静～', '还没有值得上新闻的事，或者你还没生成舆情快照 (˘▾˘)')}
             </div>
-        ` : `
+        ` : activeMode === 'forum' ? `
             <div class="wb-forum-list">
                 ${forums.map(item => `
                     <article class="wb-forum-card">
@@ -1838,16 +1844,44 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                     </article>
                 `).join('') || renderEmpty('论坛今天没吵起来～', '没有适合公开讨论的事，或者你还没生成舆情快照。')}
             </div>
+        ` : `
+            <div class="wb-opinion-sandbox">
+                <div class="wb-memory-fact-note"><strong>🍿 纯娱乐沙盒</strong> · 下面这些只是“世界里可能有人在聊什么”的随手小报，不算正史，不会写进事件、记忆、NPC认知或正文因果。</div>
+                ${sandbox.generatedAt ? `<div class="wb-opinion-meta wb-opinion-meta-inline"><span>闲逛快照 · ${escapeHtml(publicOpinionGeneratedLabel(sandbox.generatedAt))}</span><button class="wb-opinion-meta-button" type="button" data-wb-action="clear-public-opinion-sandbox">收起这锅瓜</button></div>` : ''}
+                <div class="wb-news-grid">
+                    ${(sandbox.news || []).map(item => `
+                        <article class="wb-news-card is-sandbox">
+                            <div class="wb-news-card-top"><span>${escapeHtml(item.category || '闲逛新闻')}</span><small>NON-CANON</small></div>
+                            <h3>${escapeHtml(item.headline)}</h3>
+                            <p>${escapeHtml(item.summary)}</p>
+                            <div class="wb-news-card-foot"><span>${escapeHtml(item.source || '世界里的普通公开信息')}</span></div>
+                        </article>
+                    `).join('')}
+                </div>
+                <div class="wb-forum-list">
+                    ${(sandbox.forums || []).map(item => `
+                        <article class="wb-forum-card is-sandbox">
+                            <div class="wb-forum-card-top"><span>${escapeHtml(item.board || '闲聊')}</span><small>NON-CANON</small></div>
+                            <h3>${escapeHtml(item.title)}</h3>
+                            <p>${escapeHtml(item.summary)}</p>
+                            ${item.replies?.length ? `<details class="wb-forum-reply-fold"><summary>看看 ${item.replies.length} 条代表回复～</summary><div class="wb-forum-replies">${item.replies.map(reply => `<div><strong>${escapeHtml(reply.author)}</strong><p>${escapeHtml(reply.text)}</p></div>`).join('')}</div></details>` : ''}
+                        </article>
+                    `).join('')}
+                </div>
+                ${sandboxItems.length ? '' : renderEmpty('今天还没随便逛～', '点一下“随便逛逛～”，抽一锅和主线无关的小新闻和论坛水帖。')}
+            </div>
         `}
     `;
 }
 
 function clueStatusLabel(status) {
     return {
-        open: '尚未呼应',
-        echoed: '已经回响',
-        resolved: '已经解决',
-        discarded: '不再有效',
+        open: '等待发芽',
+        developing: '正在发展',
+        echoed: '正在发展',
+        triggered: '已经触发',
+        resolved: '已经回收',
+        discarded: '已经放下',
     }[status] || '尚未呼应';
 }
 
@@ -1958,7 +1992,7 @@ function memorySummaryLevelMeta(summary) {
     const level = Math.max(0, Math.min(3, Number(summary?.level) || 0));
     const meta = [
         { label: 'L0 · 单轮片段', tone: 'detail', description: '最靠近原正文的一层～需要具体细节时优先从这里找。' },
-        { label: 'L1 · 阶段小结', tone: 'stage', description: '由一组单轮片段压成的小阶段，保留下面的来源链。' },
+        { label: 'L1 · 阶段小结', tone: 'stage', description: '由一组单轮片段压成的小阶段；旧碎片淡出后仍保留对应消息范围。' },
         { label: 'L2 · 章节总结', tone: 'chapter', description: '更高一层的章节记忆，适合常驻维持长线连续性。' },
         { label: 'L3 · 长期经历', tone: 'longterm', description: '最抽象的长期经历索引～只记真正跨阶段仍重要的变化。' },
     ];
@@ -2011,8 +2045,8 @@ function renderMemoryView(state, observerMode, {
     const allClues = [...(memory.clues || [])]
         .filter(clue => observerMode === 'backstage' || clue.visibility !== 'hidden')
         .sort((a, b) => (
-            Number(['open', 'echoed'].includes(b.status))
-            - Number(['open', 'echoed'].includes(a.status))
+            Number(['open', 'developing', 'echoed', 'triggered'].includes(b.status))
+            - Number(['open', 'developing', 'echoed', 'triggered'].includes(a.status))
             || Number(b.importance || 0) - Number(a.importance || 0)
             || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
         ));
@@ -2022,9 +2056,6 @@ function renderMemoryView(state, observerMode, {
         )
         : [];
     const summaryById = new Map(allSummaries.map(summary => [String(summary.id || ''), summary]));
-    const hierarchyCounts = [0, 1, 2, 3].map(level => (
-        allSummaries.filter(summary => summary.hierarchyManaged && Number(summary.level || 0) === level).length
-    ));
     const digest = observerMode === 'backstage' ? memory.digest : null;
     const normalizedFilter = ['active', 'facts', 'clues', 'episodes', 'all'].includes(filter)
         ? filter
@@ -2043,7 +2074,7 @@ function renderMemoryView(state, observerMode, {
         && (
             normalizedFilter === 'all'
             || normalizedFilter === 'clues'
-            || (normalizedFilter === 'active' && ['open', 'echoed'].includes(clue.status))
+            || (normalizedFilter === 'active' && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status))
         )
     ));
     const summaries = allSummaries.filter(summary => (
@@ -2073,7 +2104,7 @@ function renderMemoryView(state, observerMode, {
         <article class="wb-memory-fact-card is-${escapeAttr(fact.status)}">
             <div class="wb-memory-fact-meta">
                 <span>${escapeHtml(memoryFactStatusLabel(fact.status))}</span>
-                <span>${escapeHtml(memoryConfidenceLabel(fact.confidence))} · 来源 ${escapeHtml(fact.sourceMessageId)}:${escapeHtml(fact.sourceSwipeId)}</span>
+                <span>${escapeHtml(memoryConfidenceLabel(fact.confidence))}</span>
             </div>
             ${!duplicateSubject && subject ? `<h4>${escapeHtml(subject)}</h4>` : ''}
             ${fact.predicate ? `<small>${escapeHtml(fact.predicate)}</small>` : ''}
@@ -2089,20 +2120,20 @@ function renderMemoryView(state, observerMode, {
         <article class="wb-clue-card is-${escapeAttr(clue.status)}">
             <div class="wb-clue-meta">
                 <span>${escapeHtml(clueStatusLabel(clue.status))}</span>
-                <span>第 ${escapeHtml(clue.sourceMessageId)} 层 · 重抽 ${escapeHtml(clue.sourceSwipeId)}</span>
             </div>
             <h4>${escapeHtml(clue.title)}</h4>
             <p>${escapeHtml(clue.text)}</p>
             ${clue.sourceExcerpt ? `<blockquote>${escapeHtml(clue.sourceExcerpt)}</blockquote>` : ''}
             ${clue.resolution ? `<div class="wb-clue-resolution">${escapeHtml(clue.resolution)}</div>` : ''}
+            ${clue.lifecycleReason && clue.lifecycleReason !== clue.resolution ? `<div class="wb-memory-fact-note">为什么变更：${escapeHtml(clue.lifecycleReason)}</div>` : ''}
             ${renderMemoryActions('clue', clue)}
         </article>
     `;
     return `
         <div class="wb-view-intro wb-memory-intro">
-            <p>记忆现在会越久远越抽象地收好啦～平时拿高层经历维持长线，需要具体细节时还能顺着来源一路翻回下层，不用把整本聊天全塞给模型 (｡•̀ᴗ-)✧</p>
+            <p>这里保存会影响后续剧情的长期事实、经历与未完成伏笔。</p>
             <div class="wb-memory-intro-actions">
-                <span>${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条有效事实 · ${allClues.filter(clue => ['open', 'echoed'].includes(clue.status)).length} 条待回收伏笔 · L0/L1/L2/L3 ${hierarchyCounts.join('/')}</span>
+                <span>${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条事实 · ${allClues.filter(clue => ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)).length} 条伏笔</span>
                 <button type="button" data-wb-action="open-memory-editor" data-memory-kind="fact">＋ 新增记忆</button>
             </div>
         </div>
@@ -2122,16 +2153,25 @@ function renderMemoryView(state, observerMode, {
                 </label>
                 <small>${query ? `找到 ${resultCount} 条` : `当前分类 ${resultCount} 条`}</small>
             </div>
+            ${(memory.metabolismLog || []).length ? `
+                <details class="wb-fold wb-memory-digest" data-fold-key="memory:metabolism"
+                    ${foldOpenAttr(openFolds, 'memory:metabolism')}>
+                    <summary class="wb-memory-digest-summary">
+                        <span><strong>最近整理</strong></span>
+                        <span class="wb-fold-meta"><small>${Math.min(12, (memory.metabolismLog || []).length)} 条最近变化</small><i class="wb-fold-chevron" aria-hidden="true"></i></span>
+                    </summary>
+                    <div class="wb-fold-body wb-memory-digest-body">
+                        ${(memory.metabolismLog || []).slice(-12).reverse().map(item => `<p><strong>${escapeHtml(item.kind === 'fact' ? '事实' : item.kind === 'clue' ? '伏笔' : '经历')}</strong> · ${escapeHtml(item.action || '更新')}<br><small>${escapeHtml(item.reason || '已按后续内容整理')}</small></p>`).join('')}
+                    </div>
+                </details>
+            ` : ''}
             ${digest?.text ? `
                 <details class="wb-fold wb-memory-digest" data-fold-key="memory:digest"
                     ${foldOpenAttr(openFolds, 'memory:digest')}>
                     <summary class="wb-memory-digest-summary">
-                        <span>
-                            <small>CONTINUOUS MEMORY</small>
-                            <strong>持续摘要</strong>
-                        </span>
+                        <span><strong>长期摘要</strong></span>
                         <span class="wb-fold-meta">
-                            <small>整理至消息 ${escapeHtml(digest.throughMessageId)}</small>
+                            <small>已自动整理</small>
                             <i class="wb-fold-chevron" aria-hidden="true"></i>
                         </span>
                     </summary>
@@ -2147,7 +2187,7 @@ function renderMemoryView(state, observerMode, {
             <div class="wb-memory-layout">
                 <section class="wb-memory-section ${shownFacts.length ? '' : 'is-hidden'}">
                     <div class="wb-section-heading wb-memory-heading-with-folds">
-                        <div><span>DURABLE FACTS</span><h3>长期事实</h3></div>
+                        <div><h3>长期事实</h3></div>
                         ${renderFoldToolbar('memory:facts:')}
                     </div>
                     <div class="wb-memory-group-list">
@@ -2173,7 +2213,7 @@ function renderMemoryView(state, observerMode, {
                 </section>
                 <section class="wb-memory-section ${shownClues.length ? '' : 'is-hidden'}">
                     <div class="wb-section-heading wb-memory-heading-with-folds">
-                        <div><span>UNRESOLVED THREADS</span><h3>伏笔簿</h3></div>
+                        <div><h3>伏笔簿</h3></div>
                         ${renderFoldToolbar('memory:clues:')}
                     </div>
                     <div class="wb-memory-group-list">
@@ -2200,7 +2240,7 @@ function renderMemoryView(state, observerMode, {
             </div>
             <section class="wb-memory-summary-section ${shownSummaries.length ? '' : 'is-hidden'}">
                 <div class="wb-section-heading wb-memory-heading-with-folds">
-                    <div><span>HIERARCHICAL EPISODIC MEMORY</span><h3>分层经历</h3></div>
+                    <div><h3>经历</h3></div>
                     ${renderFoldToolbar('memory:summary:')}
                 </div>
                 <div class="wb-summary-list">
@@ -2215,27 +2255,19 @@ function renderMemoryView(state, observerMode, {
                             <details class="wb-fold wb-summary-card is-${escapeAttr(levelMeta.tone)}" data-fold-key="${escapeAttr(foldKey)}"
                                 ${foldOpenAttr(openFolds, foldKey)}>
                                 <summary class="wb-summary-card-summary">
-                                    <span>
-                                        <small>${escapeHtml(levelMeta.label)} · 消息 ${escapeHtml(summary.startMessageId)}—${escapeHtml(summary.endMessageId)}</small>
-                                        <strong>${escapeHtml(summary.title)}</strong>
-                                    </span>
+                                    <span><strong>${escapeHtml(summary.title)}</strong></span>
                                     <i class="wb-fold-chevron" aria-hidden="true"></i>
                                 </summary>
                                 <div class="wb-fold-body wb-summary-card-body">
-                                    <div class="wb-memory-layer-note">${escapeHtml(levelMeta.description)}</div>
                                     <p>${escapeHtml(summary.summary)}</p>
-                                    ${parent ? `<div class="wb-memory-lineage-link">↑ 已收进上层：${escapeHtml(parent.title)}</div>` : ''}
-                                    ${sourceSummaries.length ? `
-                                        <details class="wb-memory-lineage">
-                                            <summary>看看下面 ${sourceSummaries.length} 条来源～</summary>
-                                            <div>
-                                                ${sourceSummaries.map(source => `
-                                                    <p><strong>${escapeHtml(memorySummaryLevelMeta(source).label)}</strong> · ${escapeHtml(source.title)}<br>
-                                                    <small>消息 ${escapeHtml(source.startMessageId)}—${escapeHtml(source.endMessageId)}</small></p>
-                                                `).join('')}
-                                            </div>
-                                        </details>
-                                    ` : ''}
+                                    <details class="wb-memory-lineage">
+                                        <summary>来源</summary>
+                                        <div>
+                                            <p>${escapeHtml(levelMeta.label)} · 消息 ${escapeHtml(summary.startMessageId)}—${escapeHtml(summary.endMessageId)}</p>
+                                            ${parent ? `<p>已归入：${escapeHtml(parent.title)}</p>` : ''}
+                                            ${sourceSummaries.length ? `<p>仍保留 ${sourceSummaries.length} 条下层来源</p>` : ''}
+                                        </div>
+                                    </details>
                                     ${renderMemoryActions('summary', summary)}
                                 </div>
                             </details>
@@ -2306,37 +2338,19 @@ function renderMemoryEditorModal(state, editor) {
     `;
 }
 
-function renderArchiveView(state, outcomes, openFolds = new Set()) {
-    const combined = [
-        ...state.archive.map(entry => ({ entry, recordKind: 'archive' })),
-        ...outcomes.filter(event => (
-            ['delivered', 'expired'].includes(event.delivery?.state)
-            || event.visibility === 'hidden'
-        )).map(entry => ({ entry, recordKind: 'echo' })),
-    ];
-    const seen = new Set();
-    const archived = combined.filter(({ entry }) => {
-        const key = entry.eventId || entry.id;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
+function renderArchiveView(state, openFolds = new Set()) {
+    const archived = Array.isArray(state.archive) ? state.archive : [];
     return `
         <div class="wb-view-intro">
-            <p>没被镜头看见的事情也不会凭空蒸发～这里负责记下世界真正留下的后果，但不会冒充成谁的私人记忆。</p>
+            <p>这里保存已经发生、却最终没有被正文自然看见的世界历史。</p>
             <span>世界账本</span>
         </div>
-        <div class="wb-view-fold-head">
-            <span>日期、标题和摘要先摆在外面～完整内容想看时再翻开，账本不用一直摊满桌子。</span>
-            ${renderFoldToolbar('archive:')}
-        </div>
         <div class="wb-archive-ledger">
-            ${archived.map(({ entry, recordKind }) => renderArchiveEntry(entry, state, recordKind, openFolds)).join('')
-                || renderEmpty('纪事簿还是空的～', '等世界真正留下稳定后果，这里就会慢慢写起来。')}
+            ${archived.map(entry => renderArchiveEntry(entry, state, 'archive', openFolds)).join('')
+                || renderEmpty('纪事簿还是空的～', '没有遗漏到镜头外的历史。')}
         </div>
     `;
 }
-
 
 function renderWorldEditorModal(state) {
     return `
@@ -2548,7 +2562,7 @@ export function createWorldBackstageUI({
     let worldEditorOpen = false;
     let recordEditor = null;
     let settingsScrollTop = 0;
-    let openSettingsGroups = new Set(['connection', 'simulation']);
+    let openSettingsGroups = new Set();
     let openSettingsSubgroups = new Set();
     let openContentFolds = new Set();
     let eventFormDraft = null;
@@ -2591,6 +2605,25 @@ export function createWorldBackstageUI({
             customApiKey: replacementKey || getSettings().customApiKey,
             customApiModel: data.customApiModel,
             customApiTransport: data.customApiTransport,
+        };
+    }
+
+    function apiRequestFromDraft(data, { requireModel = true } = {}) {
+        const settings = getSettings();
+        const profileId = String(data.profileId || '').trim();
+        const existingProfile = (settings.apiProfiles || []).find(item => item.id === profileId);
+        const key = String(data.customApiCredential || '').trim()
+            || existingProfile?.key
+            || (!profileId ? settings.customApiKey : '');
+        const model = String(data.customApiModel || '').trim();
+        if (!key) throw new Error('这个接口还缺 API Key 哦～');
+        if (requireModel && !model) throw new Error('先选个模型再测试吧～');
+        return {
+            url: data.customApiUrl,
+            key,
+            model,
+            transport: data.customApiTransport,
+            label: String(data.profileName || existingProfile?.name || '这个接口').trim() || '这个接口',
         };
     }
 
@@ -2777,7 +2810,7 @@ export function createWorldBackstageUI({
             : state.events.filter(event => event.visibility !== 'hidden');
         const activeEvents = visibleEvents.filter(isActiveEvent);
         const outcomes = visibleEvents
-            .filter(event => event.status === 'ready' || isTerminalEvent(event))
+            .filter(event => (event.status === 'ready' || isTerminalEvent(event)) && event.delivery?.state !== 'expired')
             .sort((a, b) => Number(b.resolvedAt ?? b.updatedAt) - Number(a.resolvedAt ?? a.updatedAt));
         const person = displayPeople.find(item => item.id === selectedPersonId);
         const presentPersonIds = new Set(syncStatus.presentPersonIds || []);
@@ -2802,7 +2835,7 @@ export function createWorldBackstageUI({
         let content = '';
         if (activeView === 'now') content = renderNowView(state, observerMode, visiblePeople, activeEvents);
         if (activeView === 'people') content = renderPeopleView(state, observerMode, visiblePeople, openContentFolds);
-        if (activeView === 'currents') content = renderCurrentsView(state, activeEvents, openContentFolds);
+        if (activeView === 'currents') content = renderCurrentsView(state, activeEvents, openContentFolds, settings);
         if (activeView === 'echoes') content = renderEchoesView(state, outcomes, openContentFolds);
         if (activeView === 'opinion') content = renderPublicOpinionView(state, syncStatus.publicOpinion || {}, publicOpinionMode, settings);
         if (activeView === 'memory') content = renderMemoryView(state, observerMode, {
@@ -2811,7 +2844,7 @@ export function createWorldBackstageUI({
             visibleCount: memoryVisibleCount,
             openFolds: openContentFolds,
         });
-        if (activeView === 'archive') content = renderArchiveView(state, outcomes, openContentFolds);
+        if (activeView === 'archive') content = renderArchiveView(state, openContentFolds);
 
         root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'}`;
         root.innerHTML = `
@@ -2829,16 +2862,18 @@ export function createWorldBackstageUI({
                 <strong>世界背面</strong>
                 <span>${escapeHtml(
                     memoryPhase === 'error'
-                        ? syncStatus.memory?.message || '上次记忆整理失败，打开可查看原因'
+                        ? syncStatus.memory?.message || '记忆整理刚刚绊了一下 QAQ，点开看看原因～'
                         : memoryPhase === 'running'
-                        ? syncStatus.memory.message || '正在整理长期记忆'
+                        ? syncStatus.memory.message || '记忆正在悄悄收拾中～ (｡•̀ᴗ-)✧'
                         : orbProcessing
-                            ? syncStatus.message || '世界正在推演'
+                            ? syncStatus.message || '镜头外的世界正在悄悄运转中… ( •̀ ω •́ )✧'
                             : syncStatus.phase === 'error'
-                                ? '上次推演失败，打开可查看原因'
+                                ? '唔，世界这次没转起来 QAQ，点开看看原因～'
                                 : state.pendingSync
-                                    ? '最新正文等待推演'
-                                    : `${pendingDeliveries} 条变化正在靠近镜头`,
+                                    ? '新正文正在乖乖排队等推演～ (｡•̀ᴗ-)✧'
+                                    : pendingDeliveries > 0
+                                        ? `${pendingDeliveries} 条变化正慢慢靠近镜头～`
+                                        : '镜头之外暂时安安静静的～ (˘ω˘)',
                 )}</span>
             </div>
 
@@ -3261,8 +3296,15 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'toggle-settings') {
-            settingsOpen = !settingsOpen;
-            if (!settingsOpen) {
+            const opening = !settingsOpen;
+            settingsOpen = opening;
+            if (opening) {
+                // 每次打开观测设置都从干净的折叠态开始～需要哪块再点哪块，
+                // 避免上一次打开的几个大模块一股脑铺满屏幕。
+                openSettingsGroups = new Set();
+                openSettingsSubgroups = new Set();
+                settingsScrollTop = 0;
+            } else {
                 clockFormDraft = null;
                 tagFilterDraftRules = null;
                 tagFilterCandidates = [];
@@ -3324,13 +3366,32 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'set-public-opinion-mode') {
-            publicOpinionMode = target.dataset.mode === 'forum' ? 'forum' : 'news';
+            publicOpinionMode = ['forum', 'sandbox'].includes(target.dataset.mode) ? target.dataset.mode : 'news';
             render();
             return;
         }
         if (action === 'generate-public-opinion') {
             const result = await invokeAction('generate-public-opinion');
-            if (result) notify('舆情刷新好啦～来看看大家又在聊什么 `(ﾉ◕ヮ◕)ﾉ`', 'success');
+            if (result?.kind === 'sandbox') {
+                publicOpinionMode = 'sandbox';
+                notify('正史这轮没什么瓜～顺手给你捞了一锅闲逛内容，放心，不算正史 `(ﾉ◕ヮ◕)ﾉ`', 'info');
+            } else if (result) {
+                notify('世界舆情刷新好啦～来看看大家又在聊什么 `(ﾉ◕ヮ◕)ﾉ`', 'success');
+            }
+            render();
+            return;
+        }
+        if (action === 'generate-public-opinion-sandbox') {
+            const result = await invokeAction('generate-public-opinion-sandbox');
+            if (result) {
+                publicOpinionMode = 'sandbox';
+                notify('随便逛到一锅新鲜瓜～放心，这些不算正史 `(≧▽≦)`', 'success');
+            }
+            render();
+            return;
+        }
+        if (action === 'clear-public-opinion-sandbox') {
+            await invokeAction('clear-public-opinion-sandbox');
             render();
             return;
         }
@@ -3618,6 +3679,11 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'pull-api-profile-models') {
+            await invokeAction('pull-api-profile-models', { profileId: target.dataset.profileId || '' });
+            render();
+            return;
+        }
         if (action === 'duplicate-api-profile') {
             await invokeAction('duplicate-api-profile', { profileId: target.dataset.profileId || '' });
             openSettingsSubgroups.add('connection-profiles');
@@ -3635,38 +3701,51 @@ export function createWorldBackstageUI({
         }
         if (action === 'test-api') {
             const form = target.closest('[data-wb-form="api"]');
-            if (form) {
-                if (!form.reportValidity()) return;
-                const data = readApiForm(form);
-                const completed = await invokeAction('update-settings', apiSettingsFromDraft(data));
-                if (!completed) return;
-                forgetApiKeyDraft(data);
+            if (!form) return;
+            const urlField = form.elements?.customApiUrl;
+            const modelField = form.elements?.customApiModel;
+            if (urlField && !urlField.checkValidity()) {
+                urlField.reportValidity();
+                return;
             }
-            await invokeAction('test-api');
+            if (modelField && !String(modelField.value || '').trim()) {
+                modelField.focus();
+                notify('先选个模型再测试吧～', 'error');
+                return;
+            }
+            const data = readApiForm(form);
+            let request;
+            try {
+                request = apiRequestFromDraft(data, { requireModel: true });
+            } catch (error) {
+                notify(String(error?.message || error), 'error');
+                return;
+            }
+            await invokeAction('test-api-draft', request);
             render();
             return;
         }
         if (action === 'pull-api-models') {
             const form = target.closest('[data-wb-form="api"]');
-            if (form) {
-                // 拉模型列表只需要地址 + Key；模型名本来就是要靠这一步获取，不能反过来要求先填模型。
-                const urlField = form.elements?.customApiUrl;
-                const keyField = form.elements?.customApiCredential;
-                if (urlField && !urlField.checkValidity()) {
-                    urlField.reportValidity();
-                    return;
-                }
-                const data = readApiForm(form);
-                if (!String(data.customApiCredential || '').trim() && !getSettings().customApiKey) {
-                    notify('先把 API Key 填上嘛～不然我不知道该去哪里翻模型列表 QAQ', 'error');
-                    keyField?.focus();
-                    return;
-                }
-                const completed = await invokeAction('update-settings', apiSettingsFromDraft(data));
-                if (!completed) return;
-                forgetApiKeyDraft(data);
+            if (!form) return;
+            // 拉模型只读取当前草稿，不再偷偷改默认独立接口。编辑已保存方案时，
+            // Key 留空会安全沿用该方案自己的 Key，而不是串到默认配置。
+            const urlField = form.elements?.customApiUrl;
+            const keyField = form.elements?.customApiCredential;
+            if (urlField && !urlField.checkValidity()) {
+                urlField.reportValidity();
+                return;
             }
-            await invokeAction('pull-api-models');
+            const data = readApiForm(form);
+            let request;
+            try {
+                request = apiRequestFromDraft(data, { requireModel: false });
+            } catch (error) {
+                notify(String(error?.message || error), 'error');
+                keyField?.focus();
+                return;
+            }
+            await invokeAction('pull-api-draft-models', request);
             render();
             return;
         }

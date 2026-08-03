@@ -15,7 +15,7 @@ import {
     buildPersonObservationPrompt,
     buildSimulationPrompt,
     createInitialState,
-    createSnapshot,
+    createCompactSnapshot,
     DEFAULT_TAG_FILTER_RULES,
     extractJsonObject,
     extractTagFilterCandidates,
@@ -30,15 +30,18 @@ import {
     normalizeTagFilterRules,
     planMemoryRollup,
     recordDeliveryOffers,
-    restoreSnapshot,
+    restoreCompactSnapshot,
     restoreRecoveryPoint,
     setWorldCalendar,
+    settlePersonWorldState,
     trimState,
 } from './core.js';
 import {
+    getLastCustomApiOperation,
     isAbortError,
     requestCustomCompletion,
     requestCustomModels,
+    resetLastCustomApiOperation,
     runWithRetries,
 } from './api.js';
 import { createWorldBackstageUI } from './ui.js';
@@ -47,16 +50,20 @@ import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 import { detectWorldbookCharacter, extractWorldbookCharacterProfile } from './worldbook.js';
 import {
     buildPublicOpinionPrompt,
+    buildPublicOpinionSandboxPrompt,
     eligiblePublicOpinionEvents,
     emptyPublicOpinionCache,
+    emptyPublicOpinionSandbox,
     normalizePublicOpinionCache,
     normalizePublicOpinionPayload,
+    normalizePublicOpinionSandbox,
+    normalizePublicOpinionSandboxPayload,
 } from './public-opinion.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
-const PLUGIN_VERSION = '1.1.3';
+const PLUGIN_VERSION = '1.3.0';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 18,
+    settingsVersion: 19,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -64,6 +71,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     memorySystemEnabled: true,
     memoryPromptInjection: true,
     autoSync: true,
+    worldAutoEnabled: true,
     autoSimulationMode: 'balanced',
     autoSimulationInterval: 1,
     autoRetryCount: 1,
@@ -94,6 +102,7 @@ const DEFAULT_SETTINGS = Object.freeze({
         opinion: 'default',
     },
     publicOpinionRevealMode: 'observe',
+    publicOpinionAutoEnabled: true,
     maxOutputTokens: 0,
     tagFilterEnabled: true,
     tagFilterRules: DEFAULT_TAG_FILTER_RULES.map(rule => ({ ...rule })),
@@ -110,6 +119,7 @@ const runtime = {
     activeSimulation: null,
     activeHistoryScan: null,
     activePublicOpinion: null,
+    activePublicOpinionSandbox: null,
     pendingPublicOpinion: false,
     activeObservation: null,
     inBackgroundGeneration: false,
@@ -421,13 +431,21 @@ function getSettings() {
         settings.worldPromptInjection = previous?.promptInjection !== false;
         settings.memoryPromptInjection = previous?.promptInjection !== false;
     }
-    // Kept only as a migration field. Injection is now controlled per module.
+    // Kept only as a migration field. World continuity is mandatory while the world engine is enabled;
+    // worldPromptInjection now controls proactive reveal candidates only.
     settings.promptInjection = true;
     settings.worldSimulationEnabled = Boolean(settings.worldSimulationEnabled);
     settings.worldPromptInjection = Boolean(settings.worldPromptInjection);
     settings.memorySystemEnabled = Boolean(settings.memorySystemEnabled);
     settings.memoryPromptInjection = Boolean(settings.memoryPromptInjection);
     settings.autoSync = Boolean(settings.autoSync);
+    settings.worldAutoEnabled = previousSettingsVersion < 19
+        ? (
+            previous?.worldAutoEnabled !== undefined
+                ? Boolean(previous.worldAutoEnabled)
+                : previous?.autoSync !== false && previous?.autoSimulationMode !== 'manual'
+        )
+        : settings.worldAutoEnabled !== false;
     settings.includeUserInnerVoice = Boolean(settings.includeUserInnerVoice);
     if (!['auto', 'day', 'night'].includes(settings.theme)) settings.theme = 'auto';
     if (!['restrained', 'balanced', 'active'].includes(settings.deliveryDensity)) {
@@ -451,16 +469,20 @@ function getSettings() {
     if (previousSettingsVersion < 4) settings.contextTurns = 5;
     if (previousSettingsVersion < 8) settings.orbPosition = null;
     if (previousSettingsVersion < 5) {
-        settings.autoSimulationMode = previous?.autoSync === false ? 'manual' : 'balanced';
+        settings.autoSimulationMode = 'balanced';
     }
-    if (!['manual', 'light', 'balanced', 'deep'].includes(settings.autoSimulationMode)) {
+    if (settings.autoSimulationMode === 'manual') {
+        settings.worldAutoEnabled = false;
+        settings.autoSimulationMode = 'balanced';
+    }
+    if (!['light', 'balanced', 'deep'].includes(settings.autoSimulationMode)) {
         settings.autoSimulationMode = 'balanced';
     }
     if (legacySimulationPaused) {
-        settings.autoSimulationMode = 'manual';
+        settings.worldAutoEnabled = false;
     }
     delete settings.simulationPaused;
-    settings.autoSync = settings.autoSimulationMode !== 'manual';
+    settings.autoSync = settings.worldAutoEnabled; // legacy alias
     settings.autoSimulationInterval = Math.min(
         20,
         Math.max(1, Number.parseInt(settings.autoSimulationInterval, 10) || 1),
@@ -496,7 +518,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 18;
+    settings.settingsVersion = 19;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -516,13 +538,14 @@ function getSettings() {
     if (!['observe', 'relevant'].includes(settings.publicOpinionRevealMode)) {
         settings.publicOpinionRevealMode = 'observe';
     }
+    settings.publicOpinionAutoEnabled = settings.publicOpinionAutoEnabled !== false;
     settings.maxOutputTokens = Math.min(
         16000,
         Math.max(0, Number.parseInt(settings.maxOutputTokens, 10) || 0),
     );
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 18) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 19) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -538,11 +561,55 @@ function makeStore() {
         initialState,
         currentState: clone(initialState),
         branchOverrides: {},
+        memorySummaryArchive: [],
         personObservations: {},
         publicOpinion: emptyPublicOpinionCache(),
+        publicOpinionSandbox: emptyPublicOpinionSandbox(),
         recoveryPoints: [],
         updatedAt: new Date().toISOString(),
     };
+}
+
+function mergeMemorySummaryArchive(store, state = store?.currentState) {
+    if (!store || typeof store !== 'object') return [];
+    const existing = Array.isArray(store.memorySummaryArchive) ? store.memorySummaryArchive : [];
+    const current = Array.isArray(state?.storyMemory?.summaries) ? state.storyMemory.summaries : [];
+    const byId = new Map();
+    for (const summary of [...existing, ...current]) {
+        const id = String(summary?.id || '').trim();
+        if (!id) continue;
+        byId.set(id, clone(summary));
+    }
+    const merged = [...byId.values()]
+        .sort((a, b) => Number(a?.endMessageId || 0) - Number(b?.endMessageId || 0));
+    // Keep one chat-level reservoir instead of duplicating the whole hierarchy
+    // in every message/swipe snapshot. The live state already applies its own
+    // retention policy; this extra headroom mainly preserves alternate swipes.
+    if (merged.length > 3600) {
+        const protectedItems = merged.filter(item => (
+            item?.locked || item?.important || item?.manual || Number(item?.level || 0) >= 2
+        ));
+        const protectedIds = new Set(protectedItems.map(item => item.id));
+        const remainder = merged.filter(item => !protectedIds.has(item.id)).slice(-Math.max(0, 3600 - protectedItems.length));
+        store.memorySummaryArchive = [...protectedItems, ...remainder]
+            .sort((a, b) => Number(a?.endMessageId || 0) - Number(b?.endMessageId || 0));
+    } else {
+        store.memorySummaryArchive = merged;
+    }
+    return store.memorySummaryArchive;
+}
+
+function createBranchSnapshot(state, meta = {}, store = getStore()) {
+    mergeMemorySummaryArchive(store, state);
+    return createCompactSnapshot(state, meta);
+}
+
+function restoreBranchSnapshot(snapshot, fallback = null, store = getStore()) {
+    return restoreCompactSnapshot(
+        snapshot,
+        fallback || store?.initialState || null,
+        store?.memorySummaryArchive || [],
+    );
 }
 
 function currentChatToken() {
@@ -620,6 +687,10 @@ function getStore({ create = true } = {}) {
     store.schemaVersion = SCHEMA_VERSION;
     store.initialState = trimState(store.initialState || createInitialState({ worldName: '主世界' }));
     store.currentState = trimState(store.currentState || store.initialState);
+    store.memorySummaryArchive = Array.isArray(store.memorySummaryArchive)
+        ? store.memorySummaryArchive
+        : [];
+    mergeMemorySummaryArchive(store, store.currentState);
     const settings = getSettings();
     const legacyPlayerIdentityAnchor = String(settings.playerIdentityAnchor || '').trim().slice(0, 400);
     const player = findPlayerPerson(store.currentState, context?.name1 || '');
@@ -639,6 +710,7 @@ function getStore({ create = true } = {}) {
         ? store.personObservations
         : {};
     store.publicOpinion = normalizePublicOpinionCache(store.publicOpinion || emptyPublicOpinionCache());
+    store.publicOpinionSandbox = normalizePublicOpinionSandbox(store.publicOpinionSandbox || emptyPublicOpinionSandbox());
     store.recoveryPoints = listRecoveryPoints(store);
     if ((createdMigrationRecovery || migratedLegacyPlayerIdentity) && context?.chatMetadata && hasChatContext()) {
         context.chatMetadata[STATE_KEY] = store;
@@ -649,6 +721,7 @@ function getStore({ create = true } = {}) {
 
 function saveStore(store, { immediate = false } = {}) {
     const context = getContext();
+    mergeMemorySummaryArchive(store, store.currentState);
     store.updatedAt = new Date().toISOString();
 
     if (!context?.chatMetadata || !hasChatContext()) {
@@ -907,8 +980,10 @@ function getSyncStatus() {
         publicOpinion: {
             ...getStore().publicOpinion,
             ...runtime.publicOpinionStatus,
-            stale: Number(getStore().publicOpinion?.sourceRevision ?? -1) !== Number(getState().revision ?? 0)
-                || Number(getStore().publicOpinion?.sourceWorldMinute ?? -1) !== Number(getState().clock?.absoluteMinute ?? 0),
+            sandbox: getStore().publicOpinionSandbox || emptyPublicOpinionSandbox(),
+            canonRunning: Boolean(runtime.activePublicOpinion && !runtime.activePublicOpinion?.controller?.signal?.aborted),
+            sandboxRunning: Boolean(runtime.activePublicOpinionSandbox && !runtime.activePublicOpinionSandbox?.controller?.signal?.aborted),
+            stale: String(getStore().publicOpinion?.sourceEventSignature || '') !== publicOpinionEventSignature(getState()),
         },
         worldbook: {
             ...runtime.worldbookScan,
@@ -1094,10 +1169,10 @@ function findLatestResultSnapshot(beforeIndex = Infinity) {
 }
 
 function stateWithBranchOverride(snapshot, store = getStore()) {
-    const restored = restoreSnapshot(snapshot, store.initialState);
+    const restored = restoreBranchSnapshot(snapshot, store.initialState);
     const sourceKey = snapshot?.meta?.sourceKey || '';
     const override = sourceKey ? store.branchOverrides[sourceKey] : null;
-    return override ? restoreSnapshot(override, restored) : restored;
+    return override ? restoreBranchSnapshot(override, restored) : restored;
 }
 
 function currentAnchorKey() {
@@ -1114,7 +1189,7 @@ function setCurrentState(nextState, {
     store.currentState = trimState(nextState);
 
     if (overrideKey) {
-        store.branchOverrides[overrideKey] = createSnapshot(store.currentState, {
+        store.branchOverrides[overrideKey] = createBranchSnapshot(store.currentState, {
             sourceKey: overrideKey,
             kind: 'manual-override',
         });
@@ -1137,7 +1212,7 @@ function restoreLatestBranch({ pending = false } = {}) {
         ? stateWithBranchOverride(latest.snapshot, store)
         : (
             store.branchOverrides.root
-                ? restoreSnapshot(store.branchOverrides.root, store.initialState)
+                ? restoreBranchSnapshot(store.branchOverrides.root, store.initialState)
                 : clone(store.initialState)
         );
     if (pending) state = markPendingSync(state, true);
@@ -1303,10 +1378,30 @@ function nextHistoryBatch(cursor, {
     };
 }
 
+
+function publicOpinionEventSignature(state) {
+    // 舆情只在其公开信息源真正变化时失效。记忆整理、UI 编辑等无关 revision
+    // 不应该让同一份公开世界事实反复重跑 API。
+    return hashText(JSON.stringify(eligiblePublicOpinionEvents(state)));
+}
+
+function scheduleAutoPublicOpinion(state = getState(), delay = 260) {
+    const settings = getSettings();
+    if (!settings.enabled || !settings.publicOpinionAutoEnabled) return false;
+    const events = eligiblePublicOpinionEvents(state);
+    if (!events.length) return false;
+    const signature = publicOpinionEventSignature(state);
+    const cachedSignature = String(getStore().publicOpinion?.sourceEventSignature || '');
+    if (signature && signature === cachedSignature) return false;
+    runtime.pendingPublicOpinion = true;
+    window.setTimeout(scheduleDeferredPublicOpinion, Math.max(120, Number(delay) || 260));
+    return true;
+}
+
 function publicOpinionRevealInjection(state, cache, settings, recentText = '') {
     if (settings.publicOpinionRevealMode !== 'relevant') return '';
     const opinion = normalizePublicOpinionCache(cache || {});
-    const stale = Number(opinion.sourceRevision ?? -1) !== Number(state?.revision ?? 0);
+    const stale = String(opinion.sourceEventSignature || '') !== publicOpinionEventSignature(state);
     if (!opinion.generatedAt || stale) return '';
     const text = String(recentText || '').toLocaleLowerCase();
     const events = new Map((state.events || []).map(event => [String(event.id), event]));
@@ -1401,6 +1496,9 @@ function preemptLowPriorityTasksForCore() {
         runtime.pendingPublicOpinion = true;
         runtime.activePublicOpinion.controller.abort();
     }
+    if (runtime.activePublicOpinionSandbox && !runtime.activePublicOpinionSandbox.controller.signal.aborted) {
+        runtime.activePublicOpinionSandbox.controller.abort();
+    }
     if (runtime.activeObservation && !runtime.activeObservation.controller.signal.aborted) {
         runtime.activeObservation.controller.abort();
     }
@@ -1465,7 +1563,7 @@ function markMessagePending(messageId, {
     let baseState = null;
     if (!deferBase) {
         if (existing?.base && !existing.stale) {
-            baseState = restoreSnapshot(existing.base, getStore().initialState);
+            baseState = restoreBranchSnapshot(existing.base, getStore().initialState);
         } else {
             const previous = findLatestResultSnapshot(messageId);
             baseState = previous
@@ -1480,7 +1578,7 @@ function markMessagePending(messageId, {
         sourceKey,
         trigger,
         offeredEventIds: [...new Set(offeredEventIds || [])],
-        base: baseState ? createSnapshot(baseState, {
+        base: baseState ? createBranchSnapshot(baseState, {
             messageId,
             swipeId,
             sourceKey,
@@ -1578,6 +1676,8 @@ async function backgroundSimulation(prompt, {
                 temperature,
                 signal,
                 rejectTruncated,
+                operation: taskKind,
+                routeLabel: route.label,
             });
         } finally {
             runtime.inBackgroundGeneration = false;
@@ -1787,7 +1887,7 @@ async function runSimulationForMessage(messageId, {
             const committed = {
                 ...prepared.data,
                 status: 'committed',
-                result: createSnapshot(resultState, {
+                result: createBranchSnapshot(resultState, {
                     messageId,
                     swipeId,
                     sourceKey,
@@ -1831,6 +1931,7 @@ async function runSimulationForMessage(messageId, {
             userName: beforeContext?.name1 || '',
             includeUserInnerVoice: settings.includeUserInnerVoice,
             timePolicy: settings.timePolicy,
+            worldAuto: settings.worldAutoEnabled,
             simulationMode: settings.autoSimulationMode,
             customInstruction: settings.customSimulationInstruction,
             playerIdentityAnchor: getPlayerIdentityAnchor(baseState),
@@ -1941,7 +2042,7 @@ async function runSimulationForMessage(messageId, {
         const committed = {
             ...prepared.data,
             status: 'committed',
-            result: createSnapshot(resultState, {
+            result: createBranchSnapshot(resultState, {
                 messageId,
                 swipeId,
                 sourceKey,
@@ -1963,6 +2064,7 @@ async function runSimulationForMessage(messageId, {
             saveStore(store, { immediate: true });
             refreshInjection();
             runtime.ui?.render();
+            scheduleAutoPublicOpinion(resultState);
         }
 
         await target.context.saveChat?.();
@@ -2164,7 +2266,7 @@ function scheduleAutoSync(messageId, type) {
         trigger: type || 'reply',
         deferBase: workAlreadyRunning,
     });
-    if (!settings.autoSync) {
+    if (!settings.worldAutoEnabled) {
         setSyncStatus({
             phase: 'pending',
             message: '自动推演设为手动；可随时推演累计正文',
@@ -2215,7 +2317,7 @@ function schedulePendingCatchUp({ afterMessageId = -1 } = {}) {
     if (
         !settings.enabled
         || !settings.worldSimulationEnabled
-        || !settings.autoSync
+        || !settings.worldAutoEnabled
         || runtime.simulationCount > 0
         || runtime.queuedSimulations.size > 0
     ) {
@@ -2263,7 +2365,7 @@ function scheduleAutoMemoryIndex() {
             scheduleAutoMemoryIndex();
             return;
         }
-        void scanHistoryArchive({
+        void scanStoryMemoryHistory({
             automatic: true,
             maximumBatches: 1,
         }).catch(() => undefined);
@@ -2308,7 +2410,7 @@ function restoreExistingSwipe(messageId) {
     if (swipeId >= swipesLength) {
         const previous = findLatestResultSnapshot(Number(messageId));
         const base = data?.base && !data.stale
-            ? restoreSnapshot(data.base, store.initialState)
+            ? restoreBranchSnapshot(data.base, store.initialState)
             : (previous
                 ? stateWithBranchOverride(previous.snapshot, store)
                 : clone(store.initialState));
@@ -2319,7 +2421,7 @@ function restoreExistingSwipe(messageId) {
             sourceKey: `${messageId}:${swipeId}:pending`,
             trigger: 'swipe',
             offeredEventIds: clone(runtime.injection.eventIds || []),
-            base: createSnapshot(base, {
+            base: createBranchSnapshot(base, {
                 messageId: Number(messageId),
                 swipeId,
                 sourceKey: `${messageId}:${swipeId}:pending`,
@@ -2335,10 +2437,10 @@ function restoreExistingSwipe(messageId) {
         store.currentState = stateWithBranchOverride(data.result, store);
     } else if (data?.base && !data.stale) {
         store.currentState = markPendingSync(
-            restoreSnapshot(data.base, store.initialState),
+            restoreBranchSnapshot(data.base, store.initialState),
             true,
         );
-        if (message.mes && message.mes !== '...' && getSettings().autoSync) {
+        if (message.mes && message.mes !== '...' && getSettings().worldAutoEnabled) {
             scheduleAutoSync(Number(messageId), 'swipe');
         }
     } else {
@@ -2475,11 +2577,15 @@ function onMessageDeleted() {
 
 function onChatChanged() {
     runtime.activePublicOpinion?.controller?.abort?.();
+    runtime.activePublicOpinionSandbox?.controller?.abort?.();
     runtime.activeObservation?.controller?.abort?.();
     runtime.activeHistoryScan?.abort?.();
     runtime.activePublicOpinion = null;
+    runtime.activePublicOpinionSandbox = null;
     runtime.activeObservation = null;
     runtime.pendingPublicOpinion = false;
+    runtime.lastTaskConnection = null;
+    resetLastCustomApiOperation();
     runtime.ui?.ensureMounted?.();
     installSettingsEntry();
     if (runtime.autoMemoryTimer !== null) {
@@ -2559,7 +2665,7 @@ function undoManualChange() {
     const store = getStore();
     store.currentState = trimState(undo.state);
     if (undo.previousInitialState) store.initialState = trimState(undo.previousInitialState);
-    store.branchOverrides[undo.key] = createSnapshot(store.currentState, {
+    store.branchOverrides[undo.key] = createBranchSnapshot(store.currentState, {
         sourceKey: undo.key,
         kind: 'manual-undo',
     });
@@ -2572,8 +2678,9 @@ function undoManualChange() {
 function commitManualState(nextState, message = '世界状态已更新') {
     const key = currentAnchorKey();
     const previousState = getState();
-    setCurrentState(nextState, { overrideKey: key });
+    const committed = setCurrentState(nextState, { overrideKey: key });
     armManualUndo(previousState, { key });
+    scheduleAutoPublicOpinion(committed);
     toast(message, 'success');
 }
 
@@ -2606,7 +2713,7 @@ function restoreLatestSavedRecovery() {
     store = restored.store;
     const key = currentAnchorKey();
     store.branchOverrides ||= {};
-    store.branchOverrides[key] = createSnapshot(store.currentState, {
+    store.branchOverrides[key] = createBranchSnapshot(store.currentState, {
         sourceKey: key,
         kind: 'recovery-restore',
     });
@@ -2636,13 +2743,14 @@ function classifyDiagnosticIssue(value) {
     const text = String(value || '').toLocaleLowerCase();
     if (!text) return 'none';
     if (/abort|cancel|取消|停止/.test(text)) return 'cancelled';
-    if (/no message|empty|空回|没有生成|未生成/.test(text)) return 'empty-response';
-    if (/json|解析|parse|格式/.test(text)) return 'invalid-json';
-    if (/length|token|上限|过长|limit/.test(text)) return 'output-limit';
-    if (/401|403|unauthorized|forbidden|鉴权|密钥|key/.test(text)) return 'authorization';
-    if (/429|rate.?limit|频率|限流/.test(text)) return 'rate-limit';
+    if (/401|403|unauthorized|forbidden|鉴权|密钥|api.?key/.test(text)) return 'authorization';
+    if (/insufficient[_\s-]*quota|quota\s*(?:exceeded|exhausted|depleted)|credits?\s*(?:exhausted|depleted)|额度(?:不足|耗尽)|余额不足/.test(text)) return 'quota-exhausted';
+    if (/429|too many requests|rate[_\s-]*limit|请求过于频繁|频率限制|限流/.test(text)) return 'rate-limit';
     if (/timeout|timed out|超时/.test(text)) return 'timeout';
     if (/network|fetch|connection|econn|网络|连接/.test(text)) return 'network';
+    if (/no message|empty|空回|没有生成|未生成/.test(text)) return 'empty-response';
+    if (/length|max[_\s-]*tokens?|token[_\s-]*limit|输出上限|长度上限|过长/.test(text)) return 'output-limit';
+    if (/json|解析|parse|格式/.test(text)) return 'invalid-json';
     return 'other';
 }
 
@@ -2687,7 +2795,9 @@ function buildDiagnosticReport() {
         },
         features: {
             worldSimulation: settings.worldSimulationEnabled,
-            worldInjection: settings.worldPromptInjection,
+            worldAuto: settings.worldAutoEnabled,
+            worldContinuityInjection: settings.worldSimulationEnabled,
+            worldRevealInjection: settings.worldPromptInjection,
             memorySystem: settings.memorySystemEnabled,
             memoryInjection: settings.memoryPromptInjection,
             simulationMode: settings.autoSimulationMode,
@@ -2696,6 +2806,7 @@ function buildDiagnosticReport() {
             contextTurns: settings.contextTurns,
             npcBudget: settings.backgroundNpcBudget,
             uiScale: settings.uiScale,
+            publicOpinionAuto: settings.publicOpinionAutoEnabled,
             publicOpinionRevealMode: settings.publicOpinionRevealMode,
             apiProfileCount: settings.apiProfiles?.length || 0,
             apiModuleRoutes: { ...(settings.apiModuleRoutes || {}) },
@@ -2712,12 +2823,15 @@ function buildDiagnosticReport() {
             memoryFacts: state.storyMemory?.facts?.length || 0,
             memorySummaries: state.storyMemory?.summaries?.length || 0,
             memoryClues: state.storyMemory?.clues?.length || 0,
+            worldFacts: state.worldFacts?.length || 0,
+            consistencyConflicts: state.consistencyConflicts?.length || 0,
+            needsReconciliation: Boolean(state.needsReconciliation),
             indexedThroughMessageId: state.storyMemory?.indexedThroughMessageId ?? -1,
             chatMessages: context?.chat?.length || 0,
             recoveryPoints: recoveryPoints.length,
             latestSnapshot: Boolean(findLatestResultSnapshot()),
         },
-        lastTask: {
+        lastWorldTask: {
             phase: runtime.syncStatus.phase,
             messageType: classifyDiagnosticIssue(runtime.syncStatus.message),
             errorType: classifyDiagnosticIssue(runtime.syncStatus.error),
@@ -2730,6 +2844,25 @@ function buildDiagnosticReport() {
             memoryPhase: runtime.historyProgress.phase,
             memoryMessageType: classifyDiagnosticIssue(runtime.historyProgress.message),
         },
+        lastApiOperation: (() => {
+            const operation = getLastCustomApiOperation();
+            if (!operation) return null;
+            return {
+                phase: operation.phase,
+                operation: operation.operation,
+                source: operation.source,
+                route: redactDiagnosticText(operation.route || ''),
+                model: redactDiagnosticText(operation.model || ''),
+                transport: operation.transport,
+                transportStatus: operation.transportStatus,
+                upstreamStatus: operation.upstreamStatus,
+                errorType: operation.errorType,
+                errorSummary: redactDiagnosticText(operation.errorSummary || ''),
+                attemptedAt: operation.attemptedAt,
+                succeededAt: operation.succeededAt,
+                failedAt: operation.failedAt,
+            };
+        })(),
         privacy: '不包含 API Key、接口地址、聊天正文、角色身份锚点或自定义提示词。',
         generatedAt: new Date().toISOString(),
     };
@@ -2798,7 +2931,7 @@ function importState(text) {
     const key = currentAnchorKey();
     store.currentState = imported;
     if (!findLatestResultSnapshot()) store.initialState = clone(imported);
-    store.branchOverrides[key] = createSnapshot(imported, {
+    store.branchOverrides[key] = createBranchSnapshot(imported, {
         sourceKey: key,
         kind: 'import',
     });
@@ -2883,6 +3016,8 @@ async function testApiProfileConnection(profileId) {
             getRequestHeaders: () => context?.getRequestHeaders?.() || {},
             maxTokens: 80,
             temperature: 0,
+            operation: 'connection-test',
+            routeLabel: profile.name || '已保存方案',
         });
         if (!String(reply || '').trim()) throw new Error('接口没有返回内容');
         toast(`“${profile.name}”连接成功啦～`, 'success');
@@ -2901,12 +3036,82 @@ async function pullApiProfileModels(profileId) {
         const models = await requestCustomModels(requestSettings, {
             fetchImpl: globalThis.fetch.bind(globalThis),
             getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+            routeLabel: profile.name || '已保存方案',
         });
         runtime.customModels = models;
         runtime.modelPullStatus = {
             phase: 'success',
             message: `找到 ${models.length} 个模型啦～还是可以手动填写哦`,
         };
+        return models;
+    } catch (error) {
+        runtime.modelPullStatus = { phase: 'error', message: describeError(error) };
+        throw error;
+    } finally {
+        runtime.ui?.render();
+    }
+}
+
+function settingsFromApiDraft(payload = {}, { requireModel = true } = {}) {
+    const base = getSettings();
+    const url = String(payload.url || payload.customApiUrl || '').trim().slice(0, 500);
+    const key = String(payload.key || payload.customApiKey || '').trim().slice(0, 1000);
+    const model = String(payload.model || payload.customApiModel || '').trim().slice(0, 180);
+    const transport = ['proxy', 'direct'].includes(payload.transport || payload.customApiTransport)
+        ? (payload.transport || payload.customApiTransport)
+        : 'proxy';
+    if (!url) throw new Error('还没填接口地址呢～');
+    if (!key) throw new Error('还缺 API Key 哦～');
+    if (requireModel && !model) throw new Error('还没选模型呢～');
+    return {
+        ...base,
+        apiMode: 'custom',
+        customApiUrl: url,
+        customApiKey: key,
+        customApiModel: model,
+        customApiTransport: transport,
+    };
+}
+
+async function testApiDraftConnection(payload = {}) {
+    const requestSettings = settingsFromApiDraft(payload, { requireModel: true });
+    const context = getContext();
+    setBusy(true);
+    try {
+        const reply = await requestCustomCompletion(requestSettings, buildBackstageMessages('这是连接测试。请只回复：连接成功'), {
+            fetchImpl: globalThis.fetch.bind(globalThis),
+            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+            maxTokens: 80,
+            temperature: 0,
+            operation: 'connection-test',
+            routeLabel: String(payload.label || '临时独立接口').slice(0, 80),
+        });
+        if (!String(reply || '').trim()) throw new Error('接口没有返回内容');
+        toast(`${String(payload.label || '这个接口').slice(0, 80)}连接成功啦～`, 'success');
+        return true;
+    } finally {
+        setBusy(false);
+    }
+}
+
+async function pullApiDraftModels(payload = {}) {
+    const requestSettings = settingsFromApiDraft(payload, { requireModel: false });
+    const label = String(payload.label || '这个接口').slice(0, 80);
+    runtime.modelPullStatus = { phase: 'running', message: `正在翻${label}的模型列表～` };
+    runtime.ui?.render();
+    try {
+        const context = getContext();
+        const models = await requestCustomModels(requestSettings, {
+            fetchImpl: globalThis.fetch.bind(globalThis),
+            getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+            routeLabel: label,
+        });
+        runtime.customModels = models;
+        runtime.modelPullStatus = {
+            phase: 'success',
+            message: `找到 ${models.length} 个模型啦～不会改动默认接口`,
+        };
+        toast(`找到 ${models.length} 个可用模型啦～`, 'success');
         return models;
     } catch (error) {
         runtime.modelPullStatus = { phase: 'error', message: describeError(error) };
@@ -2941,6 +3146,8 @@ async function testCustomApiConnection() {
                 getRequestHeaders: () => context?.getRequestHeaders?.() || {},
                 maxTokens: 80,
                 temperature: 0,
+                operation: 'connection-test',
+                routeLabel: '默认独立接口',
             },
         );
         if (!String(reply || '').trim()) throw new Error('接口没有返回内容');
@@ -2979,6 +3186,7 @@ async function pullCustomApiModels() {
         const models = await requestCustomModels(settings, {
             fetchImpl: globalThis.fetch.bind(globalThis),
             getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+            routeLabel: '默认独立接口',
         });
         runtime.customModels = models;
         runtime.modelPullStatus = {
@@ -3046,7 +3254,7 @@ async function runOneMemoryRollup(state, controller) {
     };
 }
 
-async function scanHistoryArchive({
+async function scanStoryMemoryHistory({
     automatic = false,
     maximumBatches = Number.POSITIVE_INFINITY,
 } = {}) {
@@ -3076,6 +3284,11 @@ async function scanHistoryArchive({
             + '这会产生额外 API 调用，但每批成功后都会立即保存进度。是否继续？',
         );
         if (confirmed === false) return false;
+        const protectedStore = addRecoveryPoint(getStore(), {
+            reason: 'before-memory-maintenance',
+            label: '手动整理记忆前自动保存',
+        });
+        saveStore(protectedStore, { immediate: true });
     }
 
     runtime.historyProgress = {
@@ -3201,7 +3414,7 @@ async function scanHistoryArchive({
 
             const store = getStore();
             store.currentState = state;
-            store.branchOverrides[currentAnchorKey()] = createSnapshot(state, {
+            store.branchOverrides[currentAnchorKey()] = createBranchSnapshot(state, {
                 sourceKey: currentAnchorKey(),
                 kind: 'history-index',
             });
@@ -3218,7 +3431,7 @@ async function scanHistoryArchive({
         if (rolledUp) {
             const store = getStore();
             store.currentState = state;
-            store.branchOverrides[currentAnchorKey()] = createSnapshot(state, {
+            store.branchOverrides[currentAnchorKey()] = createBranchSnapshot(state, {
                 sourceKey: currentAnchorKey(),
                 kind: 'memory-rollup',
             });
@@ -3592,25 +3805,35 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
     const state = getState();
     const sourceRevision = Number(state.revision || 0);
     const sourceAssistantStamp = latestAssistantSourceStamp();
+    const sourceEventSignature = publicOpinionEventSignature(state);
     const candidates = eligiblePublicOpinionEvents(state);
     const store = getStore();
     const generatedAt = new Date().toISOString();
 
     if (!candidates.length) {
+        const visibilityCounts = (state.events || []).reduce((counts, event) => {
+            const key = ['hidden', 'trace', 'known', 'direct'].includes(String(event?.visibility || ''))
+                ? String(event.visibility)
+                : 'hidden';
+            counts[key] += 1;
+            return counts;
+        }, { hidden: 0, trace: 0, known: 0, direct: 0 });
         store.publicOpinion = emptyPublicOpinionCache({
             generatedAt,
             sourceRevision: state.revision,
             sourceWorldMinute: state.clock?.absoluteMinute ?? -1,
+            sourceEventSignature: publicOpinionEventSignature(state),
         });
         saveStore(store);
         refreshInjection();
         runtime.publicOpinionStatus = {
-            phase: 'success',
-            message: '今天没什么值得传开的事～世界意外地很安静 (˘ω˘)',
+            phase: 'running',
+            message: `正史这轮没什么能传开的～公开 ${visibilityCounts.known + visibilityCounts.direct} · 痕迹 ${visibilityCounts.trace} · 隐藏 ${visibilityCounts.hidden}。那就顺手去街上捞点无关主线的小瓜吧 (ﾉ◕ヮ◕)ﾉ`,
             error: '',
         };
         runtime.ui?.render();
-        return store.publicOpinion;
+        const sandbox = await generatePublicOpinionSandbox();
+        return sandbox ? { kind: 'sandbox', sandbox, fallback: 'no-candidates' } : null;
     }
 
     const controller = new AbortController();
@@ -3663,7 +3886,7 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
 
         const stale = (
             currentChatToken() !== chatTokenAtStart
-            || Number(getState().revision || 0) !== sourceRevision
+            || publicOpinionEventSignature(getState()) !== sourceEventSignature
             || latestAssistantSourceStamp() !== sourceAssistantStamp
         );
         if (stale) {
@@ -3680,19 +3903,29 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
 
         const cache = normalizePublicOpinionPayload(parsed, {
             validEventIds: candidates.map(item => item.id),
+            eventVisibilityById: Object.fromEntries(candidates.map(item => [item.id, item.visibility])),
             sourceRevision: state.revision,
             sourceWorldMinute: state.clock?.absoluteMinute ?? -1,
+            sourceEventSignature,
             generatedAt,
         });
         const latestStore = getStore();
         latestStore.publicOpinion = cache;
         saveStore(latestStore);
         refreshInjection();
+        if (!cache.news.length && !cache.forums.length) {
+            runtime.publicOpinionStatus = {
+                phase: 'running',
+                message: '正史候选明明有，但这次没扒出合格舆情～不让你空手回去，顺手切到闲逛捞点瓜 `(•̀ᴗ•́)و`',
+                error: '',
+            };
+            runtime.ui?.render();
+            const sandbox = await generatePublicOpinionSandbox();
+            return sandbox ? { kind: 'sandbox', sandbox, fallback: 'empty-canon-result' } : cache;
+        }
         runtime.publicOpinionStatus = {
             phase: 'success',
-            message: cache.news.length || cache.forums.length
-                ? `扒到 ${cache.news.length} 条新闻 · ${cache.forums.length} 个论坛话题～`
-                : '没有事情值得上新闻～今天先安静吃瓜吧 (˘▾˘)',
+            message: `扒到 ${cache.news.length} 条新闻 · ${cache.forums.length} 个论坛话题～`,
             error: '',
         };
         runtime.ui?.render();
@@ -3725,6 +3958,83 @@ async function generatePublicOpinionSnapshot({ allowDefer = true } = {}) {
             runtime.activePublicOpinion = null;
         }
     }
+}
+
+async function generatePublicOpinionSandbox() {
+    const chatTokenAtStart = currentChatToken();
+    if (coreSimulationBusy()) throw new Error('世界主线还在推演～先等核心状态接稳，再来闲逛一下吧');
+    const state = getState();
+    const controller = new AbortController();
+    const activeSandbox = { controller, chatToken: chatTokenAtStart };
+    runtime.activePublicOpinionSandbox = activeSandbox;
+    const generatedAt = new Date().toISOString();
+    runtime.publicOpinionStatus = { phase: 'running', message: '正在街上随便逛逛～看看今天有什么无关紧要的小热闹 `(ﾉ◕ヮ◕)ﾉ`', error: '' };
+    runtime.ui?.render();
+    try {
+        const prompt = buildPublicOpinionSandboxPrompt(state, { clockLabel: formatWorldCalendar(state)?.stamp || '' });
+        const settings = getSettings();
+        const sandbox = await runWithRetries(
+            async () => {
+                const raw = await backgroundSimulation(prompt, {
+                    maxTokens: 2800,
+                    temperature: 0.9,
+                    taskKind: 'public-opinion',
+                    rejectTruncated: true,
+                    signal: controller.signal,
+                });
+                const parsed = extractJsonObject(raw);
+                if (!parsed) throw new Error('闲逛舆情没有返回可解析的 JSON');
+                const normalized = normalizePublicOpinionSandboxPayload(parsed, { generatedAt });
+                if (!normalized.news.length && !normalized.forums.length) {
+                    throw new Error('闲逛舆情返回了空内容');
+                }
+                return normalized;
+            },
+            {
+                retries: Math.min(1, settings.autoRetryCount),
+                delayMs: 520,
+                shouldRetry: error => /JSON|空内容|截断|长度上限|empty|No message generated/i.test(String(error?.message || error || '')),
+                signal: controller.signal,
+            },
+        );
+        if (currentChatToken() !== chatTokenAtStart) return null;
+        const store = getStore();
+        store.publicOpinionSandbox = sandbox;
+        saveStore(store);
+        runtime.publicOpinionStatus = {
+            phase: 'success',
+            message: `随便逛到 ${sandbox.news.length} 条小新闻 · ${sandbox.forums.length} 个闲聊话题～这些都不算正史哦`,
+            error: '',
+        };
+        runtime.ui?.render();
+        return sandbox;
+    } catch (error) {
+        if (isAbortError(error) || controller.signal.aborted) {
+            if (currentChatToken() === chatTokenAtStart) {
+                runtime.publicOpinionStatus = { phase: 'idle', message: '主线有新动静啦～闲逛先收摊，不跟核心推演抢路 `(｡•̀ᴗ-)✧`', error: '' };
+                runtime.ui?.render();
+            }
+            return null;
+        }
+        if (currentChatToken() === chatTokenAtStart) {
+            runtime.publicOpinionStatus = { phase: 'error', message: '今天闲逛没逛出东西 QAQ', error: describeError(error) };
+            runtime.ui?.render();
+        }
+        throw error;
+    } finally {
+        if (runtime.activePublicOpinionSandbox === activeSandbox) runtime.activePublicOpinionSandbox = null;
+    }
+}
+
+function clearPublicOpinionSandbox() {
+    runtime.activePublicOpinionSandbox?.controller?.abort?.();
+    runtime.activePublicOpinionSandbox = null;
+    const store = getStore();
+    store.publicOpinionSandbox = emptyPublicOpinionSandbox();
+    saveStore(store);
+    runtime.publicOpinionStatus = { phase: 'idle', message: '闲逛小报收起来啦～', error: '' };
+    runtime.ui?.render();
+    return true;
 }
 
 function clearPublicOpinionSnapshot() {
@@ -3793,12 +4103,21 @@ async function handleUiAction(action, payload = {}) {
             }
             runtime.activeHistoryScan?.abort();
         }
+        if (payload.publicOpinionAutoEnabled === false) {
+            runtime.pendingPublicOpinion = false;
+        }
         context.extensionSettings[MODULE_ID] = settings;
         saveSettings();
         refreshInjection();
         syncSettingsEntry();
         runtime.ui?.render();
-        if (payload.autoSimulationMode && payload.autoSimulationMode !== 'manual') {
+        if (payload.publicOpinionAutoEnabled === true) {
+            scheduleAutoPublicOpinion(getState(), 120);
+        }
+        if (
+            (payload.worldAutoEnabled === true)
+            || (payload.autoSimulationMode && getSettings().worldAutoEnabled)
+        ) {
             window.setTimeout(schedulePendingCatchUp, 40);
         }
         return;
@@ -3832,8 +4151,24 @@ async function handleUiAction(action, payload = {}) {
         return await pullApiProfileModels(payload.profileId);
     }
 
+    if (action === 'test-api-draft') {
+        return await testApiDraftConnection(payload);
+    }
+
+    if (action === 'pull-api-draft-models') {
+        return await pullApiDraftModels(payload);
+    }
+
     if (action === 'scan-history') {
-        return scanHistoryArchive();
+        return scanStoryMemoryHistory();
+    }
+
+    if (action === 'generate-public-opinion-sandbox') {
+        return generatePublicOpinionSandbox();
+    }
+
+    if (action === 'clear-public-opinion-sandbox') {
+        return clearPublicOpinionSandbox();
     }
 
     if (action === 'observe-person') {
@@ -4087,7 +4422,8 @@ async function handleUiAction(action, payload = {}) {
         };
         if (existing) Object.assign(existing, person);
         else next.people.push(person);
-        commitManualState(next, existing ? '后台人物卡已经更新。' : `已将 ${person.name} 加入后台人物。`);
+        const reconciled = settlePersonWorldState(next, person.id, { source: 'manual' });
+        commitManualState(reconciled, existing ? '后台人物卡已经更新。' : `已将 ${person.name} 加入后台人物。`);
         return person;
     }
 
@@ -4376,9 +4712,9 @@ function installSettingsEntry() {
             <div class="inline-drawer-content">
                 <label class="checkbox_label">
                     <input id="world-backstage-enabled" type="checkbox">
-                    <span>启用独立平行世界</span>
+                    <span>启用世界背面</span>
                 </label>
-                <p class="notes">世界时钟、人物轨迹、第一视角独白与事件账本按聊天独立保存。</p>
+                <p class="notes">让镜头外的时间、人物与事件持续运转，并保持正文与世界事实一致。</p>
                 <button id="world-backstage-open" class="menu_button" type="button">
                     打开世界背面
                 </button>
@@ -4468,7 +4804,7 @@ function initialize() {
     registerEvents();
     registerDebugCheck();
     restoreLatestBranch();
-    console.info('[世界背面] 独立平行世界扩展已加载');
+    console.info('[世界背面] 世界状态引擎已加载');
 }
 
 if (document.readyState === 'loading') {

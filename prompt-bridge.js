@@ -162,7 +162,7 @@ export function splitBackstagePrompt(prompt) {
     const lines = text.split(/\r?\n/);
     const firstLine = cleanText(lines[0]);
     const looksLikeRoleDeclaration = /^你是[“"]?世界背面[”"]?的/.test(firstLine)
-        && /(推演器|档案员|整理器|观测器)/.test(firstLine);
+        && /(推演器|世界状态引擎|状态引擎|档案员|整理器|观测器)/.test(firstLine);
 
     if (!looksLikeRoleDeclaration) {
         return {

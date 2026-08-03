@@ -2,6 +2,52 @@ function cleanText(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
+let lastCustomApiOperation = null;
+let customApiOperationSequence = 0;
+
+function beginCustomApiOperation({
+    operation = 'request',
+    route = '',
+    model = '',
+    transport = '',
+} = {}) {
+    const id = ++customApiOperationSequence;
+    lastCustomApiOperation = {
+        id,
+        phase: 'running',
+        operation,
+        source: 'custom-independent',
+        route: cleanText(route),
+        model: cleanText(model),
+        transport: cleanText(transport),
+        transportStatus: null,
+        upstreamStatus: null,
+        errorType: 'none',
+        errorSummary: '',
+        attemptedAt: new Date().toISOString(),
+        succeededAt: '',
+        failedAt: '',
+    };
+    return id;
+}
+
+function finishCustomApiOperation(id, patch = {}) {
+    if (!lastCustomApiOperation || lastCustomApiOperation.id !== id) return;
+    lastCustomApiOperation = {
+        ...lastCustomApiOperation,
+        ...patch,
+    };
+}
+
+export function getLastCustomApiOperation() {
+    return lastCustomApiOperation ? { ...lastCustomApiOperation } : null;
+}
+
+export function resetLastCustomApiOperation() {
+    lastCustomApiOperation = null;
+}
+
+
 export async function runWithRetries(operation, {
     retries = 0,
     delayMs = 750,
@@ -148,12 +194,63 @@ async function readResponse(response) {
 }
 
 function errorDetail(data, text) {
+    const error = data?.error;
     return cleanText(
-        data?.error?.message
+        error?.message
+        || error?.detail
+        || error?.code
         || data?.message
-        || data?.error
+        || (typeof error === 'string' ? error : '')
         || text,
     ).slice(0, 360);
+}
+
+function classifyUpstreamError(response, data, detail = '') {
+    const text = [
+        detail,
+        data?.error?.code,
+        data?.error?.type,
+        data?.code,
+        data?.type,
+    ].filter(Boolean).join(' ').toLocaleLowerCase();
+
+    if (
+        /insufficient[_\s-]*quota|quota\s*(?:exceeded|exhausted|depleted)|credits?\s*(?:exhausted|depleted)|额度(?:不足|耗尽)|余额不足/.test(text)
+    ) {
+        return { errorType: 'quota-exhausted', upstreamStatus: response?.status === 429 ? 429 : null };
+    }
+    if (
+        Number(response?.status) === 429
+        || /too many requests|rate[_\s-]*limit(?:ed|_exceeded)?|请求过于频繁|限流|频率限制/.test(text)
+    ) {
+        return { errorType: 'rate-limit', upstreamStatus: 429 };
+    }
+    return { errorType: 'other', upstreamStatus: null };
+}
+
+function buildCustomApiResponseError(response, data, text, subject = '独立 API') {
+    const detail = errorDetail(data, text);
+    const classified = classifyUpstreamError(response, data, detail);
+    let message;
+    if (classified.errorType === 'rate-limit') {
+        message = `${subject} 被上游限流：${detail || 'Too Many Requests'}（429 类错误`;
+        if (Number(response?.status) === 200) message += '；酒馆转发层 HTTP 200';
+        message += '）。稍后再试，或检查该接口/模型的频率限制。';
+    } else if (classified.errorType === 'quota-exhausted') {
+        message = `${subject} 额度已耗尽：${detail || 'quota exhausted'}`;
+        if (Number(response?.status) === 200) message += '（酒馆转发层 HTTP 200）';
+        message += '。请检查该接口/模型的额度或余额。';
+    } else {
+        message = `${subject} 返回 HTTP ${response?.status}${detail ? `：${detail}` : ''}`;
+    }
+    const error = new Error(message);
+    error.errorType = classified.errorType;
+    error.transportStatus = Number(response?.status) || null;
+    error.upstreamStatus = classified.upstreamStatus;
+    error.upstreamMessage = detail;
+    if (classified.errorType === 'rate-limit') error.code = 'RATE_LIMIT';
+    if (classified.errorType === 'quota-exhausted') error.code = 'QUOTA_EXHAUSTED';
+    return error;
 }
 
 function headersFrom(getRequestHeaders) {
@@ -222,6 +319,7 @@ export async function requestCustomModels(settings, {
     getRequestHeaders = null,
     timeoutMs = null,
     signal = null,
+    routeLabel = '',
 } = {}) {
     if (typeof fetchImpl !== 'function') throw new Error('当前环境不支持网络请求');
     const modelsUrl = normalizeCustomModelsUrl(settings?.customApiUrl);
@@ -251,17 +349,39 @@ export async function requestCustomModels(settings, {
         };
     }
 
-    const response = await fetchWithTimeout(fetchImpl, target, options, requestTimeout, signal);
-    const { text, data } = await readResponse(response);
-    if (!response.ok || data?.error) {
-        const detail = errorDetail(data, text);
-        throw new Error(`模型列表请求返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`);
+    const operationId = beginCustomApiOperation({
+        operation: 'model-list',
+        route: routeLabel,
+        model: cleanText(settings?.customApiModel),
+        transport,
+    });
+    try {
+        const response = await fetchWithTimeout(fetchImpl, target, options, requestTimeout, signal);
+        const { text, data } = await readResponse(response);
+        if (!response.ok || data?.error) {
+            throw buildCustomApiResponseError(response, data, text, '模型列表请求');
+        }
+        const models = modelIdsFrom(data);
+        if (!models.length) {
+            throw new Error('接口连接成功，但没有返回可识别的模型列表；仍可手动填写模型名称');
+        }
+        finishCustomApiOperation(operationId, {
+            phase: 'success',
+            transportStatus: Number(response.status) || null,
+            succeededAt: new Date().toISOString(),
+        });
+        return models;
+    } catch (error) {
+        finishCustomApiOperation(operationId, {
+            phase: 'error',
+            transportStatus: error?.transportStatus ?? null,
+            upstreamStatus: error?.upstreamStatus ?? null,
+            errorType: error?.errorType || 'other',
+            errorSummary: cleanText(error?.message || error).slice(0, 420),
+            failedAt: new Date().toISOString(),
+        });
+        throw error;
     }
-    const models = modelIdsFrom(data);
-    if (!models.length) {
-        throw new Error('接口连接成功，但没有返回可识别的模型列表；仍可手动填写模型名称');
-    }
-    return models;
 }
 
 export async function requestCustomCompletion(settings, messages, {
@@ -272,6 +392,8 @@ export async function requestCustomCompletion(settings, messages, {
     timeoutMs = null,
     signal = null,
     rejectTruncated = false,
+    operation = 'completion',
+    routeLabel = '',
 } = {}) {
     if (typeof fetchImpl !== 'function') {
         throw new Error('当前环境不支持网络请求');
@@ -328,6 +450,13 @@ export async function requestCustomCompletion(settings, messages, {
         }
     }
 
+    const operationId = beginCustomApiOperation({
+        operation,
+        route: routeLabel,
+        model,
+        transport,
+    });
+
     let response;
     try {
         response = await fetchWithTimeout(fetchImpl, target, {
@@ -337,47 +466,109 @@ export async function requestCustomCompletion(settings, messages, {
             body: JSON.stringify(payload),
         }, requestTimeout, signal);
     } catch (error) {
+        let nextError = error;
         if (transport === 'direct' && /fetch|network|cors/i.test(String(error?.message || error))) {
-            throw new Error('浏览器直连接口失败，可能是跨域限制；请改用“经酒馆转发”');
+            nextError = new Error('浏览器直连接口失败，可能是跨域限制；请改用“经酒馆转发”');
         }
-        throw error;
+        finishCustomApiOperation(operationId, {
+            phase: 'error',
+            errorType: nextError?.errorType || 'network',
+            errorSummary: cleanText(nextError?.message || nextError).slice(0, 420),
+            failedAt: new Date().toISOString(),
+        });
+        throw nextError;
     }
 
-    const { text, data } = await readResponse(response);
+    let text;
+    let data;
+    try {
+        ({ text, data } = await readResponse(response));
+    } catch (error) {
+        error.errorType ||= 'invalid-json';
+        error.transportStatus ??= Number(response.status) || null;
+        finishCustomApiOperation(operationId, {
+            phase: 'error',
+            transportStatus: error.transportStatus,
+            upstreamStatus: null,
+            errorType: error.errorType,
+            errorSummary: cleanText(error.message || error).slice(0, 420),
+            failedAt: new Date().toISOString(),
+        });
+        throw error;
+    }
     if (!response.ok || data?.error) {
         const detail = errorDetail(data, text);
+        let error;
         if (/no message generated|empty (?:message|response)|no content/i.test(detail)) {
-            throw new Error(
+            error = new Error(
                 '独立 API 没有返回最终正文（No message generated）。'
                 + (useDeepSeekV4Compatibility
                     ? '插件已请求关闭 DS4 思考；若仍为空，通常是中转站未转发该参数或接口输出额度耗尽'
                     : '请检查模型输出额度或改用能稳定返回正文的模型'),
             );
+            error.errorType = 'empty-response';
+            error.transportStatus = Number(response.status) || null;
+        } else {
+            error = buildCustomApiResponseError(response, data, text, '独立 API');
         }
-        throw new Error(`独立 API 返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`);
+        finishCustomApiOperation(operationId, {
+            phase: 'error',
+            transportStatus: error.transportStatus ?? (Number(response.status) || null),
+            upstreamStatus: error.upstreamStatus ?? null,
+            errorType: error.errorType || 'other',
+            errorSummary: cleanText(error.message).slice(0, 420),
+            failedAt: new Date().toISOString(),
+        });
+        throw error;
     }
 
     const completion = extractCompletionText(data);
     const finishReason = extractCompletionFinishReason(data);
     if (!completion) {
-        if (/length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason)) {
-            throw new Error(`独立 API 输出达到长度上限（${finishReason}），且没有返回可恢复的正文`);
-        }
-        throw new Error(
-            '独立 API 返回成功，但没有可读取的最终正文。'
-            + (useDeepSeekV4Compatibility ? 'DS4 思考可能占满了中转站的输出额度' : ''),
-        );
+        const hitLengthLimit = /length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason);
+        const error = hitLengthLimit
+            ? new Error(`独立 API 输出达到长度上限（${finishReason}），且没有返回可恢复的正文`)
+            : new Error(
+                '独立 API 返回成功，但没有可读取的最终正文。'
+                + (useDeepSeekV4Compatibility ? 'DS4 思考可能占满了中转站的输出额度' : ''),
+            );
+        error.errorType = hitLengthLimit ? 'output-limit' : 'empty-response';
+        error.transportStatus = Number(response.status) || null;
+        finishCustomApiOperation(operationId, {
+            phase: 'error',
+            transportStatus: error.transportStatus,
+            upstreamStatus: null,
+            errorType: error.errorType,
+            errorSummary: cleanText(error.message).slice(0, 420),
+            failedAt: new Date().toISOString(),
+        });
+        throw error;
     }
     const hitLengthLimit = /length|max[_\s-]*tokens?|token[_\s-]*limit/i.test(finishReason);
     if (hitLengthLimit && rejectTruncated) {
         const error = new Error(`独立 API 输出达到长度上限（${finishReason}），本任务不接受被截断的结果`);
         error.code = 'OUTPUT_TRUNCATED';
+        error.errorType = 'output-limit';
+        error.transportStatus = Number(response.status) || null;
         error.finishReason = finishReason;
         error.partialText = completion;
+        finishCustomApiOperation(operationId, {
+            phase: 'error',
+            transportStatus: error.transportStatus,
+            upstreamStatus: null,
+            errorType: error.errorType,
+            errorSummary: cleanText(error.message).slice(0, 420),
+            failedAt: new Date().toISOString(),
+        });
         throw error;
     }
     // Structured simulation calls may still receive a complete JSON object even
     // when a provider reports MAX_TOKENS. Preserve non-empty output there and let
     // the JSON parser decide whether compact retry is necessary.
+    finishCustomApiOperation(operationId, {
+        phase: 'success',
+        transportStatus: Number(response.status) || null,
+        succeededAt: new Date().toISOString(),
+    });
     return completion;
 }

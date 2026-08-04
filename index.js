@@ -71,7 +71,7 @@ import {
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '1.5.2';
+const PLUGIN_VERSION = '1.5.3';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 21,
     enabled: true,
@@ -747,9 +747,25 @@ function getStore({ create = true } = {}) {
     return store;
 }
 
+function syncPublicOpinionLedgerFromWorld(store) {
+    if (
+        !store?.currentState
+        || runtime.publicOpinionRefreshTransaction
+        || store.publicOpinionListHidden
+    ) return store?.publicOpinion;
+
+    const current = normalizePublicOpinionCache(
+        store.publicOpinion || emptyPublicOpinionCache(),
+    );
+    const merged = mergeWorldNewsIntoPublicOpinion(store.currentState, current);
+    store.publicOpinion = merged;
+    return merged;
+}
+
 function saveStore(store, { immediate = false } = {}) {
     const context = getContext();
     mergeMemorySummaryArchive(store, store.currentState);
+    syncPublicOpinionLedgerFromWorld(store);
     store.updatedAt = new Date().toISOString();
 
     if (!context?.chatMetadata || !hasChatContext()) {
@@ -1055,12 +1071,7 @@ function getSyncStatus() {
             const storedOpinion = normalizePublicOpinionCache(
                 opinionStore.publicOpinion || emptyPublicOpinionCache(),
             );
-            const displayOpinion = (
-                runtime.publicOpinionRefreshTransaction
-                || opinionStore.publicOpinionListHidden
-            )
-                ? storedOpinion
-                : mergeWorldNewsIntoPublicOpinion(getState(), storedOpinion);
+            const displayOpinion = storedOpinion;
             return {
                 ...displayOpinion,
                 ...runtime.publicOpinionStatus,
@@ -1588,12 +1599,12 @@ function publicOpinionRevealInjection(state, cache, settings, recentText = '') {
     const stale = String(normalized.sourceEventSignature || '') !== publicOpinionEventSignature(state);
     const opinion = mergeWorldNewsIntoPublicOpinion(
         state,
-        stale ? emptyPublicOpinionCache({
-            generatedAt: '',
-            sourceRevision: state.revision,
-            sourceWorldMinute: state.clock?.absoluteMinute ?? -1,
-            sourceEventSignature: publicOpinionEventSignature(state),
-        }) : normalized,
+        stale
+            ? {
+                ...normalized,
+                forums: [],
+            }
+            : normalized,
     );
     if (!opinion.news.length && !opinion.forums.length) return '';
     const text = String(recentText || '').toLocaleLowerCase();

@@ -1,7 +1,9 @@
+const WB_STATE_RECONCILE_ORDER = Object.freeze([3, 1, 4, 2]);
+
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 18;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
 
@@ -40,6 +42,8 @@ const LIMITS = Object.freeze({
     echoes: 80,
     foregroundFacts: 24,
     worldFacts: 160,
+    worldPulseDomains: 18,
+    publicImpactLedger: 96,
     consistencyConflicts: 32,
     audit: 40,
     text: 800,
@@ -54,6 +58,7 @@ const LIMITS = Object.freeze({
     behaviorBoundaries: 500,
     cognitiveRefs: 32,
     personState: 220,
+    personAvatarData: 180000,
     eventCause: 360,
     eventPublicTrace: 260,
     storySummaries: 2400,
@@ -128,6 +133,50 @@ function normalizeVisibility(value) {
 
 function normalizeEventStatus(value) {
     return VALID_EVENT_STATES.has(value) ? value : 'active';
+}
+
+
+function inferLegacyEventPublicity(raw = {}, existing = null) {
+    const explicit = String(raw?.publicity ?? raw?.public_scope ?? raw?.publicScope ?? existing?.publicity ?? '').trim().toLowerCase();
+    if (VALID_EVENT_PUBLICITY.has(explicit)) return explicit;
+
+    const publicTrace = String(
+        raw?.public_trace
+        ?? raw?.publicTrace
+        ?? existing?.publicTrace
+        ?? ''
+    ).trim();
+    const publicHeadline = String(
+        raw?.public_headline
+        ?? raw?.publicHeadline
+        ?? existing?.publicHeadline
+        ?? ''
+    ).trim();
+    const publicSummary = String(
+        raw?.public_summary
+        ?? raw?.publicSummary
+        ?? existing?.publicSummary
+        ?? ''
+    ).trim();
+
+    if (!publicTrace && !publicHeadline && !publicSummary) return 'private';
+
+    // 1.4.1 以前 public_trace 和 visibility 混用过。
+    // 迁移时只在文本本身明确出现“社会传播渠道”证据时才自动认定为 public；
+    // 否则宁可保持 private，避免把卧室/私聊/角色已知事件错误同步成新闻。
+    const evidence = `${publicHeadline} ${publicSummary} ${publicTrace}`;
+    const strongPublicCue = /(公告|通报|报道|新闻|媒体|记者|电视台|广播|报纸|官方|政府|警方|消防|医院|学校|公司发布|机构发布|委员会|公示|通知|预警|交通部门|气象|论坛|社交媒体|热搜|公众|市民|居民|游客|全城|全网|公开声明|新闻发布)/i;
+    if (strongPublicCue.test(evidence)) return 'public';
+
+    const traceCue = /(有人看见|有人发现|路人|邻居|附近的人|外界察觉|传闻|风声|小道消息|可疑迹象|异常迹象)/i;
+    if (traceCue.test(evidence)) return 'trace';
+
+    return 'private';
+}
+
+function normalizeEventPublicity(value, fallback = 'private') {
+    const normalized = String(value || '').trim().toLowerCase();
+    return VALID_EVENT_PUBLICITY.has(normalized) ? normalized : fallback;
 }
 
 function normalizeKnowledge(value) {
@@ -370,6 +419,21 @@ export function formatDuration(minutes) {
 
 const VALID_WORLD_FACT_SOURCES = new Set(['narrative', 'simulation', 'manual', 'event-settlement']);
 const VALID_WORLD_FACT_CONFIDENCE = new Set(['low', 'medium', 'high']);
+const VALID_WORLD_FACT_VALIDITY = new Set(['current', 'upcoming', 'historical', 'persistent']);
+const VALID_WORLD_PULSE_KINDS = new Set([
+    'environment',
+    'government',
+    'economy',
+    'organization',
+    'infrastructure',
+    'security',
+    'culture',
+    'media',
+    'community',
+    'other',
+]);
+const VALID_WORLD_PULSE_TRENDS = new Set(['stable', 'rising', 'falling', 'volatile']);
+const VALID_EVENT_PUBLICITY = new Set(['private', 'trace', 'public']);
 
 function worldFactStableKey(raw = {}) {
     const explicit = asString(raw?.key, '', 180);
@@ -388,6 +452,17 @@ export function normalizeWorldFact(raw, existing = null, worldMinute = 0) {
     const key = worldFactStableKey(raw || existing || {});
     const source = asString(raw?.source, existing?.source || 'simulation', 40);
     const confidence = asString(raw?.confidence, existing?.confidence || 'high', 20);
+    const rawValidity = asString(
+        raw?.validity ?? raw?.temporal_state ?? raw?.temporalState ?? existing?.validity,
+        '',
+        20,
+    ).toLowerCase();
+    const inferredValidity = String(key || '').startsWith('event:') && String(key || '').endsWith(':result')
+        ? 'historical'
+        : 'current';
+    const validity = VALID_WORLD_FACT_VALIDITY.has(rawValidity)
+        ? rawValidity
+        : inferredValidity;
     return {
         id: normalizeId(raw?.id || existing?.id || `world_fact_${hashText(key)}`, 'world_fact'),
         key,
@@ -406,6 +481,7 @@ export function normalizeWorldFact(raw, existing = null, worldMinute = 0) {
         value: asString(raw?.value, existing?.value || '', 520),
         source: VALID_WORLD_FACT_SOURCES.has(source) ? source : 'simulation',
         confidence: VALID_WORLD_FACT_CONFIDENCE.has(confidence) ? confidence : 'high',
+        validity,
         visibility: normalizeVisibility(raw?.visibility ?? existing?.visibility ?? 'hidden'),
         eventId: asString(
             raw?.event_id ?? raw?.eventId,
@@ -451,6 +527,84 @@ function upsertWorldFact(state, raw, {
     return fact;
 }
 
+
+export function eventTemporalState(event, worldMinute = 0) {
+    if (!event) return 'historical';
+    if (TERMINAL_EVENT_STATES.has(event.status)) return 'historical';
+
+    const now = Number(worldMinute || 0);
+    const dueAt = Number(event.dueAt);
+    const startedAt = Number(event.startedAt);
+
+    if (event.status === 'waiting') return 'upcoming';
+    if (event.clockMode === 'scheduled' && Number.isFinite(dueAt) && dueAt > now) {
+        return 'upcoming';
+    }
+    if (Number.isFinite(startedAt) && startedAt > now) return 'upcoming';
+    return 'current';
+}
+
+function syncPublicEventRealityFacts(state, worldMinute = state?.clock?.absoluteMinute || 0) {
+    for (const event of asArray(state?.events)) {
+        if (
+            event?.publicity !== 'public'
+            || !event?.id
+            || (!event.publicSummary && !event.publicHeadline && !event.publicTrace && !event.publicResult)
+        ) continue;
+
+        const temporalState = eventTemporalState(event, worldMinute);
+        let value = '';
+        let field = '';
+        let source = 'simulation';
+
+        if (temporalState === 'historical') {
+            value = asString(
+                event.publicResult || event.publicSummary || event.publicHeadline || event.publicTrace,
+                '',
+                520,
+            );
+            field = event.publicResult ? '最终公开结果' : '最近公开报道';
+            source = 'event-settlement';
+        } else if (temporalState === 'upcoming') {
+            value = asString(
+                event.publicSummary || event.publicHeadline || event.publicTrace,
+                '',
+                520,
+            );
+            field = '公开预告';
+        } else {
+            value = asString(
+                event.publicSummary || event.publicHeadline || event.publicTrace,
+                '',
+                520,
+            );
+            field = '当前公开状态';
+        }
+        if (!value) continue;
+
+        const subject = asString(event.place, '', 140)
+            || asString(event.title, '世界', 140)
+            || '世界';
+        upsertWorldFact(state, {
+            key: `public_event:${event.id}:state`,
+            subject_type: event.place ? 'location' : 'event',
+            subject_id: event.place || event.id,
+            subject,
+            field,
+            value,
+            validity: temporalState,
+            visibility: 'known',
+            confidence: 'high',
+            event_id: event.id,
+            settled_at: event.createdAt || worldMinute,
+            updated_at: event.updatedAt || event.resolvedAt || worldMinute,
+        }, {
+            worldMinute,
+            source,
+        });
+    }
+}
+
 function settlePersonStateFacts(state, person, source, messageId = null) {
     if (!person?.id) return;
     const fields = [
@@ -469,6 +623,7 @@ function settlePersonStateFacts(state, person, source, messageId = null) {
             subject: person.name,
             field,
             value: text,
+            validity: 'current',
             visibility,
             confidence: 'high',
         }, {
@@ -502,6 +657,7 @@ function settleEventResultFact(state, event, messageId = null) {
         subject: event.title,
         field: 'result',
         value: result,
+        validity: 'historical',
         visibility: event.visibility,
         event_id: event.id,
         confidence: 'high',
@@ -527,9 +683,592 @@ function normalizeConsistencyConflict(raw, worldMinute = 0, messageId = null) {
     };
 }
 
+
+function normalizeWorldPulseDomain(raw, existing = null, worldMinute = 0) {
+    const label = asString(
+        raw?.label ?? raw?.name ?? existing?.label,
+        existing?.label || '未命名领域',
+        100,
+    );
+    const rawKind = asString(raw?.kind, existing?.kind || 'other', 30).toLowerCase();
+    const rawTrend = asString(raw?.trend, existing?.trend || 'stable', 20).toLowerCase();
+    return {
+        id: normalizeId(
+            raw?.id || existing?.id || `pulse_${hashText(`${rawKind}:${label}`)}`,
+            'pulse',
+        ),
+        label,
+        scope: asString(raw?.scope, existing?.scope || '', 120),
+        kind: VALID_WORLD_PULSE_KINDS.has(rawKind) ? rawKind : 'other',
+        state: asString(raw?.state, existing?.state || '', 420),
+        pressure: asInteger(raw?.pressure, existing?.pressure ?? 1, 0, 3),
+        trend: VALID_WORLD_PULSE_TRENDS.has(rawTrend) ? rawTrend : 'stable',
+        visibility: normalizeVisibility(raw?.visibility ?? existing?.visibility ?? 'hidden'),
+        source: ['history', 'simulation', 'manual'].includes(raw?.source)
+            ? raw.source
+            : (existing?.source || 'simulation'),
+        evidence: asString(
+            raw?.evidence ?? raw?.reason,
+            existing?.evidence || '',
+            260,
+        ),
+        updatedAt: asInteger(
+            raw?.updated_at ?? raw?.updatedAt,
+            worldMinute,
+            0,
+        ),
+    };
+}
+
+function normalizeWorldPulse(raw, worldMinute = 0) {
+    const domains = [];
+    for (const candidate of asArray(raw?.domains).slice(0, LIMITS.worldPulseDomains)) {
+        const normalized = normalizeWorldPulseDomain(candidate, null, worldMinute);
+        if (!normalized.state && !normalized.evidence) continue;
+        const existing = domains.find(item => item.id === normalized.id || (
+            item.kind === normalized.kind
+            && item.label.toLocaleLowerCase() === normalized.label.toLocaleLowerCase()
+        ));
+        if (existing) Object.assign(existing, normalizeWorldPulseDomain(candidate, existing, worldMinute));
+        else domains.push(normalized);
+    }
+    return {
+        baselineEstablished: Boolean(raw?.baselineEstablished ?? raw?.baseline_established),
+        lastSweepAt: asInteger(raw?.lastSweepAt ?? raw?.last_sweep_at, worldMinute, 0),
+        domains: domains.slice(0, LIMITS.worldPulseDomains),
+    };
+}
+
+function upsertWorldPulseDomain(state, raw, {
+    worldMinute = state?.clock?.absoluteMinute || 0,
+    source = '',
+} = {}) {
+    if (!raw || typeof raw !== 'object') return null;
+    state.worldPulse = normalizeWorldPulse(state.worldPulse, worldMinute);
+    const prepared = {
+        ...raw,
+        ...(source ? { source } : {}),
+    };
+    const candidate = normalizeWorldPulseDomain(prepared, null, worldMinute);
+    const existing = state.worldPulse.domains.find(item => (
+        item.id === candidate.id
+        || (
+            item.kind === candidate.kind
+            && item.label.toLocaleLowerCase() === candidate.label.toLocaleLowerCase()
+        )
+    )) || null;
+    const normalized = normalizeWorldPulseDomain(prepared, existing, worldMinute);
+    if (!normalized.state && !normalized.evidence) return null;
+    if (existing) Object.assign(existing, normalized);
+    else state.worldPulse.domains.unshift(normalized);
+    state.worldPulse.domains = state.worldPulse.domains
+        .sort((a, b) => (
+            Number(b.pressure || 0) - Number(a.pressure || 0)
+            || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+        ))
+        .slice(0, LIMITS.worldPulseDomains);
+    state.worldPulse.lastSweepAt = worldMinute;
+    return normalized;
+}
+
+
+function normalizePublicImpactRecord(raw, worldMinute = 0) {
+    return {
+        id: normalizeId(
+            raw?.id || `impact_${hashText(`${raw?.source_event_id ?? raw?.sourceEventId ?? ''}:${raw?.fingerprint || ''}`)}`,
+            'impact',
+        ),
+        sourceEventId: asString(raw?.source_event_id ?? raw?.sourceEventId, '', 120),
+        fingerprint: asString(raw?.fingerprint, '', 120),
+        summary: asString(raw?.summary, '', 520),
+        affectedPersonIds: uniqueStrings(
+            raw?.affected_person_ids ?? raw?.affectedPersonIds,
+            24,
+        ),
+        affectedScopes: uniqueStrings(
+            raw?.affected_scopes ?? raw?.affectedScopes,
+            24,
+        ),
+        channels: uniqueStrings(raw?.channels, 16),
+        processedAt: asInteger(
+            raw?.processed_at ?? raw?.processedAt,
+            worldMinute,
+            0,
+        ),
+        reason: asString(raw?.reason, '', 220),
+    };
+}
+
+export function publicImpactFingerprint(event) {
+    if (!event?.id) return '';
+    // Public-impact propagation reacts to what entered public circulation, not to
+    // backstage-only lifecycle state. A hidden resolved/cancelled transition must
+    // not make society magically know the ending. If the terminal outcome becomes
+    // public, publicResult/publicSummary changes and naturally creates a new fingerprint.
+    const payload = {
+        id: String(event.id || ''),
+        publicity: String(event.publicity || 'private'),
+        publicTrace: String(event.publicTrace || ''),
+        publicHeadline: String(event.publicHeadline || ''),
+        publicSummary: String(event.publicSummary || ''),
+        publicResult: String(event.publicResult || ''),
+    };
+    return hashText(JSON.stringify(payload));
+}
+
+function eventHasPublicPropagation(event) {
+    if (!event?.id) return false;
+    if (event.publicity === 'public') {
+        return Boolean(event.publicHeadline || event.publicSummary || event.publicResult || event.publicTrace);
+    }
+    if (event.publicity === 'trace') {
+        return Boolean(event.publicTrace);
+    }
+    return false;
+}
+
+export function pendingPublicImpactEvents(state, { maximum = 8 } = {}) {
+    const ledger = asArray(state?.publicImpactLedger);
+    const processed = new Set(
+        ledger.map(record => `${record?.sourceEventId || ''}:${record?.fingerprint || ''}`),
+    );
+    return asArray(state?.events)
+        .filter(eventHasPublicPropagation)
+        .filter(event => {
+            const fingerprint = publicImpactFingerprint(event);
+            return fingerprint && !processed.has(`${event.id}:${fingerprint}`);
+        })
+        .sort((a, b) => (
+            Number(b.updatedAt || b.resolvedAt || 0)
+            - Number(a.updatedAt || a.resolvedAt || 0)
+        ))
+        .slice(0, Math.max(1, Number(maximum) || 8));
+}
+
+function recordProcessedPublicImpacts(state, sourceEvents, rawRecords = [], {
+    reason = 'public-impact',
+} = {}) {
+    const recordsBySource = new Map(
+        asArray(rawRecords)
+            .map(raw => normalizePublicImpactRecord(raw, state.clock?.absoluteMinute || 0))
+            .filter(record => record.sourceEventId)
+            .map(record => [record.sourceEventId, record]),
+    );
+    const next = asArray(state.publicImpactLedger)
+        .map(record => normalizePublicImpactRecord(record, state.clock?.absoluteMinute || 0));
+
+    for (const event of asArray(sourceEvents)) {
+        if (!event?.id) continue;
+        const fingerprint = publicImpactFingerprint(event);
+        if (!fingerprint) continue;
+        const modelRecord = recordsBySource.get(event.id);
+        const record = normalizePublicImpactRecord({
+            id: `impact_${hashText(`${event.id}:${fingerprint}`)}`,
+            source_event_id: event.id,
+            fingerprint,
+            summary: modelRecord?.summary || '本轮已检查该公开事件的世界连锁影响。',
+            affected_person_ids: modelRecord?.affectedPersonIds || [],
+            affected_scopes: modelRecord?.affectedScopes || [],
+            channels: modelRecord?.channels || [],
+            processed_at: state.clock?.absoluteMinute || 0,
+            reason,
+        }, state.clock?.absoluteMinute || 0);
+
+        const key = `${record.sourceEventId}:${record.fingerprint}`;
+        const oldIndex = next.findIndex(item => (
+            `${item.sourceEventId}:${item.fingerprint}` === key
+        ));
+        if (oldIndex >= 0) next[oldIndex] = record;
+        else next.unshift(record);
+    }
+
+    state.publicImpactLedger = next
+        .sort((a, b) => Number(b.processedAt || 0) - Number(a.processedAt || 0))
+        .slice(0, LIMITS.publicImpactLedger);
+}
+
+export function markCurrentPublicImpactsProcessed(inputState, {
+    reason = 'baseline',
+} = {}) {
+    const state = deepClone(inputState);
+    recordProcessedPublicImpacts(
+        state,
+        asArray(state.events).filter(eventHasPublicPropagation),
+        [],
+        { reason },
+    );
+    return trimState(state);
+}
+
+export function buildPublicImpactPrompt(state, {
+    sourceEventIds = [],
+    userName = '',
+    maximumEvents = 8,
+} = {}) {
+    const wanted = new Set(asArray(sourceEventIds).map(String).filter(Boolean));
+    const sourceEvents = (wanted.size
+        ? asArray(state?.events).filter(event => wanted.has(String(event?.id || '')))
+        : pendingPublicImpactEvents(state, { maximum: maximumEvents }))
+        .filter(eventHasPublicPropagation)
+        .slice(0, Math.max(1, Number(maximumEvents) || 8));
+
+    const compact = compactStateForModel(state, {
+        includeUserInnerVoice: false,
+        userName,
+        maximumPeople: 24,
+    });
+    const publicSources = sourceEvents.map(event => ({
+        id: event.id,
+        place: modelText(event.place, 120),
+        status: event.status,
+        publicity: event.publicity,
+        public_trace: modelText(event.publicTrace, 260),
+        public_headline: modelText(event.publicHeadline, 180),
+        public_summary: modelText(event.publicSummary, 520),
+        public_result: modelText(event.publicResult, 520),
+    }));
+
+    return [
+        '你是“世界背面”的公共事件影响传播引擎。你的任务不是写新闻，而是判断已经进入公共传播的世界事件，会怎样真实改变这个世界。',
+        '',
+        '核心原则：事件可以完全不是为了主角发生，但主角和角色生活在这个世界里，所以只要职业、组织、地点、资源、关系、政策、市场或社会环境被波及，后果必须进入后台世界状态。',
+        '1. 只根据 source_public_events 与当前权威世界状态推导后果。新闻措辞不是新的事实来源；不得从新闻标题脑补未公开的幕后原因。',
+        '2. publicity=public 表示公开事实；publicity=trace 只表示公开流传的迹象/传闻。trace 可以造成“传闻正在流传、品牌观望、公众讨论升温”等真实社会后果，但绝不能把传闻内容本身升级成已证实事实。',
+        '3. 影响可以落到人物、组织/势力、地点、行业、资源、机会、合同、行程、声誉、价格、政策执行、基础设施和社会压力。该变的人物状态就 people_upsert；该留下的客观结果写 world_facts_upsert；持续压力写 world_pulse_upsert；需要继续发展的后果写 events_create/update。world_facts_upsert 必须填写 validity：current / upcoming / historical / persistent。源新闻已经结束，不代表它造成的后果也结束；仍然有效的后果用 current/persistent。',
+        '4. 新建的后果事件必须 caused_by 包含源公共事件 id，避免因果链断掉。source_public_events 本身是本轮已确认输入，不要在 events_update 里改写它们；需要的新进展另建后果事件。不要为了“有影响”硬制造戏剧性后果；无直接影响完全允许。',
+        '5. 对非玩家角色：只有当她确实能通过公开渠道/职业渠道/组织通知等合理得知时，才在 people_upsert 增加 known_event_ids / known_fact_keys。',
+        '6. 对玩家：绝不能因为“新闻公开”就自动假定玩家已经看到了。若公共事件会直接影响玩家，但玩家当前未必知道，优先建立一个可被正文自然承接的后果事件（例如经纪人通知、行程变更、公司群消息、道路封闭导致到场受阻），并用 delivery_route/visibility 描述它如何进入前台；不要替玩家决定反应。',
+        '7. 如果公共事件已经在物理层面直接影响当前地点/行程，例如停电、封路、航班取消，可以把这些后果写成世界事实；“角色知道这件新闻”仍然是另一层认知。',
+        '8. 影响传播不是每条新闻都必须撞主角。先判断世界范围，再判断当前人物与之有没有真实连接。娱乐圈、政商、战争、灾害等题材里，行业/组织级新闻往往会自然波及大量角色；日常地方新闻则可能只影响局部。',
+        '9. 不推进主世界时间，elapsed_minutes 必须为 0；不写长期记忆 memory_update。这里只结算公共传播造成的世界后果。',
+        '10. 只输出合法 JSON。',
+        '',
+        '当前权威世界：',
+        JSON.stringify(compact),
+        '',
+        '本轮公共事件：',
+        JSON.stringify(publicSources),
+        '',
+        '返回结构：',
+        JSON.stringify({
+            elapsed_minutes: 0,
+            time_reason: 'public impact propagation',
+            clock_anchor: { mode: 'none' },
+            world: { title: '', detail: '' },
+            people_upsert: [{
+                id: '',
+                name: '',
+                location: '',
+                action: '',
+                intent: '',
+                long_term_goal: '',
+                physical_state: '',
+                emotional_state: '',
+                resource_state: '',
+                known_event_ids: [],
+                known_fact_keys: [],
+                relevance: 1,
+                source: 'background',
+            }],
+            people_remove: [],
+            events_create: [{
+                id: '',
+                title: '',
+                place: '',
+                summary: '',
+                consequence: '',
+                expected_result: '',
+                status: 'active | waiting | ready',
+                clock_mode: 'condition | duration | scheduled | active',
+                duration_minutes: 0,
+                scheduled_at: null,
+                prerequisites: [],
+                cause: '',
+                actors: [],
+                known_by: [],
+                caused_by: ['源公共事件ID'],
+                publicity: 'private | trace | public',
+                public_trace: '',
+                public_headline: '',
+                public_summary: '',
+                public_result: '',
+                visibility: 'hidden | trace | known | direct',
+                delivery_route: '',
+            }],
+            events_update: [],
+            deliveries_confirmed: [],
+            front_facts: [],
+            world_facts_upsert: [{
+                key: '',
+                subject_type: 'person | event | world | location | item | organization | other',
+                subject_id: '',
+                subject: '',
+                field: '',
+                value: '',
+                source: 'simulation',
+                visibility: 'hidden | trace | known | direct',
+                confidence: 'high',
+                validity: 'current | upcoming | historical | persistent',
+                event_id: '',
+            }],
+            world_pulse_upsert: [{
+                id: '',
+                label: '',
+                scope: '',
+                kind: 'environment | government | economy | organization | infrastructure | security | culture | media | community | other',
+                state: '',
+                pressure: 1,
+                trend: 'stable | rising | falling | volatile',
+                visibility: 'hidden | trace | known',
+                source: 'simulation',
+                evidence: '',
+            }],
+            consistency_conflicts: [],
+            impact_records: [{
+                source_event_id: '源公共事件ID',
+                summary: '这件公开事件实际造成了什么世界连锁影响；若暂无影响也明确写无直接影响',
+                affected_person_ids: [],
+                affected_scopes: [],
+                channels: [],
+            }],
+            memory_update: {
+                facts_upsert: [],
+                facts_invalidate: [],
+                clues_upsert: [],
+                clues_resolve: [],
+            },
+        }),
+    ].join('\n');
+}
+
+export function applyPublicImpactResult(inputState, rawPayload, {
+    sourceEventIds = [],
+    userName = '',
+    sourceKey = '',
+    backgroundNpcBudget = LIMITS.people,
+} = {}) {
+    const sourceEvents = asArray(inputState?.events)
+        .filter(event => asArray(sourceEventIds).includes(event?.id))
+        .filter(eventHasPublicPropagation);
+    let state = applySimulationResult(inputState, {
+        ...rawPayload,
+        elapsed_minutes: 0,
+        memory_update: {
+            facts_upsert: [],
+            facts_invalidate: [],
+            clues_upsert: [],
+            clues_resolve: [],
+        },
+    }, {
+        messageId: null,
+        swipeId: null,
+        sourceKey: sourceKey || `public-impact:${sourceEventIds.join(',')}`,
+        userName,
+        allowUserInnerVoice: false,
+        timePolicy: 'world',
+        narrativeText: '',
+        backgroundNpcBudget,
+    });
+
+    recordProcessedPublicImpacts(
+        state,
+        sourceEvents,
+        rawPayload?.impact_records ?? rawPayload?.impactRecords ?? [],
+        { reason: 'public-impact-propagation' },
+    );
+    appendAudit(state, {
+        type: 'public_impact_propagated',
+        text: `已检查 ${sourceEvents.length} 条公共事件的连锁影响`,
+        reason: asArray(rawPayload?.impact_records ?? rawPayload?.impactRecords)
+            .map(item => asString(item?.summary, '', 160))
+            .filter(Boolean)
+            .slice(0, 3)
+            .join('；'),
+    });
+    return trimState(state);
+}
+
+
+function contextMatchScore(text, terms = []) {
+    let score = 0;
+    const source = String(text || '').toLocaleLowerCase();
+    for (const raw of terms) {
+        const term = String(raw || '').trim().toLocaleLowerCase();
+        if (term.length < 2) continue;
+        if (source.includes(term)) {
+            score += Math.min(140, 80 + term.length * 4);
+            continue;
+        }
+        // Useful for longer location / organization names where the story may use
+        // a shortened form, without fuzzy-matching generic one-character words.
+        if (term.length >= 4) {
+            const chunks = term
+                .split(/[\s·・,，。、“”"'（）()\-_/]+/u)
+                .map(item => item.trim())
+                .filter(item => item.length >= 2);
+            if (chunks.some(chunk => source.includes(chunk))) score += 35;
+        }
+    }
+    return score;
+}
+
+function textSuggestsFuturePlan(text = '') {
+    return /(?:待会|等会|稍后|之后|过会|下午|今晚|明天|后天|下周|周末|过几天|晚些时候|一会儿|准备去|打算去|计划去|要去)/u
+        .test(String(text || ''));
+}
+
+function textExplicitlyReferencesHistoricalEvent(text = '', event = null) {
+    const source = String(text || '').toLocaleLowerCase();
+    if (!source || !event) return false;
+    const exactTerms = [
+        event.title,
+        event.publicHeadline,
+        event.publicResult,
+    ]
+        .map(value => String(value || '').trim().toLocaleLowerCase())
+        .filter(value => value.length >= 3);
+    return exactTerms.some(term => source.includes(term));
+}
+
+export function selectContextRelevantReality(state, recentText = '', maximum = 8) {
+    const text = asString(recentText, '', 6000);
+    if (!text.trim()) return [];
+    const now = Number(state?.clock?.absoluteMinute || 0);
+    const futurePlan = textSuggestsFuturePlan(text);
+    const eventsById = new Map(asArray(state?.events).map(event => [event.id, event]));
+    const candidates = [];
+
+    for (const event of asArray(state?.events)) {
+        if (
+            event?.publicity !== 'public'
+            || (!event.publicSummary && !event.publicHeadline && !event.publicTrace && !event.publicResult)
+        ) continue;
+
+        const temporalState = eventTemporalState(event, now);
+        if (temporalState === 'historical') continue;
+        if (temporalState === 'upcoming' && !futurePlan) continue;
+
+        const score = contextMatchScore(text, [
+            event.place,
+            event.title,
+            event.publicHeadline,
+            ...(event.actors || []),
+        ]);
+        if (score <= 0) continue;
+
+        candidates.push({
+            id: `event:${event.id}`,
+            kind: 'public-event',
+            temporalState,
+            label: event.place || event.title || '公开世界事件',
+            state: event.publicSummary || event.publicHeadline || event.publicTrace,
+            publicity: 'public',
+            eventId: event.id,
+            score: score
+                + (temporalState === 'current' ? 55 : 15)
+                + Number(event.updatedAt || 0) / 1_000_000,
+        });
+    }
+
+    for (const domain of asArray(state?.worldPulse?.domains)) {
+        const score = contextMatchScore(text, [
+            domain.scope,
+            domain.label,
+            domain.state,
+        ]);
+        if (score <= 0) continue;
+        candidates.push({
+            id: `pulse:${domain.id}`,
+            kind: 'world-pulse',
+            temporalState: 'current',
+            label: domain.scope || domain.label || '世界环境',
+            state: domain.state,
+            publicity: domain.visibility === 'known' ? 'public' : 'world',
+            eventId: '',
+            score: score + 30 + Number(domain.pressure || 0) * 5,
+        });
+    }
+
+    for (const fact of asArray(state?.worldFacts)) {
+        if (fact?.confidence !== 'high') continue;
+        // Person location/action/body/resource facts already have their own
+        // authoritative character-state injection. The situational bridge is for
+        // the surrounding world (place / organization / item / policy / consequence),
+        // not a second copy of the person card.
+        if (fact?.subjectType === 'person') continue;
+        const event = fact.eventId ? eventsById.get(fact.eventId) : null;
+        const factValidity = VALID_WORLD_FACT_VALIDITY.has(fact.validity)
+            ? fact.validity
+            : (event ? eventTemporalState(event, now) : 'current');
+        const temporalState = factValidity === 'persistent' ? 'current' : factValidity;
+
+        if (fact.eventId && String(fact.key || '').startsWith('public_event:')) continue;
+        if (
+            temporalState === 'historical'
+            && !(event && textExplicitlyReferencesHistoricalEvent(text, event))
+        ) continue;
+        if (temporalState === 'upcoming' && !futurePlan) continue;
+
+        const score = contextMatchScore(text, [
+            fact.subject,
+            fact.subjectId,
+            fact.field,
+            fact.value,
+            event?.title,
+            event?.publicHeadline,
+        ]);
+        if (score <= 0) continue;
+
+        candidates.push({
+            id: `fact:${fact.key}`,
+            kind: 'world-fact',
+            temporalState,
+            label: fact.subject || fact.subjectId || '世界',
+            state: `${fact.field}：${fact.value}`,
+            publicity: fact.visibility === 'known' || fact.visibility === 'direct'
+                ? 'public-or-known'
+                : 'world',
+            eventId: fact.eventId || '',
+            score: score
+                + (temporalState === 'current' ? 30 : temporalState === 'upcoming' ? 5 : -35)
+                + Number(fact.updatedAt || 0) / 1_000_000,
+        });
+    }
+
+    const seenKeys = new Set();
+    const seenEventIds = new Set();
+    return candidates
+        .sort((a, b) => b.score - a.score)
+        .filter(item => {
+            if (item.eventId) {
+                if (seenEventIds.has(item.eventId)) return false;
+                seenEventIds.add(item.eventId);
+            }
+            const key = `${item.label}\u0000${item.state}`;
+            if (seenKeys.has(key)) return false;
+            seenKeys.add(key);
+            return true;
+        })
+        .slice(0, Math.max(0, Number(maximum) || 0));
+}
+
 function selectRelevantWorldFacts(state, recentText = '', maximum = 12) {
     const text = String(recentText || '').toLocaleLowerCase();
+    const eventsById = new Map(asArray(state?.events).map(event => [event.id, event]));
     return asArray(state?.worldFacts)
+        .filter(fact => {
+            if (String(fact?.key || '').startsWith('public_event:')) return false;
+            const event = fact?.eventId ? eventsById.get(fact.eventId) : null;
+            const validity = VALID_WORLD_FACT_VALIDITY.has(fact?.validity)
+                ? fact.validity
+                : 'current';
+            if (
+                validity === 'historical'
+                && !(event && textExplicitlyReferencesHistoricalEvent(text, event))
+            ) return false;
+            if (validity === 'upcoming' && !textSuggestsFuturePlan(text)) return false;
+            return true;
+        })
         .map(fact => {
             const terms = [fact.subject, fact.subjectId, fact.field, fact.value]
                 .filter(Boolean)
@@ -589,6 +1328,12 @@ export function createInitialState({
         archive: [],
         foregroundFacts: [],
         worldFacts: [],
+        worldPulse: {
+            baselineEstablished: false,
+            lastSweepAt: absoluteMinute,
+            domains: [],
+        },
+        publicImpactLedger: [],
         consistencyConflicts: [],
         needsReconciliation: false,
         storyMemory: {
@@ -1127,6 +1872,12 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         name,
         isUser,
         monogram: asString(raw?.monogram, existing?.monogram || name.slice(0, 1), 4),
+        // 头像是纯 UI 资源，不进入模型上下文。已有头像优先，避免后台推演误改。
+        avatarDataUrl: asString(
+            existing?.avatarDataUrl ?? raw?.avatar_data_url ?? raw?.avatarDataUrl,
+            '',
+            LIMITS.personAvatarData,
+        ),
         location: asString(raw?.location, existing?.location || '位置待确认', 160),
         action: asString(raw?.action, existing?.action || '当前行动待确认', 280),
         intent: asString(raw?.intent, existing?.intent || '短期意图待确认', 320),
@@ -1243,6 +1994,10 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
 
     const status = normalizeEventStatus(raw?.status ?? existing?.status);
     const visibility = normalizeVisibility(raw?.visibility ?? existing?.visibility);
+    const publicity = normalizeEventPublicity(
+        raw?.publicity ?? raw?.public_scope ?? raw?.publicScope,
+        inferLegacyEventPublicity(raw, existing),
+    );
     const oldDelivery = existing?.delivery || {};
     const requestedDeliveryState = asString(raw?.delivery_state, oldDelivery.state || '', 30);
     const defaultDeliveryState = TERMINAL_EVENT_STATES.has(status) && visibility !== 'hidden'
@@ -1297,13 +2052,35 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
             raw?.caused_by ?? raw?.causedBy,
             12,
         ),
-        publicTrace: visibility === 'hidden'
+        publicTrace: publicity === 'private'
             ? ''
             : asString(
                 raw?.public_trace ?? raw?.publicTrace ?? existing?.publicTrace,
                 '',
                 LIMITS.eventPublicTrace,
             ),
+        publicHeadline: publicity === 'public'
+            ? asString(
+                raw?.public_headline ?? raw?.publicHeadline ?? existing?.publicHeadline,
+                '',
+                180,
+            )
+            : '',
+        publicSummary: publicity === 'public'
+            ? asString(
+                raw?.public_summary ?? raw?.publicSummary ?? existing?.publicSummary,
+                '',
+                520,
+            )
+            : '',
+        publicResult: publicity === 'public'
+            ? asString(
+                raw?.public_result ?? raw?.publicResult ?? existing?.publicResult,
+                '',
+                520,
+            )
+            : '',
+        publicity,
         visibility,
         delivery: {
             state: deliveryState,
@@ -1831,6 +2608,9 @@ function normalizeSimulationResult(payload) {
         worldFactsUpsert: asArray(
             payload?.world_facts_upsert ?? payload?.worldFactsUpsert,
         ).slice(0, 32),
+        worldPulseUpsert: asArray(
+            payload?.world_pulse_upsert ?? payload?.worldPulseUpsert,
+        ).slice(0, LIMITS.worldPulseDomains),
         consistencyConflicts: asArray(
             payload?.consistency_conflicts ?? payload?.consistencyConflicts,
         ).slice(0, 24),
@@ -2266,6 +3046,11 @@ export function applySimulationResult(baseState, rawPayload, {
             state.people
                 .filter(person => (
                     !person.locked
+                    // 用户手动添加 / 世界书导入的人物属于作者维护资产。
+                    // routine simulation 可以更新她们的动态状态，但不能通过 people_remove 删除。
+                    && !person.manual
+                    && !person.worldbookRef
+                    && person.source !== 'manual'
                     && (
                         removed.has(person.id.toLowerCase())
                         || removed.has(person.name.toLowerCase())
@@ -2333,6 +3118,16 @@ export function applySimulationResult(baseState, rawPayload, {
             12,
         );
         if (update?.visibility) event.visibility = normalizeVisibility(update.visibility);
+        if (
+            update?.publicity !== undefined
+            || update?.public_scope !== undefined
+            || update?.publicScope !== undefined
+        ) {
+            event.publicity = normalizeEventPublicity(
+                update?.publicity ?? update?.public_scope ?? update?.publicScope,
+                event.publicity || 'private',
+            );
+        }
         if (update?.public_trace !== undefined || update?.publicTrace !== undefined) {
             event.publicTrace = asString(
                 update?.public_trace ?? update?.publicTrace,
@@ -2340,7 +3135,37 @@ export function applySimulationResult(baseState, rawPayload, {
                 LIMITS.eventPublicTrace,
             );
         }
-        if (event.visibility === 'hidden') event.publicTrace = '';
+        if (update?.public_headline !== undefined || update?.publicHeadline !== undefined) {
+            event.publicHeadline = asString(
+                update?.public_headline ?? update?.publicHeadline,
+                event.publicHeadline || '',
+                180,
+            );
+        }
+        if (update?.public_summary !== undefined || update?.publicSummary !== undefined) {
+            event.publicSummary = asString(
+                update?.public_summary ?? update?.publicSummary,
+                event.publicSummary || '',
+                520,
+            );
+        }
+        if (update?.public_result !== undefined || update?.publicResult !== undefined) {
+            event.publicResult = asString(
+                update?.public_result ?? update?.publicResult,
+                event.publicResult || '',
+                520,
+            );
+        }
+        if (event.publicity === 'private') {
+            event.publicTrace = '';
+            event.publicHeadline = '';
+            event.publicSummary = '';
+            event.publicResult = '';
+        } else if (event.publicity === 'trace') {
+            event.publicHeadline = '';
+            event.publicSummary = '';
+            event.publicResult = '';
+        }
         if (update?.delivery_route) {
             event.delivery.route = asString(update.delivery_route, event.delivery.route, 220);
         }
@@ -2375,6 +3200,25 @@ export function applySimulationResult(baseState, rawPayload, {
             messageId,
         });
     }
+
+    state.worldPulse = normalizeWorldPulse(state.worldPulse, worldMinute);
+    for (const rawDomain of payload.worldPulseUpsert) {
+        upsertWorldPulseDomain(state, rawDomain, {
+            worldMinute,
+            source: rawDomain?.source === 'history' ? 'history' : 'simulation',
+        });
+    }
+    if (payload.worldPulseUpsert.length) {
+        state.worldPulse.baselineEstablished = true;
+    }
+    if (payload.elapsedMinutes > 0 || payload.worldPulseUpsert.length) {
+        state.worldPulse.lastSweepAt = worldMinute;
+    }
+
+    // Public news is only a presentation of an already-real world event.
+    // Keep one stable world fact per public event so later foreground scenes can
+    // retrieve the world's current/recent reality even after the news card changes.
+    syncPublicEventRealityFacts(state, worldMinute);
 
     const allConsistencyConflicts = [
         ...generatedConsistencyConflicts,
@@ -2651,9 +3495,9 @@ function selectRelevantPeople(state, recentText = '', maximum = 6) {
         .map(item => item.person);
 }
 
-export function buildInjectionPackage(state, settings = {}, recentText = '') {
+export function buildInjectionPackage(state, settings = {}, recentText = '', { contextText = recentText } = {}) {
     if (!settings.enabled) {
-        return { text: '', eventIds: [] };
+        return { text: '', authorityText: '', supportText: '', eventIds: [] };
     }
 
     // Authoritative world state is a continuity contract, not an optional reveal.
@@ -2666,11 +3510,20 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
     const injectWorldReveals = injectWorldState && settings.worldPromptInjection !== false;
     const injectMemory = settings.memorySystemEnabled !== false
         && settings.memoryPromptInjection !== false;
-    if (!injectWorldState && !injectMemory) return { text: '', eventIds: [] };
+    if (!injectWorldState && !injectMemory) return { text: '', authorityText: '', supportText: '', eventIds: [] };
 
     const clock = formatWorldCalendar(state);
     const people = injectWorldState ? selectRelevantPeople(state, recentText) : [];
-    const authoritativeFacts = injectWorldState ? selectRelevantWorldFacts(state, recentText, 12) : [];
+    const contextReality = injectWorldState ? selectContextRelevantReality(state, contextText, 7) : [];
+    const contextFactKeys = new Set(
+        contextReality
+            .filter(item => item.kind === 'world-fact' && String(item.id || '').startsWith('fact:'))
+            .map(item => String(item.id).slice(5)),
+    );
+    const authoritativeFacts = injectWorldState
+        ? selectRelevantWorldFacts(state, recentText, 12)
+            .filter(fact => !contextFactKeys.has(fact.key))
+        : [];
     const deliveries = injectWorldReveals ? selectDeliveryCandidates(state, settings) : [];
     const recalledMemory = injectMemory ? selectRelevantStoryMemory(state, recentText, {
         maximumFacts: 6,
@@ -2692,10 +3545,11 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
         open: '可以在场景中加入一条简短、自然的可感知变化，但不要后台播报。',
     }[settings.sceneTiming] || '只在自然时机显露，不要后台播报。';
 
-    const lines = ['<world_backstage_state>'];
+    const authorityLines = ['<world_backstage_state>'];
+    const supportLines = ['<world_backstage_support>'];
     if (injectWorldState) {
         if (state.clock?.anchored) {
-            lines.push(
+            authorityLines.push(
                 `权威主世界时间：${state.world.name} · ${clock.stamp}`,
                 `权威日期字段：year=${clock.year}; month=${clock.month}; day=${clock.dayOfMonth}; time=${clock.time}`,
                 `整体状态：${state.world.title}；${state.world.detail}`,
@@ -2704,7 +3558,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
                 '正文只负责叙事，不要在本轮自行额外推进世界时钟；本轮实际经过多久会在正文结束后由世界背面结算。',
             );
         } else {
-            lines.push(
+            authorityLines.push(
                 '主世界时间：尚未完成故事时间锚点校准。',
                 `整体状态：${state.world.title}；${state.world.detail}`,
                 '时间一致性规则：当前不要把占位历法/占位钟点当作剧情事实；本轮正文结束后由世界背面从上下文建立主世界时间锚点。',
@@ -2714,82 +3568,131 @@ export function buildInjectionPackage(state, settings = {}, recentText = '') {
 
     if (people.length) {
         if (state.needsReconciliation) {
-            lines.push(
+            authorityLines.push(
                 '旧存档人物状态（等待一次前台重新校准）：',
                 '这些状态来自升级前的后台记录；若与最近正文的明确事实冲突，以正文为准。首次成功世界推演后会重新结算为权威状态。',
             );
         } else {
-            lines.push(
+            authorityLines.push(
                 '当前人物权威状态（必须保持连续性；不等于主角知道全部后台信息）：',
                 '若正文没有明确写出新的移动、离场、返回或状态变化，不得把人物无理由放到与这里冲突的位置；若正文明确发生了新变化，则按新变化继续，并由世界背面回写。',
             );
         }
         for (const person of people) {
             const boundary = person.knowledge === 'known' ? '可知' : '幕后';
-            lines.push(`- ${person.name}｜${person.location}｜${person.action}｜${boundary}`);
+            authorityLines.push(`- ${person.name}｜${person.location}｜${person.action}｜${boundary}`);
         }
     }
 
+    if (contextReality.length) {
+        authorityLines.push(
+            '当前行动关联的世界现实（不是新闻播报任务，而是角色正生活其中的客观环境）：',
+            '只要用户或角色当前提出的地点、行程、组织、行业或行动会被这些现实直接影响，本轮正文必须尊重它。公开可查的信息只有在角色有合理习惯/渠道得知时才可以由角色主动提醒或据此调整；角色尚不知情时，不要强塞知识，而应让客观后果在实际接触时自然体现。绝不能替玩家决定已经看过新闻或已经知道。',
+        );
+        for (const reality of contextReality) {
+            const sourceLabel = {
+                'public-event': reality.temporalState === 'upcoming' ? '即将发生的公开预告' : '当前公开世界事件',
+                'world-pulse': '当前世界环境',
+                'world-fact': reality.temporalState === 'historical'
+                    ? '当前对话明确重新提及的历史事实'
+                    : reality.temporalState === 'upcoming'
+                        ? '与当前计划相关的未来事实'
+                        : '当前权威世界事实',
+            }[reality.kind] || '世界现实';
+            authorityLines.push(`- ${sourceLabel}｜${reality.label}：${reality.state}`);
+        }
+        authorityLines.push(
+            '例如目的地正在暴雨/封路，正文不能照常写成晴天畅通；知情且会关注此事的角色可以自然提醒带伞、改路线或调整计划，不知情角色则可以到场后才发现。保持角色个性，不要机械复述上述句子。',
+        );
+    }
+
+
     if (authoritativeFacts.length) {
-        lines.push(
+        authorityLines.push(
             '已结算世界事实（这是世界客观状态，不是可选剧情建议；必须保持一致，但角色是否知道仍看认知边界）：',
         );
         for (const fact of authoritativeFacts) {
             const subject = fact.subject || fact.subjectId || '世界';
-            lines.push(`- ${subject}｜${fact.field}：${fact.value}｜显露=${fact.visibility}`);
+            authorityLines.push(`- ${subject}｜${fact.field}：${fact.value}｜显露=${fact.visibility}`);
         }
-        lines.push('显露度只决定这些事实如何进入镜头，不决定它们是否存在。隐藏事实可以约束连续性，但不得因此让不知情角色突然知晓。');
+        authorityLines.push('显露度只决定这些事实如何进入镜头，不决定它们是否存在。隐藏事实可以约束连续性，但不得因此让不知情角色突然知晓。');
     }
 
+
     if (knownFacts.length || knownClues.length) {
-        lines.push('与当前场景相关、且角色已经有资格知道的长期记忆：');
+        supportLines.push('与当前场景相关、且角色已经有资格知道的长期记忆：');
         for (const fact of knownFacts) {
             const qualifier = fact.status === 'disputed' ? '（说法有争议，不可当成定论）' : '';
-            lines.push(`- 事实｜${fact.subject || fact.key}｜${fact.predicate || '相关信息'}：${fact.value}${qualifier}`);
+            supportLines.push(`- 事实｜${fact.subject || fact.key}｜${fact.predicate || '相关信息'}：${fact.value}${qualifier}`);
         }
         for (const clue of knownClues) {
-            lines.push(`- 线索｜${clue.title}：${clue.text}`);
+            supportLines.push(`- 线索｜${clue.title}：${clue.text}`);
         }
-        lines.push('只用于维持回忆、承诺与前后呼应；不得把未列出的隐藏记忆补写成角色知识。');
+        supportLines.push('只用于维持回忆、承诺与前后呼应；不得把未列出的隐藏记忆补写成角色知识。');
     }
 
     if (deliveries.length) {
-        lines.push('本轮由用户点名或系统选中的可自然显露事件：');
+        supportLines.push('本轮由用户点名或系统选中的可自然显露事件：');
         for (const event of deliveries) {
             const route = event.delivery.route || event.result || event.consequence || event.summary;
             const request = event.delivery?.manualQueued ? '用户要求下一轮优先显露' : '系统候选';
-            lines.push(`- [${event.id}] ${event.title}：${route}（${event.visibility}；${request}）`);
+            supportLines.push(`- [${event.id}] ${event.title}：${route}（${event.visibility}；${request}）`);
         }
-        lines.push(`显露节奏：${sceneTiming}`);
-        lines.push('只把真正写进正文、被角色感知或留下可见痕迹的结果视为已承接；不要声称“后台已递交”。');
+        supportLines.push(`显露节奏：${sceneTiming}`);
+        supportLines.push('只把真正写进正文、被角色感知或留下可见痕迹的结果视为已承接；不要声称“后台已递交”。');
     }
 
-    lines.push('禁止提及“世界背面”、状态表、注入块或幕后独白。');
-    lines.push('</world_backstage_state>');
+    authorityLines.push('禁止提及“世界背面”、状态表、注入块或幕后独白。');
+    authorityLines.push('</world_backstage_state>');
 
-    const keptLines = [];
-    let usedCharacters = 0;
-    for (const line of lines) {
-        const addition = line.length + (keptLines.length ? 1 : 0);
-        if (usedCharacters + addition > 4200) break;
-        keptLines.push(line);
-        usedCharacters += addition;
+    const supportHasContent = supportLines.length > 1;
+    if (supportHasContent) {
+        supportLines.push('辅助信息只用于自然承接和长期连续性；不得覆盖上面的权威世界状态。');
+        supportLines.push('</world_backstage_support>');
     }
-    const originalKeptCount = keptLines.length;
-    if (originalKeptCount < lines.length) {
-        const closing = '</world_backstage_state>';
-        if (keptLines.at(-1) === closing) keptLines.pop();
-        const notice = '（其余低相关信息已压缩省略，禁止自行补全。）';
-        while (keptLines.length > 1 && [...keptLines, notice, closing].join('\n').length > 4200) {
-            keptLines.pop();
+
+    const compactLayer = (sourceLines, maximumCharacters, closingTag) => {
+        if (!sourceLines.length) return { text: '', omitted: 0 };
+        const kept = [];
+        let usedCharacters = 0;
+        for (const line of sourceLines) {
+            const addition = line.length + (kept.length ? 1 : 0);
+            if (usedCharacters + addition > maximumCharacters) break;
+            kept.push(line);
+            usedCharacters += addition;
         }
-        keptLines.push(notice, closing);
-    }
+        const originalKeptCount = kept.length;
+        if (originalKeptCount < sourceLines.length) {
+            if (kept.at(-1) === closingTag) kept.pop();
+            const notice = '（其余低相关信息已压缩省略，禁止自行补全。）';
+            while (kept.length > 1 && [...kept, notice, closingTag].join('\n').length > maximumCharacters) {
+                kept.pop();
+            }
+            kept.push(notice, closingTag);
+        }
+        return {
+            text: kept.join('\n'),
+            omitted: Math.max(0, sourceLines.length - originalKeptCount),
+        };
+    };
+
+    // Hard continuity stays closest to the latest user message. Memory, optional
+    // reveal candidates and public-opinion additions are injected separately at
+    // a deeper position by index.js so they cannot compete with world facts.
+    const authority = compactLayer(authorityLines, 3000, '</world_backstage_state>');
+    const support = supportHasContent
+        ? compactLayer(supportLines, 1100, '</world_backstage_support>')
+        : { text: '', omitted: 0 };
 
     return {
-        text: keptLines.join('\n'),
+        // Keep a combined legacy field for diagnostics/tests and generation-offer
+        // accounting. Authority is deliberately last so legacy consumers still
+        // end on the world-state closing tag.
+        text: [support.text, authority.text].filter(Boolean).join('\n\n'),
+        authorityText: authority.text,
+        supportText: support.text,
         eventIds: deliveries.map(event => event.id),
-        omittedLines: Math.max(0, lines.length - originalKeptCount),
+        omittedLines: authority.omitted + support.omitted,
     };
 }
 
@@ -3130,6 +4033,351 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
         summaries,
         clues,
     };
+}
+
+
+export function buildWorldBootstrapPrompt(state, {
+    messages = [],
+    userName = '',
+    playerIdentityAnchor = '',
+    compact = false,
+} = {}) {
+    const compactMode = Boolean(compact);
+    const normalizedMessages = asArray(messages)
+        .map(message => ({
+            id: asInteger(message?.id, 0, 0),
+            swipe: asInteger(message?.swipe, 0, 0),
+            role: message?.role === 'user' ? 'user' : 'assistant',
+            content: modelText(
+                message?.content,
+                compactMode
+                    ? (message?.role === 'user' ? 2200 : 3800)
+                    : (message?.role === 'user' ? 3600 : 6200),
+            ),
+        }))
+        .filter(message => message.content);
+    const startMessageId = normalizedMessages[0]?.id ?? 0;
+    const endMessageId = normalizedMessages.at(-1)?.id ?? startMessageId;
+    const sourceText = normalizedMessages
+        .map(message => (
+            `<message id="${message.id}" swipe="${message.swipe}" role="${message.role}">`
+            + `${message.content}</message>`
+        ))
+        .join('\n');
+    const identityAnchor = modelText(playerIdentityAnchor, 400);
+    const compactState = compactStateForModel(state, {
+        includeUserInnerVoice: false,
+        userName,
+        maximumPeople: compactMode ? 12 : 22,
+    });
+    const existingMemory = selectRelevantStoryMemory(state, sourceText, {
+        maximumFacts: compactMode ? 10 : 24,
+        maximumClues: compactMode ? 8 : 18,
+        maximumSummaries: compactMode ? 2 : 5,
+    });
+    const outputRule = compactMode
+        ? '极简重试：每条单轮摘要不超过90字；人物最多8名、未完暗流最多5条、世界事实最多8条、世界脉搏最多5项；无变化数组返回空数组。'
+        : '输出要克制：只恢复对当前世界仍有价值的内容。人物最多16名、未完暗流最多10条、世界事实最多16条、世界脉搏最多8项；不要把历史流水账重新复制一遍。';
+
+    return [
+        '你是“世界背面”的历史回溯引擎。目标是让插件在长聊天中途启用时，能够接上此前已经真实发生的世界，而不是重新创作一份过去。',
+        '',
+        '总原则：恢复证据支持的世界，不补写隐藏历史，不推演未来。',
+        '1. 本批每条 assistant 正文仍要生成一条 turn_summaries L0 摘要；同时整理长期记忆 facts/clues。',
+        '2. people_upsert 恢复截至本批末尾仍有意义的人物当前状态：最后可靠位置、行动/处境、长期目标与已明确状态。只写正文有证据的内容；不得根据外貌猜身份，不得替玩家补内心。',
+        '3. events_create 只恢复“到本批末尾仍未解决”的过程、承诺、计划、威胁、调查、旅程、任务、环境压力等。已经明确结束的旧事件不要重新挂回暗流；它们应沉淀为 world_facts_upsert / 长期记忆。',
+        '3A. 如果上一批已经恢复的 existing event 在本批历史里继续推进、完成、取消或错过，必须用 events_update 更新原 ID。特别是已经结束的事件必须给 terminal status + result，不能因为它曾经未完成就让它错误地一直挂到当前时间。',
+        '4. world_facts_upsert 恢复已经客观成立、会约束后续世界的一致性事实。正文传闻、角色误解、未经确认的猜测不能升级为世界事实。必须标 validity：current=截至本批末尾仍成立，upcoming=已明确预定但尚未发生，historical=已经结束，persistent=起因结束但后果仍持续。',
+        '5. world_pulse_upsert 建立宏观社会基线：环境/天气趋势、地区状态、组织/势力方向、经济资源、基础设施、治安、文化媒体、社区压力。只能依据正文已经体现的世界设定与持续条件，不得凭空补出“其实过去还发生过”的事件。',
+        '6. clock_anchor 只使用本批中最晚、最可靠的故事绝对时间。能确定日期但不能确定分钟时，只给 date/daypart 精度；绝不为了完整字段编时间。',
+        '7. world.title/detail 可以把已经明确的当前世界态势压成一个简短基线，但不能写未来预测。',
+        '8. 公开性必须严格，而且与 visibility 分开：正文/角色已经看见某件事，不代表社会知道。只有历史里明确出现公告、媒体报道、论坛传播、公众可见现象或广泛传播渠道时，才设置 publicity=trace/public。私密事件保持 publicity=private，即使 visibility=direct。',
+        '9. 不生成舆情帖子。若历史已经明确存在公开渠道，只恢复 publicity/public_trace；只有已经真正公开成可报道事实时才可补 public_headline/public_summary，且只能写公众当时能知道的内容。若历史明确记录了公开终局，可填写 public_result；否则不要把最后一次报道误当终局。',
+        '10. 用户手动/世界书人物属于作者资产。已有 author_managed/locked_profile 的稳定设定不可改写；只能用历史证据补动态状态。',
+        '11. 同一人物/事件/事实尽量沿用已有 id/key，避免每批重复创建。',
+        '12. 只输出合法 JSON，不要 Markdown、解释或代码围栏。',
+        `13. ${outputRule}`,
+        '',
+        `玩家角色名：${modelText(userName, 80) || '未提供'}。`
+            + (identityAnchor
+                ? ` 玩家身份锚点：${identityAnchor}。必须逐项遵守。`
+                : ' 未设置玩家身份锚点；没有明确证据时使用中性表述。'),
+        `本批范围：消息 ${startMessageId}—${endMessageId}`,
+        '',
+        '本批正文：',
+        sourceText || '（没有正文）',
+        '',
+        '截至上一批已经建立的世界（用于延续、去重与覆盖旧状态）：',
+        JSON.stringify(compactState),
+        '',
+        '已有相关记忆（用于延续稳定 key / clue id）：',
+        JSON.stringify(existingMemory),
+        '',
+        '返回结构：',
+        JSON.stringify({
+            memory_digest: {
+                text: '',
+                through_message_id: endMessageId,
+            },
+            turn_summaries: [{
+                id: 'summary_l0_message_id',
+                source_message_id: endMessageId,
+                title: '',
+                summary: '',
+                people: [],
+                locations: [],
+                tags: [],
+            }],
+            chapter_summary: null,
+            facts_upsert: [{
+                key: '',
+                subject: '',
+                predicate: '',
+                value: '',
+                source_message_id: startMessageId,
+                source_excerpt: '',
+            }],
+            facts_invalidate: [],
+            clues_upsert: [{
+                id: '',
+                title: '',
+                text: '',
+                source_message_id: startMessageId,
+                source_excerpt: '',
+                status: 'open | developing | triggered',
+            }],
+            clues_resolve: [],
+            clock_anchor: {
+                mode: 'none | initialize | calibrate',
+                calendar_name: '',
+                year: null,
+                month: null,
+                day: null,
+                hour: null,
+                minute: null,
+                precision: 'minute | daypart | date',
+                confidence: 'low | medium | high',
+                source_excerpt: '',
+                reason: '',
+            },
+            world: {
+                title: '',
+                detail: '',
+            },
+            people_upsert: [{
+                id: '',
+                name: '',
+                is_user: false,
+                location: '',
+                action: '',
+                intent: '',
+                long_term_goal: '',
+                physical_state: '',
+                emotional_state: '',
+                resource_state: '',
+                relevance: 1,
+                source: 'foreground',
+                present_in_scene: false,
+                last_seen_message_id: endMessageId,
+            }],
+            events_create: [{
+                id: '',
+                title: '',
+                place: '',
+                summary: '',
+                consequence: '',
+                expected_result: '',
+                clock_mode: 'condition | duration | scheduled | active',
+                duration_minutes: 0,
+                scheduled_at: null,
+                prerequisites: [],
+                cause: '',
+                actors: [],
+                known_by: [],
+                caused_by: [],
+                publicity: 'private | trace | public',
+                public_trace: '',
+                public_headline: '',
+                public_summary: '',
+                public_result: '',
+                visibility: 'hidden | trace | known | direct',
+                delivery_route: '',
+            }],
+            events_update: [{
+                id: '必须沿用上一批已有事件 id',
+                status: 'active | waiting | ready | resolved | cancelled | missed',
+                result: '',
+                summary: '',
+                consequence: '',
+                cause: '',
+                actors: [],
+                known_by: [],
+                publicity: 'private | trace | public',
+                public_trace: '',
+                public_headline: '',
+                public_summary: '',
+                public_result: '',
+                visibility: 'hidden | trace | known | direct',
+            }],
+            world_facts_upsert: [{
+                key: '',
+                subject_type: 'person | event | world | location | item | organization | other',
+                subject_id: '',
+                subject: '',
+                field: '',
+                value: '',
+                source: 'foreground',
+                validity: 'current | upcoming | historical | persistent',
+                visibility: 'hidden | trace | known | direct',
+                confidence: 'high',
+                message_id: endMessageId,
+            }],
+            world_pulse_upsert: [{
+                id: '',
+                label: '',
+                scope: '',
+                kind: 'environment | government | economy | organization | infrastructure | security | culture | media | community | other',
+                state: '',
+                pressure: 1,
+                trend: 'stable | rising | falling | volatile',
+                visibility: 'hidden | trace | known',
+                source: 'history',
+                evidence: '',
+            }],
+        }),
+    ].join('\n');
+}
+
+export function applyWorldBootstrapResult(inputState, rawPayload, {
+    startMessageId = 0,
+    endMessageId = 0,
+    narrativeText = '',
+    userName = '',
+    allowUserInnerVoice = false,
+    memoryEnabled = true,
+} = {}) {
+    let state = deepClone(inputState);
+
+    if (memoryEnabled) {
+        state = applyHistoryIndexResult(state, rawPayload, {
+            startMessageId,
+            endMessageId,
+        });
+    }
+
+    const simulationPayload = {
+        elapsed_minutes: 0,
+        time_reason: '历史回溯只建立当前世界基线，不按批次额外推进时间',
+        clock_anchor: rawPayload?.clock_anchor ?? rawPayload?.clockAnchor ?? { mode: 'none' },
+        world: rawPayload?.world ?? {},
+        people_upsert: rawPayload?.people_upsert ?? rawPayload?.peopleUpsert ?? [],
+        people_remove: [],
+        events_create: rawPayload?.events_create ?? rawPayload?.eventsCreate ?? [],
+        events_update: rawPayload?.events_update ?? rawPayload?.eventsUpdate ?? [],
+        deliveries_confirmed: [],
+        front_facts: [],
+        world_facts_upsert: rawPayload?.world_facts_upsert ?? rawPayload?.worldFactsUpsert ?? [],
+        world_pulse_upsert: rawPayload?.world_pulse_upsert ?? rawPayload?.worldPulseUpsert ?? [],
+        consistency_conflicts: [],
+        memory_update: {
+            facts_upsert: [],
+            facts_invalidate: [],
+            clues_upsert: [],
+            clues_resolve: [],
+        },
+    };
+
+    state = applySimulationResult(state, simulationPayload, {
+        messageId: endMessageId,
+        swipeId: 0,
+        sourceKey: `history-bootstrap:${startMessageId}:${endMessageId}`,
+        userName,
+        allowUserInnerVoice,
+        timePolicy: 'world',
+        narrativeText,
+        backgroundNpcBudget: LIMITS.people,
+    });
+
+    state.worldPulse = normalizeWorldPulse(state.worldPulse, state.clock.absoluteMinute);
+    state.worldPulse.baselineEstablished = true;
+    state.worldPulse.lastSweepAt = state.clock.absoluteMinute;
+    recordProcessedPublicImpacts(
+        state,
+        state.events.filter(eventHasPublicPropagation),
+        [],
+        { reason: 'history-bootstrap-baseline' },
+    );
+    appendAudit(state, {
+        type: 'world_history_bootstrapped',
+        text: `历史回溯已接入消息 ${startMessageId}—${endMessageId}`,
+        reason: '建立人物、世界事实、未完暗流、宏观世界脉搏与长期记忆基线',
+    });
+    return trimState(state);
+}
+
+export function buildWorldPulsePrompt(state, {
+    activity = 'natural',
+    reason = 'world-clock-advanced',
+    backgroundNpcBudget = 4,
+    publicCycle = false,
+} = {}) {
+    const compact = compactStateForModel(state, {
+        includeUserInnerVoice: false,
+        maximumPeople: Math.min(20, Math.max(10, Number(backgroundNpcBudget) + 8)),
+    });
+    const activityRule = {
+        quiet: '安静：主要推进已存在的压力和到期事件，新公共事件极少。',
+        natural: '自然：合理维护社会、地区、环境、组织与资源变化；普通地方事件可以自然出现，重大新闻稀少。',
+        busy: '活跃：允许更多并行的地方/行业/组织变化，但仍禁止无因果的大灾难和巧合。',
+    }[activity] || '自然：合理维护镜头外世界。';
+
+    const publicCycleRule = publicCycle
+        ? '本次同时是“公共世界循环”：用户正在刷新真实世界新闻。若当前没有足够的新公共事件，不要跳去虚构闲逛内容；请从既有世界脉搏、地区/行业/组织状态和时代常态中，形成 1—3 条合理的当下公共变化。优先天气、交通、商业、活动、行业、政策执行、设施、治安、文化娱乐等普通新闻；不要求与主角有关，也绝不能为了填新闻硬造灾难。创建可报道事件时 publicity=public，并填写只含公众可知信息的 public_headline/public_summary。'
+        : '按正常世界脉搏运行；没有自然变化时可以不新建事件。';
+
+    return [
+        '你是“世界背面”的世界脉搏引擎。本次没有新的小说正文；主世界时钟已经由用户或系统推进或正在进行一次明确的公共世界刷新。你只根据当前权威世界状态，结算到期变化并让镜头外世界按因果继续。',
+        `本次触发原因：${modelText(reason, 120)}。世界脉搏活跃度：${activityRule}`,
+        `公共世界循环：${publicCycleRule}`,
+        '规则：',
+        '1. elapsed_minutes 必须返回 0；时间已经在调用前推进完毕，不得再次加时。',
+        '2. 先检查 existing events 是否到期、条件是否满足、持续过程是否应该结算；需要时用 events_update。同一场持续中的公共事件（例如同一地区暴雨、同一案件、同一行业风波）有新进展时优先更新原 event 的 public_headline/public_summary/status，而不是另建一条近义重复新闻；只有真正独立的新事件才 events_create。事件在本轮终结且终局已经公开时必须填写 public_result；若终局尚未公开则留空，不能拿旧 public_summary 假装最终结果。',
+        '3. 再检查 world_pulse、人物长期目标、势力/地区/环境压力是否自然产生下一步。可以 events_create，但不得因为“没有正文”就硬造事件。',
+        '4. world_pulse_upsert 只写真正变化的持续宏观状态；不要机械复读原值。',
+        '5. 公开世界事件可以与主角完全无关，但必须用 publicity 表示社会公开度，而不是拿 visibility 代替。publicity=trace 只能形成未证实讨论；publicity=public 才能进入新闻，并填写 public_headline/public_summary。',
+        '6. visibility 仍只控制事件怎样靠近当前正文。某件私密事件即使 visibility=direct，也可以且通常应该 publicity=private。',
+        '7. 普通天气、交通、商业、地方政策、设施、行业、社区与网络热点远多于战争/灾难/巨型阴谋。重大事件必须罕见且有强因果。',
+        '7. 可以更新镜头外 NPC 的位置、行动、意图和状态，但不得删除 author_managed / locked 人物，不得替玩家补行动或内心。',
+        '8. 已结算的客观结果写 world_facts_upsert，并同步对应人物/事件状态。',
+        '9. 不写 memory_update；没有新正文，不应该凭空形成“正文长期记忆”。',
+        '10. 只输出合法 JSON。',
+        '',
+        '当前权威世界：',
+        JSON.stringify(compact),
+        '',
+        '返回结构：',
+        JSON.stringify({
+            elapsed_minutes: 0,
+            time_reason: 'world pulse tick',
+            clock_anchor: { mode: 'none' },
+            world: { title: '', detail: '' },
+            people_upsert: [],
+            people_remove: [],
+            events_create: [],
+            events_update: [],
+            deliveries_confirmed: [],
+            front_facts: [],
+            world_facts_upsert: [],
+            world_pulse_upsert: [],
+            consistency_conflicts: [],
+            memory_update: {
+                facts_upsert: [],
+                facts_invalidate: [],
+                clues_upsert: [],
+                clues_resolve: [],
+            },
+        }),
+    ].join('\n');
 }
 
 export function buildHistoryIndexPrompt(state, {
@@ -3557,6 +4805,53 @@ export function compactStateForModel(state, {
             title: modelText(state.world.title, 140),
             detail: modelText(state.world.detail, 360),
         },
+        world_pulse: {
+            baseline_established: Boolean(state.worldPulse?.baselineEstablished),
+            last_sweep_at: Number(state.worldPulse?.lastSweepAt || 0),
+            domains: asArray(state.worldPulse?.domains)
+                .sort((a, b) => (
+                    Number(b.pressure || 0) - Number(a.pressure || 0)
+                    || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+                ))
+                .slice(0, LIMITS.worldPulseDomains)
+                .map(domain => ({
+                    id: domain.id,
+                    label: modelText(domain.label, 100),
+                    scope: modelText(domain.scope, 120),
+                    kind: domain.kind,
+                    state: modelText(domain.state, 360),
+                    pressure: domain.pressure,
+                    trend: domain.trend,
+                    visibility: domain.visibility,
+                    evidence: modelText(domain.evidence, 220),
+                })),
+        },
+        recent_public_impacts: asArray(state.publicImpactLedger)
+            .slice(0, 12)
+            .map(record => ({
+                source_event_id: record.sourceEventId,
+                summary: modelText(record.summary, 260),
+                affected_person_ids: record.affectedPersonIds,
+                affected_scopes: record.affectedScopes,
+                channels: record.channels,
+                processed_at: record.processedAt,
+            })),
+        world_facts: asArray(state.worldFacts)
+            .filter(fact => fact?.confidence === 'high')
+            .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+            .slice(0, 24)
+            .map(fact => ({
+                key: fact.key,
+                subject_type: fact.subjectType,
+                subject_id: fact.subjectId,
+                subject: modelText(fact.subject, 120),
+                field: modelText(fact.field, 80),
+                value: modelText(fact.value, 360),
+                validity: fact.validity || 'current',
+                visibility: fact.visibility,
+                event_id: fact.eventId || '',
+                updated_at: fact.updatedAt,
+            })),
         people: people.map(person => {
             const isUser = Boolean(
                 person.isUser
@@ -3595,6 +4890,7 @@ export function compactStateForModel(state, {
                 relevance: person.relevance,
                 background_simulation: person.simulationEnabled !== false,
                 locked_profile: Boolean(person.locked),
+                author_managed: Boolean(person.manual || person.worldbookRef || person.source === 'manual'),
                 last_seen_message_id: person.lastSeenMessageId,
             };
         }),
@@ -3618,6 +4914,10 @@ export function compactStateForModel(state, {
                 known_by: event.knownBy,
                 caused_by: event.causedBy,
                 public_trace: modelText(event.publicTrace, LIMITS.eventPublicTrace),
+                public_headline: modelText(event.publicHeadline, 180),
+                public_summary: modelText(event.publicSummary, 360),
+                public_result: modelText(event.publicResult, 360),
+                publicity: event.publicity || 'private',
                 visibility: event.visibility,
                 delivery_state: event.delivery.state,
             })),
@@ -3641,6 +4941,7 @@ export function buildSimulationPrompt(state, {
     playerIdentityAnchor = '',
     newAssistantTurns = 1,
     backgroundNpcBudget = 4,
+    worldPulseActivity = 'natural',
 } = {}) {
     const compact = compactStateForModel(state, {
         includeUserInnerVoice,
@@ -3694,12 +4995,17 @@ export function buildSimulationPrompt(state, {
         ? `玩家角色名为“${modelText(userName, 80) || '未提供'}”；允许在正文已经明确体现其情绪时写入玩家角色 inner_voice，但不得替玩家新增决定、欲望或立场。`
         : `玩家角色名为“${modelText(userName, 80) || '未提供'}”；可以追踪玩家角色的位置与行动，但必须标记 is_user=true，且 inner_voice 必须为空，绝不替玩家描写内心活动。`;
     const simulationRule = {
-        light: '轻量推演：只处理最后正文明确造成的变化，原则上不新建镜头外事件；最多提取1条真正重要的新伏笔。',
-        balanced: '均衡推演：维护明确的前台变化，并让少量高相关的镜头外人物和事件继续发展；避免无意义扩张。',
-        deep: '深入推演：在保持因果与知识边界的前提下，可以维护更多高相关镜头外人物、事件和伏笔，但仍不得凭空制造灾难或强行转折。',
-        manual: '手动均衡推演：按均衡尺度处理本次正文，不因为手动触发而重复旧变化。',
-    }[simulationMode] || '均衡推演：只维护与当前因果相关的变化。';
+        light: '轻量推演：先同步正文事实，再做一次很轻的世界自主检查。若已有事件后果、人物既定目标或明确环境压力已经自然形成下一步，可以新建最多1条镜头外暗流；没有因果就保持安静。',
+        balanced: '均衡推演：同步正文后必须检查世界本身有没有继续往前走的理由。已有事件后果、人物目标、势力行动与环境变化都可以独立产生新的暗流；通常新增0—2条，宁缺毋滥。',
+        deep: '深入推演：在保持因果与知识边界的前提下，认真维护镜头外人物、势力和事件链。可以让多个已有压力自然长出后续暗流，但每条都必须有清楚来源，不得为了热闹硬凑事故或灾难。',
+        manual: '手动均衡推演：按均衡尺度同步正文并检查世界自主发展，不因为手动触发而重复旧变化。',
+    }[simulationMode] || '均衡推演：同步正文，同时维护世界自身能够自然继续的因果。';
     const customRule = modelText(customInstruction, 1000);
+    const pulseActivityRule = {
+        quiet: '世界脉搏偏安静：优先推进已存在的宏观压力与到期事项。独立公共事件应很少，普通平稳状态完全可以持续；不要为了证明世界在运行而制造新闻。',
+        natural: '世界脉搏自然：每次主世界时间真正推进后，都检查环境、城市/地区、组织/势力、经济/资源、公共设施与社会生活是否有自然变化。大多数是普通或地方变化，重大新闻必须稀少且有因果。',
+        busy: '世界脉搏偏活跃：在合理因果足够时，可以让更多地区/行业/组织同时出现变化，但仍以日常、地方和行业事件为主；重大事故、战争、灾害与极端巧合仍然必须有强依据。',
+    }[worldPulseActivity] || '世界脉搏自然：让镜头外社会按时间与因果正常变化。';
     const npcBudget = asInteger(backgroundNpcBudget, 4, 0, 12);
     const newAssistantRule = newAssistantIndexSet.size === 1
         ? '11. 较早轮次只用于理解因果，不得重复计算；本次只推演最后一个 assistant_turn（new="true"）。'
@@ -3718,13 +5024,25 @@ export function buildSimulationPrompt(state, {
         '2. 玩家/用户的行动只能来自正文已经发生的内容，不得替玩家新增行动。',
         `3. 先做“前台事实协调”：new="true" 正文明确写出的时间、人物位置/移动、行动、身体状态、物品或环境变化必须回写。这个步骤不受后台 NPC 预算限制。完成前台协调后，本次最多更新 ${npcBudget} 名镜头外 NPC。`,
         '3A. 推演前权威状态不是可选建议。若新正文没有描写移动/返回/离场等过渡，却把人物放到与权威位置矛盾的地方，不要默默覆盖世界状态；把它写入 consistency_conflicts，并保持原世界事实。只有正文明确建立了新的过渡或可靠新事实，才接受正文并更新状态。',
-        '3B. 后台推演也可以形成真实世界事实。事件一旦 resolved/cancelled/missed，或镜头外行动已经客观完成，就必须把结果结算进人物/事件状态；无法落到现有字段的稳定结果写入 world_facts_upsert。不要等正文重复确认它才算发生。',
+        '3B. 后台推演也可以形成真实世界事实。事件一旦 resolved/cancelled/missed，或镜头外行动已经客观完成，就必须把结果结算进人物/事件状态；无法落到现有字段的稳定结果写入 world_facts_upsert。不要等正文重复确认它才算发生。world fact 必须区分 validity：current=当前仍成立，upcoming=尚未发生但已确定/预定，historical=已经结束的历史事实，persistent=事件结束后仍持续成立的后果。事件本身的 result 通常是 historical；若“暴雨结束但道路仍积水”，积水必须另写 current/persistent world fact。',
         '3C. 结算结果如果改变了人物位置、当前行动、身体/资源状态等已有结构字段，必须同步写入对应 people_upsert；不能只在 event.result 里写“已经到达卧室”，却继续让人物权威位置停在工作室。事件结果与人物/地点状态必须彼此一致。',
+        '3D. 前台事实协调完成后，必须再做一次“世界自主运转检查”。最新正文只是世界输入之一，不是新事件产生的前提。检查：①已有暗流/已结算事件留下的后果是否自然形成下一步；②镜头外人物的 long_term_goal / intent 是否到了会自行行动的时候；③势力、地点、社会环境或资源压力是否已经足以产生新的合理变化；④预定时间或既有条件是否触发了此前未显露的行动。只要因果已经成立，就可以创建新的镜头外暗流，即使正文完全没有提到它。',
+        '3E. “随机事件”只能从当前世界设定、地点环境、社会背景与已有压力中合理采样：可以是日常事故、天气、交通、组织动作、工作变化、资源波动等；不得无缘无故制造重大灾难、巧合强转折或专门围着玩家发生。随机只决定合理候选里哪件先发生，不负责凭空创造因果。',
+        '3F. 世界自主运转不是每轮硬凑事件。若主世界时间没有实际推进、已有条件没有变化、人物目标也没有自然下一步，就可以 events_create=[]。但不能因为“正文没提到”就跳过本来已经应该发生的世界变化。',
+        `3G. ${pulseActivityRule}`,
+        '3H. world_pulse 是镜头外宏观状态账本，不是新闻列表。它记录持续一段时间的环境、地区、组织/势力、经济资源、基础设施、治安、文化/媒体或社区压力。状态真正变化时才写 world_pulse_upsert；不要每轮重复同一句。pressure=0 表示平稳，1=轻微，2=明显，3=高压；trend 只描述该压力在上升、下降、波动或稳定。',
+        '3I. visibility 和 publicity 是两条完全不同的轴。visibility=hidden/trace/known/direct 只表示这个事件怎样进入当前正文/角色视野；它绝不等于社会公开。卧室、私聊、秘密行动即使 visibility=direct，也通常必须 publicity=private。',
+        '3J. publicity=private 表示社会不知道；publicity=trace 表示外界只有未证实迹象，可形成论坛传闻但不能成为新闻；publicity=public 表示已有公告、媒体报道、公众可见现象或广泛传播渠道，可以进入新闻。',
+        '3K. 只有 publicity=trace/public 时才填写 public_trace。只有 publicity=public 时才填写 public_headline 与 public_summary；这两个字段必须只包含公众已经能知道的事实，不能复制幕后原因、私密细节或角色内心。public_summary 表示当前/最近一次公众知道的状态，不自动等于最终结局。',
+        '3K-1. 当 publicity=public 的事件进入 resolved/cancelled/missed 时：如果终局已经公开，必须填写 public_result；如果终局尚未公开，public_result 留空。旧 public_summary 只会被当作历史报道，绝不能继续充当当前世界状态。',
+        '3L. world_pulse 可以产生与当前主线完全无关的新暗流。公开世界事件先在世界里真实发生，再通过 publicity/public_* 字段交给舆情模块；舆情绝不能反向创造事实。',
+        '3M. “公开世界事件”不等于“大事件”。天气、交通、商业、政策小变化、行业动态、地方案件、设施故障、活动、消费与网络热点都可以成立。绝大多数公共变化应该普通、地方化、可解释；真正的大型灾害、战争、政变、巨型阴谋等必须极罕见且有强因果。',
         '大量同阵营或同地点 NPC 的共同变化优先合并成势力/地点事件；名字重新出现、地点接近、关联事件到时或伏笔命中时再唤醒个人。',
         '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
         '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在该人物的处境、目标或情绪有真实变化时更新。不要让所有人物每轮集体独白。',
         '人物状态中的 identity_anchor、personality_anchor、appearance_profile、background_profile、speaking_style 与 behavior_boundaries 是用户维护的稳定角色设定：必须遵守，不得在 people_upsert 中重写。identity_anchor 可包含任意性别身份、称谓/代词、物种、年龄阶段与社会身份；appearance_profile 负责外貌与身体特征；background_profile 负责背景、经历与关系。不得根据外貌、衣着、身体或物种反推或改写身份。没有身份锚点且正文也不明确时使用中性表述。',
+        '人物 author_managed=true 表示由用户手动添加或从世界书导入：可以正常更新其位置、行动、意图和状态，但绝不能放进 people_remove。people_remove 只用于清理插件自行生成、且已经确定不再需要保留的临时后台人物。用户人物、author_managed 人物与 locked_profile 人物都不得由 routine simulation 删除。',
         `7. ${userVoiceRule} ${playerIdentityRule}`,
         '8. long_term_goal 是人物较稳定的长期方向；只有目标真正建立、完成、放弃或转向时才更新，不能把本轮动作重复填进去。',
         '9. inner_voice 是幕后观测信息，不得当作主角已知事实，也不得写入 deliveries_confirmed。',
@@ -3734,7 +5052,8 @@ export function buildSimulationPrompt(state, {
         '12A. NPC 认知由 known_event_ids / known_fact_keys / known_fact_beliefs / known_clue_ids 与事件 known_by 共同记录。只有亲历、被明确告知、主动调查得到、或通过该人物既有身份/渠道合理获得的信息才能加入；绝不能把玩家知道、旁白知道或后台知道的内容自动复制给 NPC。账本条目不会因为本轮未提及而自动遗忘。known_fact_beliefs 保存该人物实际获知时的事实版本；世界事实后续更迭时不得自动刷新。若人物本轮确实得知同一 key 的新版本，除了保留 known_fact_keys，还要把该 key 放进 known_fact_refresh_keys。对于本轮确实处理到的旧人物，在核对其当前认知后设置 cognition_ready=true；旧存档人物首次升级时不得把所有相关记忆批量回填，只能加入有证据支持其知情的条目。',
         '12B. event.visibility 只表示事件对前台/玩家的显露边界，不代表 NPC 是否知道；NPC 是否知情只看 known_by 与人物认知账本。known_by 优先填写已有人物 id，新人物尚无 id 时可暂填精确姓名。',
         '12C. physical_state / emotional_state / resource_state 是人物当前状态。状态变化必须真实影响 action、intent 与执行能力；受伤、疲劳、缺资源、权限不足或情绪压力不能下一轮凭空消失。不得发明角色卡、身份锚点、既有记忆未支持的技能、装备、权限或知识。玩家的 emotional_state 只有正文/玩家明确表达时才能更新，不得替玩家猜内心。',
-        '12D. 新事件要写明 cause；若它由已有事件的行动、结果或后果继续发酵，必须在 caused_by 填上游事件 ID。actors 只列真实参与/经历该事件的人，known_by 只列确实知情的人。一个事件解决后如果产生了新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命；也不要为了制造“热闹”强行生成后续。',
+        '12D. 新事件必须写明 cause。cause 可以来自：已有事件的行动/结果/后果、人物既定目标与主动行动、势力/地点/环境压力、或当前世界条件下自然发生的合理环境事件。若由已有事件继续发酵，必须在 caused_by 填上游事件 ID；若没有上游事件，则在 cause 中明确写出人物目标或环境条件。actors 只列真实参与/经历该事件的人，known_by 只列确实知情的人。一个事件解决后如果产生新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命。',
+        '12D-1. 已解决事件本体不要为了“保留剧情”继续挂在暗流里；保留它已经造成的 world_facts / 人物状态 / 环境后果即可。真正需要继续发展的部分创建为新的事件。这样事件链会往前长，而不是反复复读旧事件。',
         '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
         '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',
         '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。',
@@ -3818,7 +5137,11 @@ export function buildSimulationPrompt(state, {
                 actors: [],
                 known_by: [],
                 caused_by: [],
+                publicity: 'private | trace | public',
                 public_trace: '',
+                public_headline: '',
+                public_summary: '',
+                public_result: '',
                 visibility: 'hidden',
                 delivery_route: '',
             }],
@@ -3833,7 +5156,11 @@ export function buildSimulationPrompt(state, {
                 actors: [],
                 known_by: [],
                 caused_by: [],
+                publicity: 'private | trace | public',
                 public_trace: '',
+                public_headline: '',
+                public_summary: '',
+                public_result: '',
                 visibility: 'hidden',
                 delivery_route: '',
             }],
@@ -3851,9 +5178,22 @@ export function buildSimulationPrompt(state, {
                 field: 'location | state | result | owner | condition | other',
                 value: '',
                 source: 'simulation | foreground',
+                validity: 'current | upcoming | historical | persistent',
                 visibility: 'hidden | trace | known | direct',
                 confidence: 'high',
                 event_id: '',
+            }],
+            world_pulse_upsert: [{
+                id: '',
+                label: '例如：港区物流 / 城市交通 / 商会资金链 / 季风天气',
+                scope: '地区、行业、组织或社会范围',
+                kind: 'environment | government | economy | organization | infrastructure | security | culture | media | community | other',
+                state: '当前持续状态，不写一次性新闻标题',
+                pressure: 1,
+                trend: 'stable | rising | falling | volatile',
+                visibility: 'hidden | trace | known',
+                source: 'simulation',
+                evidence: '由什么既有条件或世界设定支撑',
             }],
             consistency_conflicts: [{
                 subject: '',
@@ -4212,6 +5552,8 @@ export const DEFAULT_TAG_FILTER_RULES = Object.freeze([
     Object.freeze({ open: '<options>', close: '</options>' }),
     Object.freeze({ open: '<thinking>', close: '</thinking>' }),
     Object.freeze({ open: '<think>', close: '</think>' }),
+    Object.freeze({ open: '<UpdateVariable>', close: '</UpdateVariable>' }),
+    Object.freeze({ open: '<updatevariable>', close: '</updatevariable>' }),
 ]);
 
 export function normalizeTagFilterRules(rawRules) {
@@ -4299,12 +5641,66 @@ export function extractTagFilterCandidates(texts, existingRules = []) {
         .sort((a, b) => Number(b.recommended) - Number(a.recommended) || b.count - a.count || a.tagName.localeCompare(b.tagName));
 }
 
+export function normalizeNarrativeRegexRules(rawRules) {
+    const source = Array.isArray(rawRules)
+        ? rawRules
+        : String(rawRules ?? '').split(/\r?\n/);
+    return source
+        .map(item => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 8)
+        .map(item => item.slice(0, 260));
+}
+
+function extractIncludedNarrativeTag(text, tagName) {
+    const normalized = String(tagName || '').trim();
+    if (!/^[A-Za-z0-9_:-]{1,80}$/.test(normalized)) return String(text ?? '');
+    const pattern = new RegExp(
+        `<${escapeRegExp(normalized)}(?:\\s[^<>]*?)?>([\\s\\S]*?)<\\/${escapeRegExp(normalized)}\\s*>`,
+        'gi',
+    );
+    const matches = [];
+    let match;
+    while ((match = pattern.exec(String(text ?? '')))) {
+        matches.push(String(match[1] || ''));
+        if (match[0] === '') pattern.lastIndex += 1;
+    }
+    // “只读取某标签”是便捷提取器：本条没有该标签时保留原文，
+    // 避免不同预设/旧楼层因为格式不一致被整个吃空。
+    return matches.length ? matches.join('\n') : String(text ?? '');
+}
+
+function compileNarrativeRegexRule(rawRule) {
+    const raw = String(rawRule || '').trim();
+    if (!raw) return null;
+    let pattern = raw;
+    let flags = 'g';
+    const slash = raw.match(/^\/(.*)\/([dgimsuvy]*)$/);
+    if (slash) {
+        pattern = slash[1];
+        flags = slash[2] || 'g';
+    }
+    // Replacement must scan the whole narrative. Sticky mode would only match
+    // at lastIndex and is not useful for a cleanup rule.
+    flags = [...new Set(`${flags.replaceAll('y', '')}g`)].join('');
+    try {
+        return new RegExp(pattern, flags);
+    } catch {
+        return null;
+    }
+}
+
 export function filterNarrativeText(text, settings = {}) {
     let result = String(text ?? '');
     // Always strip well-formed HTML comments (non-greedy, dotAll).
     result = result.replace(/<!--[\s\S]*?-->/g, '');
 
     if (settings?.tagFilterEnabled === false) return result;
+
+    // Optional positive extraction comes first. If a preset wraps the actual
+    // prose in e.g. <narrative>...</narrative>, users can simply name the tag
+    // instead of maintaining a long exclusion list.
+    result = extractIncludedNarrativeTag(result, settings?.narrativeIncludeTag);
 
     const rules = normalizeTagFilterRules(settings?.tagFilterRules);
     for (const rule of rules) {
@@ -4335,6 +5731,12 @@ export function filterNarrativeText(text, settings = {}) {
             const index = result.indexOf(open);
             if (index !== -1) result = result.slice(0, index);
         }
+    }
+
+    for (const rawRule of normalizeNarrativeRegexRules(settings?.narrativeRegexFilters)) {
+        const pattern = compileNarrativeRegexRule(rawRule);
+        if (!pattern) continue;
+        result = result.replace(pattern, '');
     }
     return result;
 }
@@ -4465,6 +5867,12 @@ export function trimState(inputState) {
         else normalizedWorldFacts.push(fact);
     }
     state.worldFacts = normalizedWorldFacts;
+    state.worldPulse = normalizeWorldPulse(state.worldPulse, state.clock.absoluteMinute);
+    syncPublicEventRealityFacts(state, state.clock.absoluteMinute);
+    state.publicImpactLedger = asArray(state.publicImpactLedger)
+        .map(record => normalizePublicImpactRecord(record, state.clock.absoluteMinute))
+        .filter(record => record.sourceEventId && record.fingerprint)
+        .slice(0, LIMITS.publicImpactLedger);
 
     // Schema 14 introduces an explicit authoritative fact layer. Old person
     // locations may already lag behind the latest foreground, so migration does
@@ -4478,6 +5886,40 @@ export function trimState(inputState) {
         }
     } else {
         state.needsReconciliation = Boolean(state.needsReconciliation);
+    }
+    if (previousSchemaVersion < 15) {
+        state.worldPulse.baselineEstablished = Boolean(state.worldPulse.domains.length);
+        state.worldPulse.lastSweepAt = state.clock.absoluteMinute;
+    }
+    if (previousSchemaVersion < 16) {
+        // publicity 在 normalizeEvent 中已按“明确公共传播证据”保守迁移。
+        // 不允许把旧 known/direct 直接解释为社会公开。
+        state.events = state.events.map(event => normalizeEvent(event, state.clock.absoluteMinute, event));
+    }
+    if (previousSchemaVersion < 17) {
+        // 升级时把已有公共事件视为“此前世界已经包含其后果”，避免更新后
+        // 把旧新闻全部重新冲击一遍人物/行业。只有之后新增或公共信息真正变化
+        // 的事件才进入新的影响传播队列。
+        recordProcessedPublicImpacts(
+            state,
+            state.events.filter(eventHasPublicPropagation),
+            [],
+            { reason: 'schema-17-baseline' },
+        );
+    }
+    if (previousSchemaVersion < 18) {
+        // 最新公开报道和真正公开的终局从此分开。旧终结事件不会把
+        // publicSummary 自动猜成 publicResult，避免把“仍在下雨”之类旧报道
+        // 升级后继续冒充当前结果。
+        state.events = state.events.map(event => normalizeEvent(event, state.clock.absoluteMinute, event));
+        // schema 18 的公共影响 fingerprint 只看真正公开的信息，不再看后台
+        // status。升级时给现有公开事件建立新基线，避免把所有旧新闻重放一次。
+        recordProcessedPublicImpacts(
+            state,
+            state.events.filter(eventHasPublicPropagation),
+            [],
+            { reason: 'schema-18-public-fingerprint-baseline' },
+        );
     }
 
     state.consistencyConflicts = asArray(state.consistencyConflicts)

@@ -1,3 +1,5 @@
+const WB_PROFILE_MATCH_TIEBREAK = 17;
+
 const PROFILE_LABELS = Object.freeze({
     name: ['中文名', '姓名', '名字', '角色名', 'chinese name', 'full name', 'name'],
     nickname: ['昵称', '别名', '别称', '称呼', 'nickname', 'alias', 'aliases'],

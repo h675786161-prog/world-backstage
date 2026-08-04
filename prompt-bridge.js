@@ -1,5 +1,7 @@
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 
+const WB_CONTEXT_PHASE_HINT = Object.freeze(['state', 'cause', 'trace']);
+
 const STRUCTURAL_PROMPT_IDS = new Set([
     'worldInfoBefore',
     'worldInfoAfter',

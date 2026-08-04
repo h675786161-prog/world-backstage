@@ -286,6 +286,10 @@
     gap: 14px;
 }
 
+.wb-mobile-clock-time {
+    display: none;
+}
+
 .wb-world-calendar {
     gap: 10px;
     min-width: 0;
@@ -1456,6 +1460,15 @@
     color: var(--wb-text-soft);
     font-family: "Noto Serif SC", "Songti SC", serif;
     font-size: 13px;
+}
+
+.wb-person-avatar > img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
 }
 
 .wb-person-avatar > i {
@@ -3353,10 +3366,32 @@
     }
 
     .wb-window-header {
+        position: relative;
         height: 66px;
         grid-template-columns: minmax(0, 1fr) auto auto;
         gap: clamp(4px, 2vw, 8px);
         padding: 0 clamp(8px, 3vw, 12px);
+    }
+
+    .wb-mobile-clock-time {
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        left: 50%;
+        display: block;
+        min-width: 58px;
+        padding: 3px 6px;
+        transform: translate(-50%, -50%);
+        color: var(--wb-text);
+        font-family: "Iowan Old Style", "Noto Serif SC", "Songti SC", serif;
+        font-size: clamp(15px, 4.5vw, 18px);
+        font-variant-numeric: tabular-nums;
+        font-weight: 500;
+        line-height: 1;
+        letter-spacing: 0.08em;
+        text-align: center;
+        white-space: nowrap;
+        pointer-events: none;
     }
 
     .wb-calendar-page {
@@ -3568,7 +3603,7 @@
 
     #world-backstage-root .wb-settings-layer {
         position: fixed !important;
-        z-index: 2147483646 !important;
+        z-index: 40 !important;
         top: var(--wb-visual-inset-top, 0px) !important;
         right: auto !important;
         bottom: auto !important;
@@ -3621,7 +3656,7 @@
     }
 
     .wb-world-orb {
-        z-index: 2147483647 !important;
+        z-index: 50 !important;
         display: block !important;
         width: clamp(34px, 9vmin, 38px) !important;
         height: clamp(34px, 9vmin, 38px) !important;
@@ -3676,7 +3711,7 @@
         left: var(--wb-visual-inset-left, 0px) !important;
         width: var(--wb-visual-width, 100dvw) !important;
         height: var(--wb-visual-height, 100dvh) !important;
-        z-index: 2147483647 !important;
+        z-index: 50 !important;
         display: grid !important;
         place-items: end stretch !important;
         align-items: end !important;
@@ -7168,4 +7203,224 @@
     width: 16px;
     height: 16px;
     margin: 0;
+}
+
+
+.wb-person-avatar-editor {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 14px;
+    background: var(--wb-panel-faint);
+}
+
+.wb-person-avatar-editor > div {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+}
+
+.wb-person-avatar-editor small {
+    color: var(--wb-text-muted);
+    line-height: 1.55;
+}
+
+.wb-avatar-upload {
+    display: grid;
+    gap: 6px;
+    font-weight: 600;
+}
+
+.wb-avatar-upload input[type="file"] {
+    min-width: 0;
+    max-width: 100%;
+    font-size: 12px;
+}
+
+.wb-person-avatar-editor > button {
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 999px;
+    padding: 7px 10px;
+    background: var(--wb-panel) !important;
+    color: var(--wb-text-soft);
+}
+
+@media (max-width: 640px) {
+    .wb-person-avatar-editor {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+    .wb-person-avatar-editor > button {
+        grid-column: 1 / -1;
+        justify-self: start;
+    }
+}
+
+
+/* 1.3.3 — narrative filter shortcuts stay compact even in the settings drawer. */
+#world-backstage-root .wb-narrative-filter-shortcuts {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+#world-backstage-root .wb-narrative-filter-shortcuts label {
+    display: grid;
+    gap: 6px;
+}
+#world-backstage-root .wb-narrative-filter-shortcuts small {
+    color: var(--wb-text-faint);
+    line-height: 1.5;
+}
+
+
+
+/* 1.3.7 · 设置真正归位：板块内部不再套“总设置的大框”。 */
+#world-backstage-root .wb-view-header-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    min-width: 0;
+}
+#world-backstage-root .wb-view-settings-action {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    display: inline-grid;
+    place-items: center;
+    border: 1px solid var(--wb-line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--wb-panel) 74%, transparent);
+    color: var(--wb-text-faint);
+    cursor: pointer;
+    transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
+}
+#world-backstage-root .wb-view-settings-action:hover,
+#world-backstage-root .wb-view-settings-action.is-active {
+    border-color: var(--wb-line-strong);
+    background: var(--wb-accent-soft);
+    color: var(--wb-text);
+    transform: translateY(-1px);
+}
+#world-backstage-root .wb-view-settings-action .wb-settings-glyph { transform: scale(.9); }
+#world-backstage-root .wb-module-settings-layer > .wb-settings-popover { top: 84px; }
+
+/* 全局设置：真正只留全局项。外观已经直接摊开，不再“界面与显露 -> 界面”。 */
+#world-backstage-root .wb-settings-scope-global > [data-settings-group="appearance"],
+#world-backstage-root .wb-settings-scope-global > [data-settings-group="simulation"],
+#world-backstage-root .wb-settings-scope-global > [data-settings-group="worldbook"],
+#world-backstage-root .wb-settings-scope-global > [data-settings-group="memory"],
+#world-backstage-root .wb-settings-scope-global > [data-settings-group="calendar"],
+#world-backstage-root .wb-settings-scope-global [data-settings-subgroup="connection-routing"] {
+    display: none !important;
+}
+#world-backstage-root .wb-global-flat-block {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+/* 板块设置：标题 + 留白 + 单个设置项，边框不再承担信息层级。 */
+#world-backstage-root .wb-module-settings-popover {
+    display: flex;
+    flex-direction: column;
+}
+#world-backstage-root .wb-module-settings-body {
+    display: grid;
+    gap: 14px;
+    padding: 14px 16px 18px;
+}
+#world-backstage-root .wb-flat-setting-list {
+    display: grid;
+    gap: 10px;
+}
+#world-backstage-root .wb-flat-section-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 5px 2px 2px;
+    margin-top: 2px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 72%, transparent);
+}
+#world-backstage-root .wb-flat-section-heading > div {
+    display: grid;
+    gap: 3px;
+}
+#world-backstage-root .wb-flat-section-heading strong {
+    color: var(--wb-text);
+    font-size: .93em;
+    letter-spacing: .02em;
+}
+#world-backstage-root .wb-flat-section-heading span {
+    color: var(--wb-text-faint);
+    font-size: .76em;
+    font-weight: 500;
+}
+#world-backstage-root .wb-module-settings-body > .wb-setting-block,
+#world-backstage-root .wb-flat-setting-list > .wb-setting-block,
+#world-backstage-root .wb-flat-setting-list > .wb-setting-toggle,
+#world-backstage-root .wb-module-settings-body > .wb-setting-toggle,
+#world-backstage-root .wb-flat-clock-form,
+#world-backstage-root .wb-flat-history-settings {
+    margin: 0;
+}
+#world-backstage-root .wb-route-setting select { width: 100%; }
+#world-backstage-root .wb-flat-footnote {
+    margin: 0 2px;
+    color: var(--wb-text-faint);
+    font-size: .78em;
+    line-height: 1.6;
+}
+
+/* 真正低频的东西才折叠成“高级”，而且只保留一层。 */
+#world-backstage-root .wb-module-advanced {
+    margin: 0;
+    border: 0;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 72%, transparent);
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
+}
+#world-backstage-root .wb-module-advanced > summary {
+    min-height: 40px;
+    padding: 10px 2px 6px;
+    background: transparent;
+    border: 0;
+}
+#world-backstage-root .wb-module-advanced > summary > span { font-weight: 700; }
+#world-backstage-root .wb-module-advanced > summary > small { color: var(--wb-text-faint); }
+#world-backstage-root .wb-module-advanced-body {
+    display: grid;
+    gap: 10px;
+    padding: 6px 0 0;
+    border: 0;
+    background: transparent;
+}
+
+@media (max-width: 720px) {
+    #world-backstage-root .wb-view-header-tools { gap: 5px; }
+    #world-backstage-root .wb-view-settings-action {
+        width: 31px;
+        height: 31px;
+        flex-basis: 31px;
+        border-radius: 9px;
+    }
+    #world-backstage-root .wb-module-settings-layer > .wb-settings-popover { top: 68px; }
+    #world-backstage-root .wb-module-settings-body { padding: 12px 12px 16px; gap: 12px; }
+    #world-backstage-root .wb-flat-setting-list { gap: 9px; }
+}
+
+
+/* 1.3.8 · 舆情顶部显示当前显露模式，而不是固定写“只读观察”。 */
+#world-backstage-root .wb-public-mode-badge {
+    transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+#world-backstage-root .wb-public-mode-badge.is-relevant {
+    border-color: color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-accent-soft) 78%, transparent);
+    color: var(--wb-text);
 }

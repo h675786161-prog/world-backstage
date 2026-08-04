@@ -8,6 +8,8 @@ import {
 } from './core.js';
 import { filterWorldbookEntries } from './worldbook.js';
 
+const WB_PANEL_STABILITY_HINT = 'fold:7/2';
+
 const VIEWS = [
     { id: 'now', label: '此刻', eyebrow: 'NOW' },
     { id: 'people', label: '人物', eyebrow: 'PEOPLE' },
@@ -173,13 +175,51 @@ function renderEmpty(label, detail = '') {
 }
 
 function renderPersonAvatar(person, size = '') {
-    const glyph = person.monogram || person.name?.slice(0, 1) || '·';
+    const glyph = person?.monogram || person?.name?.slice(0, 1) || '·';
+    const avatar = String(person?.avatarDataUrl || '');
+    const image = /^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(avatar)
+        ? `<img src="${escapeAttr(avatar)}" alt="" loading="lazy">`
+        : escapeHtml(glyph);
     return `
         <span class="wb-person-avatar ${size}">
-            ${escapeHtml(glyph)}
+            ${image}
             <i></i>
         </span>
     `;
+}
+
+async function readPersonAvatarFile(file) {
+    if (!file) return '';
+    if (!String(file.type || '').startsWith('image/')) throw new Error('这个文件看起来不是图片哦～');
+    if (Number(file.size || 0) > 8 * 1024 * 1024) throw new Error('头像太大啦～先选一张 8MB 以内的图片吧。');
+
+    const source = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('头像没有读成功，再换一张试试吧～'));
+        reader.readAsDataURL(file);
+    });
+    const image = await new Promise((resolve, reject) => {
+        const node = new Image();
+        node.onload = () => resolve(node);
+        node.onerror = () => reject(new Error('这张图片浏览器没有认出来，可以换成 PNG / JPG / WebP 试试～'));
+        node.src = source;
+    });
+
+    const side = Math.max(1, Math.min(image.naturalWidth || image.width, image.naturalHeight || image.height));
+    const sx = Math.max(0, ((image.naturalWidth || image.width) - side) / 2);
+    const sy = Math.max(0, ((image.naturalHeight || image.height) - side) / 2);
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 160;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('当前浏览器没法处理头像图片。');
+    context.drawImage(image, sx, sy, side, side, 0, 0, 160, 160);
+    let result = canvas.toDataURL('image/webp', 0.78);
+    if (!result.startsWith('data:image/webp')) result = canvas.toDataURL('image/jpeg', 0.78);
+    if (result.length > 180000) result = canvas.toDataURL('image/jpeg', 0.62);
+    if (result.length > 180000) throw new Error('头像压缩后还是有点太大～换一张简单一点的图试试吧。');
+    return result;
 }
 
 export function renderInnerVoice(person, worldMinute, compact = false) {
@@ -530,7 +570,7 @@ function renderSyncStrip(syncStatus) {
     `;
 }
 
-function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}) {
+function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}, scope = 'global') {
     const clock = formatWorldCalendar(state);
     const clockLabel = worldClockLabel(state, clock);
     const connection = syncStatus?.connection || {};
@@ -643,13 +683,53 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
     `;
     const groupOpen = id => openGroups.has(id) ? 'open' : '';
     const subgroupOpen = id => openSubgroups.has(id) ? 'open' : '';
+    const scopeMeta = {
+        global: { eyebrow: 'GLOBAL', title: '全局设置' },
+        now: { eyebrow: 'NOW SETTINGS', title: '此刻设置' },
+        people: { eyebrow: 'PEOPLE SETTINGS', title: '人物设置' },
+        currents: { eyebrow: 'CURRENT SETTINGS', title: '暗流设置' },
+        opinion: { eyebrow: 'PUBLIC SETTINGS', title: '舆情设置' },
+        memory: { eyebrow: 'MEMORY SETTINGS', title: '记忆设置' },
+    };
+    const scopeKey = Object.hasOwn(scopeMeta, scope) ? scope : 'global';
+    const scopeInfo = scopeMeta[scopeKey];
 
     return `
-        <div class="wb-settings-popover" role="dialog" aria-modal="true" aria-label="世界背面设置">
+        <div class="wb-settings-popover wb-settings-scope-${scopeKey}" role="dialog" aria-modal="true"
+            aria-label="${escapeAttr(scopeInfo.title)}">
             <div class="wb-popover-heading">
-                <div><span>OBSERVATION</span><h3>观测设置</h3></div>
-                <button type="button" data-wb-action="toggle-settings" aria-label="关闭设置">×</button>
+                <div><span>${scopeInfo.eyebrow}</span><h3>${scopeInfo.title}</h3></div>
+                <button type="button" data-wb-action="${scopeKey === 'global' ? 'toggle-settings' : 'toggle-module-settings'}"
+                    data-view="${scopeKey === 'global' ? '' : scopeKey}" aria-label="关闭设置">×</button>
             </div>
+
+            ${scopeKey === 'global' ? `
+                <div class="wb-global-flat-block">
+                    <div class="wb-flat-section-heading">
+                        <div><strong>外观</strong><span>看着舒服最重要～</span></div>
+                    </div>
+                    <div class="wb-flat-setting-list">
+                        <div class="wb-setting-block">
+                            <label>界面明暗</label>
+                            <div class="wb-option-row">
+                                ${themeButton('auto', '自动')}
+                                ${themeButton('day', '日间')}
+                                ${themeButton('night', '夜间')}
+                            </div>
+                            <p class="wb-setting-explanation">${escapeHtml(settingExplanation('theme', settings.theme))}</p>
+                        </div>
+                        <div class="wb-setting-block">
+                            <label>界面字号</label>
+                            <div class="wb-option-row">
+                                ${settingButton('uiScale', settings.uiScale, 'compact', '紧凑')}
+                                ${settingButton('uiScale', settings.uiScale, 'comfortable', '标准')}
+                                ${settingButton('uiScale', settings.uiScale, 'large', '大字')}
+                            </div>
+                            <p class="wb-setting-explanation">${escapeHtml(settingExplanation('uiScale', settings.uiScale))}</p>
+                        </div>
+                    </div>
+                </div>
+            ` : ''}
 
             <details class="wb-settings-group" data-settings-group="connection" ${groupOpen('connection')}>
                 <summary><span>连接</span><small>API 与模型</small></summary>
@@ -1233,7 +1313,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </details>
 
                     <details class="wb-settings-subgroup" data-settings-subgroup="advanced-tagfilter" ${subgroupOpen('advanced-tagfilter')}>
-                        <summary><span>标签过滤</span><small>清理杂标签与 HTML 注释</small></summary>
+                        <summary><span>正文过滤</span><small>只把真正的叙事喂给后台～</small></summary>
                         <div class="wb-settings-subgroup-body">
                     <div class="wb-setting-toggle">
                         <div><strong>启用标签过滤</strong><span>关闭后仍会删除 HTML 注释 &lt;!-- --&gt;</span></div>
@@ -1244,7 +1324,20 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         </label>
                     </div>
                     <div class="wb-setting-block">
-                        <p>HTML 注释 <code>&lt;!-- ... --&gt;</code> 会整块拿掉～这里按字面严格匹配（区分大小写）。只填结尾时会删掉它和之前内容；只填开头时会从那里一路删到本条末尾。</p>
+                        <div class="wb-narrative-filter-shortcuts">
+                            <label>只读取某个正文标签（可选）
+                                <input type="text" maxlength="80" data-wb-setting="narrativeIncludeTag"
+                                    value="${escapeAttr(settings.narrativeIncludeTag || '')}"
+                                    placeholder="例如 narrative（不用写 &lt; &gt;）" autocomplete="off" spellcheck="false">
+                                <small>本条有这个标签时就只取标签里面；没有时保留原文，不会一口吃空～</small>
+                            </label>
+                            <label>额外正则排除（可选）
+                                <textarea rows="3" maxlength="2200" data-wb-setting="narrativeRegexFilters"
+                                    placeholder="一行一条，例如：&lt;UpdateVariable&gt;[\s\S]*?&lt;/UpdateVariable&gt;">${escapeHtml(settings.narrativeRegexFilters || '')}</textarea>
+                                <small>最多 8 条～变量块、状态栏或预设附加内容都可以在进后台前先摘掉。</small>
+                            </label>
+                        </div>
+                        <p>HTML 注释 <code>&lt;!-- ... --&gt;</code> 会整块拿掉～下面这些成对标签也可以直接排除；不需要懂正则也能用 (｡•̀ᴗ-)✧</p>
                         <div class="wb-tag-filter-list">
                             ${rules.map((rule, index) => `
                                 <div class="wb-tag-filter-rule" data-tag-filter-index="${index}">
@@ -1337,6 +1430,400 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 </div>
             </details>
 
+        </div>
+    `;
+}
+
+
+function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSubgroups = new Set(), worldbookUi = {}) {
+    const scopeMeta = {
+        now: { eyebrow: 'NOW SETTINGS', title: '此刻设置' },
+        people: { eyebrow: 'PEOPLE SETTINGS', title: '人物设置' },
+        currents: { eyebrow: 'CURRENT SETTINGS', title: '暗流设置' },
+        opinion: { eyebrow: 'PUBLIC SETTINGS', title: '舆情设置' },
+        memory: { eyebrow: 'MEMORY SETTINGS', title: '记忆设置' },
+    };
+    const scopeKey = Object.hasOwn(scopeMeta, scope) ? scope : 'now';
+    const scopeInfo = scopeMeta[scopeKey];
+    const clock = formatWorldCalendar(state);
+    const clockLabel = worldClockLabel(state, clock);
+    const memory = syncStatus?.memory || {};
+    const historyRunning = memory.phase === 'running';
+    const historyPercent = memory.total > 0
+        ? Math.min(100, Math.round((Number(memory.processed) || 0) / memory.total * 100))
+        : 0;
+    const worldbook = syncStatus?.worldbook || { books: [], entries: [], phase: 'idle' };
+    const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
+    const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
+    const worldbookQuery = String(worldbookUi.query || '').slice(0, 120);
+    const worldbookOnlyPeople = Boolean(worldbookUi.onlyPeople);
+    const worldbookOnlyEnabled = Boolean(worldbookUi.onlyEnabled);
+    const worldbookSelectedIds = worldbookUi.selectedIds instanceof Set
+        ? worldbookUi.selectedIds
+        : new Set(Array.isArray(worldbookUi.selectedIds) ? worldbookUi.selectedIds.map(String) : []);
+    const filteredWorldbookEntries = filterWorldbookEntries(worldbookEntries, {
+        query: worldbookQuery,
+        onlyPeople: worldbookOnlyPeople,
+        onlyEnabled: worldbookOnlyEnabled,
+    });
+    const worldbookSelectedCount = worldbookSelectedIds.size;
+    const apiProfiles = Array.isArray(settings.apiProfiles) ? settings.apiProfiles : [];
+    const apiModuleRoutes = settings.apiModuleRoutes && typeof settings.apiModuleRoutes === 'object'
+        ? settings.apiModuleRoutes
+        : {};
+    const routeOptions = (current = 'default') => [
+        `<option value="default" ${current === 'default' ? 'selected' : ''}>跟随世界背面默认连接</option>`,
+        `<option value="tavern" ${current === 'tavern' ? 'selected' : ''}>跟随当前酒馆</option>`,
+        ...apiProfiles.map(profile => {
+            const value = `profile:${profile.id}`;
+            return `<option value="${escapeAttr(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(profile.name)} · ${escapeHtml(profile.model || '未选模型')}</option>`;
+        }),
+    ].join('');
+    const settingButton = (setting, current, id, label) => `
+        <button type="button" data-wb-action="setting-button"
+            data-setting="${setting}" data-value="${id}"
+            class="${String(current) === String(id) ? 'is-active' : ''}">${label}</button>
+    `;
+    const densityButton = (id, label) => settingButton('deliveryDensity', settings.deliveryDensity, id, label);
+    const explanation = (setting, value) => ({
+        deliveryDensity: {
+            restrained: '后台照常生活，只是少来抢镜头～',
+            balanced: '重要结果会自然靠近镜头～该出现的时候再出现。',
+            active: '会更积极找机会露个脸，世界存在感更强一点 ( •̀ ω •́ )✧',
+        },
+        autoSimulationMode: {
+            light: '轻轻维护必要变化～安静一点，也更省调用。',
+            balanced: '默认推荐～人物和事件都会正常过自己的日子。',
+            deep: '会更认真照看镜头外的人和因果～复杂剧情更适合这个。',
+        },
+        timePolicy: {
+            world: '世界钟负责盯住连续时间～正文给出可靠时间时会自己跟上。',
+            explicit: '只有明确算得出来的时间才会推进～最谨慎。',
+            cautious: '允许稍微估一点，但会很克制～',
+            open: '旅行、等待、工作这类长耗时也可以自然往前走～',
+        },
+        publicOpinionRevealMode: {
+            observe: '安心吃瓜就好啦～新闻和论坛只待在舆情页 (˘▾˘)',
+            relevant: '真的和当前镜头沾边时，才让它自然露个脸～不会硬插播。',
+        },
+        worldPulseActivity: {
+            quiet: '世界照样会动，只是独立公共变化更少、更安静～',
+            natural: '默认推荐～城市、组织、天气和社会会按自己的节奏正常变化。',
+            busy: '镜头外会更活跃一些，但重大事故和灾难仍然不会拿来凑热闹。',
+        },
+    }[setting]?.[String(value)] || '');
+    const advancedOpen = id => openSubgroups.has(id) ? 'open' : '';
+    const sectionHeading = (title, note = '') => `
+        <div class="wb-flat-section-heading">
+            <div><strong>${escapeHtml(title)}</strong>${note ? `<span>${escapeHtml(note)}</span>` : ''}</div>
+        </div>
+    `;
+    const routeSetting = (key, title, note = '') => `
+        <div class="wb-setting-block wb-route-setting">
+            <label>${escapeHtml(title)}</label>
+            <select data-wb-api-route="${escapeAttr(key)}">${routeOptions(apiModuleRoutes[key] || 'default')}</select>
+            ${note ? `<p class="wb-setting-explanation">${escapeHtml(note)}</p>` : ''}
+        </div>
+    `;
+
+    const nowHtml = `
+        <div class="wb-flat-setting-list">
+            <div class="wb-setting-toggle">
+                <div><strong>启用世界引擎</strong><span>关掉就先让后台歇一会儿～现有世界不会丢</span></div>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="worldSimulationEnabled" ${settings.worldSimulationEnabled ? 'checked' : ''}><i></i></label>
+            </div>
+            <div class="wb-setting-block">
+                <label>正文读取范围</label>
+                <div class="wb-option-row wb-option-row-four">
+                    ${settingButton('contextTurns', settings.contextTurns, 1, '最近 1 轮')}
+                    ${settingButton('contextTurns', settings.contextTurns, 3, '最近 3 轮')}
+                    ${settingButton('contextTurns', settings.contextTurns, 5, '最近 5 轮')}
+                    <button type="button" data-wb-action="setting-button" data-setting="contextTurns"
+                        data-value="${escapeAttr(settings.customContextTurns || 8)}"
+                        class="${![1, 3, 5].includes(Number(settings.contextTurns)) ? 'is-active' : ''}">自定义</button>
+                </div>
+                ${![1, 3, 5].includes(Number(settings.contextTurns)) ? `
+                    <label class="wb-number-setting wb-context-custom">读取最近几轮
+                        <input type="number" min="1" max="30" step="1" data-wb-setting="contextTurns" value="${escapeAttr(settings.contextTurns)}">
+                    </label>` : ''}
+                <p class="wb-setting-explanation">${escapeHtml(
+                    [1, 3, 5].includes(Number(settings.contextTurns))
+                        ? ({1: '只看最新一轮，最轻最省～', 3: '最近 3 轮，日常剧情通常够用。', 5: '默认推荐～连续性和消耗比较均衡。'}[Number(settings.contextTurns)])
+                        : `现在会读最近 ${settings.contextTurns} 轮～长事件更稳，Token 也会跟着长胖。`
+                )}</p>
+            </div>
+            <div class="wb-setting-block">
+                <label>时间推进</label>
+                <div class="wb-option-row">
+                    ${settingButton('timePolicy', settings.timePolicy, 'world', '世界钟')}
+                    ${settingButton('timePolicy', settings.timePolicy, 'explicit', '严格')}
+                    ${settingButton('timePolicy', settings.timePolicy, 'cautious', '克制')}
+                    ${settingButton('timePolicy', settings.timePolicy, 'open', '开放')}
+                </div>
+                <p class="wb-setting-explanation">${escapeHtml(explanation('timePolicy', settings.timePolicy))}</p>
+            </div>
+        </div>
+        ${sectionHeading('世界钟', '校准、手动设定与快进')}
+        <form class="wb-clock-form wb-flat-clock-form" data-wb-form="clock">
+            <div class="wb-clock-form-heading"><div><label>主世界日历</label><strong>${escapeHtml(clockLabel)}</strong></div><span>每个聊天独立保存</span></div>
+            <label class="wb-calendar-name-field">历法名称<input name="calendarName" maxlength="40" value="${escapeAttr(clock.calendarName)}" placeholder="例如：帝国历"></label>
+            <div class="wb-calendar-date-fields">
+                <label><input name="year" type="number" min="1" max="9999" value="${clock.year}"> 年</label>
+                <label><input name="month" type="number" min="1" max="12" value="${clock.month}"> 月</label>
+                <label><input name="day" type="number" min="1" max="31" value="${clock.dayOfMonth}"> 日</label>
+            </div>
+            <div class="wb-clock-fields">
+                <label><input name="hour" type="number" min="0" max="23" value="${clock.hour}"> 时</label>
+                <label><input name="minute" type="number" min="0" max="59" value="${clock.minute}"> 分</label>
+                <button type="button" data-wb-action="sync-clock-from-story">与正文校准</button>
+                <button type="submit" class="wb-clock-manual-save">手动设定</button>
+            </div>
+            <p class="wb-clock-sync-note">正文给出可靠时间时，世界钟会自己跟上～这里也可以手动校准或快进。</p>
+            <div class="wb-time-actions">
+                <button type="button" data-wb-action="advance-clock" data-minutes="60">+ 1 小时</button>
+                <button type="button" data-wb-action="advance-clock" data-minutes="360">+ 6 小时</button>
+                <button type="button" data-wb-action="advance-clock" data-minutes="1440">+ 1 天</button>
+            </div>
+        </form>
+    `;
+
+    const peopleHtml = `
+        <div class="wb-flat-setting-list">
+            <div class="wb-setting-block">
+                <label>后台 NPC 预算</label>
+                <div class="wb-option-row wb-option-row-four">
+                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 0, '不主动推演')}
+                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 2, '最多 2 人')}
+                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 4, '最多 4 人')}
+                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 8, '最多 8 人')}
+                </div>
+                <label class="wb-number-setting">自定义人数上限
+                    <input type="number" min="0" max="12" step="1" data-wb-setting="backgroundNpcBudget" value="${escapeAttr(settings.backgroundNpcBudget)}">
+                </label>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>描写玩家内心</strong><span>默认关闭～避免插件替你决定想法与立场。</span></div>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="includeUserInnerVoice" ${settings.includeUserInnerVoice ? 'checked' : ''}><i></i></label>
+            </div>
+            ${routeSetting('observation', '人物观测使用的连接', '这里只选路线～Key 和地址还是统一放全局连接里。')}
+        </div>
+        <details class="wb-settings-subgroup wb-module-advanced" data-settings-subgroup="people-worldbook" ${advancedOpen('people-worldbook')}>
+            <summary><span>世界书人物导入</span><small>需要时再展开～</small></summary>
+            <div class="wb-module-advanced-body">
+                <form class="wb-worldbook-import" data-wb-form="worldbook">
+                    <label>选择世界书
+                        <select name="bookName" ${worldbookBooks.length ? '' : 'disabled'}>
+                            ${worldbookBooks.length
+                                ? worldbookBooks.map(book => `<option value="${escapeAttr(book)}" ${book === worldbook.bookName ? 'selected' : ''}>${escapeHtml(book)}</option>`).join('')
+                                : '<option value="">酒馆当前没有可读取的世界书</option>'}
+                        </select>
+                    </label>
+                    <button class="wb-worldbook-scan-button" type="button" data-wb-action="scan-worldbook" ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
+                        ${worldbook.phase === 'running' ? '正在读取…' : '读取并识别人物'}
+                    </button>
+                    ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
+                    ${worldbookEntries.length ? `
+                        <div class="wb-worldbook-browser">
+                            <label class="wb-worldbook-search"><span>搜索条目</span><input type="search" name="worldbookSearch" data-wb-worldbook-search value="${escapeAttr(worldbookQuery)}" placeholder="搜人物名、条目名、关键词或正文"></label>
+                            <div class="wb-worldbook-filter-row">
+                                <label class="wb-worldbook-filter-chip ${worldbookOnlyPeople ? 'is-active' : ''}"><input type="checkbox" data-wb-worldbook-filter="people" ${worldbookOnlyPeople ? 'checked' : ''}><span>只看疑似人物</span></label>
+                                <label class="wb-worldbook-filter-chip ${worldbookOnlyEnabled ? 'is-active' : ''}"><input type="checkbox" data-wb-worldbook-filter="enabled" ${worldbookOnlyEnabled ? 'checked' : ''}><span>只看启用条目</span></label>
+                            </div>
+                            <div class="wb-worldbook-toolbar"><span>共 ${worldbookEntries.length} 条 · 当前 ${filteredWorldbookEntries.length} 条 · 已选 ${worldbookSelectedCount} 条</span><div>
+                                <button type="button" data-wb-action="select-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>全选当前</button>
+                                <button type="button" data-wb-action="clear-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>取消当前</button>
+                            </div></div>
+                            <div class="wb-worldbook-entry-list">
+                                ${filteredWorldbookEntries.length ? filteredWorldbookEntries.map(entry => `
+                                    <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''} ${entry.likelyPerson ? 'is-person-candidate' : ''}">
+                                        <input id="wb-worldbook-entry-${escapeAttr(entry.uid)}" type="checkbox" name="entryIds" data-wb-worldbook-entry-id="${escapeAttr(entry.uid)}" value="${escapeAttr(entry.uid)}" ${worldbookSelectedIds.has(String(entry.uid)) ? 'checked' : ''}>
+                                        <span><span class="wb-worldbook-entry-heading"><strong>${escapeHtml(entry.parsedName || entry.name)}</strong>${entry.likelyPerson ? '<em>疑似人物</em>' : ''}${entry.disabled ? '<em class="is-muted">已停用</em>' : ''}</span>
+                                            <small>${escapeHtml((entry.keys || []).join('、') || `UID ${entry.uid}`)}</small>
+                                            <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? '…' : ''}</p>
+                                        </span>
+                                    </label>`).join('') : '<div class="wb-worldbook-empty">当前筛选下没有条目。可以取消筛选或换个关键词。</div>'}
+                            </div>
+                            <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>${worldbookSelectedCount ? `导入已选人物（${worldbookSelectedCount}）` : '请选择要导入的人物'}</button>
+                        </div>` : ''}
+                </form>
+            </div>
+        </details>
+    `;
+
+    const currentsHtml = `
+        <div class="wb-flat-setting-list">
+            <div class="wb-setting-block">
+                <label>正文显露度</label>
+                <div class="wb-option-row">${densityButton('restrained', '克制')}${densityButton('balanced', '均衡')}${densityButton('active', '活跃')}</div>
+                <p class="wb-setting-explanation">${escapeHtml(explanation('deliveryDensity', settings.deliveryDensity))}</p>
+            </div>
+            <div class="wb-setting-block">
+                <label for="wb-scene-timing-flat">显露时机</label>
+                <select id="wb-scene-timing-flat" data-wb-setting="sceneTiming">
+                    <option value="strict" ${settings.sceneTiming === 'strict' ? 'selected' : ''}>严格：只在转场或空档</option>
+                    <option value="smart" ${settings.sceneTiming === 'smart' ? 'selected' : ''}>智能：关键场景延后</option>
+                    <option value="open" ${settings.sceneTiming === 'open' ? 'selected' : ''}>开放：允许简短自然变化</option>
+                </select>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>后台结果自然显露</strong><span>关掉也不会让世界失忆～已成立世界事实仍然用于保持连续性。</span></div>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="worldPromptInjection" ${settings.worldPromptInjection ? 'checked' : ''}><i></i></label>
+            </div>
+        </div>
+        ${sectionHeading('世界运行', '让镜头外的世界继续自己走～')}
+        <div class="wb-flat-setting-list">
+            <div class="wb-setting-toggle">
+                <div>
+                    <strong>自动运行</strong>
+                    <span>开启后会按下面的频率自动推进世界～关掉也能随时手动推演，不会丢掉现有暗流。</span>
+                </div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="worldAutoEnabled"
+                        ${settings.worldAutoEnabled ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+            <div class="wb-setting-block">
+                <label>世界脉搏</label>
+                <div class="wb-option-row">
+                    ${settingButton('worldPulseActivity', settings.worldPulseActivity, 'quiet', '安静')}
+                    ${settingButton('worldPulseActivity', settings.worldPulseActivity, 'natural', '自然')}
+                    ${settingButton('worldPulseActivity', settings.worldPulseActivity, 'busy', '热闹')}
+                </div>
+                <p class="wb-setting-explanation">${escapeHtml(explanation('worldPulseActivity', settings.worldPulseActivity))}</p>
+            </div>
+            <div class="wb-setting-block">
+                <label>世界运转强度</label>
+                <div class="wb-option-row">
+                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'light', '轻量')}
+                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'balanced', '均衡')}
+                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'deep', '深入')}
+                </div>
+                <p class="wb-setting-explanation">${escapeHtml(explanation('autoSimulationMode', settings.autoSimulationMode))}</p>
+            </div>
+            <div class="wb-setting-block">
+                <label>自动触发频率</label>
+                <div class="wb-option-row wb-option-row-four">
+                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 1, '每轮')}
+                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 2, '每 2 轮')}
+                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 3, '每 3 轮')}
+                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 5, '每 5 轮')}
+                </div>
+                <label class="wb-number-setting">自定义累计轮数<input type="number" min="1" max="20" step="1" data-wb-setting="autoSimulationInterval" value="${escapeAttr(settings.autoSimulationInterval)}"></label>
+            </div>
+            ${routeSetting('simulation', '世界推演使用的连接', '这里只选路线～连接凭据统一放全局设置。')}
+        </div>
+        <details class="wb-settings-subgroup wb-module-advanced" data-settings-subgroup="currents-advanced" ${advancedOpen('currents-advanced')}>
+            <summary><span>高级</span><small>失败处理、输出预算与附加要求</small></summary>
+            <div class="wb-module-advanced-body wb-flat-setting-list">
+                <div class="wb-setting-block">
+                    <label>推演失败自动重试</label>
+                    <div class="wb-option-row wb-option-row-four">
+                        ${settingButton('autoRetryCount', settings.autoRetryCount, 0, '不重试')}
+                        ${settingButton('autoRetryCount', settings.autoRetryCount, 1, '重试 1 次')}
+                        ${settingButton('autoRetryCount', settings.autoRetryCount, 2, '重试 2 次')}
+                        ${settingButton('autoRetryCount', settings.autoRetryCount, 3, '重试 3 次')}
+                    </div>
+                    <label class="wb-number-setting">自定义重试次数<input type="number" min="0" max="5" step="1" data-wb-setting="autoRetryCount" value="${escapeAttr(settings.autoRetryCount)}"></label>
+                </div>
+                <div class="wb-setting-block">
+                    <label>单次最大输出</label>
+                    <div class="wb-option-row wb-option-row-four">
+                        ${settingButton('maxOutputTokens', settings.maxOutputTokens, 0, '自动')}
+                        ${settingButton('maxOutputTokens', settings.maxOutputTokens, 4000, '4K')}
+                        ${settingButton('maxOutputTokens', settings.maxOutputTokens, 8000, '8K')}
+                        ${settingButton('maxOutputTokens', settings.maxOutputTokens, 12000, '12K')}
+                    </div>
+                    <label class="wb-number-setting">自定义输出 token<input type="number" min="0" max="16000" step="500" data-wb-setting="maxOutputTokens" value="${escapeAttr(settings.maxOutputTokens)}"></label>
+                </div>
+                <label class="wb-custom-instruction">自定义推演要求<textarea data-wb-setting="customSimulationInstruction" maxlength="1000" rows="3" placeholder="例如：少制造新事件；更关注商会与港口的变化。">${escapeHtml(settings.customSimulationInstruction)}</textarea></label>
+            </div>
+        </details>
+    `;
+
+    const opinionHtml = `
+        <div class="wb-flat-setting-list">
+            <div class="wb-setting-toggle">
+                <div>
+                    <strong>自动更新舆情</strong>
+                    <span>世界发生值得公开传播的新变化时，会自己刷新这一页～关掉后仍可手动刷新。</span>
+                </div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="publicOpinionAutoEnabled"
+                        ${settings.publicOpinionAutoEnabled ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+            <div class="wb-setting-block">
+                <label>舆情是否靠近主线</label>
+                <div class="wb-option-row">
+                    ${settingButton('publicOpinionRevealMode', settings.publicOpinionRevealMode, 'observe', '仅观察')}
+                    ${settingButton('publicOpinionRevealMode', settings.publicOpinionRevealMode, 'relevant', '相关时显露')}
+                </div>
+                <p class="wb-setting-explanation">${escapeHtml(explanation('publicOpinionRevealMode', settings.publicOpinionRevealMode))}</p>
+            </div>
+            ${routeSetting('opinion', '舆情使用的连接', '舆情只选自己走哪条路线～接口本体仍在全局设置管理。')}
+        </div>
+        <p class="wb-flat-footnote">舆情页本身只负责查看和即时操作；“仅观察 / 相关时显露”决定它是否有机会自然靠近正文，不会把舆情当成世界事实来源。</p>
+    `;
+
+    const memoryHtml = `
+        <div class="wb-flat-setting-list">
+            <div class="wb-setting-toggle">
+                <div><strong>启用记忆系统</strong><span>关闭后停止整理与写入，但保留已有记忆。</span></div>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="memorySystemEnabled" ${settings.memorySystemEnabled ? 'checked' : ''}><i></i></label>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>记忆注入正文</strong><span>关闭后仍会整理和保存，只是不参与主对话生成。</span></div>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="memoryPromptInjection" ${settings.memoryPromptInjection ? 'checked' : ''}><i></i></label>
+            </div>
+            ${routeSetting('history', '记忆整理使用的连接', '记忆整理单独选路线～Key 和地址不用重复填。')}
+        </div>
+        ${sectionHeading('中途接入', '长聊天已经跑了很久？把过去一次接成当前世界')}
+        <div class="wb-history-settings wb-flat-history-settings wb-world-bootstrap-settings">
+            <div class="wb-history-heading">
+                <div>
+                    <label>回溯当前聊天</label>
+                    <strong>${escapeHtml(historyRunning && memory.kind === 'world-bootstrap'
+                        ? memory.message || '正在把旧聊天接成一个完整世界～'
+                        : '时间、人物、世界事实、未完暗流和记忆一起收拾')}</strong>
+                </div>
+                <span>${historyRunning && memory.kind === 'world-bootstrap' ? `${historyPercent}%` : '一次性提交'}</span>
+            </div>
+            ${historyRunning && memory.kind === 'world-bootstrap'
+                ? `<div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>`
+                : ''}
+            <p>适合中途才启用世界背面～全部扫描成功后才写入，半路空回也不会留下半个世界 (｡•̀ᴗ-)✧</p>
+            <button type="button" data-wb-action="bootstrap-history" ${historyRunning ? 'disabled' : ''}>回溯当前聊天</button>
+        </div>
+
+        ${sectionHeading('记忆整理', '这里只收拾长期记忆，不重建整个世界')}
+        <div class="wb-history-settings wb-flat-history-settings">
+            <div class="wb-history-heading"><div><label>长期记忆</label><strong>${escapeHtml(historyRunning && memory.kind !== 'world-bootstrap' ? memory.message || '正在收拾记忆～' : '会自己收拾长期记忆～')}</strong></div>
+                <span>${historyRunning && memory.kind !== 'world-bootstrap' ? `${historyPercent}%` : (Number(memory.pendingAssistantResponses || 0) > 0 ? '有新增正文待收拾～' : '已经跟上正文啦～')}</span></div>
+            ${historyRunning && memory.kind !== 'world-bootstrap' ? `<div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>` : ''}
+            <p>重要事实、关系、承诺和没收尾的伏笔会乖乖留下来 (｡•̀ᴗ-)✧</p>
+            <div class="wb-memory-queue"><span>待整理 ${Math.max(0, Number(memory.pendingAssistantResponses || 0))} 条正文</span><strong>${settings.memoryAutoIndexInterval > 0 ? `自动 · 每 ${settings.memoryAutoIndexInterval} 轮` : '手动整理'}</strong></div>
+            <label>整理方式</label>
+            <div class="wb-option-row wb-option-row-four">
+                ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 0, '手动')}
+                ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 5, '每 5 轮')}
+                ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 10, '每 10 轮')}
+                ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 20, '每 20 轮')}
+            </div>
+            <label class="wb-number-setting">自定义间隔（轮）<input type="number" min="0" max="50" step="1" data-wb-setting="memoryAutoIndexInterval" value="${escapeAttr(settings.memoryAutoIndexInterval)}"></label>
+            <button type="button" data-wb-action="scan-history" ${historyRunning || !settings.memorySystemEnabled ? 'disabled' : ''}>仅整理记忆</button>
+        </div>
+    `;
+
+    const contentByScope = { now: nowHtml, people: peopleHtml, currents: currentsHtml, opinion: opinionHtml, memory: memoryHtml };
+    return `
+        <div class="wb-settings-popover wb-module-settings-popover wb-module-settings-${scopeKey}" role="dialog" aria-modal="true" aria-label="${escapeAttr(scopeInfo.title)}">
+            <div class="wb-popover-heading">
+                <div><span>${scopeInfo.eyebrow}</span><h3>${scopeInfo.title}</h3></div>
+                <button type="button" data-wb-action="toggle-module-settings" data-view="${scopeKey}" aria-label="关闭设置">×</button>
+            </div>
+            <div class="wb-module-settings-body">${contentByScope[scopeKey]}</div>
         </div>
     `;
 }
@@ -1514,6 +2001,49 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
     `;
 }
 
+export function sortEventsForDisplay(events, state, presentPeople = []) {
+    const now = Number(state?.clock?.absoluteMinute || 0);
+    const presentIds = new Set(presentPeople.map(person => String(person?.id || '')).filter(Boolean));
+    const presentNames = new Set(presentPeople.map(person => String(person?.name || '')).filter(Boolean));
+    const presentPlaces = new Set(presentPeople.map(person => String(person?.location || '')).filter(Boolean));
+    const score = event => {
+        let value = 0;
+        if (event?.delivery?.manualQueued) value += 100000;
+        const actors = new Set((event?.actors || []).map(String));
+        if ([...actors].some(actor => presentIds.has(actor) || presentNames.has(actor))) value += 24000;
+        if (presentPlaces.has(String(event?.place || ''))) value += 16000;
+        value += ({ direct: 6000, known: 4200, trace: 2600, hidden: 0 }[event?.visibility] || 0);
+        if (event?.status === 'active') value += 1800;
+        if (Number.isFinite(Number(event?.dueAt)) && now > 0) {
+            const remaining = Number(event.dueAt) - now;
+            if (remaining <= 60 && remaining >= 0) value += 7000;
+            else if (remaining <= 360 && remaining >= 0) value += 3500;
+        }
+        const age = Math.max(0, now - Number(event?.updatedAt || 0));
+        value += Math.max(0, 1440 - Math.min(1440, age));
+        return value;
+    };
+    return [...events].sort((a, b) => score(b) - score(a) || Number(b?.updatedAt || 0) - Number(a?.updatedAt || 0));
+}
+
+export function sortPeopleForDisplay(people, activeEvents, presentPersonIds = new Set(), worldMinute = 0) {
+    const activeActors = new Set();
+    for (const event of activeEvents || []) {
+        for (const actor of event?.actors || []) activeActors.add(String(actor));
+    }
+    const score = person => {
+        let value = 0;
+        if (presentPersonIds.has(String(person?.id || ''))) value += 100000;
+        if (activeActors.has(String(person?.id || '')) || activeActors.has(String(person?.name || ''))) value += 24000;
+        if (person?.simulationEnabled !== false) value += 1800;
+        value += Number(person?.relevance || 0) * 3200;
+        const age = Math.max(0, Number(worldMinute || 0) - Number(person?.updatedAt || 0));
+        value += Math.max(0, 1440 - Math.min(1440, age));
+        return value;
+    };
+    return [...people].sort((a, b) => score(b) - score(a) || String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN'));
+}
+
 function renderNowView(state, observerMode, people, activeEvents) {
     const clock = formatWorldCalendar(state);
     const clockLabel = worldClockLabel(state, clock);
@@ -1568,14 +2098,12 @@ function renderNowView(state, observerMode, people, activeEvents) {
 function renderPeopleView(state, observerMode, people, openFolds = new Set()) {
     return `
         <div class="wb-view-intro">
-            <p>每个人都会在镜头外继续过自己的日子啦～位置和行动会跟着世界一起变，没说出口的心声还是乖乖留在幕后 (｡•̀ᴗ-)✧</p>
             <div class="wb-memory-intro-actions">
                 <span>${people.length} 条可观测轨迹</span>
                 <button type="button" data-wb-action="open-person-editor">＋ 添加后台 NPC</button>
             </div>
         </div>
         <div class="wb-view-fold-head">
-            <span>先看她们现在在哪、在做什么就好～想深挖再慢慢展开。</span>
             ${renderFoldToolbar('people:')}
         </div>
         <div class="wb-people-grid">
@@ -1608,11 +2136,26 @@ function renderPersonEditorModal(state, editor) {
                 </div>
                 <input type="hidden" name="id" value="${escapeAttr(person?.id || '')}">
                 <input type="hidden" name="originalName" value="${escapeAttr(person?.name || '')}">
+                <div class="wb-person-avatar-editor">
+                    ${renderPersonAvatar(person || { name: '·', monogram: '·' }, 'is-large')}
+                    <div>
+                        <label class="wb-avatar-upload">换个头像～
+                            <input name="avatarFile" type="file" accept="image/*">
+                        </label>
+                        <small>会自动裁成 160×160 的小头像保存，不会塞进模型上下文 (｡•̀ᴗ-)✧</small>
+                    </div>
+                    ${person?.avatarDataUrl ? `<button type="button" data-wb-action="clear-person-avatar"
+                        data-person-id="${escapeAttr(person.id)}">恢复文字头像</button>` : ''}
+                </div>
                 <label>姓名<input name="name" required maxlength="80" value="${escapeAttr(person?.name || '')}"></label>
                 <label>当前位置<input name="location" maxlength="160" value="${escapeAttr(person?.location || '')}"></label>
                 <label>正在做<textarea name="action" maxlength="280" rows="2">${escapeHtml(person?.action || '')}</textarea></label>
                 <label>短期意图<textarea name="intent" maxlength="320" rows="2">${escapeHtml(person?.intent || '')}</textarea></label>
                 <label>长期目标<textarea name="longTermGoal" maxlength="420" rows="3">${escapeHtml(person?.longTermGoal || '')}</textarea></label>
+                <label>当前幕后独白<textarea name="innerVoice" maxlength="240" rows="3"
+                    placeholder="只修正她现在这一刻在想什么～后续状态真的变化时，AI 仍然可以自然更新。">${escapeHtml(person?.innerVoice || '')}</textarea>
+                    <small>这是当前心声，不是永久人设锁～写歪了就直接掰回来 (｡•̀ᴗ-)✧</small>
+                </label>
                 <fieldset class="wb-character-anchor-fields">
                     <legend><span>角色约束</span><small>推演与即时观测都会遵守，AI 不会自动改写</small></legend>
                     <label>角色身份锚点<textarea name="identityAnchor" maxlength="500" rows="3"
@@ -1664,17 +2207,11 @@ function renderPersonEditorModal(state, editor) {
 function renderCurrentsView(state, activeEvents, openFolds = new Set(), settings = {}) {
     return `
         <div class="wb-view-intro">
-            <p>这里装的是还没走完的事情～它们会跟着世界继续发展，结果一旦落地就真的算数啦 ( •̀ ω •́ )✧</p>
             <div class="wb-view-inline-actions">
-                <label class="wb-view-toggle">
-                    <span>自动运行</span>
-                    <input type="checkbox" data-wb-setting="worldAutoEnabled" ${settings.worldAutoEnabled ? 'checked' : ''}>
-                </label>
                 <button class="wb-inline-add" type="button" data-wb-action="open-event-form">＋ 放入一条暗流</button>
             </div>
         </div>
         <div class="wb-view-fold-head">
-            <span>先扫一眼状态、地点和剩余时间～想看细节再展开就好。</span>
             ${renderFoldToolbar('currents:')}
         </div>
         <div class="wb-event-list is-full">
@@ -1686,12 +2223,7 @@ function renderCurrentsView(state, activeEvents, openFolds = new Set(), settings
 
 function renderEchoesView(state, outcomes, openFolds = new Set()) {
     return `
-        <div class="wb-view-intro">
-            <p>事情走到结果后会来到这里～有没有被正文看见是另一回事，结果本身可不会凭空消失 (｡•̀ᴗ-)✧</p>
-            <span>最近结果</span>
-        </div>
         <div class="wb-view-fold-head">
-            <span>结果是否存在，与正文是否看见，是两回事～先看看有没有碰到镜头吧。</span>
             ${renderFoldToolbar('echoes:')}
         </div>
         <div class="wb-echo-timeline">
@@ -1744,15 +2276,20 @@ function publicOpinionGeneratedLabel(value) {
 function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = {}) {
     const news = Array.isArray(opinion.news) ? opinion.news : [];
     const forums = Array.isArray(opinion.forums) ? opinion.forums : [];
-    const canonRunning = Boolean(opinion.canonRunning);
+    const interactionBusy = Boolean(opinion.interactionBusy);
+    const canonRunning = Boolean(opinion.canonRunning || interactionBusy);
     const sandboxRunning = Boolean(opinion.sandboxRunning);
-    const running = canonRunning || sandboxRunning || opinion.phase === 'running';
+    const running = canonRunning || sandboxRunning || opinion.phase === 'running' || opinion.phase === 'queued';
     const stale = Boolean(opinion.stale && opinion.generatedAt);
     const relatedEvents = new Map((state.events || []).map(event => [event.id, event]));
     const sandbox = opinion.sandbox && typeof opinion.sandbox === 'object' ? opinion.sandbox : { news: [], forums: [], generatedAt: '' };
     const sandboxItems = [...(sandbox.news || []), ...(sandbox.forums || [])];
     const activeMode = ['forum', 'sandbox'].includes(mode) ? mode : 'news';
-    const statusMessage = opinion.error || opinion.message || '';
+    const statusMessage = (
+        interactionBusy && !['running', 'queued', 'error'].includes(opinion.phase)
+            ? '正在检查世界变化～'
+            : (opinion.error || opinion.message || '')
+    );
     const hasMainOpinion = news.length > 0 || forums.length > 0;
     const hasSandboxOpinion = sandboxItems.length > 0;
     const showStatusMessage = Boolean(statusMessage && (opinion.phase === 'error' || activeMode !== 'sandbox' || !hasSandboxOpinion));
@@ -1763,25 +2300,20 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
             : '';
     };
     return `
-        <div class="wb-opinion-toolbar">
+        <div class="wb-opinion-toolbar" aria-busy="${running ? 'true' : 'false'}">
             <div class="wb-opinion-summary">
-                <p>镜头外今天在聊什么～只拿世界里真的公开、能察觉到的变化来吃瓜，不会自己造新闻 (˘▾˘)</p>
                 <div class="wb-opinion-meta">
-                    <span>快照 · ${escapeHtml(publicOpinionGeneratedLabel(opinion.generatedAt))}</span>
+                    <span>更新至 · ${escapeHtml(publicOpinionGeneratedLabel(opinion.generatedAt))}</span>
                     ${stale
                         ? '<span class="is-stale">世界往前走啦 · 刷新一下更准</span>'
                         : `<span>${settings.publicOpinionRevealMode === 'relevant' ? '相关时可显露' : '安心吃瓜模式'}</span>`}
                 </div>
             </div>
             <div class="wb-opinion-actions">
-                <label class="wb-view-toggle">
-                    <span>自动更新</span>
-                    <input type="checkbox" data-wb-setting="publicOpinionAutoEnabled" ${settings.publicOpinionAutoEnabled ? 'checked' : ''}>
-                </label>
-                ${opinion.generatedAt ? `<button type="button" data-wb-action="clear-public-opinion" ${running ? 'disabled' : ''}>清空</button>` : ''}
+                ${opinion.generatedAt ? `<button type="button" data-wb-action="clear-public-opinion" title="只清空舆情列表，不删除世界事实或已经发生的影响" ${running ? 'disabled' : ''}>清空列表</button>` : ''}
                 <button type="button" data-wb-action="generate-public-opinion-sandbox" ${running ? 'disabled' : ''}>${sandboxRunning ? '正在闲逛…' : '随便逛逛～'}</button>
                 <button class="wb-inline-add" type="button" data-wb-action="generate-public-opinion" ${running ? 'disabled' : ''}>
-                    ${canonRunning ? '正在刷新世界舆情…' : (opinion.generatedAt ? '刷新世界舆情' : '生成当前舆情')}
+                    ${canonRunning ? '正在刷新…' : (opinion.generatedAt ? '刷新世界舆情' : '生成当前舆情')}
                 </button>
             </div>
         </div>
@@ -1793,13 +2325,13 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
             <button type="button" role="tab" data-wb-action="set-public-opinion-mode" data-mode="sandbox"
                 aria-selected="${activeMode === 'sandbox'}" class="${activeMode === 'sandbox' ? 'is-active' : ''}">🍿 闲逛 <small>${sandboxItems.length}</small></button>
         </div>
-        ${showStatusMessage ? `<div class="wb-opinion-status is-${escapeAttr(opinion.phase || 'idle')} ${hasMainOpinion || hasSandboxOpinion ? 'is-compact' : ''}">${escapeHtml(statusMessage)}</div>` : ''}
+        ${showStatusMessage ? `<div role="status" aria-live="polite" class="wb-opinion-status is-${escapeAttr(opinion.phase || (interactionBusy ? 'running' : 'idle'))} ${hasMainOpinion || hasSandboxOpinion ? 'is-compact' : ''}">${escapeHtml(statusMessage)}</div>` : ''}
         ${activeMode === 'news' ? `
             <div class="wb-news-grid">
                 ${news.map(item => `
                     <article class="wb-news-card">
                         <div class="wb-news-card-top">
-                            <span>${escapeHtml(item.category || '世界新闻')}</span>
+                            <span>${escapeHtml(item.category || '世界新闻')}${item.publishedAt && item.updatedAt && item.publishedAt !== item.updatedAt ? ' · 后续' : ''}</span>
                             <small>${'●'.repeat(Math.max(1, Math.min(3, Number(item.heat) || 1)))}</small>
                         </div>
                         <div class="wb-opinion-source-row">
@@ -1809,7 +2341,7 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                         <p>${escapeHtml(item.summary)}</p>
                         ${renderPublicOpinionAudience(item)}
                         <div class="wb-news-card-foot">
-                            <span>${escapeHtml(item.source || '公开信息')} · ${escapeHtml(publicOpinionConfidenceLabel(item.confidence))}</span>
+                            <span>${escapeHtml(item.source || '公开信息')} · ${escapeHtml(publicOpinionConfidenceLabel(item.confidence))}${item.worldSynced ? ' · 世界事件同步' : ''}</span>
                             ${renderRelated(item)}
                         </div>
                     </article>
@@ -2131,7 +2663,6 @@ function renderMemoryView(state, observerMode, {
     `;
     return `
         <div class="wb-view-intro wb-memory-intro">
-            <p>重要事实、经历和没收尾的伏笔会留在这里～不用管底下怎么收拾，记得住就好啦 (｡•̀ᴗ-)✧</p>
             <div class="wb-memory-intro-actions">
                 <span>${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条事实 · ${allClues.filter(clue => ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)).length} 条伏笔</span>
                 <button type="button" data-wb-action="open-memory-editor" data-memory-kind="fact">＋ 新增记忆</button>
@@ -2341,10 +2872,6 @@ function renderMemoryEditorModal(state, editor) {
 function renderArchiveView(state, openFolds = new Set()) {
     const archived = Array.isArray(state.archive) ? state.archive : [];
     return `
-        <div class="wb-view-intro">
-            <p>没被镜头看见的事情也不会凭空蒸发～这里记着那些真的发生过、却悄悄错过正文的世界历史。</p>
-            <span>世界账本</span>
-        </div>
         <div class="wb-archive-ledger">
             ${archived.map(entry => renderArchiveEntry(entry, state, 'archive', openFolds)).join('')
                 || renderEmpty('纪事簿还是空的～', '还没有哪段世界历史悄悄错过镜头 (˘ω˘)')}
@@ -2542,6 +3069,7 @@ export function createWorldBackstageUI({
     let observerMode = 'backstage';
     let isOpen = false;
     let settingsOpen = false;
+    let moduleSettingsView = '';
     let eventFormOpen = false;
     let eventEditorId = '';
     let selectedPersonId = null;
@@ -2553,6 +3081,7 @@ export function createWorldBackstageUI({
     let closing = false;
     let panelEntrancePending = false;
     let publicOpinionMode = 'news';
+    let publicOpinionActionBusy = false;
     let memorySearchTimer = null;
     let memoryFilter = 'active';
     let memoryQuery = '';
@@ -2730,7 +3259,7 @@ export function createWorldBackstageUI({
                     .map(group => group.dataset.settingsGroup),
             );
         }
-        const previousSettingSubgroups = root.querySelectorAll('.wb-settings-subgroup[data-settings-subgroup]');
+        const previousSettingSubgroups = root.querySelectorAll('[data-settings-subgroup]');
         if (previousSettingSubgroups.length) {
             openSettingsSubgroups = new Set(
                 [...previousSettingSubgroups]
@@ -2743,7 +3272,7 @@ export function createWorldBackstageUI({
             eventFormDraft = Object.fromEntries(new FormData(previousEventForm).entries());
         }
         const previousClockForm = root.querySelector('[data-wb-form="clock"]');
-        if (previousClockForm && settingsOpen) {
+        if (previousClockForm && (settingsOpen || moduleSettingsView)) {
             clockFormDraft = Object.fromEntries(new FormData(previousClockForm).entries());
         }
         const previousApiForm = root.querySelector('[data-wb-form="api"]');
@@ -2802,18 +3331,25 @@ export function createWorldBackstageUI({
                 ? { ...person, isUser: true, innerVoice: '' }
                 : { ...person, isUser };
         });
-        const visiblePeople = observerMode === 'backstage'
+        const candidatePeople = observerMode === 'backstage'
             ? displayPeople
             : displayPeople.filter(person => person.knowledge === 'known');
         const visibleEvents = observerMode === 'backstage'
             ? state.events
             : state.events.filter(event => event.visibility !== 'hidden');
-        const activeEvents = visibleEvents.filter(isActiveEvent);
+        const presentPersonIds = new Set(syncStatus.presentPersonIds || []);
+        const presentPeople = candidatePeople.filter(person => presentPersonIds.has(person.id));
+        const activeEvents = sortEventsForDisplay(visibleEvents.filter(isActiveEvent), state, presentPeople);
+        const visiblePeople = sortPeopleForDisplay(
+            candidatePeople,
+            activeEvents,
+            presentPersonIds,
+            state.clock?.absoluteMinute,
+        );
         const outcomes = visibleEvents
             .filter(event => (event.status === 'ready' || isTerminalEvent(event)) && event.delivery?.state !== 'expired')
             .sort((a, b) => Number(b.resolvedAt ?? b.updatedAt) - Number(a.resolvedAt ?? a.updatedAt));
         const person = displayPeople.find(item => item.id === selectedPersonId);
-        const presentPersonIds = new Set(syncStatus.presentPersonIds || []);
         const canObservePerson = Boolean(
             person
             && observerMode === 'backstage'
@@ -2837,7 +3373,15 @@ export function createWorldBackstageUI({
         if (activeView === 'people') content = renderPeopleView(state, observerMode, visiblePeople, openContentFolds);
         if (activeView === 'currents') content = renderCurrentsView(state, activeEvents, openContentFolds, settings);
         if (activeView === 'echoes') content = renderEchoesView(state, outcomes, openContentFolds);
-        if (activeView === 'opinion') content = renderPublicOpinionView(state, syncStatus.publicOpinion || {}, publicOpinionMode, settings);
+        if (activeView === 'opinion') content = renderPublicOpinionView(
+            state,
+            {
+                ...(syncStatus.publicOpinion || {}),
+                interactionBusy: publicOpinionActionBusy,
+            },
+            publicOpinionMode,
+            settings,
+        );
         if (activeView === 'memory') content = renderMemoryView(state, observerMode, {
             query: memoryQuery,
             filter: memoryFilter,
@@ -2888,6 +3432,13 @@ export function createWorldBackstageUI({
                                     <p>镜头之外，世界仍在继续</p>
                                 </div>
                             </div>
+                            <time class="wb-mobile-clock-time"
+                                ${clockAnchored ? `datetime="${escapeAttr(
+                                    `${clock.year}-${String(clock.month).padStart(2, '0')}-${String(clock.dayOfMonth).padStart(2, '0')}T${clock.time}`,
+                                )}"` : ''}
+                                aria-label="${clockAnchored ? `主世界时间 ${escapeAttr(clock.time)}` : '主世界时间尚未校准'}">
+                                ${clockAnchored ? escapeHtml(clock.time) : '--:--'}
+                            </time>
                             <div class="wb-header-center">
                                 <time class="wb-world-calendar" ${clockAnchored ? `datetime="${escapeAttr(
                                     `${clock.year}-${String(clock.month).padStart(2, '0')}-${String(clock.dayOfMonth).padStart(2, '0')}T${clock.time}`,
@@ -2922,7 +3473,7 @@ export function createWorldBackstageUI({
                                 <button type="button" class="wb-round-action" data-wb-action="cycle-theme"
                                     aria-label="切换日间/夜间"><span class="wb-theme-glyph"></span></button>
                                 <button type="button" class="wb-round-action ${settingsOpen ? 'is-active' : ''}"
-                                    data-wb-action="toggle-settings" aria-label="观测设置">
+                                    data-wb-action="toggle-settings" aria-label="全局设置">
                                     <span class="wb-settings-glyph"></span>
                                 </button>
                                 <button type="button" class="wb-round-action" data-wb-action="toggle-panel"
@@ -2949,18 +3500,31 @@ export function createWorldBackstageUI({
                             <div class="wb-content-column">
                                 <div class="wb-view-header">
                                     <div><span>${currentView.eyebrow}</span><h2>${currentView.label}</h2></div>
-                                    ${activeView === 'opinion' ? `
-                                        <div class="wb-public-readonly-badge"><i></i>只读观察</div>
-                                    ` : `
-                                        <div class="wb-observer-switch">
-                                            <button type="button" data-wb-action="set-observer" data-mode="backstage"
-                                                aria-pressed="${observerMode === 'backstage'}"
-                                                class="${observerMode === 'backstage' ? 'is-active' : ''}">幕后视角</button>
-                                            <button type="button" data-wb-action="set-observer" data-mode="known"
-                                                aria-pressed="${observerMode === 'known'}"
-                                                class="${observerMode === 'known' ? 'is-active' : ''}">角色所知</button>
-                                        </div>
-                                    `}
+                                    <div class="wb-view-header-tools">
+                                        ${activeView === 'opinion' ? `
+                                            <div class="wb-public-readonly-badge wb-public-mode-badge ${settings.publicOpinionRevealMode === 'relevant' ? 'is-relevant' : 'is-observe'}"
+                                                aria-live="polite" title="当前舆情显露模式">
+                                                <i></i>${settings.publicOpinionRevealMode === 'relevant' ? '相关时显露' : '仅观察'}
+                                            </div>
+                                        ` : `
+                                            <div class="wb-observer-switch">
+                                                <button type="button" data-wb-action="set-observer" data-mode="backstage"
+                                                    aria-pressed="${observerMode === 'backstage'}"
+                                                    class="${observerMode === 'backstage' ? 'is-active' : ''}">幕后视角</button>
+                                                <button type="button" data-wb-action="set-observer" data-mode="known"
+                                                    aria-pressed="${observerMode === 'known'}"
+                                                    class="${observerMode === 'known' ? 'is-active' : ''}">角色所知</button>
+                                            </div>
+                                        `}
+                                        ${['now', 'people', 'currents', 'opinion', 'memory'].includes(activeView) ? `
+                                            <button type="button"
+                                                class="wb-view-settings-action ${moduleSettingsView === activeView ? 'is-active' : ''}"
+                                                data-wb-action="toggle-module-settings" data-view="${activeView}"
+                                                aria-label="${escapeAttr(currentView.label)}设置" title="${escapeAttr(currentView.label)}设置">
+                                                <span class="wb-settings-glyph" aria-hidden="true"></span>
+                                            </button>
+                                        ` : ''}
+                                    </div>
                                 </div>
                                 ${renderSyncStrip(syncStatus)}
                                 <div class="wb-view-content ${viewChanged ? 'is-entering' : ''}">${content}</div>
@@ -2991,6 +3555,23 @@ export function createWorldBackstageUI({
                                 apiFormDraft,
                                 visibleTagFilterRules(settings),
                                 tagFilterCandidates,
+                                {
+                                    query: worldbookQuery,
+                                    onlyPeople: worldbookOnlyPeople,
+                                    onlyEnabled: worldbookOnlyEnabled,
+                                    selectedIds: worldbookSelectedIds,
+                                },
+                            )}
+                        </div>
+                    ` : ''}
+                    ${moduleSettingsView ? `
+                        <div class="wb-settings-layer wb-module-settings-layer">
+                            ${renderModuleSettings(
+                                state,
+                                settings,
+                                syncStatus,
+                                moduleSettingsView,
+                                openSettingsSubgroups,
                                 {
                                     query: worldbookQuery,
                                     onlyPeople: worldbookOnlyPeople,
@@ -3200,6 +3781,7 @@ export function createWorldBackstageUI({
         }
         if (action === 'set-view') {
             activeView = target.dataset.view || 'now';
+            moduleSettingsView = '';
             render();
             return;
         }
@@ -3299,8 +3881,8 @@ export function createWorldBackstageUI({
             const opening = !settingsOpen;
             settingsOpen = opening;
             if (opening) {
-                // 每次打开观测设置都从干净的折叠态开始～需要哪块再点哪块，
-                // 避免上一次打开的几个大模块一股脑铺满屏幕。
+                moduleSettingsView = '';
+                // 全局设置继续保持清爽～需要哪块再点哪块。
                 openSettingsGroups = new Set();
                 openSettingsSubgroups = new Set();
                 settingsScrollTop = 0;
@@ -3308,6 +3890,22 @@ export function createWorldBackstageUI({
                 clockFormDraft = null;
                 tagFilterDraftRules = null;
                 tagFilterCandidates = [];
+            }
+            render();
+            return;
+        }
+        if (action === 'toggle-module-settings') {
+            const requestedView = target.dataset.view || moduleSettingsView || activeView;
+            const opening = moduleSettingsView !== requestedView;
+            moduleSettingsView = opening ? requestedView : '';
+            if (opening) {
+                settingsOpen = false;
+                settingsScrollTop = 0;
+                // 板块设置已经是扁平结构～不再为了旧总设置层级预展开一堆套娃。
+                openSettingsGroups = new Set();
+                openSettingsSubgroups = new Set();
+            } else {
+                clockFormDraft = null;
             }
             render();
             return;
@@ -3371,14 +3969,18 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'generate-public-opinion') {
-            const result = await invokeAction('generate-public-opinion');
-            if (result?.kind === 'sandbox') {
-                publicOpinionMode = 'sandbox';
-                notify('正史这轮没什么瓜～顺手给你捞了一锅闲逛内容，放心，不算正史 `(ﾉ◕ヮ◕)ﾉ`', 'info');
-            } else if (result) {
-                notify('世界舆情刷新好啦～来看看大家又在聊什么 `(ﾉ◕ヮ◕)ﾉ`', 'success');
-            }
+            if (publicOpinionActionBusy) return;
+            publicOpinionActionBusy = true;
             render();
+            try {
+                const result = await invokeAction('generate-public-opinion');
+                if (result) {
+                    notify('世界舆情刷新好啦～', 'success');
+                }
+            } finally {
+                publicOpinionActionBusy = false;
+                render();
+            }
             return;
         }
         if (action === 'generate-public-opinion-sandbox') {
@@ -3436,6 +4038,14 @@ export function createWorldBackstageUI({
         }
         if (action === 'close-person-editor') {
             personEditor = null;
+            render();
+            return;
+        }
+        if (action === 'clear-person-avatar') {
+            const completed = await invokeAction('clear-person-avatar', {
+                id: target.dataset.personId || '',
+            });
+            if (completed) notify('头像收起来啦～又变回文字头像了 (｡•̀ᴗ-)✧', 'success');
             render();
             return;
         }
@@ -3932,14 +4542,27 @@ export function createWorldBackstageUI({
             if (completed) memoryEditor = null;
         }
         if (form.dataset.wbForm === 'person') {
+            const avatarFile = form.elements.avatarFile?.files?.[0] || null;
+            let avatarDataUrl = null;
+            if (avatarFile) {
+                notify('正在把头像缩成小小一只～', 'info');
+                try {
+                    avatarDataUrl = await readPersonAvatarFile(avatarFile);
+                } catch (error) {
+                    notify(String(error?.message || error || '头像没有处理成功～'), 'error');
+                    return;
+                }
+            }
             const completed = await invokeAction('save-manual-person', {
                 id: data.id || '',
                 originalName: data.originalName || '',
                 name: data.name || '',
+                avatarDataUrl,
                 location: data.location || '',
                 action: data.action || '',
                 intent: data.intent || '',
                 longTermGoal: data.longTermGoal || '',
+                innerVoice: data.innerVoice || '',
                 identityAnchor: data.identityAnchor || '',
                 personalityAnchor: data.personalityAnchor || '',
                 appearanceProfile: data.appearanceProfile || '',
@@ -3981,6 +4604,10 @@ export function createWorldBackstageUI({
             eventFormOpen = false;
             eventEditorId = '';
             eventFormDraft = null;
+        }
+        else if (moduleSettingsView) {
+            moduleSettingsView = '';
+            clockFormDraft = null;
         }
         else if (settingsOpen) {
             settingsOpen = false;

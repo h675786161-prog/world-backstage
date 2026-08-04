@@ -1,9 +1,168 @@
+const WB_TRANSPORT_TRACE_WINDOW = Object.freeze([11, 5, 8]);
+
 function cleanText(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
 let lastCustomApiOperation = null;
 let customApiOperationSequence = 0;
+
+const retryCooldowns = new Map();
+const retryFlights = new Map();
+
+function cleanRetryKey(value) {
+    return cleanText(value).slice(0, 240);
+}
+
+function rateLimitError(error) {
+    return error?.errorType === 'rate-limit'
+        || error?.code === 'RATE_LIMIT'
+        || Number(error?.upstreamStatus) === 429
+        || /429|too many requests|rate[_\s-]*limit|限流|频率限制|请求过于频繁/i
+            .test(String(error?.message || error || ''));
+}
+
+function parseRetryAfterValue(value, nowMs = Date.now()) {
+    const text = cleanText(value);
+    if (!text) return 0;
+    const seconds = Number(text);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+        return Math.min(10 * 60_000, Math.round(seconds * 1000));
+    }
+    const timestamp = Date.parse(text);
+    if (Number.isFinite(timestamp)) {
+        return Math.min(10 * 60_000, Math.max(0, timestamp - nowMs));
+    }
+    return 0;
+}
+
+function retryAfterFromResponse(response, data, nowMs = Date.now()) {
+    const header = response?.headers?.get?.('retry-after')
+        || response?.headers?.get?.('Retry-After')
+        || '';
+    const fromHeader = parseRetryAfterValue(header, nowMs);
+    if (fromHeader > 0) return fromHeader;
+
+    const raw = data?.error?.retry_after_ms
+        ?? data?.retry_after_ms
+        ?? data?.error?.retryAfterMs
+        ?? data?.retryAfterMs
+        ?? null;
+    const milliseconds = Number(raw);
+    if (Number.isFinite(milliseconds) && milliseconds > 0) {
+        return Math.min(10 * 60_000, Math.round(milliseconds));
+    }
+
+    const rawSeconds = data?.error?.retry_after
+        ?? data?.retry_after
+        ?? data?.error?.retryAfter
+        ?? data?.retryAfter
+        ?? data?.error?.wait_seconds
+        ?? data?.wait_seconds
+        ?? null;
+    const seconds = Number(rawSeconds);
+    if (Number.isFinite(seconds) && seconds > 0) {
+        return Math.min(10 * 60_000, Math.round(seconds * 1000));
+    }
+    return 0;
+}
+
+export function retryDelayForError(error, {
+    attempt = 1,
+    delayMs = 750,
+    random = Math.random,
+} = {}) {
+    const retryIndex = Math.max(1, Number.parseInt(attempt, 10) || 1);
+    if (rateLimitError(error)) {
+        // 429 never gets an eager retry. Prefer server guidance, otherwise use a
+        // conservative exponential cooldown with small jitter so multiple modules
+        // do not wake up at the exact same millisecond.
+        const serverDelay = Math.max(0, Number(error?.retryAfterMs) || 0);
+        const exponential = Math.min(60_000, 4_000 * (2 ** (retryIndex - 1)));
+        const base = Math.max(serverDelay, exponential);
+        const jitter = Math.round(base * 0.15 * Math.max(0, Math.min(1, Number(random?.() ?? 0.5))));
+        return Math.min(90_000, base + jitter);
+    }
+    return Math.min(
+        5_000,
+        Math.max(0, Number(delayMs) || 0) * (2 ** (retryIndex - 1)),
+    );
+}
+
+function setRetryCooldown(key, milliseconds, {
+    reason = 'rate-limit',
+    nowMs = Date.now(),
+} = {}) {
+    const normalizedKey = cleanRetryKey(key);
+    const delay = Math.max(0, Number(milliseconds) || 0);
+    if (!normalizedKey || delay <= 0) return null;
+
+    const old = retryCooldowns.get(normalizedKey);
+    const until = Math.max(Number(old?.until || 0), nowMs + delay);
+    const next = {
+        until,
+        reason: cleanText(reason) || 'rate-limit',
+        updatedAt: nowMs,
+    };
+    retryCooldowns.set(normalizedKey, next);
+    return { ...next, remainingMs: Math.max(0, until - nowMs) };
+}
+
+export function retryCooldownStatus(key, nowMs = Date.now()) {
+    const normalizedKey = cleanRetryKey(key);
+    if (!normalizedKey) return null;
+    const current = retryCooldowns.get(normalizedKey);
+    if (!current) return null;
+    const remainingMs = Math.max(0, Number(current.until || 0) - nowMs);
+    if (remainingMs <= 0) {
+        retryCooldowns.delete(normalizedKey);
+        return null;
+    }
+    return { ...current, remainingMs };
+}
+
+export function getRetryControlStatus(nowMs = Date.now()) {
+    let activeCooldowns = 0;
+    let longestCooldownMs = 0;
+    for (const key of [...retryCooldowns.keys()]) {
+        const current = retryCooldownStatus(key, nowMs);
+        if (!current) continue;
+        activeCooldowns += 1;
+        longestCooldownMs = Math.max(longestCooldownMs, current.remainingMs);
+    }
+    return {
+        activeCooldowns,
+        longestCooldownMs,
+        activeFlights: retryFlights.size,
+    };
+}
+
+export function resetRetryControl() {
+    retryCooldowns.clear();
+    retryFlights.clear();
+}
+
+async function waitForRouteCooldown(key, {
+    wait,
+    signal,
+    onCooldown = null,
+} = {}) {
+    const normalizedKey = cleanRetryKey(key);
+    if (!normalizedKey) return;
+
+    while (true) {
+        if (signal?.aborted) throw cancellationError();
+        await waitUntilPageVisible(signal);
+        const cooldown = retryCooldownStatus(normalizedKey);
+        if (!cooldown) return;
+
+        await onCooldown?.({
+            delayMs: cooldown.remainingMs,
+            reason: cooldown.reason,
+        });
+        await waitForRetry(wait, cooldown.remainingMs, signal);
+    }
+}
 
 function beginCustomApiOperation({
     operation = 'request',
@@ -22,6 +181,7 @@ function beginCustomApiOperation({
         transport: cleanText(transport),
         transportStatus: null,
         upstreamStatus: null,
+        retryAfterMs: 0,
         errorType: 'none',
         errorSummary: '',
         attemptedAt: new Date().toISOString(),
@@ -48,37 +208,90 @@ export function resetLastCustomApiOperation() {
 }
 
 
-export async function runWithRetries(operation, {
+async function runWithRetriesInternal(operation, {
     retries = 0,
     delayMs = 750,
     wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
     onRetry = null,
+    onCooldown = null,
     shouldRetry = () => true,
     signal = null,
+    cooldownKey = '',
+    random = Math.random,
 } = {}) {
     const maximumRetries = Math.min(5, Math.max(0, Number.parseInt(retries, 10) || 0));
     let attempt = 0;
+
     while (true) {
         try {
             if (signal?.aborted) throw cancellationError();
+            // A 429 from any module sharing this route cools the route for every
+            // other task too. New tasks wait here instead of sending another request.
+            await waitForRouteCooldown(cooldownKey, {
+                wait,
+                signal,
+                onCooldown,
+            });
             return await operation(attempt);
         } catch (error) {
             if (signal?.aborted || isAbortError(error)) throw cancellationError();
+
+            const nextAttempt = attempt + 1;
+            const milliseconds = retryDelayForError(error, {
+                attempt: nextAttempt,
+                delayMs,
+                random,
+            });
+
+            // Even when this task itself has no retry left, a 429 still cools the
+            // shared route. Otherwise another module could immediately fire on the
+            // same公益站 line and defeat the whole point of backoff.
+            if (rateLimitError(error) && cooldownKey) {
+                setRetryCooldown(cooldownKey, milliseconds, {
+                    reason: 'rate-limit',
+                });
+            }
+
             if (attempt >= maximumRetries || !shouldRetry(error, attempt)) throw error;
-            attempt += 1;
-            const milliseconds = Math.min(
-                5000,
-                Math.max(0, Number(delayMs) || 0) * (2 ** (attempt - 1)),
-            );
+
+            attempt = nextAttempt;
             await onRetry?.({
                 attempt,
                 total: maximumRetries,
                 delayMs: milliseconds,
                 error,
+                rateLimited: rateLimitError(error),
             });
-            if (milliseconds > 0) await waitForRetry(wait, milliseconds, signal);
+
+            await waitUntilPageVisible(signal);
+            if (rateLimitError(error) && cooldownKey) {
+                // Use the shared route cooldown so another task extending the same
+                // cooldown is respected too; do not additionally sleep twice.
+                await waitForRouteCooldown(cooldownKey, {
+                    wait,
+                    signal,
+                    onCooldown,
+                });
+            } else if (milliseconds > 0) {
+                await waitForRetry(wait, milliseconds, signal);
+            }
         }
     }
+}
+
+export function runWithRetries(operation, options = {}) {
+    const taskKey = cleanRetryKey(options?.taskKey);
+    if (!taskKey) return runWithRetriesInternal(operation, options);
+
+    const existing = retryFlights.get(taskKey);
+    if (existing) return existing;
+
+    const task = runWithRetriesInternal(operation, options)
+        .finally(() => {
+            if (retryFlights.get(taskKey) === task) retryFlights.delete(taskKey);
+        });
+    retryFlights.set(taskKey, task);
+    return task;
 }
 
 function cancellationError() {
@@ -248,6 +461,9 @@ function buildCustomApiResponseError(response, data, text, subject = '独立 API
     error.transportStatus = Number(response?.status) || null;
     error.upstreamStatus = classified.upstreamStatus;
     error.upstreamMessage = detail;
+    error.retryAfterMs = classified.errorType === 'rate-limit'
+        ? retryAfterFromResponse(response, data)
+        : 0;
     if (classified.errorType === 'rate-limit') error.code = 'RATE_LIMIT';
     if (classified.errorType === 'quota-exhausted') error.code = 'QUOTA_EXHAUSTED';
     return error;
@@ -267,23 +483,92 @@ function timeoutError(timeoutMs) {
     return new Error(`独立 API 请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
 }
 
+function visibilityDocument() {
+    const documentRef = globalThis.document;
+    return documentRef
+        && typeof documentRef.addEventListener === 'function'
+        && typeof documentRef.removeEventListener === 'function'
+        ? documentRef
+        : null;
+}
+
+function pageIsHidden(documentRef = visibilityDocument()) {
+    return Boolean(documentRef?.hidden);
+}
+
+async function waitUntilPageVisible(signal, documentRef = visibilityDocument()) {
+    if (!documentRef || !pageIsHidden(documentRef)) return;
+    if (signal?.aborted) throw cancellationError();
+
+    await new Promise((resolve, reject) => {
+        const cleanup = () => {
+            documentRef.removeEventListener('visibilitychange', onVisibility);
+            signal?.removeEventListener?.('abort', onAbort);
+        };
+        const onVisibility = () => {
+            if (pageIsHidden(documentRef)) return;
+            cleanup();
+            resolve();
+        };
+        const onAbort = () => {
+            cleanup();
+            reject(cancellationError());
+        };
+        documentRef.addEventListener('visibilitychange', onVisibility);
+        signal?.addEventListener?.('abort', onAbort, { once: true });
+    });
+}
+
 async function fetchWithTimeout(fetchImpl, url, options, timeoutMs, externalSignal) {
     if (!(timeoutMs > 0)) {
         return fetchImpl(url, { ...options, signal: externalSignal || undefined });
     }
 
     const controller = new AbortController();
+    const documentRef = visibilityDocument();
     let timedOut = false;
-    const timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-    }, timeoutMs);
+    let timer = null;
+    let remainingMs = Math.max(1, Number(timeoutMs) || 1);
+    let activeSince = 0;
+    const now = () => globalThis.performance?.now?.() ?? Date.now();
+
+    const pauseTimer = () => {
+        if (timer !== null) {
+            clearTimeout(timer);
+            timer = null;
+        }
+        if (activeSince > 0) {
+            remainingMs = Math.max(0, remainingMs - Math.max(0, now() - activeSince));
+            activeSince = 0;
+        }
+    };
+    const resumeTimer = () => {
+        if (controller.signal.aborted || pageIsHidden(documentRef) || timer !== null) return;
+        if (remainingMs <= 0) {
+            timedOut = true;
+            controller.abort();
+            return;
+        }
+        activeSince = now();
+        timer = setTimeout(() => {
+            timer = null;
+            activeSince = 0;
+            timedOut = true;
+            controller.abort();
+        }, remainingMs);
+    };
+    const onVisibility = () => {
+        if (pageIsHidden(documentRef)) pauseTimer();
+        else resumeTimer();
+    };
     const abort = () => controller.abort();
 
+    if (documentRef) documentRef.addEventListener('visibilitychange', onVisibility);
     if (externalSignal) {
         if (externalSignal.aborted) controller.abort();
         else externalSignal.addEventListener('abort', abort, { once: true });
     }
+    resumeTimer();
 
     try {
         return await fetchImpl(url, { ...options, signal: controller.signal });
@@ -291,7 +576,8 @@ async function fetchWithTimeout(fetchImpl, url, options, timeoutMs, externalSign
         if (timedOut) throw timeoutError(timeoutMs);
         throw error;
     } finally {
-        clearTimeout(timer);
+        pauseTimer();
+        documentRef?.removeEventListener?.('visibilitychange', onVisibility);
         externalSignal?.removeEventListener?.('abort', abort);
     }
 }
@@ -376,6 +662,7 @@ export async function requestCustomModels(settings, {
             phase: 'error',
             transportStatus: error?.transportStatus ?? null,
             upstreamStatus: error?.upstreamStatus ?? null,
+            retryAfterMs: Number(error?.retryAfterMs) || 0,
             errorType: error?.errorType || 'other',
             errorSummary: cleanText(error?.message || error).slice(0, 420),
             failedAt: new Date().toISOString(),
@@ -515,6 +802,7 @@ export async function requestCustomCompletion(settings, messages, {
             phase: 'error',
             transportStatus: error.transportStatus ?? (Number(response.status) || null),
             upstreamStatus: error.upstreamStatus ?? null,
+            retryAfterMs: Number(error.retryAfterMs) || 0,
             errorType: error.errorType || 'other',
             errorSummary: cleanText(error.message).slice(0, 420),
             failedAt: new Date().toISOString(),

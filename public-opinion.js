@@ -1,5 +1,7 @@
-const PUBLIC_VISIBILITY = new Set(['known', 'direct']);
-const OPINION_VISIBILITY = new Set(['trace', 'known', 'direct']);
+const WB_PUBLIC_SIGNAL_BIAS = 0x2d;
+
+const NEWS_PUBLICITY = new Set(['public']);
+const OPINION_PUBLICITY = new Set(['trace', 'public']);
 const VALID_CONFIDENCE = new Set(['high', 'medium']);
 const VALID_CLAIM_STATUS = new Set(['fact', 'mixed', 'rumor']);
 const VALID_SOURCE_TYPE = new Set(['official', 'unofficial']);
@@ -58,37 +60,273 @@ export function emptyPublicOpinionCache({
 
 export function eligiblePublicOpinionEvents(state) {
     return asArray(state?.events)
-        .filter(event => OPINION_VISIBILITY.has(String(event?.visibility || '')))
+        .filter(event => OPINION_PUBLICITY.has(String(event?.publicity || 'private')))
         .filter(event => String(event?.id || '').trim())
         .sort((a, b) => Number(b?.updatedAt || b?.resolvedAt || 0) - Number(a?.updatedAt || a?.resolvedAt || 0))
         .slice(0, 24)
         .map(event => {
-            const visibility = asText(event.visibility, 20);
-            if (visibility === 'trace') {
+            const publicity = asText(event.publicity || 'private', 20);
+            const publicHint = asText(event.publicTrace ?? event.public_trace, 360);
+            if (publicity === 'trace') {
                 const place = asText(event.place, 140);
-                const explicitTrace = asText(event.publicTrace ?? event.public_trace, 260);
                 return {
                     id: asText(event.id, 120),
-                    title: '未证实的异常迹象',
+                    title: '未证实的公开迹象',
                     place,
                     summary: '',
                     result: '',
                     status: asText(event.status, 30),
-                    visibility,
-                    public_hint: explicitTrace || `${place ? `${place}附近` : '某处'}出现了可被外界察觉的异常迹象，具体原因尚不明确。`,
+                    publicity,
+                    visibility: asText(event.visibility, 20),
+                    public_hint: publicHint || `${place ? `${place}附近` : '某处'}出现了尚未证实、但已经能被外界察觉的迹象。`,
+                    public_headline: '',
+                    public_summary: '',
+                    public_result: '',
+                    created_at: Number(event?.createdAt ?? -1),
+                    updated_at: Number(event?.updatedAt ?? -1),
+                    resolved_at: Number(event?.resolvedAt ?? -1),
+                    clock_mode: asText(event?.clockMode, 30),
+                    due_at: Number(event?.dueAt ?? -1),
                 };
             }
             return {
                 id: asText(event.id, 120),
                 title: asText(event.title, 140),
                 place: asText(event.place, 140),
-                summary: asText(event.summary, 420),
-                result: asText(event.result || event.consequence || event.expectedResult, 520),
+                summary: '',
+                result: '',
                 status: asText(event.status, 30),
-                visibility,
-                public_hint: asText(event.publicTrace ?? event.public_trace, 260),
+                publicity,
+                visibility: asText(event.visibility, 20),
+                public_hint: publicHint,
+                public_headline: asText(event.publicHeadline ?? event.public_headline, 180),
+                public_summary: asText(event.publicSummary ?? event.public_summary, 520),
+                public_result: asText(event.publicResult ?? event.public_result, 520),
+                created_at: Number(event?.createdAt ?? -1),
+                updated_at: Number(event?.updatedAt ?? -1),
+                resolved_at: Number(event?.resolvedAt ?? -1),
+                clock_mode: asText(event?.clockMode, 30),
+                due_at: Number(event?.dueAt ?? -1),
             };
         });
+}
+
+function publicEventSourceType(event) {
+    const text = [
+        event?.public_hint,
+        event?.public_headline,
+        event?.public_summary,
+        event?.public_result,
+        event?.summary,
+        event?.result,
+    ].filter(Boolean).join(' ');
+    return /公告|通报|官方|政府|机构|委员会|公司发布|声明|通知|公示|新闻发布|气象部门|交通部门|警方|消防|医院|学校|主办方|品牌方|供电|铁路|机场/i.test(text)
+        ? 'official'
+        : 'unofficial';
+}
+
+function publicEventTemporalState(event, worldMinute = 0) {
+    const status = String(event?.status || '');
+    if (['resolved', 'cancelled', 'missed'].includes(status)) return 'historical';
+    const now = Number(worldMinute || 0);
+    const dueAt = Number(event?.due_at);
+    if (status === 'waiting') return 'upcoming';
+    if (event?.clock_mode === 'scheduled' && Number.isFinite(dueAt) && dueAt > now) return 'upcoming';
+    return 'current';
+}
+
+export function worldNewsFromPublicEvents(state, { maximum = 12 } = {}) {
+    const worldMinute = Number(state?.clock?.absoluteMinute ?? -1);
+    return eligiblePublicOpinionEvents(state)
+        .filter(event => NEWS_PUBLICITY.has(String(event?.publicity || '')))
+        .slice(0, Math.max(1, Number(maximum) || 12))
+        .map(event => {
+            const temporalState = publicEventTemporalState(event, worldMinute);
+            const publicHint = asText(event.public_hint, 360);
+            const terminalResult = temporalState === 'historical'
+                ? asText(event.public_result, 520)
+                : '';
+            const publicSummary = terminalResult
+                || asText(event.public_summary, 520)
+                || publicHint;
+            if (!publicSummary) return null;
+
+            const fallbackHeadline = publicSummary
+                .split(/[。！？!?\n]/u)
+                .map(part => part.trim())
+                .find(Boolean)
+                ?.slice(0, 46) || '公开世界动态';
+            const headline = asText(event.public_headline, 160) || fallbackHeadline;
+            const sourceType = publicEventSourceType(event);
+            const eventMinute = [
+                Number(event?.updated_at),
+                Number(event?.resolved_at),
+                Number(event?.created_at),
+            ].find(value => Number.isFinite(value) && value >= 0);
+
+            return {
+                id: `world_news_${event.id}`,
+                category: '世界新闻',
+                headline,
+                summary: publicSummary,
+                source: sourceType === 'official' ? '公开机构信息' : '公开世界信息',
+                sourceType,
+                audienceTags: [],
+                scope: asText(event.place, 80) || '公开传播',
+                relatedEventId: asText(event.id, 120),
+                confidence: 'high',
+                heat: 1,
+                worldSynced: true,
+                eventStatus: asText(event.status, 30),
+                temporalState,
+                worldMinute: clampInteger(
+                    eventMinute,
+                    worldMinute,
+                    -1,
+                    Number.MAX_SAFE_INTEGER,
+                ),
+            };
+        })
+        .filter(Boolean);
+}
+
+export function mergeWorldNewsIntoPublicOpinion(state, rawCache = {}) {
+    const cache = normalizePublicOpinionCache(rawCache || {});
+    const synced = worldNewsFromPublicEvents(state, { maximum: 18 });
+    const existingByEvent = new Map(
+        cache.news
+            .filter(item => item.relatedEventId)
+            .map(item => [String(item.relatedEventId), item]),
+    );
+    const currentIds = new Set();
+    const currentNews = synced.map(worldItem => {
+        const existing = existingByEvent.get(worldItem.relatedEventId);
+        currentIds.add(worldItem.relatedEventId);
+        return {
+            ...(existing || {}),
+            ...worldItem,
+            id: worldItem.id,
+            relatedEventId: worldItem.relatedEventId,
+            worldSynced: true,
+            // The event itself is the authority. Old card wording may keep source /
+            // audience decoration, but current public headline + summary always
+            // follow the latest settled public event state.
+            source: existing?.source || worldItem.source,
+            audienceTags: existing?.audienceTags || worldItem.audienceTags,
+            scope: existing?.scope || worldItem.scope,
+            publishedAt: existing?.publishedAt || worldItem.publishedAt || '',
+            updatedAt: existing?.updatedAt || worldItem.updatedAt || '',
+            worldMinute: Math.max(
+                Number(existing?.worldMinute ?? -1),
+                Number(worldItem.worldMinute ?? -1),
+            ),
+        };
+    });
+
+    const historicalNews = cache.news.filter(item => (
+        !item.relatedEventId || !currentIds.has(String(item.relatedEventId))
+    ));
+
+    return {
+        ...cache,
+        news: uniqueBy(
+            [...currentNews, ...historicalNews]
+                .sort((a, b) => (
+                    Number(b.worldMinute ?? -1) - Number(a.worldMinute ?? -1)
+                    || Date.parse(b.updatedAt || b.publishedAt || 0)
+                    - Date.parse(a.updatedAt || a.publishedAt || 0)
+                )),
+            item => item.relatedEventId
+                ? `event:${item.relatedEventId}`
+                : `${item.headline}\u0000${item.summary}`,
+        ).slice(0, 18),
+        forums: cache.forums.slice(0, 12),
+    };
+}
+
+function opinionItemChanged(previous, next, fields) {
+    if (!previous) return true;
+    return fields.some(field => String(previous?.[field] ?? '') !== String(next?.[field] ?? ''));
+}
+
+function opinionSortValue(item) {
+    const timestamp = Date.parse(item?.updatedAt || item?.publishedAt || '');
+    if (Number.isFinite(timestamp)) return timestamp;
+    return Number(item?.worldMinute || -1);
+}
+
+export function mergePublicOpinionStream(previousRaw, nextRaw, {
+    maximumNews = 18,
+    maximumForums = 12,
+} = {}) {
+    const previous = normalizePublicOpinionCache(previousRaw || {});
+    const next = normalizePublicOpinionCache(nextRaw || {});
+    const generatedAt = next.generatedAt || new Date().toISOString();
+
+    const previousNewsByEvent = new Map(
+        previous.news
+            .filter(item => item.relatedEventId)
+            .map(item => [String(item.relatedEventId), item]),
+    );
+    const nextNewsEventIds = new Set();
+    const freshNews = next.news.map(item => {
+        const previousItem = item.relatedEventId
+            ? previousNewsByEvent.get(String(item.relatedEventId))
+            : null;
+        if (item.relatedEventId) nextNewsEventIds.add(String(item.relatedEventId));
+
+        const changed = opinionItemChanged(previousItem, item, [
+            'headline', 'summary', 'source', 'category', 'scope',
+        ]);
+        return {
+            ...previousItem,
+            ...item,
+            publishedAt: previousItem?.publishedAt || item.publishedAt || generatedAt,
+            updatedAt: changed
+                ? (item.updatedAt || generatedAt)
+                : (previousItem?.updatedAt || item.updatedAt || generatedAt),
+            worldMinute: changed
+                ? Number(item.worldMinute ?? next.sourceWorldMinute ?? -1)
+                : Number(previousItem?.worldMinute ?? item.worldMinute ?? -1),
+        };
+    });
+
+    const retainedNews = previous.news.filter(item => (
+        !item.relatedEventId || !nextNewsEventIds.has(String(item.relatedEventId))
+    ));
+
+    const nextForumEventIds = new Set(
+        next.forums.map(item => String(item.relatedEventId || '')).filter(Boolean),
+    );
+    const freshForums = next.forums.map(item => ({
+        ...item,
+        publishedAt: item.publishedAt || generatedAt,
+        updatedAt: item.updatedAt || generatedAt,
+        worldMinute: Number(item.worldMinute ?? next.sourceWorldMinute ?? -1),
+    }));
+    const retainedForums = previous.forums.filter(item => (
+        !item.relatedEventId || !nextForumEventIds.has(String(item.relatedEventId))
+    ));
+
+    const news = uniqueBy(
+        [...freshNews, ...retainedNews]
+            .sort((a, b) => opinionSortValue(b) - opinionSortValue(a)),
+        item => item.relatedEventId
+            ? `event:${item.relatedEventId}`
+            : `${item.headline}\u0000${item.summary}`,
+    ).slice(0, Math.max(1, Number(maximumNews) || 18));
+
+    const forums = uniqueBy(
+        [...freshForums, ...retainedForums]
+            .sort((a, b) => opinionSortValue(b) - opinionSortValue(a)),
+        item => `${item.relatedEventId}\u0000${item.board}\u0000${item.title}`,
+    ).slice(0, Math.max(1, Number(maximumForums) || 12));
+
+    return {
+        ...next,
+        news,
+        forums,
+    };
 }
 
 export function buildPublicOpinionPrompt(state, { clockLabel = '' } = {}) {
@@ -101,11 +339,12 @@ export function buildPublicOpinionPrompt(state, { clockLabel = '' } = {}) {
 
     return [
         '你是“世界背面”的世界舆情观察器。你只生成只读的新闻与论坛快照，不修改世界状态、人物认知、事件、记忆、时间或正文。不会写回人物认知，也不会触发新的世界变化。',
-        '只能依据下方 public_event_candidates。不得使用任何未提供的幕后事实，不得把隐藏事件、私人行动或角色秘密写成公开消息。',
-        'visibility=trace 的候选不是“已经公开的事件”，而只是外界能察觉的一点表面迹象：只允许依据 public_hint 与 place 生成非官方论坛讨论；不得使用该事件真正标题、summary/result、隐藏原因或幕后人物信息，也不得生成新闻。trace 对应论坛必须 source_type=unofficial，claim_status 只能是 mixed 或 rumor。',
+        '只能依据下方 public_event_candidates。不得使用任何未提供的幕后事实，不得把私人行动或角色秘密写成公开消息。',
+        'publicity=trace 的候选不是“已经公开的新闻事实”，而只是外界能察觉的一点表面迹象：只允许依据 public_hint 与 place 生成非官方论坛讨论；不得使用该事件真正标题、summary/result、隐藏原因或幕后人物信息，也不得生成新闻。',
+        'publicity=public 的候选才允许生成新闻，而且只能使用 public_headline / public_summary / public_hint / place 中已经公开的信息。事件内部 title、summary、result 可能包含幕后细节，禁止直接复制进新闻。',
         '不得虚构新的正史事件；但只要 public_event_candidates 非空，就必须至少选择其中 1 项有自然传播可能的内容生成新闻或论坛讨论。影响较小时可以写成本地、小圈层、低热度讨论，不必硬抬成重大新闻。',
         '新闻与论坛是“传播载体”，source_type 才表示消息来源层级：official = 官方/机构/权威渠道，unofficial = 目击、匿名爆料、民间媒体、论坛、小道消息。官方消息也可能措辞保守、选择性披露；非官方消息也可能碰巧为真。来源层级不等于世界真相。',
-        '新闻偏事实传播：只报道有公共传播价值的内容；无法确认的原因不要擅自下结论。论坛偏群众反应：允许猜测、误解、玩梗和传闻，但必须通过 claim_status 明确区分 fact / mixed / rumor，且不得把传闻写回成事实。',
+        '新闻偏事实传播：只报道有公共传播价值的内容；无法确认的原因不要擅自下结论。系统会把 publicity=public 的世界事件直接同步进新闻区，所以你生成的新闻主要用于传播表达，不能改变或增加事件事实。同一 related_event_id 是同一条持续新闻线，有新进展时写最新公开状态，不要把同一事件拆成互相重复的平行新闻。论坛偏群众反应：允许猜测、误解、玩梗和传闻，但必须通过 claim_status 明确区分 fact / mixed / rumor，且不得把传闻写回成事实。',
         '每条消息给出 audience_tags：只写“哪些类型的人可能更关注这条消息”，例如当地居民、行业从业者、某组织成员、记者、学生等。它只是受众标签，不代表任何具体 NPC 已经看到或相信该消息，也不需要读取完整世界书。',
         'scope 用一句很短的话概括传播范围，例如“本地居民圈”“行业内部”“全城公开”“小范围匿名流传”。',
         'related_event_id 必须来自 public_event_candidates 中已有的 id。不得虚构新的事件 ID。',
@@ -146,24 +385,29 @@ export function buildPublicOpinionPrompt(state, { clockLabel = '' } = {}) {
 export function normalizePublicOpinionPayload(payload, {
     validEventIds = [],
     eventVisibilityById = {},
+    eventPublicityById = {},
     sourceRevision = -1,
     sourceWorldMinute = -1,
     sourceEventSignature = '',
     generatedAt = new Date().toISOString(),
+    maximumNews = 3,
+    maximumForums = 4,
 } = {}) {
     const allowedIds = new Set(asArray(validEventIds).map(item => String(item || '')).filter(Boolean));
     const visibilityFor = id => String(eventVisibilityById?.[id] || '');
+    const hasPublicity = id => Object.hasOwn(eventPublicityById || {}, id);
+    const publicityFor = id => String(eventPublicityById?.[id] || '');
     const news = uniqueBy(
         asArray(payload?.news).map((item, index) => {
             const relatedEventId = asText(item?.related_event_id ?? item?.relatedEventId, 120);
             if (!allowedIds.has(relatedEventId)) return null;
-            if (visibilityFor(relatedEventId) === 'trace') return null;
+            if (hasPublicity(relatedEventId) && publicityFor(relatedEventId) !== 'public') return null;
             const headline = asText(item?.headline ?? item?.title, 160);
             const summary = asText(item?.summary, 700);
             if (!headline || !summary) return null;
             const confidenceRaw = asText(item?.confidence, 20).toLowerCase();
             return {
-                id: `news_${index}_${relatedEventId}`,
+                id: asText(item?.id, 160) || `news_${index}_${relatedEventId}`,
                 category: asText(item?.category, 40) || '世界新闻',
                 headline,
                 summary,
@@ -174,8 +418,19 @@ export function normalizePublicOpinionPayload(payload, {
                 relatedEventId,
                 confidence: VALID_CONFIDENCE.has(confidenceRaw) ? confidenceRaw : 'medium',
                 heat: clampInteger(item?.heat, 1, 1, 3),
+                worldSynced: Boolean(item?.worldSynced ?? item?.world_synced),
+                eventStatus: asText(item?.eventStatus ?? item?.event_status, 30),
+                temporalState: asText(item?.temporalState ?? item?.temporal_state, 20),
+                publishedAt: asText(item?.publishedAt ?? item?.published_at, 40) || asText(generatedAt, 40),
+                updatedAt: asText(item?.updatedAt ?? item?.updated_at, 40) || asText(generatedAt, 40),
+                worldMinute: clampInteger(
+                    item?.worldMinute ?? item?.world_minute,
+                    sourceWorldMinute,
+                    -1,
+                    Number.MAX_SAFE_INTEGER,
+                ),
             };
-        }).filter(Boolean).slice(0, 3),
+        }).filter(Boolean).slice(0, Math.max(1, Number(maximumNews) || 3)),
         item => `${item.relatedEventId}\u0000${item.headline}`,
     );
 
@@ -184,6 +439,7 @@ export function normalizePublicOpinionPayload(payload, {
             const relatedEventId = asText(item?.related_event_id ?? item?.relatedEventId, 120);
             if (!allowedIds.has(relatedEventId)) return null;
             const eventVisibility = visibilityFor(relatedEventId);
+            const eventPublicity = publicityFor(relatedEventId);
             const title = asText(item?.title, 180);
             const summary = asText(item?.summary, 700);
             if (!title || !summary) return null;
@@ -198,23 +454,31 @@ export function normalizePublicOpinionPayload(payload, {
                 };
             }).filter(Boolean).slice(0, 4);
             return {
-                id: `forum_${index}_${relatedEventId}`,
+                id: asText(item?.id, 160) || `forum_${index}_${relatedEventId}`,
                 board: asText(item?.board, 60) || '闲聊',
                 title,
                 summary,
-                sourceType: eventVisibility === 'trace'
+                sourceType: hasPublicity(relatedEventId) && eventPublicity === 'trace'
                     ? 'unofficial'
                     : normalizeSourceType(item?.source_type ?? item?.sourceType, 'unofficial'),
                 audienceTags: uniqueStrings(item?.audience_tags ?? item?.audienceTags, 5),
                 scope: asText(item?.scope, 80),
                 relatedEventId,
-                claimStatus: eventVisibility === 'trace'
+                claimStatus: hasPublicity(relatedEventId) && eventPublicity === 'trace'
                     ? (claimRaw === 'rumor' ? 'rumor' : 'mixed')
                     : (VALID_CLAIM_STATUS.has(claimRaw) ? claimRaw : 'mixed'),
                 heat: clampInteger(item?.heat, 1, 1, 5),
                 replies,
+                publishedAt: asText(item?.publishedAt ?? item?.published_at, 40) || asText(generatedAt, 40),
+                updatedAt: asText(item?.updatedAt ?? item?.updated_at, 40) || asText(generatedAt, 40),
+                worldMinute: clampInteger(
+                    item?.worldMinute ?? item?.world_minute,
+                    sourceWorldMinute,
+                    -1,
+                    Number.MAX_SAFE_INTEGER,
+                ),
             };
-        }).filter(Boolean).slice(0, 4),
+        }).filter(Boolean).slice(0, Math.max(1, Number(maximumForums) || 4)),
         item => `${item.relatedEventId}\u0000${item.title}`,
     );
 
@@ -241,6 +505,8 @@ export function normalizePublicOpinionCache(raw) {
         sourceWorldMinute,
         sourceEventSignature: raw?.sourceEventSignature || '',
         generatedAt: raw?.generatedAt || '',
+        maximumNews: 18,
+        maximumForums: 12,
     });
 }
 

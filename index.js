@@ -63,6 +63,7 @@ import {
     emptyPublicOpinionSandbox,
     normalizePublicOpinionCache,
     normalizePublicOpinionPayload,
+    mergePublicOpinionStream,
     mergeWorldNewsIntoPublicOpinion,
     normalizePublicOpinionSandbox,
     normalizePublicOpinionSandboxPayload,
@@ -70,7 +71,7 @@ import {
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '1.5.1';
+const PLUGIN_VERSION = '1.5.2';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 21,
     enabled: true,

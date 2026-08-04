@@ -71,9 +71,9 @@ import {
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '1.5.3';
+const PLUGIN_VERSION = '1.5.6';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 21,
+    settingsVersion: 22,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -94,6 +94,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     deliveryDensity: 'restrained',
     sceneTiming: 'strict',
     orbPosition: null,
+    orbEnabled: true,
     includeUserInnerVoice: false,
     uiScale: 'comfortable',
     contextTurns: 5,
@@ -154,6 +155,11 @@ const runtime = {
     publicOpinionStatus: {
         phase: 'idle',
         message: '舆情还没开张呢～',
+        error: '',
+    },
+    publicOpinionSandboxStatus: {
+        phase: 'idle',
+        message: '',
         error: '',
     },
     worldbookScan: {
@@ -544,7 +550,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 21;
+    settings.settingsVersion = 22;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -570,8 +576,11 @@ function getSettings() {
         Math.max(0, Number.parseInt(settings.maxOutputTokens, 10) || 0),
     );
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
+    settings.orbEnabled = previousSettingsVersion < 22
+        ? (previous?.orbEnabled !== undefined ? Boolean(previous.orbEnabled) : true)
+        : settings.orbEnabled !== false;
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 21) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 22) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -807,7 +816,7 @@ function latestAssistantEntry() {
 
 function taskRouteKey(taskKind = 'simulation') {
     if (taskKind === 'person-observation') return 'observation';
-    if (taskKind === 'public-opinion') return 'opinion';
+    if (taskKind === 'public-opinion' || taskKind === 'public-opinion-sandbox') return 'opinion';
     if (taskKind === 'history' || taskKind === 'history-index' || taskKind === 'memory') return 'history';
     return 'simulation';
 }
@@ -1076,6 +1085,7 @@ function getSyncStatus() {
                 ...displayOpinion,
                 ...runtime.publicOpinionStatus,
                 sandbox: opinionStore.publicOpinionSandbox || emptyPublicOpinionSandbox(),
+                sandboxStatus: { ...runtime.publicOpinionSandboxStatus },
                 canonRunning: Boolean(
                     runtime.publicOpinionRefreshTransaction
                     || (runtime.activePublicOpinion && !runtime.activePublicOpinion?.controller?.signal?.aborted)
@@ -1707,9 +1717,6 @@ function preemptLowPriorityTasksForCore() {
         runtime.pendingPublicOpinion = true;
         runtime.activePublicOpinion.controller.abort();
     }
-    if (runtime.activePublicOpinionSandbox && !runtime.activePublicOpinionSandbox.controller.signal.aborted) {
-        runtime.activePublicOpinionSandbox.controller.abort();
-    }
     if (runtime.activeObservation && !runtime.activeObservation.controller.signal.aborted) {
         runtime.activeObservation.controller.abort();
     }
@@ -1897,8 +1904,10 @@ async function backgroundSimulation(prompt, {
         error.name = 'AbortError';
         throw error;
     }
+    const foregroundNeutralTask = taskKind === 'public-opinion-sandbox';
+
     if (route.mode === 'custom') {
-        runtime.inBackgroundGeneration = true;
+        if (!foregroundNeutralTask) runtime.inBackgroundGeneration = true;
         try {
             runtime.syncStatus.method = requestSettings.customApiTransport === 'direct'
                 ? `${route.label} · 浏览器直连`
@@ -1914,7 +1923,7 @@ async function backgroundSimulation(prompt, {
                 routeLabel: route.label,
             });
         } finally {
-            runtime.inBackgroundGeneration = false;
+            if (!foregroundNeutralTask) runtime.inBackgroundGeneration = false;
             refreshInjection();
         }
     }
@@ -1929,16 +1938,23 @@ async function backgroundSimulation(prompt, {
         throw new Error('当前酒馆版本没有提供独立上下文人物观测接口；请更新 SillyTavern 或为世界背面配置独立 API');
     }
 
-    runtime.inBackgroundGeneration = true;
+    if (!foregroundNeutralTask) runtime.inBackgroundGeneration = true;
     clearOwnInjection();
+    // Sandbox is allowed to coexist with the core world task. Its AbortController
+    // must therefore never call SillyTavern's global stopGeneration(), otherwise
+    // closing "随便逛逛" could accidentally kill the main world simulation too.
+    const allowGlobalStopOnAbort = !foregroundNeutralTask;
     const stopNativeGeneration = () => {
+        if (!allowGlobalStopOnAbort) return;
         try {
             context?.stopGeneration?.();
         } catch (error) {
             console.warn('[世界背面] 酒馆安静生成停止请求没有正常返回', error);
         }
     };
-    signal?.addEventListener?.('abort', stopNativeGeneration, { once: true });
+    if (allowGlobalStopOnAbort) {
+        signal?.addEventListener?.('abort', stopNativeGeneration, { once: true });
+    }
     try {
         let request;
         if (typeof context.generateRaw === 'function') {
@@ -1965,8 +1981,10 @@ async function backgroundSimulation(prompt, {
         refreshInjection();
         return await request;
     } finally {
-        signal?.removeEventListener?.('abort', stopNativeGeneration);
-        runtime.inBackgroundGeneration = false;
+        if (allowGlobalStopOnAbort) {
+            signal?.removeEventListener?.('abort', stopNativeGeneration);
+        }
+        if (!foregroundNeutralTask) runtime.inBackgroundGeneration = false;
         refreshInjection();
     }
 }
@@ -4927,74 +4945,106 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
 }
 
 async function generatePublicOpinionSandbox() {
+    const existing = runtime.activePublicOpinionSandbox;
+    if (existing?.promise && !existing.controller?.signal?.aborted) {
+        return existing.promise;
+    }
+
     const chatTokenAtStart = currentChatToken();
-    if (coreSimulationBusy()) throw new Error('世界主线还在推演～先等核心状态接稳，再来闲逛一下吧');
     const state = getState();
     const controller = new AbortController();
-    const activeSandbox = { controller, chatToken: chatTokenAtStart };
+    const activeSandbox = {
+        controller,
+        chatToken: chatTokenAtStart,
+        promise: null,
+    };
     runtime.activePublicOpinionSandbox = activeSandbox;
     const generatedAt = new Date().toISOString();
-    runtime.publicOpinionStatus = { phase: 'running', message: '正在街上随便逛逛～看看今天有什么无关紧要的小热闹 `(ﾉ◕ヮ◕)ﾉ`', error: '' };
+    runtime.publicOpinionSandboxStatus = {
+        phase: 'running',
+        message: '正在街上随便逛逛～看看今天有什么无关紧要的小热闹 `(ﾉ◕ヮ◕)ﾉ`',
+        error: '',
+    };
     runtime.ui?.render();
-    try {
-        const prompt = buildPublicOpinionSandboxPrompt(state, { clockLabel: formatWorldCalendar(state)?.stamp || '' });
-        const settings = getSettings();
-        const sandbox = await runWithRetries(
-            async () => {
-                const raw = await backgroundSimulation(prompt, {
-                    maxTokens: 2800,
-                    temperature: 0.9,
-                    taskKind: 'public-opinion',
-                    rejectTruncated: true,
+
+    const promise = (async () => {
+        try {
+            const prompt = buildPublicOpinionSandboxPrompt(state, {
+                clockLabel: formatWorldCalendar(state)?.stamp || '',
+            });
+            const settings = getSettings();
+            const sandbox = await runWithRetries(
+                async () => {
+                    const raw = await backgroundSimulation(prompt, {
+                        maxTokens: 2800,
+                        temperature: 0.9,
+                        taskKind: 'public-opinion-sandbox',
+                        rejectTruncated: true,
+                        signal: controller.signal,
+                    });
+                    const parsed = extractJsonObject(raw);
+                    if (!parsed) throw new Error('闲逛舆情没有返回可解析的 JSON');
+                    const normalized = normalizePublicOpinionSandboxPayload(parsed, { generatedAt });
+                    if (!normalized.news.length && !normalized.forums.length) {
+                        throw new Error('闲逛舆情返回了空内容');
+                    }
+                    return normalized;
+                },
+                {
+                    retries: Math.min(1, settings.autoRetryCount),
+                    delayMs: 520,
+                    shouldRetry: error => rateLimitLike(error)
+                        || /JSON|空内容|截断|长度上限|empty|No message generated/i.test(String(error?.message || error || '')),
+                    ...retryTaskOptions(
+                        'public-opinion-sandbox',
+                        `public-opinion-sandbox:${chatTokenAtStart}:${state.revision}:${generatedAt}`,
+                    ),
                     signal: controller.signal,
-                });
-                const parsed = extractJsonObject(raw);
-                if (!parsed) throw new Error('闲逛舆情没有返回可解析的 JSON');
-                const normalized = normalizePublicOpinionSandboxPayload(parsed, { generatedAt });
-                if (!normalized.news.length && !normalized.forums.length) {
-                    throw new Error('闲逛舆情返回了空内容');
+                },
+            );
+
+            if (currentChatToken() !== chatTokenAtStart) return null;
+            const store = getStore();
+            store.publicOpinionSandbox = sandbox;
+            saveStore(store);
+            runtime.publicOpinionSandboxStatus = {
+                phase: 'success',
+                message: `随便逛到 ${sandbox.news.length} 条小新闻 · ${sandbox.forums.length} 个闲聊话题～这些都不算正史哦`,
+                error: '',
+            };
+            runtime.ui?.render();
+            return sandbox;
+        } catch (error) {
+            if (isAbortError(error) || controller.signal.aborted) {
+                if (currentChatToken() === chatTokenAtStart) {
+                    runtime.publicOpinionSandboxStatus = {
+                        phase: 'idle',
+                        message: '闲逛先收摊啦～下次想看小热闹再点我 `(｡•̀ᴗ-)✧`',
+                        error: '',
+                    };
+                    runtime.ui?.render();
                 }
-                return normalized;
-            },
-            {
-                retries: Math.min(1, settings.autoRetryCount),
-                delayMs: 520,
-                shouldRetry: error => rateLimitLike(error)
-                    || /JSON|空内容|截断|长度上限|empty|No message generated/i.test(String(error?.message || error || '')),
-                ...retryTaskOptions(
-                    'public-opinion',
-                    `public-opinion-sandbox:${chatTokenAtStart}:${getState().revision}`,
-                ),
-                signal: controller.signal,
-            },
-        );
-        if (currentChatToken() !== chatTokenAtStart) return null;
-        const store = getStore();
-        store.publicOpinionSandbox = sandbox;
-        saveStore(store);
-        runtime.publicOpinionStatus = {
-            phase: 'success',
-            message: `随便逛到 ${sandbox.news.length} 条小新闻 · ${sandbox.forums.length} 个闲聊话题～这些都不算正史哦`,
-            error: '',
-        };
-        runtime.ui?.render();
-        return sandbox;
-    } catch (error) {
-        if (isAbortError(error) || controller.signal.aborted) {
+                return null;
+            }
             if (currentChatToken() === chatTokenAtStart) {
-                runtime.publicOpinionStatus = { phase: 'idle', message: '主线有新动静啦～闲逛先收摊，不跟核心推演抢路 `(｡•̀ᴗ-)✧`', error: '' };
+                runtime.publicOpinionSandboxStatus = {
+                    phase: 'error',
+                    message: '今天闲逛没逛出东西 QAQ',
+                    error: describeError(error),
+                };
                 runtime.ui?.render();
             }
-            return null;
-        }
-        if (currentChatToken() === chatTokenAtStart) {
-            runtime.publicOpinionStatus = { phase: 'error', message: '今天闲逛没逛出东西 QAQ', error: describeError(error) };
+            throw error;
+        } finally {
+            if (runtime.activePublicOpinionSandbox === activeSandbox) {
+                runtime.activePublicOpinionSandbox = null;
+            }
             runtime.ui?.render();
         }
-        throw error;
-    } finally {
-        if (runtime.activePublicOpinionSandbox === activeSandbox) runtime.activePublicOpinionSandbox = null;
-    }
+    })();
+
+    activeSandbox.promise = promise;
+    return promise;
 }
 
 function clearPublicOpinionSandbox() {
@@ -5003,7 +5053,7 @@ function clearPublicOpinionSandbox() {
     const store = getStore();
     store.publicOpinionSandbox = emptyPublicOpinionSandbox();
     saveStore(store);
-    runtime.publicOpinionStatus = { phase: 'idle', message: '闲逛小报收起来啦～', error: '' };
+    runtime.publicOpinionSandboxStatus = { phase: 'idle', message: '闲逛小报收起来啦～', error: '' };
     runtime.ui?.render();
     return true;
 }
@@ -5715,6 +5765,10 @@ function installSettingsEntry() {
                     <input id="world-backstage-enabled" type="checkbox">
                     <span>启用世界背面</span>
                 </label>
+                <label class="checkbox_label">
+                    <input id="world-backstage-orb-enabled" type="checkbox">
+                    <span>显示悬浮球</span>
+                </label>
                 <p class="notes">镜头没照到的地方也会继续过日子～时间、人物和事件都会自己往前走 (｡•̀ᴗ-)✧</p>
                 <button id="world-backstage-open" class="menu_button" type="button">
                     打开世界背面
@@ -5727,6 +5781,9 @@ function installSettingsEntry() {
     entry.querySelector('#world-backstage-enabled')?.addEventListener('change', event => {
         void handleUiAction('update-settings', { enabled: event.target.checked });
     });
+    entry.querySelector('#world-backstage-orb-enabled')?.addEventListener('change', event => {
+        void handleUiAction('update-settings', { orbEnabled: event.target.checked });
+    });
     entry.querySelector('#world-backstage-open')?.addEventListener('click', () => {
         const settings = getSettings();
         if (!settings.enabled) {
@@ -5738,8 +5795,11 @@ function installSettingsEntry() {
 }
 
 function syncSettingsEntry() {
+    const settings = getSettings();
     const checkbox = document.getElementById('world-backstage-enabled');
-    if (checkbox) checkbox.checked = getSettings().enabled;
+    if (checkbox) checkbox.checked = settings.enabled;
+    const orbCheckbox = document.getElementById('world-backstage-orb-enabled');
+    if (orbCheckbox) orbCheckbox.checked = settings.orbEnabled !== false;
 }
 
 function registerEvents() {

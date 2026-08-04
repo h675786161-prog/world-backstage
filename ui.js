@@ -905,6 +905,18 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 </div>
                 <p class="wb-setting-explanation">${escapeHtml(settingExplanation('uiScale', settings.uiScale))}</p>
             </div>
+
+            <div class="wb-setting-toggle">
+                <div>
+                    <strong>显示悬浮球</strong>
+                    <span>不想让它一直趴在屏幕上就关掉～插件照常运行，之后也能从酒馆扩展设置里重新打开。</span>
+                </div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="orbEnabled"
+                        ${settings.orbEnabled !== false ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
                         </div>
                     </details>
 
@@ -2277,22 +2289,54 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
     const news = Array.isArray(opinion.news) ? opinion.news : [];
     const forums = Array.isArray(opinion.forums) ? opinion.forums : [];
     const interactionBusy = Boolean(opinion.interactionBusy);
-    const canonRunning = Boolean(opinion.canonRunning || interactionBusy);
-    const sandboxRunning = Boolean(opinion.sandboxRunning);
-    const running = canonRunning || sandboxRunning || opinion.phase === 'running' || opinion.phase === 'queued';
+    const sandboxInteractionBusy = Boolean(opinion.sandboxInteractionBusy);
+    const canonRunning = Boolean(
+        opinion.canonRunning
+        || interactionBusy
+        || opinion.phase === 'running'
+        || opinion.phase === 'queued'
+    );
+    const sandboxStatus = opinion.sandboxStatus && typeof opinion.sandboxStatus === 'object'
+        ? opinion.sandboxStatus
+        : { phase: 'idle', message: '', error: '' };
+    const sandboxRunning = Boolean(
+        opinion.sandboxRunning
+        || sandboxInteractionBusy
+        || sandboxStatus.phase === 'running'
+    );
+    const running = canonRunning || sandboxRunning;
     const stale = Boolean(opinion.stale && opinion.generatedAt);
     const relatedEvents = new Map((state.events || []).map(event => [event.id, event]));
     const sandbox = opinion.sandbox && typeof opinion.sandbox === 'object' ? opinion.sandbox : { news: [], forums: [], generatedAt: '' };
     const sandboxItems = [...(sandbox.news || []), ...(sandbox.forums || [])];
     const activeMode = ['forum', 'sandbox'].includes(mode) ? mode : 'news';
-    const statusMessage = (
+    const canonStatusMessage = (
         interactionBusy && !['running', 'queued', 'error'].includes(opinion.phase)
             ? '正在检查世界变化～'
             : (opinion.error || opinion.message || '')
     );
+    const sandboxStatusMessage = (
+        sandboxInteractionBusy && sandboxStatus.phase !== 'error'
+            ? '正在街上随便逛逛～'
+            : (sandboxStatus.error || sandboxStatus.message || '')
+    );
+    const statusMessage = activeMode === 'sandbox'
+        ? sandboxStatusMessage
+        : canonStatusMessage;
+    const statusPhase = activeMode === 'sandbox'
+        ? (sandboxStatus.phase || (sandboxInteractionBusy ? 'running' : 'idle'))
+        : (opinion.phase || (interactionBusy ? 'running' : 'idle'));
     const hasMainOpinion = news.length > 0 || forums.length > 0;
     const hasSandboxOpinion = sandboxItems.length > 0;
-    const showStatusMessage = Boolean(statusMessage && (opinion.phase === 'error' || activeMode !== 'sandbox' || !hasSandboxOpinion));
+    const showStatusMessage = Boolean(
+        statusMessage
+        && (
+            statusPhase === 'error'
+            || activeMode !== 'sandbox'
+            || !hasSandboxOpinion
+            || sandboxRunning
+        )
+    );
     const renderRelated = item => {
         const event = relatedEvents.get(item.relatedEventId);
         return event
@@ -2310,9 +2354,9 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                 </div>
             </div>
             <div class="wb-opinion-actions">
-                ${opinion.generatedAt ? `<button type="button" data-wb-action="clear-public-opinion" title="只清空舆情列表，不删除世界事实或已经发生的影响" ${running ? 'disabled' : ''}>清空列表</button>` : ''}
-                <button type="button" data-wb-action="generate-public-opinion-sandbox" ${running ? 'disabled' : ''}>${sandboxRunning ? '正在闲逛…' : '随便逛逛～'}</button>
-                <button class="wb-inline-add" type="button" data-wb-action="generate-public-opinion" ${running ? 'disabled' : ''}>
+                ${opinion.generatedAt ? `<button type="button" data-wb-action="clear-public-opinion" title="只清空舆情列表，不删除世界事实或已经发生的影响" ${canonRunning ? 'disabled' : ''}>清空列表</button>` : ''}
+                <button type="button" data-wb-action="generate-public-opinion-sandbox" ${sandboxRunning ? 'disabled' : ''}>${sandboxRunning ? '正在闲逛…' : '随便逛逛～'}</button>
+                <button class="wb-inline-add" type="button" data-wb-action="generate-public-opinion" ${canonRunning ? 'disabled' : ''}>
                     ${canonRunning ? '正在刷新…' : (opinion.generatedAt ? '刷新世界舆情' : '生成当前舆情')}
                 </button>
             </div>
@@ -2325,7 +2369,7 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
             <button type="button" role="tab" data-wb-action="set-public-opinion-mode" data-mode="sandbox"
                 aria-selected="${activeMode === 'sandbox'}" class="${activeMode === 'sandbox' ? 'is-active' : ''}">🍿 闲逛 <small>${sandboxItems.length}</small></button>
         </div>
-        ${showStatusMessage ? `<div role="status" aria-live="polite" class="wb-opinion-status is-${escapeAttr(opinion.phase || (interactionBusy ? 'running' : 'idle'))} ${hasMainOpinion || hasSandboxOpinion ? 'is-compact' : ''}">${escapeHtml(statusMessage)}</div>` : ''}
+        ${showStatusMessage ? `<div role="status" aria-live="polite" class="wb-opinion-status is-${escapeAttr(statusPhase)} ${hasMainOpinion || hasSandboxOpinion ? 'is-compact' : ''}">${escapeHtml(statusMessage)}</div>` : ''}
         ${activeMode === 'news' ? `
             <div class="wb-news-grid">
                 ${news.map(item => `
@@ -3058,9 +3102,16 @@ export function createWorldBackstageUI({
     function ensureMounted() {
         if (!root.isConnected) document.body.appendChild(root);
         syncVisualViewportInsets();
-        const position = getSettings().orbPosition;
-        if (position && root.querySelector('.wb-world-orb')) positionOrbElements(position.x, position.y);
-        if (!root.querySelector('.wb-world-orb')) render();
+        const settings = getSettings();
+        const orb = root.querySelector('.wb-world-orb');
+        if (settings.orbEnabled !== false) {
+            if (settings.orbPosition && orb) {
+                positionOrbElements(settings.orbPosition.x, settings.orbPosition.y);
+            }
+            if (!orb) render();
+        } else if (orb) {
+            render();
+        }
         return root.isConnected;
     }
 
@@ -3082,6 +3133,7 @@ export function createWorldBackstageUI({
     let panelEntrancePending = false;
     let publicOpinionMode = 'news';
     let publicOpinionActionBusy = false;
+    let publicOpinionSandboxActionBusy = false;
     let memorySearchTimer = null;
     let memoryFilter = 'active';
     let memoryQuery = '';
@@ -3378,6 +3430,7 @@ export function createWorldBackstageUI({
             {
                 ...(syncStatus.publicOpinion || {}),
                 interactionBusy: publicOpinionActionBusy,
+                sandboxInteractionBusy: publicOpinionSandboxActionBusy,
             },
             publicOpinionMode,
             settings,
@@ -3392,6 +3445,7 @@ export function createWorldBackstageUI({
 
         root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'}`;
         root.innerHTML = `
+            ${settings.orbEnabled !== false ? `
             <button class="wb-world-orb ${isOpen ? 'is-open' : ''} ${orbProcessing ? 'is-processing' : ''} ${settings.orbPosition ? 'has-custom-position' : ''}" type="button"
                 style="${orbStyles.orb}" data-wb-action="toggle-panel"
                 aria-label="${isOpen ? '收起世界背面' : '打开世界背面'}">
@@ -3420,6 +3474,7 @@ export function createWorldBackstageUI({
                                         : '镜头之外暂时安安静静的～ (˘ω˘)',
                 )}</span>
             </div>
+            ` : ''}
 
             ${isOpen ? `
                 <div class="wb-panel-scrim ${animatePanelEntrance ? 'is-opening' : ''}" data-wb-action="close-panel">
@@ -3984,12 +4039,19 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'generate-public-opinion-sandbox') {
-            const result = await invokeAction('generate-public-opinion-sandbox');
-            if (result) {
-                publicOpinionMode = 'sandbox';
-                notify('随便逛到一锅新鲜瓜～放心，这些不算正史 `(≧▽≦)`', 'success');
-            }
+            if (publicOpinionSandboxActionBusy) return;
+            publicOpinionSandboxActionBusy = true;
             render();
+            try {
+                const result = await invokeAction('generate-public-opinion-sandbox');
+                if (result) {
+                    publicOpinionMode = 'sandbox';
+                    notify('随便逛到一锅新鲜瓜～放心，这些不算正史 `(≧▽≦)`', 'success');
+                }
+            } finally {
+                publicOpinionSandboxActionBusy = false;
+                render();
+            }
             return;
         }
         if (action === 'clear-public-opinion-sandbox') {

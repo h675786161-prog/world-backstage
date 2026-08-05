@@ -67,6 +67,7 @@ import {
     planImportWrites,
     planSmartWorldbookImport,
     planWorldbookImportBatches,
+    splitLongEntries,
     summarizeUntouchedEntries,
 } from './worldbook.js';
 import {
@@ -194,6 +195,7 @@ const runtime = {
         entries: [],
     },
     worldbookImport: emptyWorldbookImportReport(),
+    worldbookImportDrafts: [],
     worldbookImportRunning: false,
     historyProgress: {
         kind: 'memory',
@@ -253,6 +255,7 @@ async function scanWorldbook(bookName) {
         entries: [],
     };
     runtime.worldbookImport = emptyWorldbookImportReport();
+    runtime.worldbookImportDrafts = [];
     runtime.ui?.render();
 
     try {
@@ -439,6 +442,23 @@ const IMPORTABLE_PERSON_FIELDS = Object.freeze([
     'behaviorBoundaries',
 ]);
 
+// 同一次导入里，一条人物记录只能被认领一次。否则一条目拆出的多个人物会顺着
+// 同一条匹配规则全部写进第一个人身上。
+function findImportTarget(state, { reference = '', name = '', aliases = [] } = {}, claimedIds = null) {
+    const lowerName = String(name || '').trim().toLocaleLowerCase();
+    const aliasNames = new Set((Array.isArray(aliases) ? aliases : [])
+        .map(alias => String(alias || '').trim().toLocaleLowerCase())
+        .filter(Boolean));
+    return (state?.people || []).find(person => (
+        !claimedIds?.has(person.id)
+        && (
+            person.worldbookRef === reference
+            || person.name.toLocaleLowerCase() === lowerName
+            || aliasNames.has(person.name.toLocaleLowerCase())
+        )
+    )) || null;
+}
+
 // 规则导入与 AI 整理导入共用的写入口。默认只补空栏位，绝不覆盖作者已经写好的
 // 设定；legacyDumpFields 里的栏位额外允许覆盖“整段世界书糊进来”的旧值。
 function upsertImportedPerson(next, {
@@ -458,20 +478,7 @@ function upsertImportedPerson(next, {
 } = {}) {
     const importedName = String(name || '').trim().slice(0, 80);
     if (!importedName) return null;
-    const lowerName = importedName.toLocaleLowerCase();
-    const aliasNames = new Set(aliases
-        .map(alias => String(alias || '').trim().toLocaleLowerCase())
-        .filter(Boolean));
-    // 同一次导入里，一条人物记录只能被认领一次。否则一条目拆出的多个人物会
-    // 顺着同一条匹配规则全部写进第一个人身上。
-    const existing = next.people.find(person => (
-        !claimedIds?.has(person.id)
-        && (
-            person.worldbookRef === reference
-            || person.name.toLocaleLowerCase() === lowerName
-            || aliasNames.has(person.name.toLocaleLowerCase())
-        )
-    ));
+    const existing = findImportTarget(next, { reference, name: importedName, aliases }, claimedIds);
 
     if (existing) {
         let renamed = '';
@@ -652,6 +659,7 @@ function emptyWorldbookImportReport() {
         bookName: '',
         created: 0,
         updated: 0,
+        token: '',
         people: [],
         skipped: [],
         untouched: [],
@@ -660,17 +668,119 @@ function emptyWorldbookImportReport() {
     };
 }
 
+function discardWorldbookDrafts() {
+    runtime.worldbookImportDrafts = [];
+    runtime.worldbookImport = emptyWorldbookImportReport();
+    runtime.ui?.render();
+    return true;
+}
+
+// 审校台按「确认」后才走到这里。selections 只带人物与栏位的取舍，值本身仍然
+// 取自 runtime 里那份已经过原文回查的草稿，不接受界面回传的正文。
+function commitWorldbookDrafts(selections = []) {
+    const pending = Array.isArray(runtime.worldbookImportDrafts) ? runtime.worldbookImportDrafts : [];
+    if (!pending.length) throw new Error('没有待确认的整理结果，请重新整理一次');
+
+    const wanted = new Map();
+    for (const item of Array.isArray(selections) ? selections : []) {
+        const reference = String(item?.reference || '');
+        if (!reference) continue;
+        wanted.set(reference, new Set((Array.isArray(item?.fields) ? item.fields : []).map(String)));
+    }
+
+    const next = clone(getState());
+    const claimedIds = new Set();
+    const renamed = [];
+    let created = 0;
+    let updated = 0;
+    let skippedByUser = 0;
+    for (const draft of pending) {
+        const fields = wanted.get(draft.reference);
+        if (!fields?.size) {
+            skippedByUser += 1;
+            continue;
+        }
+        const values = {};
+        for (const field of IMPORTABLE_PERSON_FIELDS) {
+            if (fields.has(field) && draft.values?.[field]) values[field] = draft.values[field];
+        }
+        if (!Object.keys(values).length) {
+            skippedByUser += 1;
+            continue;
+        }
+        const result = upsertImportedPerson(next, {
+            name: draft.name,
+            reference: draft.reference,
+            values,
+            worldbookRaw: draft.sourceContent.slice(0, 4000),
+            aliases: draft.aliases,
+            sourceContent: draft.sourceContent,
+            legacyDumpFields: IMPORTABLE_PERSON_FIELDS,
+            allowRename: true,
+            claimedIds,
+        });
+        if (result?.outcome === 'created') created += 1;
+        if (result?.outcome === 'updated') updated += 1;
+        if (result?.renamedFrom) renamed.push({ from: result.renamedFrom, to: result.name });
+    }
+
+    if (!created && !updated) throw new Error('没有勾选任何要写入的内容');
+
+    const previous = runtime.worldbookImport || emptyWorldbookImportReport();
+    runtime.worldbookImportDrafts = [];
+    runtime.worldbookImport = {
+        ...previous,
+        phase: 'success',
+        people: [],
+        token: '',
+        created,
+        updated,
+        renamed,
+        message: [
+            `已写入：新增 ${created} 人，更新 ${updated} 人`,
+            skippedByUser ? `${skippedByUser} 人被你取消了` : '',
+        ].filter(Boolean).join('；'),
+    };
+    commitManualState(next, `AI 整理导入：新增 ${created} 人，更新 ${updated} 人。`);
+    return { created, updated, skippedByUser };
+}
+
+// 扫描阶段为了预览把正文截到 4000 字。整理要看全文，所以这里按需重新读一次。
+async function loadFullWorldbookEntries(bookName, selected) {
+    const context = getContext();
+    if (typeof context?.loadWorldInfo !== 'function') return selected;
+    try {
+        const data = await context.loadWorldInfo(bookName);
+        const byUid = new Map(Object.values(data?.entries || {})
+            .filter(Boolean)
+            .map(entry => [String(entry.uid ?? ''), entry]));
+        return selected.map(entry => {
+            const content = String(byUid.get(String(entry.uid))?.content || '').trim();
+            return content.length > String(entry.content || '').length
+                ? { ...entry, content: content.slice(0, 40000) }
+                : entry;
+        });
+    } catch (error) {
+        console.warn('[世界背面] 世界书全文没读成功，改用扫描时的内容', error);
+        return selected;
+    }
+}
+
 async function runWorldbookAiImport(bookName, entryIds = []) {
-    const { bookName: name, selected } = selectedWorldbookEntries(bookName, entryIds, { requirePerson: false });
+    const { bookName: name, selected: scanned } = selectedWorldbookEntries(bookName, entryIds, {
+        requirePerson: false,
+    });
     if (runtime.worldbookImportRunning) throw new Error('上一次 AI 整理还在跑～等它结束再来');
 
-    const batches = planWorldbookImportBatches(selected);
+    const selected = await loadFullWorldbookEntries(name, scanned);
+    const batches = planWorldbookImportBatches(splitLongEntries(selected));
     const userName = String(getContext()?.name1 || '');
     const drafts = [];
     const skipped = [];
     const failures = [];
 
     runtime.worldbookImportRunning = true;
+    runtime.worldbookImportDrafts = [];
     runtime.worldbookImport = {
         ...emptyWorldbookImportReport(),
         phase: 'running',
@@ -757,55 +867,41 @@ async function runWorldbookAiImport(bookName, entryIds = []) {
             return report;
         }
 
-        const next = clone(getState());
+        // 整理结果先落成待确认草稿，不直接改世界状态：整理错了的话，用户是在
+        // 数据已经被改之后才发现的，事后编辑并不等于没发生过。
         const writes = planImportWrites(merged, selected, { bookName: name });
-        const claimedIds = new Set();
-        const renamed = [];
-        let created = 0;
-        let updated = 0;
-        for (const draft of writes) {
-            const result = upsertImportedPerson(next, {
-                name: draft.name,
-                reference: draft.reference,
-                values: draft.values,
-                worldbookRaw: draft.sourceContent.slice(0, 4000),
-                aliases: draft.aliases,
-                sourceContent: draft.sourceContent,
-                legacyDumpFields: IMPORTABLE_PERSON_FIELDS,
-                allowRename: true,
-                claimedIds,
-            });
-            if (result?.outcome === 'created') created += 1;
-            if (result?.outcome === 'updated') updated += 1;
-            if (result?.renamedFrom) renamed.push({ from: result.renamedFrom, to: result.name });
-        }
-
-        const needsReview = merged.filter(draft => draft.review.length).length;
+        const state = getState();
+        const needsReview = writes.filter(draft => draft.review.length || draft.nameConflict).length;
         const report = {
-            phase: failures.length ? 'partial' : 'success',
+            ...emptyWorldbookImportReport(),
+            phase: 'review',
             bookName: name,
-            created,
-            updated,
+            token: `${Date.now().toString(36)}-${writes.length}`,
             message: [
-                `AI 整理完成：新增 ${created} 人，更新 ${updated} 人`,
+                `整理出 ${writes.length} 人，确认后才会写进世界`,
+                needsReview ? `其中 ${needsReview} 人需要你看一眼` : '',
                 untouched.length ? `${untouched.length} 条勾选的条目没产出人物` : '',
-                needsReview ? `${needsReview} 人有栏位命中率偏低，建议去人物卡看一眼` : '',
                 failures.length ? `${failures.length} 批没跑成功` : '',
             ].filter(Boolean).join('；'),
-            people: merged.map(draft => ({
+            people: writes.map(draft => ({
+                reference: draft.reference,
                 name: draft.name,
-                fields: Object.keys(draft.values).length,
+                values: { ...draft.values },
                 review: draft.review,
                 dropped: draft.dropped,
                 lengthFuse: draft.lengthFuse,
+                nameConflict: Boolean(draft.nameConflict),
+                sourceNames: draft.sourceUids
+                    .map(uid => selected.find(entry => String(entry.uid) === uid)?.name)
+                    .filter(Boolean),
+                existing: Boolean(findImportTarget(state, draft)),
             })),
             skipped,
             untouched,
             failures,
-            renamed,
         };
+        runtime.worldbookImportDrafts = writes;
         runtime.worldbookImport = report;
-        commitManualState(next, `AI 整理导入：新增 ${created} 人，更新 ${updated} 人。`);
         return report;
     } finally {
         runtime.worldbookImportRunning = false;
@@ -6920,6 +7016,14 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'ai-import-worldbook-people') {
         return await runWorldbookAiImport(payload.bookName, payload.entryIds);
+    }
+
+    if (action === 'commit-worldbook-drafts') {
+        return commitWorldbookDrafts(payload.selections);
+    }
+
+    if (action === 'discard-worldbook-drafts') {
+        return discardWorldbookDrafts();
     }
 
     if (action === 'cancel-simulation') {

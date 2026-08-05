@@ -405,9 +405,18 @@ export function filterWorldbookEntries(entries, {
 // ---------------------------------------------------------------------------
 
 const IMPORT_GRAM_SIZE = 3;
+// 短片段不能用 n-gram 覆盖率判定：字太少时零散命中就能凑出高分。这个长度以内
+// 要求整串在原文里原样出现。
+const IMPORT_EXACT_MATCH_MAX = 8;
 export const IMPORT_PASS_COVERAGE = 0.85;
 export const IMPORT_REVIEW_COVERAGE = 0.6;
 const IMPORT_LENGTH_FUSE = 1.1;
+
+// 只有“纯字段名”前缀才允许在回查时剥掉。否则模型可以用任意前缀夹带私货：
+// 「恋人：南枫」剥掉前缀后只剩原文里确实存在的「南枫」，整句就会被判成高可信
+// 写进去，而“恋人”这个断言原文根本没有。PROFILE_LABELS 现成就是一张字段名表。
+const IMPORT_PREFIX_EXTRA = ['体重', '发色', '瞳色', '三围', '特征', 'weight', 'hair', 'eyes'];
+const IMPORT_ALLOWED_PREFIXES = new Set([...PROFILE_LOOKUP.keys(), ...IMPORT_PREFIX_EXTRA]);
 
 // 长度上限对齐 core.js 的 LIMITS，避免整理出来的值在 normalizePerson 里被截断。
 export const IMPORT_FIELDS = Object.freeze([
@@ -439,7 +448,7 @@ function coverageAgainstIndex(candidate, index) {
     if (!needle) return 1;
     const haystack = index?.text || '';
     if (!haystack) return 0;
-    if (needle.length <= IMPORT_GRAM_SIZE) return haystack.includes(needle) ? 1 : 0;
+    if (needle.length <= IMPORT_EXACT_MATCH_MAX) return haystack.includes(needle) ? 1 : 0;
 
     let hits = 0;
     let total = 0;
@@ -466,6 +475,19 @@ function splitImportSegments(value) {
     return segments;
 }
 
+// 返回可以安全剥掉的字段名前缀；不在白名单里的一律不剥，整段连前缀一起回查。
+function allowedFieldPrefix(text) {
+    const match = /^([^：:]{1,8})[：:]\s*/.exec(text);
+    if (!match) return '';
+    const parts = String(match[1])
+        .replace(/[（(][^）)]*[）)]/g, '')
+        .split(/[/、,，与和]/)
+        .map(part => part.trim().toLocaleLowerCase())
+        .filter(Boolean);
+    if (!parts.length) return '';
+    return parts.every(part => IMPORT_ALLOWED_PREFIXES.has(part)) ? match[0] : '';
+}
+
 function verifyImportedValue(rawValue, index, limit) {
     const kept = [];
     const dropped = [];
@@ -474,8 +496,10 @@ function verifyImportedValue(rawValue, index, limit) {
     for (const segment of splitImportSegments(rawValue)) {
         const text = compactValue(segment.text, limit);
         if (!text || IMPORT_FILLER_VALUE.test(text)) continue;
-        // 允许模型补上栏位前缀（height: 170cm → 身高：170cm），回查时先剥掉。
-        const body = text.replace(/^[^：:]{0,8}[：:]\s*/, '') || text;
+        // 允许模型补上字段名前缀（height: 170cm → 身高：170cm），回查时先剥掉；
+        // 其它前缀不给这个待遇。
+        const prefix = allowedFieldPrefix(text);
+        const body = (prefix ? text.slice(prefix.length) : text) || text;
         const coverage = coverageAgainstIndex(body, index);
         if (coverage < IMPORT_REVIEW_COVERAGE) {
             dropped.push({ text, coverage });
@@ -520,6 +544,37 @@ function nameIsGrounded(name, index, sources) {
         || normalizeForGrounding(entry?.parsedName) === normalized);
 }
 
+// 超长条目不能直接截断——后半段模型根本看不到。切成带重叠的片段分别整理，
+// 同一条目的片段共享 uid，后面按人物名合并时会自动拼回一个人。
+export function splitLongEntries(entries, { maxChars = 3000, overlap = 300 } = {}) {
+    const result = [];
+    for (const entry of (Array.isArray(entries) ? entries : []).filter(Boolean)) {
+        const content = String(entry.content || '');
+        if (content.length <= maxChars) {
+            result.push(entry);
+            continue;
+        }
+        const step = Math.max(1, maxChars - overlap);
+        let start = 0;
+        let chunk = 0;
+        while (start < content.length) {
+            chunk += 1;
+            result.push({
+                ...entry,
+                content: content.slice(start, start + maxChars),
+                chunk,
+            });
+            if (start + maxChars >= content.length) break;
+            start += step;
+        }
+        const total = chunk;
+        for (const item of result) {
+            if (String(item.uid ?? '') === String(entry.uid ?? '') && item.chunk) item.chunkTotal = total;
+        }
+    }
+    return result;
+}
+
 export function planWorldbookImportBatches(entries, {
     maxEntriesPerBatch = 3,
     maxCharsPerBatch = 6000,
@@ -549,6 +604,10 @@ export function buildWorldbookImportPrompt(entries, { userName = '' } = {}) {
     const payload = batch.map(entry => ({
         uid: String(entry.uid ?? ''),
         entry_name: String(entry.name || '').slice(0, 80),
+        // 分块时告诉模型这只是片段，避免它为“补完整”而自行推断缺失部分。
+        ...(entry.chunk
+            ? { fragment: `这是该条目的第 ${entry.chunk}/${entry.chunkTotal || '?'} 段，内容可能从中间开始或中断` }
+            : {}),
         content: String(entry.content || '').slice(0, 4000),
     }));
     const schema = {
@@ -601,13 +660,11 @@ export function normalizeImportedPeople(payload, entries = [], { userName = '' }
             : [];
     const batch = (Array.isArray(entries) ? entries : []).filter(Boolean);
     const byUid = new Map(batch.map(entry => [String(entry.uid ?? ''), entry]));
-    const batchIndex = groundingIndex(batch.map(entrySourceText).join('\n'));
+    const batchUids = batch.map(entry => String(entry.uid ?? ''));
     const people = [];
     const skipped = [];
 
     for (const raw of list) {
-        // uid 先解析出来：被跳过的人物也要能回指到是哪条条目，否则那条条目会
-        // 在报告里彻底消失。
         const requestedUids = [...new Set((Array.isArray(raw?.source_uids)
             ? raw.source_uids
             : Array.isArray(raw?.sourceUids)
@@ -615,23 +672,36 @@ export function normalizeImportedPeople(payload, entries = [], { userName = '' }
                 : [raw?.source_uids ?? raw?.sourceUids])
             .map(uid => String(uid ?? '').trim())
             .filter(uid => byUid.has(uid)))];
-        const sources = requestedUids.length ? requestedUids.map(uid => byUid.get(uid)) : batch;
-        const index = requestedUids.length
-            ? groundingIndex(sources.map(entrySourceText).join('\n'))
-            : batchIndex;
-        const sourceUids = requestedUids.length
-            ? requestedUids
-            : batch.map(entry => String(entry.uid ?? ''));
 
         const name = compactValue(raw?.name, 80).replace(/^[-—–·•]+/, '').trim();
         if (!name) {
-            skipped.push({ name: '', sourceUids, reason: '模型没有给出人物名' });
+            skipped.push({ name: '', sourceUids: requestedUids.length ? requestedUids : batchUids, reason: '模型没有给出人物名' });
             continue;
         }
         if (looksLikeUserName(name, userName)) {
-            skipped.push({ name, sourceUids, reason: '看起来是玩家角色，按规则不建立后台 NPC' });
+            skipped.push({ name, sourceUids: requestedUids.length ? requestedUids : batchUids, reason: '看起来是玩家角色，按规则不建立后台 NPC' });
             continue;
         }
+
+        // source_uids 缺失或无效时，绝不能拿整批当来源核对：那样 A 人物可以套用
+        // 同批里 B 人物的原文通过校验。改成按人物名定位候选条目，只对命中的条目
+        // 回查；一条都定位不到就直接拦下。
+        const sources = requestedUids.length
+            ? requestedUids.map(uid => byUid.get(uid))
+            : batch.filter(entry => normalizeForGrounding(entrySourceText(entry))
+                .includes(normalizeForGrounding(name)));
+        const sourceUids = sources.length
+            ? sources.map(entry => String(entry.uid ?? ''))
+            : batchUids;
+        if (!sources.length) {
+            skipped.push({
+                name,
+                sourceUids,
+                reason: '模型没给出有效来源条目，按人物名也定位不到出处，已拦下',
+            });
+            continue;
+        }
+        const index = groundingIndex(sources.map(entrySourceText).join('\n'));
 
         if (!nameIsGrounded(name, index, sources)) {
             skipped.push({ name, sourceUids, reason: '这个人物名在原文里找不到，已拦下' });
@@ -764,21 +834,27 @@ export function planImportWrites(drafts, entries = [], { bookName = '' } = {}) {
     });
 }
 
+// 同名不一定是同一个人：「小林」「老板」「莉莉」这种称呼在不同条目里很可能指
+// 不同的人。只有来源条目有交集才敢合并；纯粹撞名的分别保留，并标成需要确认。
 export function mergeImportedDrafts(drafts) {
-    const merged = new Map();
+    const groups = new Map();
     for (const draft of (Array.isArray(drafts) ? drafts : []).filter(Boolean)) {
         const key = normalizeForGrounding(draft.name);
         if (!key) continue;
-        const existing = merged.get(key);
+        const uids = new Set((draft.sourceUids || []).map(String));
+        const bucket = groups.get(key) || [];
+        const existing = bucket.find(item => item.sourceUids.some(uid => uids.has(String(uid))));
         if (!existing) {
-            merged.set(key, {
+            bucket.push({
                 name: draft.name,
-                sourceUids: [...new Set(draft.sourceUids || [])],
+                sourceUids: [...uids],
                 values: { ...draft.values },
                 review: [...(draft.review || [])],
                 dropped: [...(draft.dropped || [])],
                 lengthFuse: Boolean(draft.lengthFuse),
+                nameConflict: false,
             });
+            groups.set(key, bucket);
             continue;
         }
         existing.sourceUids = [...new Set([...existing.sourceUids, ...(draft.sourceUids || [])])];
@@ -801,5 +877,14 @@ export function mergeImportedDrafts(drafts) {
             existing.values[field.key] = `${current}；${additions.join('；')}`.slice(0, field.limit);
         }
     }
-    return [...merged.values()];
+
+    const result = [];
+    for (const bucket of groups.values()) {
+        // 一个名字最后落下不止一份，说明这些来源互不相干，只是撞了名。
+        if (bucket.length > 1) {
+            for (const item of bucket) item.nameConflict = true;
+        }
+        result.push(...bucket);
+    }
+    return result;
 }

@@ -6144,6 +6144,135 @@
     line-height: 1.55;
 }
 
+#world-backstage-root .wb-worldbook-status.is-review {
+    border-color: color-mix(in srgb, var(--wb-accent) 40%, var(--wb-line));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-worldbook-draft-review {
+    display: grid;
+    gap: 8px;
+}
+
+#world-backstage-root .wb-worldbook-draft-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    color: var(--wb-text-soft);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+}
+
+#world-backstage-root .wb-worldbook-draft-head small {
+    color: var(--wb-text-faint);
+}
+
+#world-backstage-root .wb-worldbook-draft-card {
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 12px;
+    background: var(--wb-panel-faint);
+}
+
+#world-backstage-root .wb-worldbook-draft-card.is-skipped {
+    opacity: 0.45;
+}
+
+#world-backstage-root .wb-worldbook-draft-person,
+#world-backstage-root .wb-worldbook-draft-field {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-worldbook-draft-person > span,
+#world-backstage-root .wb-worldbook-draft-field > span {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-worldbook-draft-person em,
+#world-backstage-root .wb-worldbook-draft-field em {
+    color: var(--wb-text-faint);
+    font-style: normal;
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 12px);
+}
+
+#world-backstage-root .wb-worldbook-draft-person em.is-existing {
+    color: var(--wb-jade);
+}
+
+#world-backstage-root .wb-worldbook-draft-person em.is-warn,
+#world-backstage-root .wb-worldbook-draft-field em {
+    color: var(--wb-amber);
+}
+
+#world-backstage-root .wb-worldbook-draft-person small {
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 12px);
+}
+
+#world-backstage-root .wb-worldbook-draft-fields {
+    display: grid;
+    gap: 6px;
+    padding-left: 4px;
+}
+
+#world-backstage-root .wb-worldbook-draft-field {
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: var(--wb-panel);
+}
+
+#world-backstage-root .wb-worldbook-draft-field.is-low {
+    border-color: color-mix(in srgb, var(--wb-amber) 55%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-amber) 8%, var(--wb-panel));
+}
+
+#world-backstage-root .wb-worldbook-draft-field.is-off {
+    opacity: 0.45;
+}
+
+#world-backstage-root .wb-worldbook-draft-field b {
+    color: var(--wb-text-soft);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px);
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-worldbook-draft-field p {
+    margin: 0;
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 13px);
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+#world-backstage-root .wb-worldbook-draft-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+#world-backstage-root .wb-worldbook-draft-actions > button {
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+    font-family: var(--wb-font);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+}
+
+#world-backstage-root .wb-worldbook-draft-actions > button:disabled {
+    opacity: 0.5;
+}
+
 #world-backstage-root .wb-worldbook-status.is-partial {
     border-color: color-mix(in srgb, var(--wb-amber) 34%, var(--wb-line));
     color: var(--wb-amber);

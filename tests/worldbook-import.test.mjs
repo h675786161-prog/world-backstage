@@ -8,6 +8,7 @@ import {
     normalizeImportedPeople,
     planImportWrites,
     planWorldbookImportBatches,
+    splitLongEntries,
     summarizeUntouchedEntries,
 } from '../worldbook.js';
 
@@ -156,7 +157,7 @@ test('一条条目里的多个人物会拆成多个 NPC', () => {
     assert.equal(people[1].values.speakingStyle, '说话软软的');
 });
 
-test('跨批次的同名人物合并且不重复堆叠', () => {
+test('来源有交集的同名人物合并且不重复堆叠', () => {
     const merged = mergeImportedDrafts([
         {
             name: '南枫',
@@ -168,7 +169,7 @@ test('跨批次的同名人物合并且不重复堆叠', () => {
         },
         {
             name: '南枫',
-            sourceUids: ['31'],
+            sourceUids: ['12', '31'],
             values: { identityAnchor: '琴行老板；前乐队主唱', backgroundProfile: '与家庭关系疏离' },
             review: [{ field: 'backgroundProfile', label: '背景与关系', coverage: 0.7 }],
             dropped: [],
@@ -181,6 +182,67 @@ test('跨批次的同名人物合并且不重复堆叠', () => {
     assert.equal(merged[0].values.personalityAnchor, '言辞犀利');
     assert.equal(merged[0].values.backgroundProfile, '与家庭关系疏离');
     assert.equal(merged[0].review.length, 1);
+    assert.equal(merged[0].nameConflict, false);
+});
+
+test('来源互不相干的同名不合并，各自保留并标成撞名', () => {
+    const merged = mergeImportedDrafts([
+        { name: '老板', sourceUids: ['12'], values: { identityAnchor: '琴行老板' } },
+        { name: '老板', sourceUids: ['77'], values: { identityAnchor: '面馆老板' } },
+    ]);
+    assert.equal(merged.length, 2, '不同来源的同名不能被静默并成一个人');
+    assert.ok(merged.every(item => item.nameConflict === true));
+    assert.deepEqual(merged.map(item => item.values.identityAnchor), ['琴行老板', '面馆老板']);
+});
+
+test('模型自造的前缀不能当成通行证夹带断言', () => {
+    const entry = { uid: '12', name: '南枫', content: 'name: 南枫\nage: 32\nheight: 170cm' };
+    const { people } = normalizeImportedPeople({
+        people: [{
+            name: '南枫',
+            source_uids: ['12'],
+            // 「恋人」不是字段名。剥掉前缀后剩下的「南枫」确实在原文里，
+            // 但「恋人」这个断言原文根本没有。
+            identity_anchor: '恋人：南枫；身高：170cm',
+        }],
+    }, [entry]);
+    assert.equal(people.length, 1);
+    assert.equal(people[0].values.identityAnchor, '身高：170cm', '白名单字段名前缀仍然放行');
+    assert.deepEqual(people[0].dropped.map(item => item.text), ['恋人：南枫']);
+});
+
+test('短片段必须整串在原文里出现，不接受零散拼凑', () => {
+    const source = '南枫是琴行老板，性格高冷。';
+    assert.equal(groundingCoverage('琴行老板', source), 1);
+    assert.equal(groundingCoverage('老板琴行', source), 0, '重排过的短片段不是搬运');
+    assert.equal(groundingCoverage('南枫高冷', source), 0, '跨句拼出来的短片段不算命中');
+});
+
+test('source_uids 失效时按人物名定位来源，不拿整批兜底', () => {
+    const batch = [
+        { uid: '1', name: '南枫', content: 'name: 南枫\n愤世嫉俗，厌恶虚伪与崇洋媚外' },
+        { uid: '2', name: '黄语情', content: 'name: 黄语情\n说话软软的，做事细致周到' },
+    ];
+    // uid 是假的，且这段设定其实是黄语情的。旧实现会拿整批当来源，让它蒙混过关。
+    const { people, skipped } = normalizeImportedPeople({
+        people: [{
+            name: '南枫',
+            source_uids: ['999'],
+            personality_anchor: '说话软软的，做事细致周到',
+        }],
+    }, batch);
+    assert.equal(people.length, 0, 'A 人物不能套用同批 B 人物的原文');
+    assert.deepEqual(skipped[0].sourceUids, ['1'], '来源应定位到写着「南枫」的那条');
+    assert.match(skipped[0].reason, /原文回查/);
+});
+
+test('人物名在整批里都定位不到时直接拦下', () => {
+    const batch = [{ uid: '1', name: '南枫', content: 'name: 南枫\nage: 32' }];
+    const { people, skipped } = normalizeImportedPeople({
+        people: [{ name: '苏晚晴', identity_anchor: 'age: 32' }],
+    }, batch);
+    assert.equal(people.length, 0);
+    assert.match(skipped[0].reason, /定位不到出处/);
 });
 
 test('同一条目拆出的多个人物拿到互不相同的身份标识', () => {
@@ -244,6 +306,30 @@ test('原文覆盖率能区分搬运与改写', () => {
     assert.ok(groundingCoverage('厌恶虚伪与崇洋媚外', source) >= IMPORT_PASS_COVERAGE);
     assert.ok(groundingCoverage('她对世界抱有一种疲惫的敌意', source) < 0.6);
     assert.equal(groundingCoverage('', source), 1);
+});
+
+test('超长条目切成带重叠的片段，不直接截断', () => {
+    const long = { uid: '5', name: '王国志', content: 'A'.repeat(7000) };
+    const chunks = splitLongEntries([long], { maxChars: 3000, overlap: 300 });
+
+    assert.ok(chunks.length > 1);
+    assert.ok(chunks.every(chunk => chunk.uid === '5'), '片段共享 uid，才能在合并时拼回同一个人');
+    assert.ok(chunks.every(chunk => chunk.content.length <= 3000));
+    assert.deepEqual(chunks.map(chunk => chunk.chunk), [1, 2, 3]);
+    assert.ok(chunks.every(chunk => chunk.chunkTotal === 3));
+    // 覆盖到最后一个字符，中间有重叠，边界上的设定不会被切没。
+    assert.equal(chunks.at(-1).content.at(-1), 'A');
+    const covered = chunks.reduce((sum, chunk) => sum + chunk.content.length, 0);
+    assert.ok(covered > 7000, '有重叠，总长应大于原文');
+
+    const short = { uid: '6', content: 'B'.repeat(100) };
+    assert.deepEqual(splitLongEntries([short]), [short], '短条目原样通过，不加 chunk 标记');
+});
+
+test('分块后的片段会告诉模型这只是片段', () => {
+    const chunks = splitLongEntries([{ uid: '5', name: '王国志', content: 'A'.repeat(7000) }]);
+    const prompt = buildWorldbookImportPrompt([chunks[1]]);
+    assert.match(prompt, /"fragment":"这是该条目的第 2\/3 段/);
 });
 
 test('批次按条数与字数双重上限切分', () => {

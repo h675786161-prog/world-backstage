@@ -681,6 +681,65 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             data-setting="${setting}" data-value="${id}"
             class="${String(current) === String(id) ? 'is-active' : ''}">${label}</button>
     `;
+    const generationLimits = settings.generationModuleLimits && typeof settings.generationModuleLimits === 'object'
+        ? settings.generationModuleLimits
+        : {};
+    const automaticTimeouts = {
+        simulation: 180000,
+        observation: 120000,
+        history: 300000,
+        opinion: 150000,
+    };
+    const generationModuleLabel = {
+        simulation: '世界推演',
+        observation: '人物观测',
+        history: '历史 / 记忆',
+        opinion: '舆情 / 闲逛',
+    };
+    const generationLimitFor = key => generationLimits[key] || { maxTokens: 0, timeoutMs: 0 };
+    const effectiveGenerationTokenLabel = key => {
+        const moduleLimit = generationLimitFor(key);
+        const cap = Number(moduleLimit.maxTokens) > 0
+            ? Number(moduleLimit.maxTokens)
+            : Number(settings.maxOutputTokens) > 0
+                ? Number(settings.maxOutputTokens)
+                : 0;
+        return cap > 0 ? `最多 ${Math.round(cap / 100) / 10}K` : '自动预算';
+    };
+    const effectiveGenerationTimeoutLabel = key => {
+        const moduleLimit = generationLimitFor(key);
+        const timeoutMs = Number(moduleLimit.timeoutMs) > 0
+            ? Number(moduleLimit.timeoutMs)
+            : Number(settings.generationTimeoutMs) > 0
+                ? Number(settings.generationTimeoutMs)
+                : automaticTimeouts[key];
+        return `${Math.round(timeoutMs / 1000)}s`;
+    };
+    const generationModuleRow = key => {
+        const moduleLimit = generationLimitFor(key);
+        return `
+            <div class="wb-generation-module-row">
+                <div class="wb-generation-module-copy">
+                    <strong>${generationModuleLabel[key]}</strong>
+                    <span>当前：${effectiveGenerationTokenLabel(key)} · ${effectiveGenerationTimeoutLabel(key)}</span>
+                </div>
+                <label>Token 上限
+                    <input type="number" min="0" max="16000" step="500"
+                        data-wb-generation-limit="maxTokens" data-module="${key}"
+                        value="${escapeAttr(moduleLimit.maxTokens || 0)}"
+                        title="0 = 继承全局">
+                    <small>0 = 继承</small>
+                </label>
+                <label>等待秒数
+                    <input type="number" min="0" max="600" step="15"
+                        data-wb-generation-limit="timeoutSeconds" data-module="${key}"
+                        value="${escapeAttr(moduleLimit.timeoutMs ? Math.round(moduleLimit.timeoutMs / 1000) : 0)}"
+                        title="0 = 继承全局">
+                    <small>0 = 继承</small>
+                </label>
+            </div>
+        `;
+    };
     const groupOpen = id => openGroups.has(id) ? 'open' : '';
     const subgroupOpen = id => openSubgroups.has(id) ? 'open' : '';
     const scopeMeta = {
@@ -1011,7 +1070,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </details>
 
                     <details class="wb-settings-subgroup" data-settings-subgroup="simulation-output" ${subgroupOpen('simulation-output')}>
-                        <summary><span>失败与输出</span><small>重试、输出预算与附加要求</small></summary>
+                        <summary><span>失败与附加要求</span><small>重试与推演侧重点</small></summary>
                         <div class="wb-settings-subgroup-body">
             <div class="wb-setting-block">
                 <label>推演失败自动重试</label>
@@ -1026,19 +1085,6 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     <input type="number" min="0" max="5" step="1"
                         data-wb-setting="autoRetryCount"
                         value="${escapeAttr(settings.autoRetryCount)}">
-                </label>
-                <label>单次最大输出</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 0, '自动')}
-                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 4000, '4K')}
-                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 8000, '8K')}
-                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 12000, '12K')}
-                </div>
-                <label class="wb-number-setting">
-                    自定义输出 token
-                    <input type="number" min="0" max="16000" step="500"
-                        data-wb-setting="maxOutputTokens"
-                        value="${escapeAttr(settings.maxOutputTokens)}">
                 </label>
                 <label class="wb-custom-instruction">
                     自定义推演要求
@@ -1312,6 +1358,60 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             <details class="wb-settings-group" data-settings-group="advanced" ${groupOpen('advanced')}>
                 <summary><span>高级与维护</span><small>过滤、恢复与诊断</small></summary>
                 <div class="wb-settings-group-body wb-advanced-settings-body wb-settings-subgroup-stack">
+                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-generation" ${subgroupOpen('advanced-generation')}>
+                        <summary><span>生成限制</span><small>Token 与单次等待时间</small></summary>
+                        <div class="wb-settings-subgroup-body">
+                            <div class="wb-setting-block">
+                                <label>全局 Token 上限</label>
+                                <div class="wb-option-row wb-option-row-four">
+                                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 0, '自动')}
+                                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 4000, '4K')}
+                                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 8000, '8K')}
+                                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 12000, '12K')}
+                                </div>
+                                <label class="wb-number-setting">
+                                    自定义 Token 上限
+                                    <input type="number" min="0" max="16000" step="500"
+                                        data-wb-setting="maxOutputTokens"
+                                        value="${escapeAttr(settings.maxOutputTokens)}">
+                                </label>
+                                <p class="wb-setting-explanation">0 = 自动。这里现在是真正的“上限”～不会因为你填了 8K，就强迫每个小任务都吐满 8K。</p>
+                            </div>
+
+                            <div class="wb-setting-block">
+                                <label>全局最长等待</label>
+                                <div class="wb-option-row wb-option-row-four">
+                                    ${settingButton('generationTimeoutMs', settings.generationTimeoutMs, 0, '自动')}
+                                    ${settingButton('generationTimeoutMs', settings.generationTimeoutMs, 60000, '60s')}
+                                    ${settingButton('generationTimeoutMs', settings.generationTimeoutMs, 120000, '120s')}
+                                    ${settingButton('generationTimeoutMs', settings.generationTimeoutMs, 180000, '180s')}
+                                </div>
+                                <label class="wb-number-setting">
+                                    自定义等待秒数
+                                    <input type="number" min="0" max="600" step="15"
+                                        data-wb-setting-seconds="generationTimeoutMs"
+                                        value="${escapeAttr(settings.generationTimeoutMs ? Math.round(settings.generationTimeoutMs / 1000) : 0)}">
+                                </label>
+                                <p class="wb-setting-explanation">0 = 自动。计的是“模型真正生成中的活跃时间”；浏览器切后台暂停计时，429 cooldown / 自动重试等待也不算进去。</p>
+                            </div>
+
+                            <details class="wb-generation-module-overrides">
+                                <summary>按模块单独设置 <small>留 0 就继承全局</small></summary>
+                                <div class="wb-generation-module-list">
+                                    ${generationModuleRow('simulation')}
+                                    ${generationModuleRow('observation')}
+                                    ${generationModuleRow('history')}
+                                    ${generationModuleRow('opinion')}
+                                </div>
+                            </details>
+
+                            <div class="wb-generation-defaults">
+                                <strong>自动等待参考</strong>
+                                <span>世界推演 180s · 人物观测 120s · 历史/记忆 300s · 舆情/闲逛 150s</span>
+                            </div>
+                        </div>
+                    </details>
+
                     <details class="wb-settings-subgroup" data-settings-subgroup="advanced-data" ${subgroupOpen('advanced-data')}>
                         <summary><span>数据备份</span><small>导出与导入当前世界</small></summary>
                         <div class="wb-settings-subgroup-body">
@@ -1726,7 +1826,7 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
             ${routeSetting('simulation', '世界推演使用的连接', '这里只选路线～连接凭据统一放全局设置。')}
         </div>
         <details class="wb-settings-subgroup wb-module-advanced" data-settings-subgroup="currents-advanced" ${advancedOpen('currents-advanced')}>
-            <summary><span>高级</span><small>失败处理、输出预算与附加要求</small></summary>
+            <summary><span>高级</span><small>失败处理与附加要求</small></summary>
             <div class="wb-module-advanced-body wb-flat-setting-list">
                 <div class="wb-setting-block">
                     <label>推演失败自动重试</label>
@@ -1738,15 +1838,9 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                     </div>
                     <label class="wb-number-setting">自定义重试次数<input type="number" min="0" max="5" step="1" data-wb-setting="autoRetryCount" value="${escapeAttr(settings.autoRetryCount)}"></label>
                 </div>
-                <div class="wb-setting-block">
-                    <label>单次最大输出</label>
-                    <div class="wb-option-row wb-option-row-four">
-                        ${settingButton('maxOutputTokens', settings.maxOutputTokens, 0, '自动')}
-                        ${settingButton('maxOutputTokens', settings.maxOutputTokens, 4000, '4K')}
-                        ${settingButton('maxOutputTokens', settings.maxOutputTokens, 8000, '8K')}
-                        ${settingButton('maxOutputTokens', settings.maxOutputTokens, 12000, '12K')}
-                    </div>
-                    <label class="wb-number-setting">自定义输出 token<input type="number" min="0" max="16000" step="500" data-wb-setting="maxOutputTokens" value="${escapeAttr(settings.maxOutputTokens)}"></label>
+                <div class="wb-setting-block wb-generation-relocated-note">
+                    <label>生成限制</label>
+                    <p class="wb-setting-explanation">Token 上限和最长等待已经统一放到「全局设置 → 高级与维护 → 生成限制」；那里也能单独覆盖世界推演、人物观测、历史/记忆和舆情。</p>
                 </div>
                 <label class="wb-custom-instruction">自定义推演要求<textarea data-wb-setting="customSimulationInstruction" maxlength="1000" rows="3" placeholder="例如：少制造新事件；更关注商会与港口的变化。">${escapeHtml(settings.customSimulationInstruction)}</textarea></label>
             </div>
@@ -2066,10 +2160,13 @@ function renderNowView(state, observerMode, people, activeEvents) {
                     <div class="wb-world-card-heading-row">
                         <span class="wb-section-kicker">WORLD STATE · ${escapeHtml(clockLabel)}</span>
                         <button class="wb-card-action-button is-edit" type="button"
-                            data-wb-action="open-world-editor" aria-label="编辑世界概况">编辑</button>
+                            data-wb-action="open-world-editor" aria-label="编辑世界设定">编辑</button>
                     </div>
                     <h3>${escapeHtml(state.world.title)}</h3>
                     <p>${escapeHtml(state.world.detail)}</p>
+                    ${state.world?.background
+                        ? '<span class="wb-section-kicker">WORLD BACKGROUND · 已设定</span>'
+                        : ''}
                 </div>
                 <div class="wb-world-pulse" aria-hidden="true">
                     <i></i><i></i><span></span>
@@ -2575,9 +2672,17 @@ function memorySummaryLevelMeta(summary) {
     return meta[level];
 }
 
-function renderMemoryActions(kind, item) {
+function renderMemoryActions(kind, item, selectedKeys = new Set()) {
+    const selectionKey = `${kind}:${item.id}`;
     return `
         <div class="wb-memory-card-actions">
+            <label class="wb-memory-select">
+                <input type="checkbox" data-wb-memory-select
+                    data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
+                    ${selectedKeys.has(selectionKey) ? 'checked' : ''}
+                    ${item.locked ? 'disabled' : ''}>
+                <span>${item.locked ? '已锁定' : '选择'}</span>
+            </label>
             <button class="is-edit" type="button" data-wb-action="open-memory-editor"
                 data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
                 ${item.locked ? 'disabled' : ''}>编辑</button>
@@ -2603,6 +2708,7 @@ function renderMemoryView(state, observerMode, {
     filter = 'active',
     visibleCount = 12,
     openFolds = new Set(),
+    selectedKeys = new Set(),
 } = {}) {
     const memory = state.storyMemory || {
         digest: null,
@@ -2688,7 +2794,7 @@ function renderMemoryView(state, observerMode, {
             ${fact.invalidationReason
                 ? `<div class="wb-memory-fact-note">${escapeHtml(fact.invalidationReason)}</div>`
                 : ''}
-            ${renderMemoryActions('fact', fact)}
+            ${renderMemoryActions('fact', fact, selectedKeys)}
         </article>
     `;
     };
@@ -2702,7 +2808,7 @@ function renderMemoryView(state, observerMode, {
             ${clue.sourceExcerpt ? `<blockquote>${escapeHtml(clue.sourceExcerpt)}</blockquote>` : ''}
             ${clue.resolution ? `<div class="wb-clue-resolution">${escapeHtml(clue.resolution)}</div>` : ''}
             ${clue.lifecycleReason && clue.lifecycleReason !== clue.resolution ? `<div class="wb-memory-fact-note">为什么变更：${escapeHtml(clue.lifecycleReason)}</div>` : ''}
-            ${renderMemoryActions('clue', clue)}
+            ${renderMemoryActions('clue', clue, selectedKeys)}
         </article>
     `;
     return `
@@ -2727,6 +2833,21 @@ function renderMemoryView(state, observerMode, {
                         value="${escapeAttr(query)}" placeholder="人物、地点、物品或关键词">
                 </label>
                 <small>${query ? `找到 ${resultCount} 条` : `当前分类 ${resultCount} 条`}</small>
+                ${observerMode === 'backstage' && resultCount ? `
+                    <div class="wb-memory-bulk-tools">
+                        <button type="button" data-wb-action="select-visible-memory"
+                            data-memory-items="${escapeAttr(JSON.stringify([
+                                ...shownFacts.filter(item => !item.locked).map(item => ({ kind: 'fact', id: item.id })),
+                                ...shownClues.filter(item => !item.locked).map(item => ({ kind: 'clue', id: item.id })),
+                                ...shownSummaries.filter(item => !item.locked).map(item => ({ kind: 'summary', id: item.id })),
+                            ]))}">选择当前显示</button>
+                        <button type="button" data-wb-action="bulk-delete-memory"
+                            ${selectedKeys.size ? '' : 'disabled'}>删除选中${selectedKeys.size ? ` · ${selectedKeys.size}` : ''}</button>
+                        <button class="is-danger" type="button" data-wb-action="clear-filtered-memory">
+                            ${normalizedFilter === 'all' && !query ? '清空全部未锁定记忆' : '清空当前筛选'}
+                        </button>
+                    </div>
+                ` : ''}
             </div>
             ${(memory.metabolismLog || []).length ? `
                 <details class="wb-fold wb-memory-digest" data-fold-key="memory:metabolism"
@@ -2843,7 +2964,7 @@ function renderMemoryView(state, observerMode, {
                                             ${sourceSummaries.length ? `<p>还有 ${sourceSummaries.length} 条更细的来源可以追溯～</p>` : ''}
                                         </div>
                                     </details>
-                                    ${renderMemoryActions('summary', summary)}
+                                    ${renderMemoryActions('summary', summary, selectedKeys)}
                                 </div>
                             </details>
                         `;
@@ -2928,7 +3049,7 @@ function renderWorldEditorModal(state) {
         <div class="wb-drawer-scrim" data-wb-action="close-world-editor">
             <form class="wb-event-form wb-world-editor" data-wb-form="world">
                 <div class="wb-form-heading">
-                    <div><span>WORLD DESK</span><h3>编辑世界概况</h3></div>
+                    <div><span>WORLD DESK</span><h3>编辑世界设定</h3></div>
                     <button type="button" data-wb-action="close-world-editor">×</button>
                 </div>
                 <label>世界标题
@@ -2937,8 +3058,14 @@ function renderWorldEditorModal(state) {
                 <label>当前概况
                     <textarea name="detail" required maxlength="900" rows="6">${escapeHtml(state.world?.detail || '')}</textarea>
                 </label>
-                <div class="wb-form-note">这里只修改“此刻”页展示的世界概况；主世界时间请继续在观测设置里校准。</div>
-                <button class="wb-primary-button" type="submit">保存世界概况</button>
+                <label>世界背景设定
+                    <textarea name="background" maxlength="5000" rows="12"
+                        placeholder="写这个世界长期成立的基础：时代与科技/魔法水平、地理与主要势力、社会规则、重要历史、原作时间线锚点……">${escapeHtml(state.world?.background || '')}</textarea>
+                </label>
+                <div class="wb-form-note">
+                    这里是世界的“地基”～后台人物、World Pulse、公共事件和正文一致性都会参考它；普通推演不会自己改写。适合写长期规则和重要时间线，不用把整张角色卡都塞进来 (｡•̀ᴗ-)✧
+                </div>
+                <button class="wb-primary-button" type="submit">保存世界设定</button>
             </form>
         </div>
     `;
@@ -3138,6 +3265,7 @@ export function createWorldBackstageUI({
     let memoryFilter = 'active';
     let memoryQuery = '';
     let memoryVisibleCount = 12;
+    let memorySelectedKeys = new Set();
     let memoryEditor = null;
     let personEditor = null;
     let worldEditorOpen = false;
@@ -3440,6 +3568,7 @@ export function createWorldBackstageUI({
             filter: memoryFilter,
             visibleCount: memoryVisibleCount,
             openFolds: openContentFolds,
+            selectedKeys: memorySelectedKeys,
         });
         if (activeView === 'archive') content = renderArchiveView(state, openContentFolds);
 
@@ -3917,6 +4046,88 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'select-visible-memory') {
+            let items = [];
+            try {
+                items = JSON.parse(target.dataset.memoryItems || '[]');
+            } catch {
+                items = [];
+            }
+            memorySelectedKeys = new Set(
+                items.map(item => `${item.kind}:${item.id}`),
+            );
+            render();
+            return;
+        }
+        if (action === 'bulk-delete-memory') {
+            const items = [...memorySelectedKeys].map(key => {
+                const separator = key.indexOf(':');
+                return {
+                    kind: separator >= 0 ? key.slice(0, separator) : 'fact',
+                    id: separator >= 0 ? key.slice(separator + 1) : key,
+                };
+            });
+            if (!items.length) return;
+            const confirmed = globalThis.confirm?.(
+                `(・_・;)  确定删除选中的 ${items.length} 条记忆吗？\n删除前会自动建立恢复点，锁定记忆不会被删。`,
+            );
+            if (confirmed === false) return;
+            const completed = await invokeAction('bulk-delete-memory', { items });
+            if (completed !== false) memorySelectedKeys = new Set();
+            render();
+            return;
+        }
+        if (action === 'clear-filtered-memory') {
+            const state = getState();
+            const memory = state.storyMemory || { facts: [], clues: [], summaries: [] };
+            const normalizedFilter = ['active', 'facts', 'clues', 'episodes', 'all'].includes(memoryFilter)
+                ? memoryFilter
+                : 'active';
+            const visibleFact = fact => (
+                (observerMode === 'backstage' || fact.visibility !== 'hidden')
+                && !fact.locked
+                && memoryItemMatches(fact, memoryQuery)
+                && (
+                    normalizedFilter === 'all'
+                    || normalizedFilter === 'facts'
+                    || (normalizedFilter === 'active' && ['active', 'disputed'].includes(fact.status))
+                )
+            );
+            const visibleClue = clue => (
+                (observerMode === 'backstage' || clue.visibility !== 'hidden')
+                && !clue.locked
+                && memoryItemMatches(clue, memoryQuery)
+                && (
+                    normalizedFilter === 'all'
+                    || normalizedFilter === 'clues'
+                    || (normalizedFilter === 'active' && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status))
+                )
+            );
+            const visibleSummary = summary => (
+                observerMode === 'backstage'
+                && !summary.locked
+                && memoryItemMatches(summary, memoryQuery)
+                && ['all', 'episodes'].includes(normalizedFilter)
+            );
+            const items = [
+                ...(memory.facts || []).filter(visibleFact).map(item => ({ kind: 'fact', id: item.id })),
+                ...(memory.clues || []).filter(visibleClue).map(item => ({ kind: 'clue', id: item.id })),
+                ...(memory.summaries || []).filter(visibleSummary).map(item => ({ kind: 'summary', id: item.id })),
+            ];
+            if (!items.length) {
+                notify('这个筛选里没有可删除的未锁定记忆～', 'info');
+                return;
+            }
+            const confirmed = globalThis.confirm?.(
+                `(・_・;)  将清理当前范围内 ${items.length} 条未锁定记忆。\n锁定记忆会保留，清理前会自动建立恢复点。`,
+            );
+            if (confirmed === false) return;
+            const completed = await invokeAction('bulk-delete-memory', { items });
+            if (completed !== false) memorySelectedKeys = new Set();
+            render();
+            return;
+        }
+
         if (action === 'delete-memory-item') {
             const confirmed = globalThis.confirm?.('(・_・;)  确定删除这条记忆吗？此操作可以用底部撤销恢复。');
             if (confirmed === false) return;
@@ -4458,6 +4669,18 @@ export function createWorldBackstageUI({
             return;
         }
 
+        if (event.target.matches?.('[data-wb-memory-select]')) {
+            const kind = String(event.target.dataset.memoryKind || 'fact');
+            const id = String(event.target.dataset.memoryId || '');
+            const key = `${kind}:${id}`;
+            const next = new Set(memorySelectedKeys);
+            if (event.target.checked) next.add(key);
+            else next.delete(key);
+            memorySelectedKeys = next;
+            render();
+            return;
+        }
+
         if (event.target.matches?.('[data-wb-worldbook-entry-id]')) {
             const uid = String(event.target.dataset.wbWorldbookEntryId || '');
             const next = new Set(worldbookSelectedIds);
@@ -4499,6 +4722,47 @@ export function createWorldBackstageUI({
                 [tagField]: String(event.target.value || '').slice(0, 80),
             };
             await persistTagFilterRules(current);
+            render();
+            return;
+        }
+
+        const settingSeconds = event.target.dataset.wbSettingSeconds;
+        if (settingSeconds) {
+            const seconds = Math.max(0, Number(event.target.value) || 0);
+            await invokeAction('update-settings', {
+                [settingSeconds]: seconds > 0 ? Math.round(seconds * 1000) : 0,
+            });
+            render();
+            return;
+        }
+
+        const generationLimitField = event.target.dataset.wbGenerationLimit;
+        const generationLimitModule = event.target.dataset.module;
+        if (
+            generationLimitField
+            && ['simulation', 'observation', 'history', 'opinion'].includes(generationLimitModule)
+        ) {
+            const settings = getSettings();
+            const current = settings.generationModuleLimits && typeof settings.generationModuleLimits === 'object'
+                ? settings.generationModuleLimits
+                : {};
+            const moduleLimit = {
+                ...(current[generationLimitModule] || { maxTokens: 0, timeoutMs: 0 }),
+            };
+            if (generationLimitField === 'maxTokens') {
+                moduleLimit.maxTokens = Math.max(0, Number.parseInt(event.target.value, 10) || 0);
+            } else if (generationLimitField === 'timeoutSeconds') {
+                const seconds = Math.max(0, Number(event.target.value) || 0);
+                moduleLimit.timeoutMs = seconds > 0 ? Math.round(seconds * 1000) : 0;
+            } else {
+                return;
+            }
+            await invokeAction('update-settings', {
+                generationModuleLimits: {
+                    ...current,
+                    [generationLimitModule]: moduleLimit,
+                },
+            });
             render();
             return;
         }
@@ -4568,6 +4832,7 @@ export function createWorldBackstageUI({
             const completed = await invokeAction('save-world-summary', {
                 title: data.title || '',
                 detail: data.detail || '',
+                background: data.background || '',
             });
             if (completed) worldEditorOpen = false;
         }

@@ -3,7 +3,7 @@ const WB_STATE_RECONCILE_ORDER = Object.freeze([3, 1, 4, 2]);
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 21;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
 
@@ -12,6 +12,15 @@ const ACTIVE_EVENT_STATES = new Set(['active', 'waiting']);
 const VALID_CLOCK_MODES = new Set(['duration', 'active', 'scheduled', 'condition']);
 const VALID_VISIBILITY = new Set(['hidden', 'trace', 'known', 'direct']);
 const VALID_KNOWLEDGE = new Set(['hidden', 'known']);
+const VALID_KNOWLEDGE_ROUTES = new Set([
+    'witnessed',
+    'told',
+    'investigated',
+    'message',
+    'public_channel',
+    'inferred',
+]);
+const VALID_KNOWLEDGE_CERTAINTY = new Set(['confirmed', 'suspected']);
 const VALID_CLUE_STATES = new Set(['open', 'developing', 'triggered', 'echoed', 'resolved', 'discarded']);
 const VALID_MEMORY_FACT_STATES = new Set(['active', 'disputed', 'superseded', 'invalidated']);
 const VALID_MEMORY_CONFIDENCE = new Set(['low', 'medium', 'high']);
@@ -53,6 +62,7 @@ const LIMITS = Object.freeze({
     personalityAnchor: 600,
     appearanceProfile: 700,
     backgroundProfile: 900,
+    worldBackground: 5000,
     worldbookRaw: 4000,
     speakingStyle: 360,
     behaviorBoundaries: 500,
@@ -932,11 +942,14 @@ export function buildPublicImpactPrompt(state, {
         '你是“世界背面”的公共事件影响传播引擎。你的任务不是写新闻，而是判断已经进入公共传播的世界事件，会怎样真实改变这个世界。',
         '',
         '核心原则：事件可以完全不是为了主角发生，但主角和角色生活在这个世界里，所以只要职业、组织、地点、资源、关系、政策、市场或社会环境被波及，后果必须进入后台世界状态。',
-        '1. 只根据 source_public_events 与当前权威世界状态推导后果。新闻措辞不是新的事实来源；不得从新闻标题脑补未公开的幕后原因。',
+        compact.world.background
+            ? `世界背景设定（基础约束，不可改写）：${compact.world.background}`
+            : '世界背景设定：未额外填写。',
+        '1. 只根据 source_public_events、世界背景设定与当前权威世界状态推导后果。新闻措辞不是新的事实来源；不得从新闻标题脑补未公开的幕后原因。',
         '2. publicity=public 表示公开事实；publicity=trace 只表示公开流传的迹象/传闻。trace 可以造成“传闻正在流传、品牌观望、公众讨论升温”等真实社会后果，但绝不能把传闻内容本身升级成已证实事实。',
         '3. 影响可以落到人物、组织/势力、地点、行业、资源、机会、合同、行程、声誉、价格、政策执行、基础设施和社会压力。该变的人物状态就 people_upsert；该留下的客观结果写 world_facts_upsert；持续压力写 world_pulse_upsert；需要继续发展的后果写 events_create/update。world_facts_upsert 必须填写 validity：current / upcoming / historical / persistent。源新闻已经结束，不代表它造成的后果也结束；仍然有效的后果用 current/persistent。',
         '4. 新建的后果事件必须 caused_by 包含源公共事件 id，避免因果链断掉。source_public_events 本身是本轮已确认输入，不要在 events_update 里改写它们；需要的新进展另建后果事件。不要为了“有影响”硬制造戏剧性后果；无直接影响完全允许。',
-        '5. 对非玩家角色：只有当她确实能通过公开渠道/职业渠道/组织通知等合理得知时，才在 people_upsert 增加 known_event_ids / known_fact_keys。',
+        '5. 对非玩家角色：只有当她本轮确实通过公开渠道/职业渠道/组织通知等接触到信息时，才在 people_upsert 写 knowledge_updates；禁止直接写 known_event_ids / known_fact_keys。public_channel 必须写清 evidence 和 source_event_id；其他镜头外 confirmed 获知也必须有 source_event_id 指向明确的通知/目击/调查过程事件，不能因为新闻公开或人物被波及就默认她自动知道。',
         '6. 对玩家：绝不能因为“新闻公开”就自动假定玩家已经看到了。若公共事件会直接影响玩家，但玩家当前未必知道，优先建立一个可被正文自然承接的后果事件（例如经纪人通知、行程变更、公司群消息、道路封闭导致到场受阻），并用 delivery_route/visibility 描述它如何进入前台；不要替玩家决定反应。',
         '7. 如果公共事件已经在物理层面直接影响当前地点/行程，例如停电、封路、航班取消，可以把这些后果写成世界事实；“角色知道这件新闻”仍然是另一层认知。',
         '8. 影响传播不是每条新闻都必须撞主角。先判断世界范围，再判断当前人物与之有没有真实连接。娱乐圈、政商、战争、灾害等题材里，行业/组织级新闻往往会自然波及大量角色；日常地方新闻则可能只影响局部。',
@@ -965,8 +978,15 @@ export function buildPublicImpactPrompt(state, {
                 physical_state: '',
                 emotional_state: '',
                 resource_state: '',
-                known_event_ids: [],
-                known_fact_keys: [],
+                knowledge_updates: [{
+                    kind: 'event | fact',
+                    ref: '事件ID / 事实key',
+                    route: 'public_channel | message | told | investigated | witnessed | inferred',
+                    certainty: 'confirmed | suspected',
+                    evidence: '该角色实际接触到这条公开信息/通知的依据',
+                    belief: '角色实际知道或相信的版本',
+                    source_event_id: '公开来源事件ID',
+                }],
                 relevance: 1,
                 source: 'background',
             }],
@@ -985,7 +1005,6 @@ export function buildPublicImpactPrompt(state, {
                 prerequisites: [],
                 cause: '',
                 actors: [],
-                known_by: [],
                 caused_by: ['源公共事件ID'],
                 publicity: 'private | trace | public',
                 public_trace: '',
@@ -1306,6 +1325,7 @@ export function createInitialState({
             name: asString(worldName, '未命名世界', 80),
             title: '世界仍在镜头之外继续',
             detail: '尚未完成第一次世界推演。',
+            background: '',
             calendar: {
                 name: '主世界历',
                 anchorAbsoluteDay: absoluteDay,
@@ -1724,15 +1744,87 @@ function normalizeFactBeliefs(value, fallback = []) {
         const key = asString(raw?.key, '', 180);
         const valueText = asString(raw?.value, '', 520);
         if (!key || !valueText) continue;
+        const route = asString(raw?.route, '', 40);
+        const certaintyRaw = asString(raw?.certainty, '', 20);
         byKey.set(key, {
             key,
             value: valueText,
             factId: asString(raw?.fact_id ?? raw?.factId, '', 120),
+            certainty: VALID_KNOWLEDGE_CERTAINTY.has(certaintyRaw)
+                ? certaintyRaw
+                : 'confirmed',
+            route: VALID_KNOWLEDGE_ROUTES.has(route) ? route : '',
+            evidence: asString(raw?.evidence, '', 360),
             learnedAtMessageId: asInteger(raw?.learned_at_message_id ?? raw?.learnedAtMessageId, 0, 0),
             updatedAt: asInteger(raw?.updated_at ?? raw?.updatedAt, 0, 0),
         });
     }
     return [...byKey.values()].slice(-LIMITS.cognitiveRefs);
+}
+
+
+function normalizeKnownEventViews(value, fallback = []) {
+    const byEvent = new Map();
+    for (const raw of [...asArray(fallback), ...asArray(value)]) {
+        const eventId = asString(raw?.event_id ?? raw?.eventId ?? raw?.id, '', 120);
+        const summary = asString(raw?.summary ?? raw?.view ?? raw?.belief, '', 520);
+        if (!eventId || !summary) continue;
+        const route = asString(raw?.route, '', 40);
+        const certaintyRaw = asString(raw?.certainty, '', 20);
+        byEvent.set(eventId, {
+            eventId,
+            summary,
+            certainty: VALID_KNOWLEDGE_CERTAINTY.has(certaintyRaw)
+                ? certaintyRaw
+                : 'confirmed',
+            route: VALID_KNOWLEDGE_ROUTES.has(route) ? route : '',
+            evidence: asString(raw?.evidence, '', 360),
+            learnedAtMessageId: asInteger(
+                raw?.learned_at_message_id ?? raw?.learnedAtMessageId,
+                0,
+                0,
+            ),
+            updatedAt: asInteger(raw?.updated_at ?? raw?.updatedAt, 0, 0),
+        });
+    }
+    return [...byEvent.values()].slice(-LIMITS.cognitiveRefs);
+}
+
+function normalizeKnowledgeAcquisitions(value, messageId = 0) {
+    return asArray(value)
+        .map(raw => {
+            const kind = asString(raw?.kind, '', 20).toLowerCase();
+            const ref = asString(
+                raw?.ref ?? raw?.ref_id ?? raw?.refId ?? raw?.key ?? raw?.event_id ?? raw?.eventId ?? raw?.clue_id ?? raw?.clueId,
+                '',
+                180,
+            );
+            const route = asString(raw?.route, '', 40).toLowerCase();
+            const certaintyRaw = asString(raw?.certainty, '', 20).toLowerCase();
+            const certainty = route === 'inferred'
+                ? 'suspected'
+                : (VALID_KNOWLEDGE_CERTAINTY.has(certaintyRaw) ? certaintyRaw : 'confirmed');
+            if (!['event', 'fact', 'clue'].includes(kind)) return null;
+            if (!ref || !VALID_KNOWLEDGE_ROUTES.has(route)) return null;
+            const evidence = asString(raw?.evidence, '', 360);
+            if (!evidence) return null;
+            return {
+                kind,
+                ref,
+                route,
+                certainty,
+                evidence,
+                belief: asString(raw?.belief ?? raw?.view ?? raw?.summary, '', 520),
+                sourceEventId: asString(raw?.source_event_id ?? raw?.sourceEventId, '', 120),
+                learnedAtMessageId: asInteger(
+                    raw?.learned_at_message_id ?? raw?.learnedAtMessageId,
+                    messageId,
+                    0,
+                ),
+            };
+        })
+        .filter(Boolean)
+        .slice(0, LIMITS.cognitiveRefs);
 }
 
 function activeFactByKey(state, key) {
@@ -1743,13 +1835,21 @@ function activeFactByKey(state, key) {
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0] || null;
 }
 
-function setFactBelief(person, fact, messageId = 0) {
-    if (!person || !fact?.key || !fact?.value) return;
+function setFactBelief(person, fact, messageId = 0, {
+    value = fact?.value,
+    certainty = 'confirmed',
+    route = '',
+    evidence = '',
+} = {}) {
+    if (!person || !fact?.key || !value) return;
     const beliefs = normalizeFactBeliefs(person.knownFactBeliefs);
     const next = {
         key: fact.key,
-        value: fact.value,
+        value: asString(value, fact.value, 520),
         factId: fact.id || '',
+        certainty: VALID_KNOWLEDGE_CERTAINTY.has(certainty) ? certainty : 'confirmed',
+        route: VALID_KNOWLEDGE_ROUTES.has(route) ? route : '',
+        evidence: asString(evidence, '', 360),
         learnedAtMessageId: asInteger(messageId, 0, 0),
         updatedAt: asInteger(fact.updatedAt, 0, 0),
     };
@@ -1865,7 +1965,7 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
     );
     const storedInnerVoice = isUser && !allowUserInnerVoice
         ? ''
-        : (hasNewInnerVoice ? innerVoice : asString(existing?.innerVoice, '', LIMITS.innerVoice));
+        : asString(existing?.innerVoice, '', LIMITS.innerVoice);
 
     return {
         id: normalizeId(raw?.id || existing?.id || name, 'person'),
@@ -1901,8 +2001,6 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         innerVoice: storedInnerVoice,
         innerVoiceAt: isUser && !allowUserInnerVoice
             ? worldMinute
-            : hasNewInnerVoice
-            ? asInteger(suppliedInnerVoiceAt, worldMinute, 0)
             : asInteger(existing?.innerVoiceAt, worldMinute, 0),
         knowledge: normalizeKnowledge(raw?.knowledge ?? existing?.knowledge),
         cognitionReady: Boolean(
@@ -1911,25 +2009,13 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
             ?? existing?.cognitionReady
             ?? false,
         ),
-        knownEventIds: mergeUniqueStrings(
-            existing?.knownEventIds,
-            raw?.known_event_ids ?? raw?.knownEventIds,
-            LIMITS.cognitiveRefs,
-        ),
-        knownFactKeys: mergeUniqueStrings(
-            existing?.knownFactKeys,
-            raw?.known_fact_keys ?? raw?.knownFactKeys,
-            LIMITS.cognitiveRefs,
-        ),
-        knownFactBeliefs: normalizeFactBeliefs(
-            raw?.known_fact_beliefs ?? raw?.knownFactBeliefs,
-            existing?.knownFactBeliefs,
-        ),
-        knownClueIds: mergeUniqueStrings(
-            existing?.knownClueIds,
-            raw?.known_clue_ids ?? raw?.knownClueIds,
-            LIMITS.cognitiveRefs,
-        ),
+        // Direct model writes to known_* are deliberately ignored.
+        // New cognition must pass through validated knowledge_updates.
+        knownEventIds: uniqueStrings(existing?.knownEventIds, LIMITS.cognitiveRefs),
+        knownEventViews: normalizeKnownEventViews(existing?.knownEventViews),
+        knownFactKeys: uniqueStrings(existing?.knownFactKeys, LIMITS.cognitiveRefs),
+        knownFactBeliefs: normalizeFactBeliefs(existing?.knownFactBeliefs),
+        knownClueIds: uniqueStrings(existing?.knownClueIds, LIMITS.cognitiveRefs),
         physicalState: asString(
             raw?.physical_state ?? raw?.physicalState ?? existing?.physicalState,
             '',
@@ -1966,6 +2052,14 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
             && Number.isInteger(Number(sourceMessageId))
             ? Number(sourceMessageId)
             : asInteger(existing?.presentInSceneMessageId, -1, -1),
+        lastLifeTickAt: asInteger(
+            raw?.last_life_tick_at
+            ?? raw?.lastLifeTickAt
+            ?? existing?.lastLifeTickAt
+            ?? existing?.updatedAt,
+            worldMinute,
+            0,
+        ),
         updatedAt: asInteger(raw?.updated_at ?? raw?.updatedAt, worldMinute, 0),
     };
 }
@@ -2261,32 +2355,21 @@ function listReferencesPerson(value, person) {
 
 function eventKnownToPerson(event, person) {
     const eventId = normalizedReference(event?.id);
-    const personalLedger = asArray(person?.knownEventIds)
+    return asArray(person?.knownEventIds)
         .some(id => normalizedReference(id) === eventId);
-    return personalLedger
-        || listReferencesPerson(event?.knownBy, person)
-        || listReferencesPerson(event?.actors, person);
 }
 
 function synchronizeCognitiveLedger(state) {
+    // Person cognition is authoritative. event.knownBy is only a derived mirror for
+    // compatibility/inspection; it can never grant knowledge back to a person.
     for (const event of asArray(state?.events)) {
         for (const person of asArray(state?.people)) {
-            if (eventKnownToPerson(event, person)) {
-                person.knownEventIds = mergeUniqueStrings(
-                    person.knownEventIds,
-                    [event.id],
-                    LIMITS.cognitiveRefs,
-                );
-            }
-            if (asArray(person?.knownEventIds).some(
-                id => normalizedReference(id) === normalizedReference(event?.id),
-            )) {
-                event.knownBy = mergeUniqueStrings(
-                    event.knownBy,
-                    [person.id],
-                    LIMITS.cognitiveRefs,
-                );
-            }
+            if (!eventKnownToPerson(event, person)) continue;
+            event.knownBy = mergeUniqueStrings(
+                event.knownBy,
+                [person.id],
+                LIMITS.cognitiveRefs,
+            );
         }
     }
 }
@@ -2649,6 +2732,292 @@ function conflictKeepsPersonField(rawConflicts, person, field) {
     });
 }
 
+
+function normalizedEvidenceText(value) {
+    return String(value || '').replace(/\s+/g, '').trim();
+}
+
+function foregroundKnowledgeEvidenceSupported(narrativeText, person, acquisition) {
+    const narrative = normalizedEvidenceText(narrativeText);
+    const evidence = normalizedEvidenceText(acquisition?.evidence);
+    if (!narrative || !evidence || evidence.length < 4) return false;
+
+    // Foreground cognition needs evidence from the actual new narrative, not a model
+    // invented explanation. The prompt asks the model to copy a short source excerpt.
+    if (!narrative.includes(evidence)) return false;
+
+    const personName = normalizedEvidenceText(person?.name);
+    if (personName && !evidence.includes(personName) && !narrative.includes(personName)) {
+        return false;
+    }
+    return true;
+}
+
+
+function backgroundAcquisitionHasWorldTrace(state, person, acquisition) {
+    if (acquisition?.route === 'inferred') return acquisition?.certainty === 'suspected';
+    if (acquisition?.route === 'public_channel') {
+        return publicChannelSupportsAcquisition(state, acquisition);
+    }
+
+    const sourceEventId = normalizedReference(acquisition?.sourceEventId);
+    if (!sourceEventId) return false;
+    const sourceEvent = asArray(state?.events).find(item => (
+        normalizedReference(item?.id) === sourceEventId
+    ));
+    if (!sourceEvent) return false;
+
+    const personName = String(person?.name || '').trim();
+    const traceText = `${sourceEvent.title || ''} ${sourceEvent.summary || ''} ${sourceEvent.cause || ''} ${acquisition.evidence || ''}`;
+    if (personName && !traceText.includes(personName)) return false;
+
+    const routeCue = {
+        witnessed: /(看见|看到|目睹|亲眼|听见|听到|亲耳|撞见|当场发现)/,
+        told: /(告诉|告知|转告|说明给|向.+说明|被.+告知)/,
+        investigated: /(调查|查到|查明|核实|验证|翻查|调取|检索)/,
+        message: /(收到|短信|消息|电话|邮件|通知|私信|群消息|来电)/,
+    }[acquisition.route];
+
+    return Boolean(routeCue?.test(traceText));
+}
+
+function publicChannelSupportsAcquisition(state, acquisition) {
+    const sourceEventId = normalizedReference(
+        acquisition?.sourceEventId || (acquisition?.kind === 'event' ? acquisition?.ref : ''),
+    );
+    if (!sourceEventId) return false;
+    const event = asArray(state?.events).find(item => (
+        normalizedReference(item?.id) === sourceEventId
+    ));
+    return Boolean(
+        event
+        && event.publicity === 'public'
+        && (event.publicHeadline || event.publicSummary || event.publicResult || event.publicTrace)
+    );
+}
+
+function applyKnowledgeAcquisition(state, person, rawAcquisition, {
+    messageId = 0,
+    narrativeText = '',
+    foreground = false,
+} = {}) {
+    const [acquisition] = normalizeKnowledgeAcquisitions([rawAcquisition], messageId);
+    if (!person || !acquisition) return false;
+
+    if (
+        foreground
+        && !foregroundKnowledgeEvidenceSupported(narrativeText, person, acquisition)
+    ) return false;
+
+    if (
+        acquisition.route === 'public_channel'
+        && !publicChannelSupportsAcquisition(state, acquisition)
+    ) return false;
+
+    if (
+        !foreground
+        && !backgroundAcquisitionHasWorldTrace(state, person, acquisition)
+    ) return false;
+
+    if (acquisition.route === 'inferred' && acquisition.certainty !== 'suspected') {
+        return false;
+    }
+
+    if (acquisition.kind === 'event') {
+        const event = asArray(state?.events).find(item => (
+            normalizedReference(item?.id) === normalizedReference(acquisition.ref)
+        ));
+        if (!event) return false;
+
+        const safeView = asString(
+            acquisition.belief
+            || (
+                acquisition.route === 'public_channel'
+                    ? (event.publicSummary || event.publicHeadline || event.publicTrace)
+                    : acquisition.evidence
+            ),
+            '',
+            520,
+        );
+        if (!safeView) return false;
+
+        person.knownEventViews = normalizeKnownEventViews([{
+            event_id: event.id,
+            summary: safeView,
+            certainty: acquisition.certainty,
+            route: acquisition.route,
+            evidence: acquisition.evidence,
+            learned_at_message_id: acquisition.learnedAtMessageId,
+            updated_at: state.clock?.absoluteMinute || 0,
+        }], person.knownEventViews);
+
+        if (acquisition.certainty === 'confirmed') {
+            person.knownEventIds = mergeUniqueStrings(
+                person.knownEventIds,
+                [event.id],
+                LIMITS.cognitiveRefs,
+            );
+        }
+        person.cognitionReady = true;
+        return true;
+    }
+
+    if (acquisition.kind === 'fact') {
+        const fact = activeFactByKey(state, acquisition.ref);
+        if (!fact) return false;
+
+        const beliefValue = asString(
+            acquisition.belief
+            || (acquisition.certainty === 'confirmed' ? fact.value : ''),
+            '',
+            520,
+        );
+        if (!beliefValue) return false;
+
+        setFactBelief(person, fact, acquisition.learnedAtMessageId || messageId, {
+            value: beliefValue,
+            certainty: acquisition.certainty,
+            route: acquisition.route,
+            evidence: acquisition.evidence,
+        });
+        if (acquisition.certainty === 'confirmed') {
+            person.knownFactKeys = mergeUniqueStrings(
+                person.knownFactKeys,
+                [fact.key],
+                LIMITS.cognitiveRefs,
+            );
+        }
+        person.cognitionReady = true;
+        return true;
+    }
+
+    if (acquisition.kind === 'clue') {
+        const clue = asArray(state?.storyMemory?.clues).find(item => (
+            normalizedReference(item?.id) === normalizedReference(acquisition.ref)
+        ));
+        if (!clue) return false;
+        // Suspicion about a clue is not equivalent to knowing that clue exists.
+        if (acquisition.certainty !== 'confirmed') return false;
+        person.knownClueIds = mergeUniqueStrings(
+            person.knownClueIds,
+            [clue.id],
+            LIMITS.cognitiveRefs,
+        );
+        person.cognitionReady = true;
+        return true;
+    }
+
+    return false;
+}
+
+
+function personKnowsReference(person, ref) {
+    const normalized = normalizedReference(ref);
+    if (!normalized) return false;
+    if (normalized.startsWith('event:')) {
+        const eventId = normalized.slice('event:'.length);
+        return asArray(person?.knownEventIds).some(id => normalizedReference(id) === eventId)
+            || asArray(person?.knownEventViews).some(view => normalizedReference(view?.eventId) === eventId);
+    }
+    if (normalized.startsWith('fact:')) {
+        const factKey = normalized.slice('fact:'.length);
+        return asArray(person?.knownFactKeys).some(key => normalizedReference(key) === factKey)
+            || asArray(person?.knownFactBeliefs).some(belief => normalizedReference(belief?.key) === factKey);
+    }
+    if (normalized.startsWith('clue:')) {
+        const clueId = normalized.slice('clue:'.length);
+        return asArray(person?.knownClueIds).some(id => normalizedReference(id) === clueId);
+    }
+    return false;
+}
+
+function textHasSecretOverlap(text, secret) {
+    const candidate = normalizedEvidenceText(text);
+    const source = normalizedEvidenceText(secret);
+    if (!candidate || !source || source.length < 6) return false;
+    if (candidate.includes(source)) return true;
+    const windows = [];
+    const width = source.length >= 12 ? 6 : 5;
+    for (let index = 0; index + width <= source.length; index += Math.max(2, width - 2)) {
+        windows.push(source.slice(index, index + width));
+    }
+    return windows.some(chunk => chunk.length >= 5 && candidate.includes(chunk));
+}
+
+
+function personHasNearbyUnknownSecrets(state, person) {
+    const name = String(person?.name || '');
+    for (const event of asArray(state?.events)) {
+        if (eventKnownToPerson(event, person)) continue;
+        if (
+            listReferencesPerson(event?.actors, person)
+            || (person?.location && event?.place === person.location)
+            || (name && (
+                String(event?.title || '').includes(name)
+                || String(event?.summary || '').includes(name)
+                || String(event?.cause || '').includes(name)
+            ))
+        ) return true;
+    }
+    return false;
+}
+
+function innerVoiceLeaksUnknownReality(state, person, candidate) {
+    for (const event of asArray(state?.events)) {
+        if (eventKnownToPerson(event, person)) continue;
+        const secrets = [
+            event.cause,
+            event.summary,
+            event.result,
+            event.expectedResult,
+        ].filter(Boolean);
+        if (secrets.some(secret => textHasSecretOverlap(candidate, secret))) return true;
+    }
+
+    const knownFactRefs = new Set([
+        ...asArray(person?.knownFactKeys).map(normalizedReference),
+        ...asArray(person?.knownFactBeliefs).map(item => normalizedReference(item?.key)),
+    ]);
+    for (const fact of asArray(state?.storyMemory?.facts)) {
+        if (knownFactRefs.has(normalizedReference(fact?.key))) continue;
+        if (fact?.visibility !== 'hidden') continue;
+        if (textHasSecretOverlap(candidate, fact?.value)) return true;
+    }
+    return false;
+}
+
+function commitSafeInnerVoice(state, person, rawPerson, {
+    worldMinute = 0,
+    allowUserInnerVoice = true,
+} = {}) {
+    if (!person) return false;
+    if (person.isUser && !allowUserInnerVoice) {
+        person.innerVoice = '';
+        person.innerVoiceAt = worldMinute;
+        return false;
+    }
+    const candidate = asString(rawPerson?.inner_voice ?? rawPerson?.innerVoice, '', LIMITS.innerVoice);
+    if (!candidate) return false;
+
+    const basis = uniqueStrings(
+        rawPerson?.inner_voice_basis ?? rawPerson?.innerVoiceBasis,
+        LIMITS.cognitiveRefs,
+    );
+    if (basis.length && basis.some(ref => !personKnowsReference(person, ref))) {
+        return false;
+    }
+    if (!basis.length && personHasNearbyUnknownSecrets(state, person)) {
+        return false;
+    }
+    if (innerVoiceLeaksUnknownReality(state, person, candidate)) {
+        return false;
+    }
+
+    person.innerVoice = candidate;
+    person.innerVoiceAt = worldMinute;
+    return true;
+}
+
 function narrativeSupportsLocationValue(narrativeText, value) {
     const text = String(narrativeText || '').replace(/\s+/g, '');
     const compactValue = String(value || '').replace(/\s+/g, '').trim();
@@ -2918,18 +3287,7 @@ export function applySimulationResult(baseState, rawPayload, {
     if (payload.world.title) state.world.title = payload.world.title;
     if (payload.world.detail) state.world.detail = payload.world.detail;
 
-    const preFactByKey = new Map(
-        asArray(state.storyMemory?.facts)
-            .filter(fact => ['active', 'disputed'].includes(fact.status))
-            .map(fact => [fact.key, deepClone(fact)]),
-    );
-    const cognitionBefore = new Map(
-        asArray(state.people).map(person => [person.id, {
-            knownFactKeys: [...asArray(person.knownFactKeys)],
-            knownFactBeliefs: normalizeFactBeliefs(person.knownFactBeliefs),
-        }]),
-    );
-    const pendingFactBeliefUpdates = [];
+    const pendingKnowledgeUpdates = [];
 
     const generatedConsistencyConflicts = [];
     let backgroundNpcUpdates = 0;
@@ -2963,21 +3321,24 @@ export function applySimulationResult(baseState, rawPayload, {
         }
         const existing = findPerson(state, rawPerson);
         if (existing && !foregroundPerson && existing.simulationEnabled === false) continue;
-        const existingCognition = existing ? cognitionBefore.get(existing.id) : null;
-        const incomingFactKeys = uniqueStrings(rawPerson?.known_fact_keys ?? rawPerson?.knownFactKeys, LIMITS.cognitiveRefs);
-        const refreshFactKeys = uniqueStrings(rawPerson?.known_fact_refresh_keys ?? rawPerson?.knownFactRefreshKeys, LIMITS.cognitiveRefs);
-        pendingFactBeliefUpdates.push({
+        pendingKnowledgeUpdates.push({
             personId: existing?.id || normalizeId(rawPerson?.id || rawPerson?.name, 'person'),
-            incomingFactKeys,
-            refreshFactKeys,
-            previousKeys: existingCognition?.knownFactKeys || [],
-            previousBeliefs: existingCognition?.knownFactBeliefs || [],
+            foreground: foregroundPerson,
+            rawPerson,
+            updates: normalizeKnowledgeAcquisitions(
+                rawPerson?.knowledge_updates
+                ?? rawPerson?.knowledgeUpdates
+                ?? rawPerson?.knowledge_acquisitions
+                ?? rawPerson?.knowledgeAcquisitions,
+                messageId || 0,
+            ),
         });
         const person = normalizePerson(rawPerson, existing, worldMinute, {
             userName,
             allowUserInnerVoice,
             sourceMessageId: messageId,
         });
+        if (!person.isUser) person.lastLifeTickAt = worldMinute;
         if (existing && foregroundPerson && !baseState?.needsReconciliation) {
             const authoritativeLocation = authoritativePersonFact(state, existing.id, 'location');
             const requestedLocation = asString(
@@ -3290,25 +3651,47 @@ export function applySimulationResult(baseState, rawPayload, {
         sourceMessageId: messageId,
         sourceSwipeId: swipeId,
     });
-    for (const pending of pendingFactBeliefUpdates) {
+    let acceptedKnowledgeUpdates = 0;
+    let rejectedKnowledgeUpdates = 0;
+    for (const pending of pendingKnowledgeUpdates) {
         const person = state.people.find(item => item.id === pending.personId);
         if (!person) continue;
-        person.knownFactBeliefs = normalizeFactBeliefs(person.knownFactBeliefs, pending.previousBeliefs);
-        const previousKeys = new Set(pending.previousKeys.map(normalizedReference));
-        const previousBeliefKeys = new Set(pending.previousBeliefs.map(item => normalizedReference(item.key)));
-        const refreshKeys = new Set(pending.refreshFactKeys.map(normalizedReference));
-        for (const key of pending.incomingFactKeys) {
-            const normalizedKey = normalizedReference(key);
-            const alreadyKnown = previousKeys.has(normalizedKey);
-            const hasBelief = previousBeliefKeys.has(normalizedKey);
-            if (alreadyKnown && hasBelief && !refreshKeys.has(normalizedKey)) continue;
-            const fact = alreadyKnown && !hasBelief && !refreshKeys.has(normalizedKey)
-                ? preFactByKey.get(key)
-                : activeFactByKey(state, key);
-            if (fact) setFactBelief(person, fact, messageId);
+        for (const update of pending.updates) {
+            const accepted = applyKnowledgeAcquisition(state, person, update, {
+                messageId,
+                narrativeText,
+                foreground: pending.foreground,
+            });
+            if (accepted) acceptedKnowledgeUpdates += 1;
+            else rejectedKnowledgeUpdates += 1;
         }
     }
     synchronizeCognitiveLedger(state);
+    let acceptedInnerVoices = 0;
+    let rejectedInnerVoices = 0;
+    for (const pending of pendingKnowledgeUpdates) {
+        const person = state.people.find(item => item.id === pending.personId);
+        if (!person) continue;
+        const hasCandidate = Boolean(
+            asString(pending.rawPerson?.inner_voice ?? pending.rawPerson?.innerVoice, '', LIMITS.innerVoice)
+        );
+        if (!hasCandidate) continue;
+        const accepted = commitSafeInnerVoice(state, person, pending.rawPerson, {
+            worldMinute,
+            allowUserInnerVoice,
+        });
+        if (accepted) acceptedInnerVoices += 1;
+        else rejectedInnerVoices += 1;
+    }
+    if (acceptedKnowledgeUpdates || rejectedKnowledgeUpdates || acceptedInnerVoices || rejectedInnerVoices) {
+        appendAudit(state, {
+            type: 'cognition_firewall',
+            text: `认知更新：知识接受 ${acceptedKnowledgeUpdates} · 拒绝 ${rejectedKnowledgeUpdates}；独白接受 ${acceptedInnerVoices} · 拒绝 ${rejectedInnerVoices}`,
+            reason: rejectedKnowledgeUpdates || rejectedInnerVoices
+                ? '缺少合法获知路径/证据，或独白引用了角色尚未掌握的幕后真相'
+                : '全部通过角色认知边界校验',
+        });
+    }
 
     state.needsReconciliation = false;
     state.pendingSync = false;
@@ -3547,6 +3930,13 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
 
     const authorityLines = ['<world_backstage_state>'];
     const supportLines = ['<world_backstage_support>'];
+    if (injectWorldState && state.world?.background) {
+        authorityLines.push(
+            '世界背景基础约束（用户手动设定，不是动态剧情建议；不得被正文随意改写）：',
+            modelText(state.world.background, 1600),
+            '背景规则负责定义这个世界允许什么；若后续已经发生的权威世界事实明确改变了某个“状态”，以最新事实为准，但不得无因果违反背景中的底层规则。',
+        );
+    }
     if (injectWorldState) {
         if (state.clock?.anchored) {
             authorityLines.push(
@@ -3679,7 +4069,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     // Hard continuity stays closest to the latest user message. Memory, optional
     // reveal candidates and public-opinion additions are injected separately at
     // a deeper position by index.js so they cannot compete with world facts.
-    const authority = compactLayer(authorityLines, 3000, '</world_backstage_state>');
+    const authority = compactLayer(authorityLines, 4600, '</world_backstage_state>');
     const support = supportHasContent
         ? compactLayer(supportLines, 1100, '</world_backstage_support>')
         : { text: '', omitted: 0 };
@@ -4083,6 +4473,10 @@ export function buildWorldBootstrapPrompt(state, {
         '你是“世界背面”的历史回溯引擎。目标是让插件在长聊天中途启用时，能够接上此前已经真实发生的世界，而不是重新创作一份过去。',
         '',
         '总原则：恢复证据支持的世界，不补写隐藏历史，不推演未来。',
+        compactState.world.background
+            ? `当前已有用户维护的世界背景设定：${compactState.world.background}`
+            : '当前没有额外填写世界背景设定。',
+        '世界背景设定不是历史回溯的输出字段，也不能由聊天回溯覆盖；历史只能在这份地基上恢复已经发生的状态。',
         '1. 本批每条 assistant 正文仍要生成一条 turn_summaries L0 摘要；同时整理长期记忆 facts/clues。',
         '2. people_upsert 恢复截至本批末尾仍有意义的人物当前状态：最后可靠位置、行动/处境、长期目标与已明确状态。只写正文有证据的内容；不得根据外貌猜身份，不得替玩家补内心。',
         '3. events_create 只恢复“到本批末尾仍未解决”的过程、承诺、计划、威胁、调查、旅程、任务、环境压力等。已经明确结束的旧事件不要重新挂回暗流；它们应沉淀为 world_facts_upsert / 长期记忆。',
@@ -4094,6 +4488,7 @@ export function buildWorldBootstrapPrompt(state, {
         '8. 公开性必须严格，而且与 visibility 分开：正文/角色已经看见某件事，不代表社会知道。只有历史里明确出现公告、媒体报道、论坛传播、公众可见现象或广泛传播渠道时，才设置 publicity=trace/public。私密事件保持 publicity=private，即使 visibility=direct。',
         '9. 不生成舆情帖子。若历史已经明确存在公开渠道，只恢复 publicity/public_trace；只有已经真正公开成可报道事实时才可补 public_headline/public_summary，且只能写公众当时能知道的内容。若历史明确记录了公开终局，可填写 public_result；否则不要把最后一次报道误当终局。',
         '10. 用户手动/世界书人物属于作者资产。已有 author_managed/locked_profile 的稳定设定不可改写；只能用历史证据补动态状态。',
+        '10A. 历史回溯中的人物认知也必须走 knowledge_updates。只有本批历史正文明确证明人物亲历、被告知、调查、收到消息或确实接触公开渠道时才恢复认知；evidence 必须复制本批原文短句。不要因为人物参与某事件、和事件同地点、或名字出现在摘要里就推断她知道幕后真相。',
         '11. 同一人物/事件/事实尽量沿用已有 id/key，避免每批重复创建。',
         '12. 只输出合法 JSON，不要 Markdown、解释或代码围栏。',
         `13. ${outputRule}`,
@@ -4175,6 +4570,15 @@ export function buildWorldBootstrapPrompt(state, {
                 physical_state: '',
                 emotional_state: '',
                 resource_state: '',
+                knowledge_updates: [{
+                    kind: 'event | fact | clue',
+                    ref: '事件ID / 事实key / 线索ID',
+                    route: 'witnessed | told | investigated | message | public_channel | inferred',
+                    certainty: 'confirmed | suspected',
+                    evidence: '必须复制本批历史正文中能证明获知路径的短句',
+                    belief: '人物当时实际知道/相信的版本',
+                    source_event_id: '',
+                }],
                 relevance: 1,
                 source: 'foreground',
                 present_in_scene: false,
@@ -4193,7 +4597,6 @@ export function buildWorldBootstrapPrompt(state, {
                 prerequisites: [],
                 cause: '',
                 actors: [],
-                known_by: [],
                 caused_by: [],
                 publicity: 'private | trace | public',
                 public_trace: '',
@@ -4211,7 +4614,6 @@ export function buildWorldBootstrapPrompt(state, {
                 consequence: '',
                 cause: '',
                 actors: [],
-                known_by: [],
                 publicity: 'private | trace | public',
                 public_trace: '',
                 public_headline: '',
@@ -4337,12 +4739,17 @@ export function buildWorldPulsePrompt(state, {
 
     return [
         '你是“世界背面”的世界脉搏引擎。本次没有新的小说正文；主世界时钟已经由用户或系统推进或正在进行一次明确的公共世界刷新。你只根据当前权威世界状态，结算到期变化并让镜头外世界按因果继续。',
+        compact.world.background
+            ? `世界背景设定（用户维护、不可由推演改写）：${compact.world.background}`
+            : '世界背景设定：未额外填写。',
+        '所有自主变化都必须发生在这份背景允许的世界里。背景里的规则/时代/地理/势力/时间线是生成边界；世界可以发展，但不能为了制造事件绕开底层规则。',
         `本次触发原因：${modelText(reason, 120)}。世界脉搏活跃度：${activityRule}`,
         `公共世界循环：${publicCycleRule}`,
         '规则：',
         '1. elapsed_minutes 必须返回 0；时间已经在调用前推进完毕，不得再次加时。',
         '2. 先检查 existing events 是否到期、条件是否满足、持续过程是否应该结算；需要时用 events_update。同一场持续中的公共事件（例如同一地区暴雨、同一案件、同一行业风波）有新进展时优先更新原 event 的 public_headline/public_summary/status，而不是另建一条近义重复新闻；只有真正独立的新事件才 events_create。事件在本轮终结且终局已经公开时必须填写 public_result；若终局尚未公开则留空，不能拿旧 public_summary 假装最终结果。',
         '3. 再检查 world_pulse、人物长期目标、势力/地区/环境压力是否自然产生下一步。可以 events_create，但不得因为“没有正文”就硬造事件。',
+        '3A. compact people 中 life_tick_due_minutes>0 的人物已经有一段世界时间没有进行个人生活结算。优先处理最逾期的后台人物：从她原本的位置、工作/日程、长期目标、关系、身体情绪和资源继续；没有大事时就写普通生活推进，不要为了让她“有发展”强制造戏。',
         '4. world_pulse_upsert 只写真正变化的持续宏观状态；不要机械复读原值。',
         '5. 公开世界事件可以与主角完全无关，但必须用 publicity 表示社会公开度，而不是拿 visibility 代替。publicity=trace 只能形成未证实讨论；publicity=public 才能进入新闻，并填写 public_headline/public_summary。',
         '6. visibility 仍只控制事件怎样靠近当前正文。某件私密事件即使 visibility=direct，也可以且通常应该 publicity=private。',
@@ -4616,95 +5023,82 @@ export function buildPersonObservationPrompt(state, person, {
     if (isUser && !includeUserInnerVoice) {
         throw new Error('玩家视角默认关闭；如确实需要，请先开启“描写玩家内心”');
     }
-    const recent = asArray(narrativeTurns)
-        .map(turn => `${turn?.role === 'user' ? 'user' : 'assistant'}：${modelText(turn?.content, 2400)}`)
-        .filter(Boolean)
-        .join('\n');
+
+    // IMPORTANT: raw recent narrative is intentionally NOT passed to the person POV.
+    // The world engine may know the full scene; this observer only receives the
+    // character's own state + validated cognition ledger.
+    void narrativeTurns;
+
     const relevantMemory = selectRelevantStoryMemory(
         state,
-        `${person?.name || ''}\n${person?.location || ''}\n${recent}`,
-        { maximumClues: 6, maximumSummaries: 3 },
+        `${person?.name || ''}\n${person?.location || ''}\n${person?.action || ''}\n${person?.intent || ''}`,
+        { maximumClues: 10, maximumFacts: 16, maximumSummaries: 0, includeDigest: false },
     );
     relevantMemory.digest = null;
     relevantMemory.summaries = [];
+
     const knownFactKeys = new Set(
         asArray(person?.knownFactKeys).map(item => normalizedReference(item)),
     );
     const knownClueIds = new Set(
         asArray(person?.knownClueIds).map(item => normalizedReference(item)),
     );
-    const cognitionReady = Boolean(person?.cognitionReady);
-    const hasEventLedger = cognitionReady
-        || asArray(person?.knownEventIds).length > 0
-        || state.events.some(event => (
-            listReferencesPerson(event?.knownBy, person)
-            || listReferencesPerson(event?.actors, person)
-        ));
+    const beliefs = normalizeFactBeliefs(person?.knownFactBeliefs);
+    const beliefKeys = new Set(beliefs.map(item => normalizedReference(item.key)));
 
-    if (cognitionReady) {
-        const beliefs = normalizeFactBeliefs(person?.knownFactBeliefs);
-        const beliefKeys = new Set(beliefs.map(item => normalizedReference(item.key)));
-        const beliefFacts = beliefs.map(belief => {
-            const historical = asArray(state?.storyMemory?.facts).find(fact => (
-                belief.factId && fact.id === belief.factId
-            )) || asArray(state?.storyMemory?.facts).find(fact => fact.key === belief.key);
-            return {
-                id: belief.factId || `belief_${hashText(`${belief.key}
-${belief.value}`)}`,
-                key: belief.key,
-                subject: historical?.subject || belief.key,
-                predicate: historical?.predicate || '',
-                value: belief.value,
-                people: historical?.people || [],
-                locations: historical?.locations || [],
-                tags: historical?.tags || [],
-                status: 'belief',
-                confidence: historical?.confidence || 'medium',
-                importance: historical?.importance || 2,
-                visibility: 'known',
-                source_message_id: belief.learnedAtMessageId || historical?.sourceMessageId || 0,
-                source_swipe_id: historical?.sourceSwipeId || 0,
-            };
-        });
-        const legacyFacts = relevantMemory.facts.filter(fact => (
-            knownFactKeys.has(normalizedReference(fact.key))
-            && !beliefKeys.has(normalizedReference(fact.key))
-        ));
-        relevantMemory.facts = [...beliefFacts, ...legacyFacts].slice(0, 16);
-    } else {
-        relevantMemory.facts = relevantMemory.facts.filter(fact => (
-            fact.visibility !== 'hidden' || fact.people.includes(person?.name)
-        ));
-    }
-    relevantMemory.clues = relevantMemory.clues.filter(clue => (
-        cognitionReady
-            ? knownClueIds.has(normalizedReference(clue.id))
-            : (
-                clue.visibility !== 'hidden'
-                || clue.people.includes(person?.name)
-            )
+    const beliefFacts = beliefs.map(belief => {
+        const historical = asArray(state?.storyMemory?.facts).find(fact => (
+            belief.factId && fact.id === belief.factId
+        )) || asArray(state?.storyMemory?.facts).find(fact => fact.key === belief.key);
+        return {
+            id: belief.factId || `belief_${hashText(`${belief.key}\n${belief.value}`)}`,
+            key: belief.key,
+            subject: historical?.subject || belief.key,
+            predicate: historical?.predicate || '',
+            value: belief.value,
+            people: historical?.people || [],
+            locations: historical?.locations || [],
+            tags: historical?.tags || [],
+            status: belief.certainty === 'suspected' ? 'suspected' : 'known',
+            confidence: belief.certainty === 'suspected'
+                ? 'low'
+                : (historical?.confidence || 'medium'),
+            importance: historical?.importance || 2,
+            visibility: 'known',
+            certainty: belief.certainty,
+            route: belief.route,
+            evidence: belief.evidence,
+            source_message_id: belief.learnedAtMessageId || historical?.sourceMessageId || 0,
+            source_swipe_id: historical?.sourceSwipeId || 0,
+        };
+    });
+    const legacyKnownFacts = relevantMemory.facts.filter(fact => (
+        knownFactKeys.has(normalizedReference(fact.key))
+        && !beliefKeys.has(normalizedReference(fact.key))
     ));
-    const relevantEvents = state.events
-        .filter(event => (
-            !TERMINAL_EVENT_STATES.has(event.status)
-            && (
-                hasEventLedger
-                    ? eventKnownToPerson(event, person)
-                    : (
-                        event.place === person?.location
-                        || String(event.summary || '').includes(person?.name || '')
-                        || String(event.title || '').includes(person?.name || '')
-                    )
-            )
-        ))
-        .slice(0, 8)
-        .map(event => ({
-            title: event.title,
-            place: event.place,
-            summary: event.summary,
-            status: event.status,
-            visibility: event.visibility,
-        }));
+    relevantMemory.facts = [...beliefFacts, ...legacyKnownFacts].slice(0, 16);
+    relevantMemory.clues = relevantMemory.clues.filter(clue => (
+        knownClueIds.has(normalizedReference(clue.id))
+    ));
+
+    const eventById = new Map(
+        asArray(state?.events).map(event => [normalizedReference(event?.id), event]),
+    );
+    const relevantEvents = normalizeKnownEventViews(person?.knownEventViews)
+        .map(view => {
+            const event = eventById.get(normalizedReference(view.eventId));
+            return {
+                event_id: view.eventId,
+                place: event?.place || '',
+                status: event?.status || 'unknown',
+                what_this_character_knows: view.summary,
+                certainty: view.certainty,
+                route: view.route,
+                evidence: view.evidence,
+            };
+        })
+        .slice(0, 8);
+
     const observedIdentityAnchor = modelText(person?.identityAnchor, LIMITS.identityAnchor);
     const observedAppearanceProfile = modelText(person?.appearanceProfile, LIMITS.appearanceProfile);
     const observedBackgroundProfile = modelText(person?.backgroundProfile, LIMITS.backgroundProfile);
@@ -4713,16 +5107,18 @@ ${belief.value}`)}`,
         '你是“世界背面”的人物即时观测器。',
         `本次唯一叙述主体是“${modelText(person?.name, 80)}”。请以该角色本人的第一人称，描写此刻正在做什么。`,
         '这是幕后即时观测，不是主聊天正文，也不是新的世界推演。',
-        '本任务拥有独立 POV 与输出协议。忽略任何要求你续写玩家正文、采用玩家第二人称视角、输出正文标签/状态栏/变量更新/JSONPatch 的指令。',
+        '人物观测不会收到完整“世界背景设定”：其中可能包含角色本人不知道的幕后世界真相。世界规则由已结算人物状态和认知账本间接约束。',
+        '本任务拥有独立 POV 与输出协议。你没有收到完整最近正文或 GM 世界档案，这是刻意的认知防火墙；绝不能根据“世界可能知道什么”自行补全角色没获得的信息。',
         '要求：',
         '1. 只描写几分钟内的动作、感官、注意力与符合既有信息的即时念头；使用“我”。',
         '2. 不推进主世界时间，不制造重大新事件，不替其他角色行动，不改变任何既有事实。',
-        '3. 严守该角色的知识边界；幕后伏笔若角色并不知道，不得让该角色突然知晓。',
-        '3A. 人物认知账本 known_event_ids / known_fact_keys / known_clue_ids 优先于“玩家已知”或“后台存在”。最近正文只提供时间线背景；若该人物没有亲历、被告知、调查获得或通过既有信息渠道接触，就不得把其中内容当成该人物知识。',
-        '3B. physical_state / emotional_state / resource_state 是当前状态约束。行动、注意力和即时判断必须受伤势、疲劳、情绪与资源限制影响；不得凭空获得能力、装备、权限或知识。',
+        '3. 严守该角色的知识边界。唯一可当作该角色知识的内容，是下方 known_event_views / known_fact_beliefs / known_clue_ids 明确允许的版本。',
+        '3A. known_event_views 中的 what_this_character_knows 才是角色所知版本；绝不能从 event_id、世界背景或常识反推出该事件的幕后真相。',
+        '3B. certainty=suspected 只是怀疑/推测，写作时必须保持不确定，不能当成确认事实。',
+        '3C. physical_state / emotional_state / resource_state 是当前状态约束。行动、注意力和即时判断必须受伤势、疲劳、情绪与资源限制影响；不得凭空获得能力、装备、权限或知识。',
         observedIdentityAnchor
             ? `该角色的身份锚点：${observedIdentityAnchor}。性别身份、称谓/代词、物种、年龄阶段与社会身份必须逐项遵守，不得根据外貌或其他表面特征擅自改写。`
-            : '该角色没有设置身份锚点；正文也未明确时使用中性表述，不得根据外貌、衣着、身体或物种猜测其性别与称谓。',
+            : '该角色没有设置身份锚点；没有明确证据时使用中性表述，不得根据外貌、衣着、身体或物种猜测其性别与称谓。',
         observedAppearanceProfile
             ? `该角色的稳定外貌设定：${observedAppearanceProfile}。观测时保持一致，不要把外貌特征混写成人格或身份。`
             : '该角色没有额外外貌设定；不要为了画面感凭空补充关键身体特征。',
@@ -4730,8 +5126,8 @@ ${belief.value}`)}`,
             ? `该角色的背景与关系设定：${observedBackgroundProfile}。只用于保持经历与关系连续，不得因此让角色知道认知账本之外的信息。`
             : '该角色没有额外背景资料；不要自行补造重要经历或关系。',
         modelText(playerIdentityAnchor, 400)
-            ? `若片段提及玩家“${modelText(userName, 80) || 'user'}”，必须逐项遵守身份锚点：${modelText(playerIdentityAnchor, 400)}；不得根据外貌、衣着、身体或物种反推性别，也不得擅自改变称谓或身份。`
-            : '若片段提及玩家且正文没有明确身份或称谓，使用中性表述；不得根据外貌、衣着、身体或物种猜测性别。',
+            ? `若片段提及玩家“${modelText(userName, 80) || 'user'}”，必须逐项遵守身份锚点：${modelText(playerIdentityAnchor, 400)}。`
+            : '若片段提及玩家且没有明确身份或称谓，使用中性表述。',
         '4. 文风自然沉浸，不写标题、说明、项目符号或“第一视角”等标签。',
         '5. 输出约 250—450 字的中文片段，只返回片段本身。必须完整结束最后一句；宁可提前收束，也不要在句中停止。',
         '',
@@ -4753,20 +5149,46 @@ ${belief.value}`)}`,
             knowledge: person?.knowledge,
             cognition_ready: person?.cognitionReady,
             known_event_ids: person?.knownEventIds,
+            known_event_views: relevantEvents,
             known_fact_keys: person?.knownFactKeys,
-            known_fact_beliefs: person?.knownFactBeliefs,
+            known_fact_beliefs: relevantMemory.facts,
             known_clue_ids: person?.knownClueIds,
             physical_state: person?.physicalState,
             emotional_state: person?.emotionalState,
             resource_state: person?.resourceState,
         }),
-        '同地点或相关进行中事件：',
+        '该角色可使用的事件认知版本：',
         JSON.stringify(relevantEvents),
-        '相关旧记忆（只使用该角色有合理机会知道的内容）：',
+        '该角色可使用的长期记忆/信念：',
         JSON.stringify(relevantMemory),
-        '最近正文：',
-        recent || '（无）',
+        '不要索取、猜测或补写未提供的最近正文；缺信息时就让角色保持不知道。',
     ].join('\n');
+}
+
+function personLifeTickInterval(person) {
+    const relevance = asInteger(person?.relevance, 1, 0, 3);
+    if (relevance >= 3) return 12 * 60;
+    if (relevance === 2) return 24 * 60;
+    if (relevance === 1) return 48 * 60;
+    return 72 * 60;
+}
+
+function personLifeTickInfo(state, person) {
+    const now = asInteger(state?.clock?.absoluteMinute, 0, 0);
+    const last = asInteger(
+        person?.lastLifeTickAt ?? person?.updatedAt,
+        now,
+        0,
+    );
+    const interval = personLifeTickInterval(person);
+    const elapsed = Math.max(0, now - last);
+    return {
+        last,
+        interval,
+        elapsed,
+        overdue: Math.max(0, elapsed - interval),
+        due: elapsed >= interval,
+    };
 }
 
 export function compactStateForModel(state, {
@@ -4774,12 +5196,39 @@ export function compactStateForModel(state, {
     userName = '',
     maximumPeople = 14,
 } = {}) {
-    const people = [...state.people]
+    const maximum = asInteger(maximumPeople, 14, 1, LIMITS.people);
+    const candidates = [...state.people]
+        .filter(person => person?.simulationEnabled !== false || person?.isUser)
+        .map(person => ({
+            person,
+            life: personLifeTickInfo(state, person),
+        }));
+
+    // Reserve part of every world call for people whose own lives are overdue,
+    // so a long-absent NPC cannot fall out forever just because the foreground
+    // stopped mentioning them.
+    const dueQuota = Math.max(1, Math.floor(maximum / 2));
+    const due = candidates
+        .filter(item => !item.person?.isUser && item.life.due)
         .sort((a, b) => (
-            Number(b.relevance || 0) - Number(a.relevance || 0)
-            || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+            Number(b.life.overdue) - Number(a.life.overdue)
+            || Number(b.person.relevance || 0) - Number(a.person.relevance || 0)
+            || Number(a.life.last) - Number(b.life.last)
         ))
-        .slice(0, asInteger(maximumPeople, 14, 1, LIMITS.people));
+        .slice(0, dueQuota);
+
+    const selectedIds = new Set(due.map(item => item.person.id));
+    const regular = candidates
+        .filter(item => !selectedIds.has(item.person.id))
+        .sort((a, b) => (
+            Number(b.person.relevance || 0) - Number(a.person.relevance || 0)
+            || Number(b.person.presentInSceneMessageId || -1) - Number(a.person.presentInSceneMessageId || -1)
+            || Number(b.person.updatedAt || 0) - Number(a.person.updatedAt || 0)
+        ))
+        .slice(0, Math.max(0, maximum - due.length));
+
+    const people = [...due, ...regular].map(item => item.person);
+    const lifeById = new Map(candidates.map(item => [item.person.id, item.life]));
     const events = state.events
         .filter(event => !['cancelled', 'missed'].includes(event.status) || event.delivery.state === 'pending')
         .sort((a, b) => {
@@ -4804,6 +5253,7 @@ export function compactStateForModel(state, {
             name: modelText(state.world.name, 80),
             title: modelText(state.world.title, 140),
             detail: modelText(state.world.detail, 360),
+            background: modelText(state.world.background, LIMITS.worldBackground),
         },
         world_pulse: {
             baseline_established: Boolean(state.worldPulse?.baselineEstablished),
@@ -4881,6 +5331,7 @@ export function compactStateForModel(state, {
                 knowledge: person.knowledge,
                 cognition_ready: person.cognitionReady,
                 known_event_ids: person.knownEventIds,
+                known_event_views: person.knownEventViews,
                 known_fact_keys: person.knownFactKeys,
                 known_fact_beliefs: person.knownFactBeliefs,
                 known_clue_ids: person.knownClueIds,
@@ -4892,6 +5343,9 @@ export function compactStateForModel(state, {
                 locked_profile: Boolean(person.locked),
                 author_managed: Boolean(person.manual || person.worldbookRef || person.source === 'manual'),
                 last_seen_message_id: person.lastSeenMessageId,
+                last_life_tick_at: lifeById.get(person.id)?.last ?? person.lastLifeTickAt ?? person.updatedAt,
+                life_tick_interval_minutes: lifeById.get(person.id)?.interval ?? personLifeTickInterval(person),
+                life_tick_due_minutes: lifeById.get(person.id)?.overdue ?? 0,
             };
         }),
         events: events.map(event => ({
@@ -5013,6 +5467,10 @@ export function buildSimulationPrompt(state, {
 
     return [
         '你是“世界背面”的世界状态引擎。你维护一个持续运转的世界，不是正文纪要器。正文只是当前镜头；镜头外已经结算的结果同样属于真实世界。你不续写小说正文，只处理标记为 new="true" 的正文变化，并继续维护必要的镜头外因果。',
+        compact.world.background
+            ? `用户维护的“世界背景设定”是这个世界的基础地基，不是动态状态，也不是可改写建议：${compact.world.background}`
+            : '当前没有额外填写“世界背景设定”，只按已有世界状态与正文证据运行。',
+        '世界背景设定只能由用户手动编辑。你可以让世界发展改变其中描述的“当前状态”，但不得无因果违反其中的世界规则、时代/科技/魔法边界、地理、势力结构或明确时间线锚点；也绝不能在返回 world.title/detail 时偷偷改写这份背景。',
         '',
         '推演原则：',
         `1. 主世界时间是唯一进度轴。${timeRule}`,
@@ -5049,10 +5507,15 @@ export function buildSimulationPrompt(state, {
         '10. deliveries_confirmed 只表示“正文是否看见了结果”，绝不决定结果是否存在。已经结算的世界事实即使没有显露也仍然有效；只有本批新正文确实承接、感知或留下可见痕迹时才填写对应事件ID。',
         newAssistantRule,
         '12. 相关旧记忆中的伏笔只能帮助保持因果连续；角色不知情的隐藏伏笔不能突然变成角色知识。',
-        '12A. NPC 认知由 known_event_ids / known_fact_keys / known_fact_beliefs / known_clue_ids 与事件 known_by 共同记录。只有亲历、被明确告知、主动调查得到、或通过该人物既有身份/渠道合理获得的信息才能加入；绝不能把玩家知道、旁白知道或后台知道的内容自动复制给 NPC。账本条目不会因为本轮未提及而自动遗忘。known_fact_beliefs 保存该人物实际获知时的事实版本；世界事实后续更迭时不得自动刷新。若人物本轮确实得知同一 key 的新版本，除了保留 known_fact_keys，还要把该 key 放进 known_fact_refresh_keys。对于本轮确实处理到的旧人物，在核对其当前认知后设置 cognition_ready=true；旧存档人物首次升级时不得把所有相关记忆批量回填，只能加入有证据支持其知情的条目。',
-        '12B. event.visibility 只表示事件对前台/玩家的显露边界，不代表 NPC 是否知道；NPC 是否知情只看 known_by 与人物认知账本。known_by 优先填写已有人物 id，新人物尚无 id 时可暂填精确姓名。',
+        '12A. NPC 认知必须经过 knowledge_updates，known_event_ids / known_fact_keys / known_fact_beliefs / known_clue_ids 都是只读账本，禁止直接写入新值。每条 knowledge_updates 必须给 kind、ref、route、certainty、evidence；route 只能是 witnessed / told / investigated / message / public_channel / inferred。前台正文中的获知，evidence 必须复制本批 new=true 正文里能直接证明“这个人物如何得知”的短句；没有证据就不要提交。',
+        '12A-1. inferred 只能 certainty=suspected，只能形成“怀疑/相信某个版本”，绝不能直接升级成确认知识。若是 event，belief/view 只写角色实际知道的表面版本；世界真实 summary/cause/result 可能包含幕后真相，绝不能整段复制给角色。',
+        '12A-2. public_channel 只表示角色本轮确实通过新闻/公告/职业渠道接触到了公开信息；“新闻已经公开”本身不等于每个角色都看过。没有实际接触渠道就不要提交 public_channel。',
+        '12A-2a. 镜头外人物新增 confirmed 知识时，除 inferred 外必须填写 source_event_id 指向本轮/既有的一条“获知过程事件”；该事件的 title/summary/cause 要明确写出这个人物如何看见、被告知、收到消息或调查得知。单纯把人物列进原秘密事件 actors 不算获知证据。',
+        '12A-3. inner_voice 只能基于该人物已知/已怀疑的内容与当前身体情绪状态。若独白依赖具体认知，请在 inner_voice_basis 写 event:ID / fact:KEY / clue:ID；不得把世界全知、旁白秘密或玩家私下行为塞进角色内心。',
+        '12B. event.visibility 只表示前台/玩家显露边界，不代表 NPC 是否知道。actors 只表示参与/被波及，也不等于知情；event.known_by 只是兼容镜像，插件会从通过防火墙的人物认知账本反推，不要依赖它给角色开知识。',
         '12C. physical_state / emotional_state / resource_state 是人物当前状态。状态变化必须真实影响 action、intent 与执行能力；受伤、疲劳、缺资源、权限不足或情绪压力不能下一轮凭空消失。不得发明角色卡、身份锚点、既有记忆未支持的技能、装备、权限或知识。玩家的 emotional_state 只有正文/玩家明确表达时才能更新，不得替玩家猜内心。',
-        '12D. 新事件必须写明 cause。cause 可以来自：已有事件的行动/结果/后果、人物既定目标与主动行动、势力/地点/环境压力、或当前世界条件下自然发生的合理环境事件。若由已有事件继续发酵，必须在 caused_by 填上游事件 ID；若没有上游事件，则在 cause 中明确写出人物目标或环境条件。actors 只列真实参与/经历该事件的人，known_by 只列确实知情的人。一个事件解决后如果产生新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命。',
+        '12D. 新事件必须写明 cause。cause 可以来自：已有事件的行动/结果/后果、人物既定目标与主动行动、势力/地点/环境压力、或当前世界条件下自然发生的合理环境事件。若由已有事件继续发酵，必须在 caused_by 填上游事件 ID；若没有上游事件，则在 cause 中明确写出人物目标或环境条件。actors 只列真实参与/经历该事件的人。一个事件解决后如果产生新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命。',
+        '12D-LIFE. compact people 中 life_tick_due_minutes>0 的人物属于“生活结算到期”。优先让其中最多 backgroundNpcBudget 名从她自己的 location/action/intent/long_term_goal/physical/emotional/resource 状态继续生活，而不是围着最新正文找反应。即使这段时间没有戏剧性事件，也应通过 people_upsert 给出自然的当前行动/意图，从而完成生活结算；不要为了交作业硬造冲突。',
         '12D-1. 已解决事件本体不要为了“保留剧情”继续挂在暗流里；保留它已经造成的 world_facts / 人物状态 / 环境后果即可。真正需要继续发展的部分创建为新的事件。这样事件链会往前长，而不是反复复读旧事件。',
         '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
         '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',
@@ -5107,12 +5570,18 @@ export function buildSimulationPrompt(state, {
                 long_term_goal: '',
                 trace: '',
                 inner_voice: '',
+                inner_voice_basis: ['event:已有事件ID | fact:事实key | clue:线索ID'],
                 knowledge: 'hidden',
                 cognition_ready: true,
-                known_event_ids: [],
-                known_fact_keys: [],
-                known_fact_refresh_keys: [],
-                known_clue_ids: [],
+                knowledge_updates: [{
+                    kind: 'event | fact | clue',
+                    ref: '事件ID / 事实key / 线索ID',
+                    route: 'witnessed | told | investigated | message | public_channel | inferred',
+                    certainty: 'confirmed | suspected',
+                    evidence: '能证明该人物如何获知的原文短句；前台获知必须复制本批正文',
+                    belief: '该人物实际知道/相信的版本；event 尤其不能复制幕后全知 summary',
+                    source_event_id: '若通过公开事件/通知渠道获知，可填写来源事件ID',
+                }],
                 physical_state: '',
                 emotional_state: '',
                 resource_state: '',
@@ -5135,7 +5604,6 @@ export function buildSimulationPrompt(state, {
                 prerequisites: [],
                 cause: '',
                 actors: [],
-                known_by: [],
                 caused_by: [],
                 publicity: 'private | trace | public',
                 public_trace: '',
@@ -5154,7 +5622,6 @@ export function buildSimulationPrompt(state, {
                 consequence: '',
                 cause: '',
                 actors: [],
-                known_by: [],
                 caused_by: [],
                 publicity: 'private | trace | public',
                 public_trace: '',
@@ -5782,6 +6249,8 @@ export function trimState(inputState) {
         name: asString(state.world?.name, '未命名世界', 80),
         title: asString(state.world?.title, '世界仍在继续', 180),
         detail: asString(state.world?.detail, '', 640),
+        // User-authored foundation. Routine simulation can read it but never rewrites it.
+        background: asString(state.world?.background, '', LIMITS.worldBackground),
         calendar: normalizeWorldCalendar(state.world?.calendar, absoluteDay),
     };
     const rawCalendar = state.world.calendar;
@@ -5920,6 +6389,34 @@ export function trimState(inputState) {
             [],
             { reason: 'schema-18-public-fingerprint-baseline' },
         );
+    }
+    if (previousSchemaVersion < 20) {
+        // 旧认知账本曾受 actors / known_by / visibility 反向推断污染，无法可靠
+        // 区分“角色真的知道”与“世界/模型知道”。升级时对 NPC 做保守清洗，
+        // 之后只允许带获知路径和证据的 knowledge_updates 重新建立认知。
+        state.people = state.people.map(person => {
+            if (person.isUser) return person;
+            return {
+                ...person,
+                cognitionReady: false,
+                knownEventIds: [],
+                knownEventViews: [],
+                knownFactKeys: [],
+                knownFactBeliefs: [],
+                knownClueIds: [],
+                innerVoice: '',
+                innerVoiceAt: state.clock.absoluteMinute,
+            };
+        });
+        state.events = state.events.map(event => ({
+            ...event,
+            knownBy: [],
+        }));
+        appendAudit(state, {
+            type: 'cognition_schema_20_reset',
+            text: '已清洗旧版 NPC 认知账本，等待按获知路径重新建立',
+            reason: '旧版 actors/known_by/visibility 可能把世界全知泄漏给人物',
+        });
     }
 
     state.consistencyConflicts = asArray(state.consistencyConflicts)

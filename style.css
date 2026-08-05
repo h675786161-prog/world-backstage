@@ -1593,7 +1593,7 @@
 .wb-people-grid {
     width: 100%;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 13px;
 }
 
@@ -5237,10 +5237,8 @@
 }
 
 #world-backstage-root .wb-person-summary-heading {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
+    display: grid;
+    gap: 3px;
     min-width: 0;
 }
 
@@ -5250,16 +5248,19 @@
     font-family: "Iowan Old Style", "Noto Serif SC", "Songti SC", serif;
     font-size: 15px;
     font-weight: 500;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.35;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
 }
 
 #world-backstage-root .wb-person-summary-heading small {
-    max-width: 58%;
+    max-width: 100%;
     color: var(--wb-text-faint);
     font-size: 8px;
     overflow: hidden;
+    text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -7423,4 +7424,206 @@
     border-color: color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line));
     background: color-mix(in srgb, var(--wb-accent-soft) 78%, transparent);
     color: var(--wb-text);
+}
+
+
+/* 1.7.0 · person names are identity, not disposable metadata */
+#world-backstage-root .wb-person-card-summary {
+    align-items: flex-start;
+}
+
+#world-backstage-root .wb-person-summary-main {
+    align-items: flex-start;
+}
+
+#world-backstage-root .wb-person-card-summary > .wb-fold-meta {
+    flex: 0 0 auto;
+    max-width: 96px;
+}
+
+@media (max-width: 980px) {
+    #world-backstage-root .wb-person-card-summary .wb-person-sim-state {
+        max-width: 62px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+}
+
+/* 1.7.0 · memory bulk selection */
+#world-backstage-root .wb-memory-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 26px;
+    padding: 4px 8px;
+    border-radius: 7px;
+    color: var(--wb-text-faint);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-memory-select input {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-memory-select:has(input:checked) {
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-memory-bulk-tools {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    padding-top: 10px;
+    border-top: 1px solid var(--wb-line);
+}
+
+#world-backstage-root .wb-memory-bulk-tools button {
+    min-height: 30px;
+    padding: 6px 10px;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 9px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-memory-bulk-tools button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line)) !important;
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-memory-bulk-tools button.is-danger {
+    margin-left: auto;
+}
+
+#world-backstage-root .wb-memory-bulk-tools button.is-danger:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-danger) 48%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-danger) 8%, transparent);
+    color: var(--wb-danger);
+}
+
+#world-backstage-root .wb-memory-bulk-tools button:disabled {
+    cursor: not-allowed;
+    opacity: 0.42;
+}
+
+@media (max-width: 680px) {
+    #world-backstage-root .wb-memory-bulk-tools button.is-danger {
+        margin-left: 0;
+    }
+
+    #world-backstage-root .wb-memory-bulk-tools button {
+        flex: 1 1 140px;
+    }
+}
+
+
+/* 1.7.1 · generation limits */
+#world-backstage-root .wb-generation-module-overrides {
+    border: 1px solid var(--wb-line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--wb-panel) 92%, transparent);
+}
+
+#world-backstage-root .wb-generation-module-overrides > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    cursor: pointer;
+    color: var(--wb-text-soft);
+}
+
+#world-backstage-root .wb-generation-module-overrides > summary small {
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    font-weight: 400;
+}
+
+#world-backstage-root .wb-generation-module-list {
+    display: grid;
+    gap: 8px;
+    padding: 0 10px 10px;
+}
+
+#world-backstage-root .wb-generation-module-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) minmax(105px, 0.65fr) minmax(105px, 0.65fr);
+    gap: 10px;
+    align-items: end;
+    padding: 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 9px;
+    background: var(--wb-panel-faint);
+}
+
+#world-backstage-root .wb-generation-module-copy {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+}
+
+#world-backstage-root .wb-generation-module-copy strong {
+    color: var(--wb-text);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+#world-backstage-root .wb-generation-module-copy span {
+    overflow: hidden;
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-generation-module-row > label {
+    display: grid;
+    gap: 4px;
+    color: var(--wb-text-soft);
+    font-size: 9px;
+}
+
+#world-backstage-root .wb-generation-module-row > label input {
+    width: 100%;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-generation-module-row > label small {
+    color: var(--wb-text-faint);
+    font-size: 8px;
+}
+
+#world-backstage-root .wb-generation-defaults {
+    display: grid;
+    gap: 4px;
+    padding: 9px 11px;
+    border-left: 2px solid var(--wb-accent);
+    color: var(--wb-text-faint);
+    font-size: 9px;
+}
+
+#world-backstage-root .wb-generation-defaults strong {
+    color: var(--wb-text-soft);
+    font-weight: 500;
+}
+
+#world-backstage-root .wb-generation-relocated-note {
+    opacity: 0.9;
+}
+
+@media (max-width: 720px) {
+    #world-backstage-root .wb-generation-module-row {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    #world-backstage-root .wb-generation-module-copy {
+        grid-column: 1 / -1;
+    }
 }

@@ -480,7 +480,11 @@ function headersFrom(getRequestHeaders) {
 }
 
 function timeoutError(timeoutMs) {
-    return new Error(`独立 API 请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
+    const error = new Error(`独立 API 请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
+    error.code = 'REQUEST_TIMEOUT';
+    error.errorType = 'timeout';
+    error.timeoutMs = Number(timeoutMs) || 0;
+    return error;
 }
 
 function visibilityDocument() {

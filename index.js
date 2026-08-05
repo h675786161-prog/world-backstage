@@ -71,9 +71,9 @@ import {
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '1.5.6';
+const PLUGIN_VERSION = '1.7.1';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 22,
+    settingsVersion: 23,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -115,7 +115,16 @@ const DEFAULT_SETTINGS = Object.freeze({
     },
     publicOpinionRevealMode: 'observe',
     publicOpinionAutoEnabled: true,
+    // 0 = automatic task budget. A positive value is a global upper cap.
     maxOutputTokens: 0,
+    // 0 = module-aware automatic timeout. This counts active request time only.
+    generationTimeoutMs: 0,
+    generationModuleLimits: {
+        simulation: { maxTokens: 0, timeoutMs: 0 },
+        observation: { maxTokens: 0, timeoutMs: 0 },
+        history: { maxTokens: 0, timeoutMs: 0 },
+        opinion: { maxTokens: 0, timeoutMs: 0 },
+    },
     tagFilterEnabled: true,
     tagFilterRules: DEFAULT_TAG_FILTER_RULES.map(rule => ({ ...rule })),
     narrativeIncludeTag: '',
@@ -435,6 +444,77 @@ function normalizeApiModuleRoutes(value, profiles = []) {
     };
 }
 
+
+const AUTO_GENERATION_TIMEOUT_MS = Object.freeze({
+    simulation: 180000,
+    observation: 120000,
+    history: 300000,
+    opinion: 150000,
+});
+
+function normalizeGenerationTokenLimit(value) {
+    const numeric = Number.parseInt(value, 10);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    return Math.min(16000, Math.max(1000, numeric));
+}
+
+function normalizeGenerationTimeoutMs(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    return Math.min(600000, Math.max(15000, Math.round(numeric)));
+}
+
+function normalizeGenerationModuleLimits(value) {
+    const raw = value && typeof value === 'object' ? value : {};
+    const result = {};
+    for (const key of ['simulation', 'observation', 'history', 'opinion']) {
+        const item = raw[key] && typeof raw[key] === 'object' ? raw[key] : {};
+        result[key] = {
+            maxTokens: normalizeGenerationTokenLimit(item.maxTokens),
+            timeoutMs: normalizeGenerationTimeoutMs(item.timeoutMs),
+        };
+    }
+    return result;
+}
+
+function resolveGenerationLimits(settings, taskKind, requestedMaxTokens = 2200) {
+    const routeKey = taskRouteKey(taskKind);
+    const moduleLimit = settings.generationModuleLimits?.[routeKey] || {};
+    const tokenCap = Number(moduleLimit.maxTokens) > 0
+        ? Number(moduleLimit.maxTokens)
+        : Number(settings.maxOutputTokens) > 0
+            ? Number(settings.maxOutputTokens)
+            : 0;
+    const requested = Math.max(64, Number.parseInt(requestedMaxTokens, 10) || 2200);
+    const maxTokens = tokenCap > 0
+        ? Math.max(64, Math.min(requested, tokenCap))
+        : requested;
+
+    const timeoutMs = Number(moduleLimit.timeoutMs) > 0
+        ? Number(moduleLimit.timeoutMs)
+        : Number(settings.generationTimeoutMs) > 0
+            ? Number(settings.generationTimeoutMs)
+            : (AUTO_GENERATION_TIMEOUT_MS[routeKey] || 180000);
+
+    return {
+        routeKey,
+        requestedMaxTokens: requested,
+        tokenCap,
+        maxTokens,
+        timeoutMs,
+        timeoutSource: Number(moduleLimit.timeoutMs) > 0
+            ? 'module'
+            : Number(settings.generationTimeoutMs) > 0
+                ? 'global'
+                : 'auto',
+        tokenSource: Number(moduleLimit.maxTokens) > 0
+            ? 'module'
+            : Number(settings.maxOutputTokens) > 0
+                ? 'global'
+                : 'auto',
+    };
+}
+
 function makeApiProfileId() {
     return `api_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -550,7 +630,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 22;
+    settings.settingsVersion = 23;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -571,16 +651,15 @@ function getSettings() {
         settings.publicOpinionRevealMode = 'observe';
     }
     settings.publicOpinionAutoEnabled = settings.publicOpinionAutoEnabled !== false;
-    settings.maxOutputTokens = Math.min(
-        16000,
-        Math.max(0, Number.parseInt(settings.maxOutputTokens, 10) || 0),
-    );
+    settings.maxOutputTokens = normalizeGenerationTokenLimit(settings.maxOutputTokens);
+    settings.generationTimeoutMs = normalizeGenerationTimeoutMs(settings.generationTimeoutMs);
+    settings.generationModuleLimits = normalizeGenerationModuleLimits(settings.generationModuleLimits);
     settings.orbPosition = normalizeOrbPosition(settings.orbPosition);
     settings.orbEnabled = previousSettingsVersion < 22
         ? (previous?.orbEnabled !== undefined ? Boolean(previous.orbEnabled) : true)
         : settings.orbEnabled !== false;
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 22) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 23) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -800,9 +879,14 @@ function branchSourceKey(messageId, message, swipeId = message?.swipe_id ?? 0) {
 }
 
 function branchDataFromMessage(message, swipeId = message?.swipe_id ?? 0) {
+    // swipe_info is the canonical branch store when SillyTavern provides it.
+    // Older builds wrote the same full snapshot to both swipe_info and message.extra,
+    // doubling chat-file weight for the current swipe.
+    const swipeData = message?.swipe_info?.[swipeId]?.extra?.[SNAPSHOT_KEY];
+    if (swipeData && typeof swipeData === 'object') return swipeData;
     const currentData = message?.extra?.[SNAPSHOT_KEY];
     if (currentData && typeof currentData === 'object') return currentData;
-    return message?.swipe_info?.[swipeId]?.extra?.[SNAPSHOT_KEY] || null;
+    return null;
 }
 
 function latestAssistantEntry() {
@@ -1250,16 +1334,98 @@ function attachBranchData(message, swipeId, data) {
     if (!message || typeof message !== 'object') return;
     message.extra ||= {};
 
-    if (Number(message.swipe_id ?? 0) === Number(swipeId)) {
-        message.extra[SNAPSHOT_KEY] = clone(data);
-    }
-
     const swipeInfo = message.swipe_info?.[swipeId];
     if (swipeInfo && typeof swipeInfo === 'object') {
         swipeInfo.extra ||= {};
         swipeInfo.extra[SNAPSHOT_KEY] = clone(data);
+
+        // Keep exactly one full copy. branchDataFromMessage reads swipe_info first.
+        if (Number(message.swipe_id ?? 0) === Number(swipeId)) {
+            delete message.extra[SNAPSHOT_KEY];
+        }
+        return;
+    }
+
+    // Some ST message shapes do not expose swipe_info. Fall back to message.extra.
+    if (Number(message.swipe_id ?? 0) === Number(swipeId)) {
+        message.extra[SNAPSHOT_KEY] = clone(data);
     }
 }
+
+function compactBranchSnapshotStorage({
+    keepRecentAssistant = 50,
+} = {}) {
+    const context = getContext();
+    const chat = context?.chat || [];
+    const assistantIndexes = chat
+        .map((message, index) => (!message?.is_user && !message?.is_system ? index : -1))
+        .filter(index => index >= 0);
+    const recentStart = assistantIndexes.length > keepRecentAssistant
+        ? assistantIndexes[assistantIndexes.length - keepRecentAssistant]
+        : -1;
+
+    let changed = false;
+    const compactCommitted = (data, historical = false) => {
+        if (!data || typeof data !== 'object' || data.status !== 'committed') return;
+        if (data.base) {
+            data.base = null;
+            changed = true;
+        }
+        if (historical) {
+            if (data.summary) {
+                delete data.summary;
+                changed = true;
+            }
+            if (Array.isArray(data.offeredEventIds) && data.offeredEventIds.length) {
+                data.offeredEventIds = [];
+                changed = true;
+            }
+            if (data.error) {
+                data.error = '';
+                changed = true;
+            }
+            data.storageCompacted = true;
+        }
+    };
+
+    for (let index = 0; index < chat.length; index += 1) {
+        const message = chat[index];
+        if (!message || message.is_user || message.is_system) continue;
+        const currentSwipe = Number(message.swipe_id ?? 0);
+        const historical = recentStart >= 0 && index < recentStart;
+
+        // Canonicalize current swipe into swipe_info and remove the duplicate
+        // message.extra full state left by older versions.
+        const currentSwipeData = message.swipe_info?.[currentSwipe]?.extra?.[SNAPSHOT_KEY];
+        if (currentSwipeData && message.extra?.[SNAPSHOT_KEY]) {
+            delete message.extra[SNAPSHOT_KEY];
+            changed = true;
+        }
+
+        if (!currentSwipeData) {
+            compactCommitted(message.extra?.[SNAPSHOT_KEY], historical);
+        }
+
+        for (let swipeId = 0; swipeId < (message.swipe_info?.length || 0); swipeId += 1) {
+            const swipeInfo = message.swipe_info?.[swipeId];
+            const data = swipeInfo?.extra?.[SNAPSHOT_KEY];
+            if (!data) continue;
+
+            // For old floors keep the selected branch exact, but stop carrying
+            // every abandoned alternate swipe forever. Switching to such an old
+            // alternate can still be resynchronized from the nearest confirmed
+            // selected-world state.
+            if (historical && swipeId !== currentSwipe) {
+                delete swipeInfo.extra[SNAPSHOT_KEY];
+                changed = true;
+                continue;
+            }
+            compactCommitted(data, historical);
+        }
+    }
+    return changed;
+}
+
 
 function findLatestResultSnapshot(beforeIndex = Infinity) {
     const context = getContext();
@@ -1873,6 +2039,102 @@ function backgroundRequestMessages(prompt, settings = getSettings(), {
     return messages;
 }
 
+
+function generationTimeoutError(timeoutMs, taskKind = 'simulation') {
+    const seconds = Math.max(1, Math.ceil(Number(timeoutMs || 0) / 1000));
+    const error = new Error(`后台任务等待超时（${seconds} 秒 · ${taskRouteKey(taskKind)}）`);
+    error.code = 'GENERATION_TIMEOUT';
+    error.errorType = 'timeout';
+    error.timeoutMs = Number(timeoutMs) || 0;
+    return error;
+}
+
+function createActiveGenerationGuard(timeoutMs, externalSignal, taskKind = 'simulation') {
+    const controller = new AbortController();
+    const documentRef = globalThis.document;
+    const canWatchVisibility = Boolean(
+        documentRef
+        && typeof documentRef.addEventListener === 'function'
+        && typeof documentRef.removeEventListener === 'function'
+    );
+    const now = () => globalThis.performance?.now?.() ?? Date.now();
+    let remainingMs = Math.max(1, Number(timeoutMs) || 1);
+    let activeSince = 0;
+    let timer = null;
+    let timedOut = false;
+    let rejectGuard = null;
+
+    const guardPromise = new Promise((_, reject) => {
+        rejectGuard = reject;
+    });
+
+    const pageHidden = () => canWatchVisibility && Boolean(documentRef.hidden);
+    const pause = () => {
+        if (timer !== null) {
+            clearTimeout(timer);
+            timer = null;
+        }
+        if (activeSince > 0) {
+            remainingMs = Math.max(0, remainingMs - Math.max(0, now() - activeSince));
+            activeSince = 0;
+        }
+    };
+    const fireTimeout = () => {
+        if (controller.signal.aborted) return;
+        timedOut = true;
+        const error = generationTimeoutError(timeoutMs, taskKind);
+        // Reject our guard before aborting the native request. Some adapters turn
+        // signal.abort() into a generic AbortError synchronously; ordering this way
+        // guarantees Promise.race reports a real timeout instead of misclassifying
+        // it as a user cancellation.
+        rejectGuard?.(error);
+        controller.abort(error);
+    };
+    const resume = () => {
+        if (controller.signal.aborted || pageHidden() || timer !== null) return;
+        if (remainingMs <= 0) {
+            fireTimeout();
+            return;
+        }
+        activeSince = now();
+        timer = setTimeout(() => {
+            timer = null;
+            activeSince = 0;
+            fireTimeout();
+        }, remainingMs);
+    };
+    const onVisibility = () => {
+        if (pageHidden()) pause();
+        else resume();
+    };
+    const onExternalAbort = () => {
+        if (controller.signal.aborted) return;
+        const error = new Error('推演已由用户取消');
+        error.name = 'AbortError';
+        rejectGuard?.(error);
+        controller.abort(error);
+    };
+
+    if (canWatchVisibility) documentRef.addEventListener('visibilitychange', onVisibility);
+    if (externalSignal) {
+        if (externalSignal.aborted) onExternalAbort();
+        else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    resume();
+
+    return {
+        signal: controller.signal,
+        guardPromise,
+        timedOut: () => timedOut,
+        cleanup() {
+            pause();
+            if (canWatchVisibility) documentRef.removeEventListener('visibilitychange', onVisibility);
+            externalSignal?.removeEventListener?.('abort', onExternalAbort);
+            rejectGuard = null;
+        },
+    };
+}
+
 async function backgroundSimulation(prompt, {
     maxTokens = 2200,
     temperature = 0.2,
@@ -1884,6 +2146,9 @@ async function backgroundSimulation(prompt, {
     const settings = getSettings();
     const route = resolveTaskConnection(settings, taskKind);
     const requestSettings = route.settings;
+    const limits = resolveGenerationLimits(settings, taskKind, maxTokens);
+    const effectiveMaxTokens = limits.maxTokens;
+    const effectiveTimeoutMs = limits.timeoutMs;
     const tavernConnection = route.mode === 'tavern' ? getConnectionInfo() : null;
     runtime.lastTaskConnection = {
         taskKind,
@@ -1897,6 +2162,11 @@ async function backgroundSimulation(prompt, {
             ? (requestSettings.customApiTransport === 'direct' ? '浏览器直连' : '酒馆转发')
             : '酒馆独立上下文',
         source: route.mode === 'custom' ? 'custom-independent' : tavernConnection?.source || 'tavern',
+        requestedMaxTokens: limits.requestedMaxTokens,
+        maxTokens: effectiveMaxTokens,
+        tokenLimitSource: limits.tokenSource,
+        timeoutMs: effectiveTimeoutMs,
+        timeoutLimitSource: limits.timeoutSource,
     };
     const messages = backgroundRequestMessages(prompt, settings, { taskKind });
     if (signal?.aborted) {
@@ -1915,8 +2185,9 @@ async function backgroundSimulation(prompt, {
             return await requestCustomCompletion(requestSettings, messages, {
                 fetchImpl: globalThis.fetch.bind(globalThis),
                 getRequestHeaders: () => context?.getRequestHeaders?.() || {},
-                maxTokens,
+                maxTokens: effectiveMaxTokens,
                 temperature,
+                timeoutMs: effectiveTimeoutMs,
                 signal,
                 rejectTruncated,
                 operation: taskKind,
@@ -1940,6 +2211,11 @@ async function backgroundSimulation(prompt, {
 
     if (!foregroundNeutralTask) runtime.inBackgroundGeneration = true;
     clearOwnInjection();
+    // Timeout applies to this single request attempt only. runWithRetries cooldown
+    // happens outside backgroundSimulation, so a 429 wait can never consume the
+    // model's active generation timeout.
+    const guard = createActiveGenerationGuard(effectiveTimeoutMs, signal, taskKind);
+    const requestSignal = guard.signal;
     // Sandbox is allowed to coexist with the core world task. Its AbortController
     // must therefore never call SillyTavern's global stopGeneration(), otherwise
     // closing "随便逛逛" could accidentally kill the main world simulation too.
@@ -1953,7 +2229,7 @@ async function backgroundSimulation(prompt, {
         }
     };
     if (allowGlobalStopOnAbort) {
-        signal?.addEventListener?.('abort', stopNativeGeneration, { once: true });
+        requestSignal.addEventListener('abort', stopNativeGeneration, { once: true });
     }
     try {
         let request;
@@ -1961,29 +2237,30 @@ async function backgroundSimulation(prompt, {
             runtime.syncStatus.method = '独立上下文推演';
             request = context.generateRaw({
                 prompt: messages,
-                responseLength: maxTokens,
+                responseLength: effectiveMaxTokens,
                 trimNames: false,
-                signal,
+                signal: requestSignal,
             });
         } else {
             runtime.syncStatus.method = '安静生成兼容模式';
             request = context.generateQuietPrompt({
                 quietPrompt: `${messages[0]?.content || ''}\n\n${messages[1]?.content || ''}`.trim(),
                 skipWIAN: true,
-                responseLength: maxTokens,
+                responseLength: effectiveMaxTokens,
                 removeReasoning: true,
-                signal,
+                signal: requestSignal,
             });
         }
         // The background request has captured its own prompt. Restore the
         // foreground injection before waiting so a newly sent user turn never
         // sees an empty World Backstage prompt.
         refreshInjection();
-        return await request;
+        return await Promise.race([request, guard.guardPromise]);
     } finally {
         if (allowGlobalStopOnAbort) {
-            signal?.removeEventListener?.('abort', stopNativeGeneration);
+            requestSignal.removeEventListener?.('abort', stopNativeGeneration);
         }
+        guard.cleanup();
         if (!foregroundNeutralTask) runtime.inBackgroundGeneration = false;
         refreshInjection();
     }
@@ -2151,6 +2428,7 @@ async function runSimulationForMessage(messageId, {
                 summary,
             };
             attachBranchData(target.message, swipeId, committed);
+            compactBranchSnapshotStorage();
             const branchIsCurrent = (
                 Number(target.message.swipe_id ?? 0) === swipeId
                 && hashText(target.message.mes) === expectedHash
@@ -2199,12 +2477,14 @@ async function runSimulationForMessage(messageId, {
             : settings.autoSimulationMode === 'light'
                 ? 2400
                 : 3400;
-        const baseMaxTokens = settings.maxOutputTokens > 0
-            ? settings.maxOutputTokens
-            : automaticMaxTokens;
+        const baseMaxTokens = automaticMaxTokens;
         const payload = await runWithRetries(async attempt => {
             generationMetrics.attempts = attempt + 1;
-            generationMetrics.tokenBudget = retryTokenBudget(baseMaxTokens, attempt);
+            generationMetrics.tokenBudget = resolveGenerationLimits(
+                settings,
+                'simulation',
+                retryTokenBudget(baseMaxTokens, attempt),
+            ).maxTokens;
             const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                 maxTokens: generationMetrics.tokenBudget,
                 temperature: attempt > 0
@@ -2326,6 +2606,7 @@ async function runSimulationForMessage(messageId, {
             summary,
         };
         attachBranchData(target.message, swipeId, committed);
+        compactBranchSnapshotStorage();
 
         const branchIsCurrent = (
             Number(target.message.swipe_id ?? 0) === swipeId
@@ -2678,27 +2959,40 @@ async function runPreGenerationConsistencyBarrier(_chat, _contextSize, _abort, t
         return;
     }
 
-    if (!settings.enabled || !settings.worldSimulationEnabled) {
+    const offerCurrentInjection = () => {
         refreshInjection();
         runtime.generationOffer = {
             eventIds: clone(runtime.injection.eventIds || []),
             at: Date.now(),
         };
+    };
+
+    if (!settings.enabled || !settings.worldSimulationEnabled) {
+        offerCurrentInjection();
         return;
     }
 
     const latest = latestAssistantEntry();
     if (!latest) {
-        refreshInjection();
-        runtime.generationOffer = {
-            eventIds: clone(runtime.injection.eventIds || []),
-            at: Date.now(),
-        };
+        offerCurrentInjection();
         return;
     }
 
     const pending = pendingAssistantEntriesThrough(latest.index);
-    if (!pending.length) {
+    const coreAlreadyRunning = Boolean(
+        runtime.activeSimulation
+        || runtime.queuedSimulations.size > 0
+    );
+
+    // Consistency Barrier is a gate, not a hidden auto-run trigger.
+    // It may wait for work that is already due/running, but it must not bypass
+    // the user's auto-run switch or configured "every N turns" interval.
+    const autoTaskIsDue = Boolean(
+        settings.worldAutoEnabled
+        && pending.length >= settings.autoSimulationInterval
+    );
+
+    if (!pending.length && !coreAlreadyRunning) {
         if (pendingPublicImpactEvents(getState(), { maximum: 8 }).length) {
             try {
                 await runPublicImpactPropagation({ quiet: true, force: true });
@@ -2708,11 +3002,19 @@ async function runPreGenerationConsistencyBarrier(_chat, _contextSize, _abort, t
                 }
             }
         }
-        refreshInjection();
-        runtime.generationOffer = {
-            eventIds: clone(runtime.injection.eventIds || []),
-            at: Date.now(),
-        };
+        offerCurrentInjection();
+        return;
+    }
+
+    if (!coreAlreadyRunning && !autoTaskIsDue) {
+        setSyncStatus({
+            phase: 'pending',
+            message: !settings.worldAutoEnabled
+                ? `已有 ${pending.length} 轮正文待同步；自动推演为手动，本次发送不会偷偷替你启动推演`
+                : `已累计 ${pending.length}/${settings.autoSimulationInterval} 轮正文；未到自动频率，本次发送继续沿用上一份已确认世界状态`,
+            error: '',
+        });
+        offerCurrentInjection();
         return;
     }
 
@@ -2720,34 +3022,36 @@ async function runPreGenerationConsistencyBarrier(_chat, _contextSize, _abort, t
     preemptLowPriorityTasksForCore();
     setSyncStatus({
         phase: 'running',
-        message: pending.length > 1
-            ? `先把前面的 ${pending.length} 层世界接上～马上就把最新状态递给正文 ( •̀ ω •́ )✧`
-            : '先把最新一层世界接上～马上就把最新状态递给正文 (｡•̀ᴗ-)✧',
+        message: coreAlreadyRunning
+            ? '已有到期世界任务正在接线～先等它提交完成，再把最新确认状态递给正文'
+            : pending.length > 1
+                ? `已达到自动频率，先把累计的 ${pending.length} 层世界接上～`
+                : '已达到自动频率，先把最新一层世界接上～',
         error: '',
     });
 
     try {
-        await queueSimulation(latest.index, {
-            trigger: 'pre-send-barrier',
-            newAssistantCount: pending.length,
-        });
-        // 世界推演刚刚可能产生新的公开事件。它们对人物/行业/地点的真实后果
-        // 属于核心世界状态，也应在正文继续前尽量结算，而不是只停留在新闻卡片里。
-        await runPublicImpactPropagation({ quiet: true, force: true });
+        if (coreAlreadyRunning) {
+            await runtime.simulationChain.catch(error => {
+                if (!isAbortError(error)) throw error;
+            });
+        } else if (autoTaskIsDue) {
+            await queueSimulation(latest.index, {
+                trigger: 'pre-send-barrier-due',
+                newAssistantCount: pending.length,
+            });
+        }
+
+        if (pendingPublicImpactEvents(getState(), { maximum: 8 }).length) {
+            await runPublicImpactPropagation({ quiet: true, force: true });
+        }
     } catch (error) {
-        // The simulation path already records a detailed error and preserves the
-        // last confirmed world snapshot. Foreground generation is allowed to
-        // continue with that confirmed state instead of being permanently blocked.
         if (!isAbortError(error)) {
             console.warn('[世界背面] 发送前世界同步未完成，本轮将沿用上一份已确认状态', error);
         }
     } finally {
         runtime.consistencyBarrierRunning = false;
-        refreshInjection();
-        runtime.generationOffer = {
-            eventIds: clone(runtime.injection.eventIds || []),
-            at: Date.now(),
-        };
+        offerCurrentInjection();
     }
 }
 
@@ -2848,7 +3152,6 @@ function onMessageEdited(messageId) {
         && index === context.chat.length - 1
         && existing?.status === 'committed'
         && existing.result
-        && existing.base
         && !existing.stale
     ) {
         runtime.editDecision = {
@@ -2986,6 +3289,7 @@ function onChatChanged() {
         runtime.activeChatToken = currentChatToken();
         restoreLatestBranch();
         syncSettingsEntry();
+        if (compactBranchSnapshotStorage()) void getContext()?.saveChat?.();
         schedulePendingCatchUp();
     }, 80);
 }
@@ -3176,6 +3480,9 @@ function buildDiagnosticReport() {
             publicOpinionRevealMode: settings.publicOpinionRevealMode,
             apiProfileCount: settings.apiProfiles?.length || 0,
             apiModuleRoutes: { ...(settings.apiModuleRoutes || {}) },
+            generationMaxTokenCap: settings.maxOutputTokens,
+            generationTimeoutMs: settings.generationTimeoutMs,
+            generationModuleLimits: clone(settings.generationModuleLimits || {}),
         },
         state: {
             revision: state.revision,
@@ -3209,6 +3516,11 @@ function buildDiagnosticReport() {
             route: runtime.lastTaskConnection?.apiLabel || '',
             model: redactDiagnosticText(runtime.lastTaskConnection?.model || ''),
             taskKind: runtime.lastTaskConnection?.taskKind || '',
+            requestedMaxTokens: runtime.lastTaskConnection?.requestedMaxTokens || 0,
+            effectiveMaxTokens: runtime.lastTaskConnection?.maxTokens || 0,
+            tokenLimitSource: runtime.lastTaskConnection?.tokenLimitSource || '',
+            timeoutMs: runtime.lastTaskConnection?.timeoutMs || 0,
+            timeoutLimitSource: runtime.lastTaskConnection?.timeoutLimitSource || '',
             memoryPhase: runtime.historyProgress.phase,
             memoryMessageType: classifyDiagnosticIssue(runtime.historyProgress.message),
         },
@@ -3689,9 +4001,7 @@ async function runPublicImpactPropagation({
                 userName: getContext()?.name1 || '',
                 maximumEvents,
             });
-            const baseMaxTokens = settings.maxOutputTokens > 0
-                ? Math.max(2600, Math.min(settings.maxOutputTokens, 5200))
-                : 3400;
+            const baseMaxTokens = 3400;
 
             const payload = await runWithRetries(async attempt => {
                 const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
@@ -3810,9 +4120,11 @@ async function runWorldPulseTick({
             backgroundNpcBudget: settings.backgroundNpcBudget,
             publicCycle,
         });
-        const baseMaxTokens = settings.maxOutputTokens > 0
-            ? Math.max(2200, Math.min(settings.maxOutputTokens, 5200))
-            : (settings.worldPulseActivity === 'busy' ? 3800 : settings.worldPulseActivity === 'quiet' ? 2200 : 3000);
+        const baseMaxTokens = settings.worldPulseActivity === 'busy'
+            ? 3800
+            : settings.worldPulseActivity === 'quiet'
+                ? 2200
+                : 3000;
         const payload = await runWithRetries(async attempt => {
             const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                 maxTokens: retryTokenBudget(baseMaxTokens, attempt),
@@ -3979,9 +4291,7 @@ async function bootstrapWorldFromHistory() {
                         playerIdentityAnchor: getPlayerIdentityAnchor(stagedState),
                         compact: attempt > 0,
                     });
-                    const historyBaseTokens = getSettings().maxOutputTokens > 0
-                        ? Math.max(4200, getSettings().maxOutputTokens)
-                        : 4800;
+                    const historyBaseTokens = 4800;
                     const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                         maxTokens: retryTokenBudget(historyBaseTokens, attempt),
                         temperature: attempt > 0 ? 0.04 : 0.08,
@@ -4217,9 +4527,7 @@ async function scanStoryMemoryHistory({
                         playerIdentityAnchor: getPlayerIdentityAnchor(state),
                         compact: attempt > 0,
                     });
-                    const historyBaseTokens = getSettings().maxOutputTokens > 0
-                        ? Math.max(3200, getSettings().maxOutputTokens)
-                        : 3200;
+                    const historyBaseTokens = 3200;
                     const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                         maxTokens: retryTokenBudget(historyBaseTokens, attempt),
                         temperature: attempt > 0 ? 0.05 : 0.1,
@@ -4512,10 +4820,20 @@ async function generateIndependentPersonObservation(prompt, person, settings, { 
         ? '人物观测 · 世界背面独立接口'
         : '人物观测 · 世界背面独立上下文';
 
-    const attempts = [
+    const requestedAttempts = [
         { maxTokens: 4096, temperature: 0.75 },
         { maxTokens: 8192, temperature: 0.65 },
     ];
+    const attempts = [];
+    for (const requested of requestedAttempts) {
+        const effective = resolveGenerationLimits(
+            settings,
+            'person-observation',
+            requested.maxTokens,
+        ).maxTokens;
+        if (attempts.some(item => item.maxTokens === effective)) continue;
+        attempts.push({ ...requested, maxTokens: effective });
+    }
     let lastTruncation = null;
 
     for (let index = 0; index < attempts.length; index += 1) {
@@ -4535,7 +4853,9 @@ async function generateIndependentPersonObservation(prompt, person, settings, { 
                 }),
                 {
                     retries: Math.min(1, getSettings().autoRetryCount),
-                    shouldRetry: error => rateLimitLike(error),
+                    shouldRetry: error => rateLimitLike(error)
+                        || error?.code === 'GENERATION_TIMEOUT'
+                        || error?.errorType === 'timeout',
                     ...retryTaskOptions(
                         'person-observation',
                         `person-observation:${currentChatToken()}:${person.id}:${getState().revision}:${attempt.maxTokens}`,
@@ -4570,8 +4890,9 @@ async function generateIndependentPersonObservation(prompt, person, settings, { 
     }
 
     const reason = String(lastTruncation?.finishReason || '').trim();
+    const finalBudget = attempts.at(-1)?.maxTokens || 0;
     throw new Error(
-        `人物观测连续两次达到输出上限${reason ? `（${reason}）` : ''}，没有保存半截内容；请重新观测或检查当前模型的输出限制`,
+        `人物观测达到当前输出上限${finalBudget ? `（${finalBudget} tokens）` : ''}${reason ? `（${reason}）` : ''}，没有保存半截内容；可在「生成限制」里提高人物观测 Token 上限后再试`,
     );
 }
 
@@ -4815,9 +5136,7 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
         clockLabel: formatWorldCalendar(state)?.stamp || '',
     });
     const settings = getSettings();
-    const baseTokens = settings.maxOutputTokens > 0
-        ? Math.max(2800, Math.min(6000, settings.maxOutputTokens))
-        : 3600;
+    const baseTokens = 3600;
 
     try {
         const raw = await runWithRetries(
@@ -4832,6 +5151,8 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
                 retries: Math.min(1, settings.autoRetryCount),
                 delayMs: 650,
                 shouldRetry: error => rateLimitLike(error)
+                    || error?.code === 'GENERATION_TIMEOUT'
+                    || error?.errorType === 'timeout'
                     || /JSON|截断|长度上限|empty|No message generated|没有返回最终正文/i.test(String(error?.message || error || '')),
                 onRetry: ({ delayMs, rateLimited }) => {
                     if (rateLimited) {
@@ -4994,6 +5315,8 @@ async function generatePublicOpinionSandbox() {
                     retries: Math.min(1, settings.autoRetryCount),
                     delayMs: 520,
                     shouldRetry: error => rateLimitLike(error)
+                        || error?.code === 'GENERATION_TIMEOUT'
+                        || error?.errorType === 'timeout'
                         || /JSON|空内容|截断|长度上限|empty|No message generated/i.test(String(error?.message || error || '')),
                     ...retryTaskOptions(
                         'public-opinion-sandbox',
@@ -5212,12 +5535,19 @@ async function handleUiAction(action, payload = {}) {
     if (action === 'save-world-summary') {
         const title = String(payload.title || '').trim();
         const detail = String(payload.detail || '').trim();
+        const background = String(payload.background || '').trim();
         if (!title || !detail) throw new Error('世界标题和概况不能为空');
         const next = clone(getState());
         next.world ||= {};
         next.world.title = title.slice(0, 140);
         next.world.detail = detail.slice(0, 900);
-        commitManualState(next, '世界概况已经更新。');
+        next.world.background = background.slice(0, 5000);
+        commitManualState(
+            next,
+            background
+                ? '世界概况和背景设定已经更新啦～'
+                : '世界概况已经更新；背景设定保持为空。',
+        );
         return next.world;
     }
 
@@ -5383,6 +5713,80 @@ async function handleUiAction(action, payload = {}) {
         return;
     }
 
+    if (action === 'bulk-delete-memory') {
+        const requested = Array.isArray(payload.items) ? payload.items : [];
+        const unique = new Map();
+        for (const item of requested) {
+            const kind = ['fact', 'clue', 'summary'].includes(item?.kind) ? item.kind : '';
+            const id = String(item?.id || '').trim();
+            if (!kind || !id) continue;
+            unique.set(`${kind}:${id}`, { kind, id });
+        }
+        if (!unique.size) throw new Error('没有选中可删除的记忆');
+
+        // Bulk deletion is intentionally safer than a normal one-card delete:
+        // create a durable recovery point before touching the memory pool.
+        let store = addRecoveryPoint(getStore(), {
+            reason: 'before-memory-bulk-delete',
+            label: `批量清理 ${unique.size} 条记忆前自动保存`,
+        });
+        saveStore(store, { immediate: true });
+
+        const next = clone(store.currentState);
+        next.storyMemory ||= { facts: [], clues: [], summaries: [] };
+        const removedSummaryIds = new Set();
+        let removed = 0;
+        let lockedSkipped = 0;
+
+        for (const { kind, id } of unique.values()) {
+            const collection = kind === 'fact'
+                ? next.storyMemory.facts
+                : kind === 'clue'
+                    ? next.storyMemory.clues
+                    : next.storyMemory.summaries;
+            const index = collection.findIndex(entry => entry.id === id);
+            if (index < 0) continue;
+            if (collection[index].locked) {
+                lockedSkipped += 1;
+                continue;
+            }
+            if (kind === 'summary') removedSummaryIds.add(collection[index].id);
+            collection.splice(index, 1);
+            removed += 1;
+        }
+
+        if (removedSummaryIds.size) {
+            for (const summary of next.storyMemory.summaries || []) {
+                if (removedSummaryIds.has(summary.parentId)) summary.parentId = '';
+                if (Array.isArray(summary.sourceSummaryIds)) {
+                    summary.sourceSummaryIds = summary.sourceSummaryIds.filter(
+                        id => !removedSummaryIds.has(id),
+                    );
+                }
+            }
+            // The chat-level summary reservoir must forget manually deleted
+            // summaries too, otherwise restoring a compact branch could resurrect them.
+            store.memorySummaryArchive = (store.memorySummaryArchive || []).filter(
+                summary => !removedSummaryIds.has(summary?.id),
+            );
+            saveStore(store, { immediate: true });
+        }
+
+        if (!removed) {
+            throw new Error(lockedSkipped
+                ? '选中的记忆都处于锁定状态，没有删除任何内容'
+                : '没有找到这些记忆，它们可能已经被整理掉了');
+        }
+
+        commitManualState(
+            next,
+            lockedSkipped
+                ? `已删除 ${removed} 条记忆，${lockedSkipped} 条锁定记忆乖乖留着～`
+                : `已删除 ${removed} 条记忆；删除前的恢复点已经存好啦～`,
+        );
+        return true;
+    }
+
     if (action === 'delete-memory-item') {
         const kind = ['fact', 'clue', 'summary'].includes(payload.kind) ? payload.kind : 'fact';
         const next = clone(getState());
@@ -5405,6 +5809,13 @@ async function handleUiAction(action, payload = {}) {
             }
         }
         collection.splice(index, 1);
+        if (kind === 'summary') {
+            const store = getStore();
+            store.memorySummaryArchive = (store.memorySummaryArchive || []).filter(
+                summary => summary?.id !== removed.id,
+            );
+            saveStore(store);
+        }
         commitManualState(next, '记忆已经删除。');
         return;
     }

@@ -53,6 +53,10 @@ export function emptyPublicOpinionCache({
         sourceRevision: clampInteger(sourceRevision, -1, -1, Number.MAX_SAFE_INTEGER),
         sourceWorldMinute: clampInteger(sourceWorldMinute, -1, -1, Number.MAX_SAFE_INTEGER),
         sourceEventSignature: asText(sourceEventSignature, 240),
+        forumSourceSignature: asText(sourceEventSignature, 240),
+        newsSourceSignature: '',
+        lastForumWorldMinute: clampInteger(sourceWorldMinute, -1, -1, Number.MAX_SAFE_INTEGER),
+        lastNewsWorldMinute: clampInteger(sourceWorldMinute, -1, -1, Number.MAX_SAFE_INTEGER),
         news: [],
         forums: [],
     };
@@ -109,6 +113,132 @@ export function eligiblePublicOpinionEvents(state) {
                 due_at: Number(event?.dueAt ?? -1),
             };
         });
+}
+
+function publicSignalHash(value) {
+    const text = String(value || '');
+    let hash = (0x811c9dc5 ^ WB_PUBLIC_SIGNAL_BIAS) >>> 0;
+    for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
+}
+
+// 只把“社会真正能看到的公开面”计入舆情来源签名。这里故意不复用
+// eligiblePublicOpinionEvents：后者会按幕后 updatedAt 排序并截前 24 条，事件一多时
+// 仅仅内部更新时间变化就可能把第 24/25 条换位，制造假的“公开来源变化”。
+function publicOpinionSurfaceDescriptor(state, { newsOnly = false } = {}) {
+    return asArray(state?.events)
+        .filter(event => OPINION_PUBLICITY.has(String(event?.publicity || 'private')))
+        .filter(event => String(event?.id || '').trim())
+        .map(event => {
+            const publicity = asText(event.publicity || 'private', 20);
+            const place = asText(event.place, 140);
+            const publicHint = asText(event.publicTrace ?? event.public_trace, 360);
+            if (publicity === 'trace') {
+                return {
+                    id: asText(event.id, 120),
+                    publicity: 'trace',
+                    place,
+                    public_hint: publicHint || `${place ? `${place}附近` : '某处'}出现了尚未证实、但已经能被外界察觉的迹象。`,
+                };
+            }
+            return {
+                id: asText(event.id, 120),
+                publicity: 'public',
+                place,
+                public_hint: publicHint,
+                public_headline: asText(event.publicHeadline ?? event.public_headline, 180),
+                public_summary: asText(event.publicSummary ?? event.public_summary, 520),
+                public_result: asText(event.publicResult ?? event.public_result, 520),
+            };
+        })
+        .filter(event => !newsOnly || event.publicity === 'public')
+        .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+}
+
+export function publicOpinionSourceSignature(state) {
+    return publicSignalHash(JSON.stringify(publicOpinionSurfaceDescriptor(state)));
+}
+
+export function publicOpinionNewsSourceSignature(state) {
+    return publicSignalHash(JSON.stringify(publicOpinionSurfaceDescriptor(state, { newsOnly: true })));
+}
+
+export function planPublicOpinionRefresh(state, rawCache = {}, {
+    force = false,
+    forumIntervalMinutes = 180,
+    newsIntervalMinutes = 360,
+} = {}) {
+    const candidates = eligiblePublicOpinionEvents(state);
+    const cache = normalizePublicOpinionCache(rawCache || {});
+    const worldMinute = Number(state?.clock?.absoluteMinute ?? -1);
+    const sourceEventSignature = publicOpinionSourceSignature(state);
+    const newsSourceSignature = publicOpinionNewsSourceSignature(state);
+    const previousForumSignature = String(cache.forumSourceSignature || cache.sourceEventSignature || '');
+    const previousNewsSignature = String(cache.newsSourceSignature || '');
+    const forumSourceChanged = Boolean(candidates.length && sourceEventSignature !== previousForumSignature);
+    const hasPublic = candidates.some(event => event.publicity === 'public');
+    const hasTrace = candidates.some(event => event.publicity === 'trace');
+    const newsSourceChanged = Boolean(hasPublic && newsSourceSignature !== previousNewsSignature);
+    const sourceChanged = forumSourceChanged || newsSourceChanged;
+    const fallbackMinute = Number(cache.sourceWorldMinute ?? -1);
+    const lastForumWorldMinute = Number(cache.lastForumWorldMinute ?? fallbackMinute);
+    const lastNewsWorldMinute = Number(cache.lastNewsWorldMinute ?? fallbackMinute);
+    const forumElapsed = worldMinute >= 0 && lastForumWorldMinute >= 0
+        ? Math.max(0, worldMinute - lastForumWorldMinute)
+        : Number.POSITIVE_INFINITY;
+    const newsElapsed = worldMinute >= 0 && lastNewsWorldMinute >= 0
+        ? Math.max(0, worldMinute - lastNewsWorldMinute)
+        : Number.POSITIVE_INFINITY;
+    const forumDueByTime = Boolean(candidates.length && worldMinute >= 0 && forumElapsed >= Math.max(1, Number(forumIntervalMinutes) || 180));
+    const newsDueByTime = Boolean(hasPublic && worldMinute >= 0 && newsElapsed >= Math.max(1, Number(newsIntervalMinutes) || 360));
+
+    const allowForums = Boolean(candidates.length && (
+        force
+        || forumSourceChanged
+        || forumDueByTime
+    ));
+    const allowNews = Boolean(hasPublic && (
+        force
+        || newsSourceChanged
+        || newsDueByTime
+    ));
+    const due = Boolean(candidates.length && (allowForums || allowNews));
+
+    let reason = 'idle';
+    if (force && candidates.length) reason = 'manual-force';
+    else if (sourceChanged) reason = 'public-source-changed';
+    else if (newsDueByTime && forumDueByTime) reason = 'time-evolution-news-and-forums';
+    else if (newsDueByTime) reason = 'time-evolution-news';
+    else if (forumDueByTime) reason = 'time-evolution-forums';
+    else if (!candidates.length) reason = 'no-public-candidates';
+
+    return {
+        due,
+        reason,
+        sourceChanged,
+        forumSourceChanged,
+        newsSourceChanged,
+        sourceEventSignature,
+        forumSourceSignature: sourceEventSignature,
+        newsSourceSignature,
+        worldMinute,
+        candidates,
+        hasPublic,
+        hasTrace,
+        allowForums,
+        allowNews,
+        forumElapsed,
+        newsElapsed,
+        nextForumAt: worldMinute >= 0
+            ? Math.max(worldMinute, (lastForumWorldMinute >= 0 ? lastForumWorldMinute : worldMinute) + Math.max(1, Number(forumIntervalMinutes) || 180))
+            : -1,
+        nextNewsAt: worldMinute >= 0 && hasPublic
+            ? Math.max(worldMinute, (lastNewsWorldMinute >= 0 ? lastNewsWorldMinute : worldMinute) + Math.max(1, Number(newsIntervalMinutes) || 360))
+            : -1,
+    };
 }
 
 function publicEventSourceType(event) {
@@ -203,17 +333,18 @@ export function mergeWorldNewsIntoPublicOpinion(state, rawCache = {}) {
         const existing = existingByEvent.get(worldItem.relatedEventId);
         currentIds.add(worldItem.relatedEventId);
         return {
-            ...(existing || {}),
             ...worldItem,
-            id: worldItem.id,
+            ...(existing || {}),
+            id: existing?.id || worldItem.id,
             relatedEventId: worldItem.relatedEventId,
             worldSynced: true,
-            // The event itself is the authority. Old card wording may keep source /
-            // audience decoration, but current public headline + summary always
-            // follow the latest settled public event state.
+            // 这个 helper 只补世界事件的来源/状态元数据。已经经过舆情调度器生成的
+            // headline/summary 是该传播节点自己的表述，不能再被事件最初的公开摘要覆盖。
             source: existing?.source || worldItem.source,
             audienceTags: existing?.audienceTags || worldItem.audienceTags,
             scope: existing?.scope || worldItem.scope,
+            eventStatus: worldItem.eventStatus,
+            temporalState: worldItem.temporalState,
             publishedAt: existing?.publishedAt || worldItem.publishedAt || '',
             updatedAt: existing?.updatedAt || worldItem.updatedAt || '',
             worldMinute: Math.max(
@@ -329,11 +460,53 @@ export function mergePublicOpinionStream(previousRaw, nextRaw, {
     };
 }
 
-export function buildPublicOpinionPrompt(state, { clockLabel = '' } = {}) {
+export function buildPublicOpinionPrompt(state, {
+    clockLabel = '',
+    previousCache = null,
+    elapsedMinutes = null,
+    forumElapsedMinutes = elapsedMinutes,
+    newsElapsedMinutes = elapsedMinutes,
+    allowNews = true,
+    allowForums = true,
+    reason = '',
+} = {}) {
     const events = eligiblePublicOpinionEvents(state);
+    const previous = normalizePublicOpinionCache(previousCache || {});
+    const wantedIds = new Set(events.map(event => String(event.id || '')));
+    const compactPrevious = {
+        news: previous.news
+            .filter(item => wantedIds.has(String(item.relatedEventId || '')))
+            .slice(0, 8)
+            .map(item => ({
+                headline: item.headline,
+                summary: item.summary,
+                source_type: item.sourceType,
+                scope: item.scope,
+                related_event_id: item.relatedEventId,
+                heat: item.heat,
+            })),
+        forums: previous.forums
+            .filter(item => wantedIds.has(String(item.relatedEventId || '')))
+            .slice(0, 8)
+            .map(item => ({
+                board: item.board,
+                title: item.title,
+                summary: item.summary,
+                claim_status: item.claimStatus,
+                scope: item.scope,
+                related_event_id: item.relatedEventId,
+                heat: item.heat,
+            })),
+    };
     const context = {
         world_name: asText(state?.world?.name || '主世界', 80),
         world_time: asText(clockLabel, 100),
+        elapsed_forum_world_minutes: Math.max(0, Number(forumElapsedMinutes) || 0),
+        elapsed_news_world_minutes: Math.max(0, Number(newsElapsedMinutes) || 0),
+        update_reason: asText(reason, 80),
+        allow_news: Boolean(allowNews),
+        allow_forums: Boolean(allowForums),
+        previous_snapshot: compactPrevious,
         public_event_candidates: events,
     };
 
@@ -342,13 +515,15 @@ export function buildPublicOpinionPrompt(state, { clockLabel = '' } = {}) {
         '只能依据下方 public_event_candidates。不得使用任何未提供的幕后事实，不得把私人行动或角色秘密写成公开消息。',
         'publicity=trace 的候选不是“已经公开的新闻事实”，而只是外界能察觉的一点表面迹象：只允许依据 public_hint 与 place 生成非官方论坛讨论；不得使用该事件真正标题、summary/result、隐藏原因或幕后人物信息，也不得生成新闻。',
         'publicity=public 的候选才允许生成新闻，而且只能使用 public_headline / public_summary / public_hint / place 中已经公开的信息。事件内部 title、summary、result 可能包含幕后细节，禁止直接复制进新闻。',
-        '不得虚构新的正史事件；但只要 public_event_candidates 非空，就必须至少选择其中 1 项有自然传播可能的内容生成新闻或论坛讨论。影响较小时可以写成本地、小圈层、低热度讨论，不必硬抬成重大新闻。',
+        '不得虚构新的正史事件。你是在“到点后检查”，不是每次都必须产出变化：即使 public_event_candidates 非空，如果这段世界时间里没有自然形成新的报道或讨论变化，也可以返回空的 news / forums。',
+        'previous_snapshot 是上一轮已经存在的公开舆情。论坛与新闻有各自独立的 elapsed_*_world_minutes；分别按对应经过时间判断扩散、降温、分化、反转或后续报道，不要拿新闻经过的时间去多推进论坛，反之亦然。不要因为收到一次检查请求就改写措辞制造“变化”。',
+        '严格遵守 allow_news / allow_forums。为 false 的类别必须返回空数组。allow_news=true 也不代表一定要出新闻：没有新的公开事实时可以只做持续报道或什么都不写；allow_forums=true 也可以在讨论没有自然变化时返回空数组。',
         '新闻与论坛是“传播载体”，source_type 才表示消息来源层级：official = 官方/机构/权威渠道，unofficial = 目击、匿名爆料、民间媒体、论坛、小道消息。官方消息也可能措辞保守、选择性披露；非官方消息也可能碰巧为真。来源层级不等于世界真相。',
-        '新闻偏事实传播：只报道有公共传播价值的内容；无法确认的原因不要擅自下结论。系统会把 publicity=public 的世界事件直接同步进新闻区，所以你生成的新闻主要用于传播表达，不能改变或增加事件事实。同一 related_event_id 是同一条持续新闻线，有新进展时写最新公开状态，不要把同一事件拆成互相重复的平行新闻。论坛偏群众反应：允许猜测、误解、玩梗和传闻，但必须通过 claim_status 明确区分 fact / mixed / rumor，且不得把传闻写回成事实。',
+        '新闻偏事实传播：只报道有公共传播价值的内容；无法确认的原因不要擅自下结论。世界事件只提供公开事实候选，新闻不会绕过本轮时间门槛被系统强行补出来；你生成的新闻也不能改变或增加事件事实。同一 related_event_id 是同一条持续新闻线，有足够世界时间和公开进展时可以写后续报道，不要把同一事件拆成互相重复的平行新闻。论坛偏群众反应：允许猜测、误解、玩梗和传闻，但必须通过 claim_status 明确区分 fact / mixed / rumor，且不得把传闻写回成事实。',
         '每条消息给出 audience_tags：只写“哪些类型的人可能更关注这条消息”，例如当地居民、行业从业者、某组织成员、记者、学生等。它只是受众标签，不代表任何具体 NPC 已经看到或相信该消息，也不需要读取完整世界书。',
         'scope 用一句很短的话概括传播范围，例如“本地居民圈”“行业内部”“全城公开”“小范围匿名流传”。',
         'related_event_id 必须来自 public_event_candidates 中已有的 id。不得虚构新的事件 ID。',
-        '最多生成 3 条新闻、4 个论坛主题；每个论坛主题最多 4 条代表回复。news / forums 不需要分别凑齐，但二者合计至少要有 1 条有效内容，并且 related_event_id 必须来自候选。',
+        '最多生成 3 条新闻、4 个论坛主题；每个论坛主题最多 4 条代表回复。允许两个数组都为空；只要输出了内容，related_event_id 就必须来自候选。',
         '只输出 JSON，不要 Markdown，不要代码块，不要解释。',
         JSON.stringify({
             output_schema: {
@@ -389,7 +564,11 @@ export function normalizePublicOpinionPayload(payload, {
     sourceRevision = -1,
     sourceWorldMinute = -1,
     sourceEventSignature = '',
+    forumSourceSignature = sourceEventSignature,
+    newsSourceSignature = '',
     generatedAt = new Date().toISOString(),
+    lastForumWorldMinute = sourceWorldMinute,
+    lastNewsWorldMinute = sourceWorldMinute,
     maximumNews = 3,
     maximumForums = 4,
 } = {}) {
@@ -487,6 +666,10 @@ export function normalizePublicOpinionPayload(payload, {
         sourceRevision: clampInteger(sourceRevision, -1, -1, Number.MAX_SAFE_INTEGER),
         sourceWorldMinute: clampInteger(sourceWorldMinute, -1, -1, Number.MAX_SAFE_INTEGER),
         sourceEventSignature: asText(sourceEventSignature, 240),
+        forumSourceSignature: asText(forumSourceSignature, 240),
+        newsSourceSignature: asText(newsSourceSignature, 240),
+        lastForumWorldMinute: clampInteger(lastForumWorldMinute, sourceWorldMinute, -1, Number.MAX_SAFE_INTEGER),
+        lastNewsWorldMinute: clampInteger(lastNewsWorldMinute, sourceWorldMinute, -1, Number.MAX_SAFE_INTEGER),
         news,
         forums,
     };
@@ -504,7 +687,11 @@ export function normalizePublicOpinionCache(raw) {
         sourceRevision,
         sourceWorldMinute,
         sourceEventSignature: raw?.sourceEventSignature || '',
+        forumSourceSignature: raw?.forumSourceSignature || raw?.sourceEventSignature || '',
+        newsSourceSignature: raw?.newsSourceSignature || '',
         generatedAt: raw?.generatedAt || '',
+        lastForumWorldMinute: raw?.lastForumWorldMinute ?? sourceWorldMinute,
+        lastNewsWorldMinute: raw?.lastNewsWorldMinute ?? sourceWorldMinute,
         maximumNews: 18,
         maximumForums: 12,
     });

@@ -7369,6 +7369,68 @@
     margin: 0;
 }
 #world-backstage-root .wb-route-setting select { width: 100%; }
+
+/* 1.7.2 · 世界背景在「此刻设置」里有一个真正看得见的入口。 */
+#world-backstage-root .wb-world-background-setting {
+    display: grid;
+    gap: 9px;
+}
+#world-backstage-root .wb-world-background-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+#world-backstage-root .wb-world-background-heading > label {
+    color: var(--wb-text-soft);
+    font-size: 9px;
+}
+#world-backstage-root .wb-world-background-heading > span {
+    flex: 0 0 auto;
+    padding: 3px 7px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    color: var(--wb-text-faint);
+    background: color-mix(in srgb, var(--wb-panel) 82%, transparent);
+    font-size: 8px;
+}
+#world-backstage-root .wb-world-background-heading > span.is-set {
+    border-color: color-mix(in srgb, var(--wb-jade) 30%, var(--wb-line));
+    color: var(--wb-jade);
+    background: color-mix(in srgb, var(--wb-jade) 8%, var(--wb-panel));
+}
+#world-backstage-root .wb-world-background-preview {
+    min-height: 44px;
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 78%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--wb-panel) 70%, transparent);
+    color: var(--wb-text-soft);
+    font-size: 8px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+#world-backstage-root .wb-world-background-preview.is-empty {
+    color: var(--wb-text-faint);
+}
+#world-backstage-root .wb-world-background-action {
+    width: 100%;
+    min-height: 34px;
+    padding: 7px 10px;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 9px;
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+    font-size: 9px;
+    font-weight: 650;
+    cursor: pointer;
+}
+#world-backstage-root .wb-world-background-action:hover,
+#world-backstage-root .wb-world-background-action:focus-visible {
+    border-color: var(--wb-accent) !important;
+}
+
 #world-backstage-root .wb-flat-footnote {
     margin: 0 2px;
     color: var(--wb-text-faint);

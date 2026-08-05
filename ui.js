@@ -1637,6 +1637,8 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
             ${note ? `<p class="wb-setting-explanation">${escapeHtml(note)}</p>` : ''}
         </div>
     `;
+    const worldBackground = String(state.world?.background || '').trim();
+    const worldBackgroundLength = worldBackground.length;
 
     const nowHtml = `
         <div class="wb-flat-setting-list">
@@ -1663,6 +1665,21 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                         ? ({1: '只看最新一轮，最轻最省～', 3: '最近 3 轮，日常剧情通常够用。', 5: '默认推荐～连续性和消耗比较均衡。'}[Number(settings.contextTurns)])
                         : `现在会读最近 ${settings.contextTurns} 轮～长事件更稳，Token 也会跟着长胖。`
                 )}</p>
+            </div>
+            <div class="wb-setting-block wb-world-background-setting">
+                <div class="wb-world-background-heading">
+                    <label>世界背景设定</label>
+                    <span class="${worldBackground ? 'is-set' : ''}">${worldBackground ? `已设定 · ${worldBackgroundLength} 字` : '未设定'}</span>
+                </div>
+                <div class="wb-world-background-preview ${worldBackground ? 'is-set' : 'is-empty'}">
+                    ${escapeHtml(worldBackground
+                        ? compactText(worldBackground, 150)
+                        : '写下这个世界长期成立的时代、地理、势力、规则与重要时间线～')}
+                </div>
+                <button class="wb-world-background-action" type="button" data-wb-action="open-world-editor">
+                    ${worldBackground ? '编辑世界背景' : '开始设定世界背景'}
+                </button>
+                <p class="wb-setting-explanation">这份设定是世界的地基～普通推演只会参考，不会自己改写。</p>
             </div>
             <div class="wb-setting-block">
                 <label>时间推进</label>
@@ -2453,8 +2470,9 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
             <div class="wb-opinion-actions">
                 ${opinion.generatedAt ? `<button type="button" data-wb-action="clear-public-opinion" title="只清空舆情列表，不删除世界事实或已经发生的影响" ${canonRunning ? 'disabled' : ''}>清空列表</button>` : ''}
                 <button type="button" data-wb-action="generate-public-opinion-sandbox" ${sandboxRunning ? 'disabled' : ''}>${sandboxRunning ? '正在闲逛…' : '随便逛逛～'}</button>
-                <button class="wb-inline-add" type="button" data-wb-action="generate-public-opinion" ${canonRunning ? 'disabled' : ''}>
-                    ${canonRunning ? '正在刷新…' : (opinion.generatedAt ? '刷新世界舆情' : '生成当前舆情')}
+                <button class="wb-inline-add" type="button" data-wb-action="generate-public-opinion" ${canonRunning ? 'disabled' : ''}
+                    title="手动立即检查一次，会绕过自动时间门槛；仍不会强迫生成不存在的舆情变化">
+                    ${canonRunning ? '正在刷新…' : (opinion.generatedAt ? '立即检查舆情' : '生成当前舆情')}
                 </button>
             </div>
         </div>
@@ -2841,7 +2859,9 @@ function renderMemoryView(state, observerMode, {
                                 ...shownClues.filter(item => !item.locked).map(item => ({ kind: 'clue', id: item.id })),
                                 ...shownSummaries.filter(item => !item.locked).map(item => ({ kind: 'summary', id: item.id })),
                             ]))}">选择当前显示</button>
-                        <button type="button" data-wb-action="bulk-delete-memory"
+                        <button type="button" data-wb-action="clear-memory-selection"
+                            ${selectedKeys.size ? '' : 'disabled'}>取消全部选择</button>
+                        <button type="button" data-wb-action="bulk-delete-memory" data-wb-memory-selected-count
                             ${selectedKeys.size ? '' : 'disabled'}>删除选中${selectedKeys.size ? ` · ${selectedKeys.size}` : ''}</button>
                         <button class="is-danger" type="button" data-wb-action="clear-filtered-memory">
                             ${normalizedFilter === 'all' && !query ? '清空全部未锁定记忆' : '清空当前筛选'}
@@ -3274,6 +3294,7 @@ export function createWorldBackstageUI({
     let openSettingsGroups = new Set();
     let openSettingsSubgroups = new Set();
     let openContentFolds = new Set();
+    const viewFoldStates = new Map();
     let eventFormDraft = null;
     let clockFormDraft = null;
     let apiFormDraft = null;
@@ -3406,6 +3427,7 @@ export function createWorldBackstageUI({
             clockFormDraft = null;
             tagFilterDraftRules = null;
             memoryEditor = null;
+            memorySelectedKeys = new Set();
             personEditor = null;
             worldEditorOpen = false;
             recordEditor = null;
@@ -3415,6 +3437,29 @@ export function createWorldBackstageUI({
         }, closeDelay);
     }
 
+    function resetContext() {
+        eventFormOpen = false;
+        eventEditorId = '';
+        eventFormDraft = null;
+        clockFormDraft = null;
+        selectedPersonId = null;
+        personObservation = null;
+        personEditor = null;
+        memoryEditor = null;
+        memorySelectedKeys = new Set();
+        memoryQuery = '';
+        memoryFilter = 'active';
+        memoryVisibleCount = 12;
+        worldEditorOpen = false;
+        recordEditor = null;
+        worldbookSelectedIds = new Set();
+        worldbookQuery = '';
+        viewFoldStates.clear();
+        viewScrollTop.clear();
+        openContentFolds = new Set();
+        render();
+    }
+
     function render() {
         const viewChanged = activeView !== renderedView;
         const animatePanelEntrance = Boolean(isOpen && panelEntrancePending);
@@ -3422,13 +3467,14 @@ export function createWorldBackstageUI({
         if (previousContent) viewScrollTop.set(renderedView, previousContent.scrollTop);
         const previousContentFolds = root.querySelectorAll('.wb-fold[data-fold-key]');
         if (previousContentFolds.length) {
-            openContentFolds = new Set(
+            viewFoldStates.set(renderedView, new Set(
                 [...previousContentFolds]
                     .filter(item => item.open)
                     .map(item => item.dataset.foldKey)
                     .filter(Boolean),
-            );
+            ));
         }
+        openContentFolds = new Set(viewFoldStates.get(activeView) || []);
         const previousSettings = root.querySelector('.wb-settings-popover');
         if (previousSettings) settingsScrollTop = previousSettings.scrollTop;
         const previousSettingGroups = root.querySelectorAll('.wb-settings-group[data-settings-group]');
@@ -3964,7 +4010,9 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'set-view') {
-            activeView = target.dataset.view || 'now';
+            const nextView = target.dataset.view || 'now';
+            if (activeView === 'memory' && nextView !== 'memory') memorySelectedKeys = new Set();
+            activeView = nextView;
             moduleSettingsView = '';
             render();
             return;
@@ -4021,6 +4069,7 @@ export function createWorldBackstageUI({
         if (action === 'set-memory-filter') {
             memoryFilter = target.dataset.filter || 'active';
             memoryVisibleCount = 12;
+            memorySelectedKeys = new Set();
             render();
             return;
         }
@@ -4056,6 +4105,11 @@ export function createWorldBackstageUI({
             memorySelectedKeys = new Set(
                 items.map(item => `${item.kind}:${item.id}`),
             );
+            render();
+            return;
+        }
+        if (action === 'clear-memory-selection') {
+            memorySelectedKeys = new Set();
             render();
             return;
         }
@@ -4241,7 +4295,7 @@ export function createWorldBackstageUI({
             try {
                 const result = await invokeAction('generate-public-opinion');
                 if (result) {
-                    notify('世界舆情刷新好啦～', 'success');
+                    notify('世界舆情检查完成～', 'success');
                 }
             } finally {
                 publicOpinionActionBusy = false;
@@ -4677,7 +4731,13 @@ export function createWorldBackstageUI({
             if (event.target.checked) next.add(key);
             else next.delete(key);
             memorySelectedKeys = next;
-            render();
+            const deleteButton = root.querySelector('[data-wb-memory-selected-count]');
+            if (deleteButton) {
+                deleteButton.disabled = memorySelectedKeys.size === 0;
+                deleteButton.textContent = `删除选中${memorySelectedKeys.size ? ` · ${memorySelectedKeys.size}` : ''}`;
+            }
+            const clearButton = root.querySelector('[data-wb-action="clear-memory-selection"]');
+            if (clearButton) clearButton.disabled = memorySelectedKeys.size === 0;
             return;
         }
 
@@ -4803,7 +4863,9 @@ export function createWorldBackstageUI({
             return;
         }
         if (!event.target.matches?.('[data-wb-memory-search]')) return;
-        memoryQuery = String(event.target.value || '').slice(0, 80);
+        const nextMemoryQuery = String(event.target.value || '').slice(0, 80);
+        if (nextMemoryQuery !== memoryQuery) memorySelectedKeys = new Set();
+        memoryQuery = nextMemoryQuery;
         memoryVisibleCount = 12;
         window.clearTimeout(memorySearchTimer);
         memorySearchTimer = window.setTimeout(render, 120);
@@ -4970,6 +5032,7 @@ export function createWorldBackstageUI({
         setBusy,
         open,
         close,
+        resetContext,
         destroy() {
             window.clearTimeout(toastTimer);
             window.clearTimeout(memorySearchTimer);

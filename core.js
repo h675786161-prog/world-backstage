@@ -1087,6 +1087,7 @@ export function applyPublicImpactResult(inputState, rawPayload, {
         timePolicy: 'world',
         narrativeText: '',
         backgroundNpcBudget,
+        preserveCommitAnchor: true,
     });
 
     recordProcessedPublicImpacts(
@@ -3054,6 +3055,7 @@ export function applySimulationResult(baseState, rawPayload, {
     timePolicy = 'open',
     narrativeText = '',
     backgroundNpcBudget = LIMITS.people,
+    preserveCommitAnchor = false,
 } = {}) {
     const payload = normalizeSimulationResult(rawPayload);
     const baseClockAnchored = Boolean(baseState?.clock?.anchored);
@@ -3693,15 +3695,21 @@ export function applySimulationResult(baseState, rawPayload, {
         });
     }
 
-    state.needsReconciliation = false;
-    state.pendingSync = false;
-    state.lastCommit = {
-        messageId,
-        swipeId,
-        sourceKey: asString(sourceKey, '', 180),
-        at: worldMinute,
-        committedAt: nowIso(),
-    };
+    if (preserveCommitAnchor) {
+        state.needsReconciliation = Boolean(baseState?.needsReconciliation);
+        state.pendingSync = Boolean(baseState?.pendingSync);
+        state.lastCommit = baseState?.lastCommit ? deepClone(baseState.lastCommit) : null;
+    } else {
+        state.needsReconciliation = false;
+        state.pendingSync = false;
+        state.lastCommit = {
+            messageId,
+            swipeId,
+            sourceKey: asString(sourceKey, '', 180),
+            at: worldMinute,
+            committedAt: nowIso(),
+        };
+    }
     state.revision = asInteger(state.revision, 0, 0) + 1;
     state.updatedAt = nowIso();
     appendAudit(state, {
@@ -5938,6 +5946,27 @@ export function listRecoveryPoints(inputStore) {
     return asArray(inputStore?.recoveryPoints)
         .map(normalizeRecoveryPoint)
         .filter(point => point?.id)
+        .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+        .slice(-RECOVERY_LIMIT);
+}
+
+// Hot UI paths only need recovery-point metadata. Avoid cloning the full saved
+// world state just to render a count/label; the full snapshot is normalized
+// only when a recovery operation actually needs it.
+export function listRecoveryPointHeaders(inputStore) {
+    return asArray(inputStore?.recoveryPoints)
+        .filter(raw => raw && typeof raw === 'object' && raw.state && typeof raw.state === 'object')
+        .map(raw => ({
+            id: asString(raw.id, '', 120),
+            createdAt: asString(raw.createdAt, '', 40),
+            reason: asString(raw.reason, 'manual', 60),
+            label: asString(raw.label, '手动恢复点', 120),
+            schemaVersion: asInteger(raw.schemaVersion, 0, 0),
+            worldName: asString(raw.worldName, raw.state?.world?.name || '主世界', 80),
+            worldMinute: asInteger(raw.worldMinute, raw.state?.clock?.absoluteMinute ?? 0, 0),
+            revision: asInteger(raw.revision, raw.state?.revision ?? 0, 0),
+        }))
+        .filter(point => point.id)
         .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
         .slice(-RECOVERY_LIMIT);
 }

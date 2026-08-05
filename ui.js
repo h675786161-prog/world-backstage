@@ -1666,21 +1666,23 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                         : `现在会读最近 ${settings.contextTurns} 轮～长事件更稳，Token 也会跟着长胖。`
                 )}</p>
             </div>
-            <div class="wb-setting-block wb-world-background-setting">
-                <div class="wb-world-background-heading">
-                    <label>世界背景设定</label>
+            <details class="wb-setting-block wb-world-background-setting" data-settings-subgroup="now-world-background" ${advancedOpen('now-world-background')}>
+                <summary class="wb-world-background-heading">
+                    <strong>世界背景设定</strong>
                     <span class="${worldBackground ? 'is-set' : ''}">${worldBackground ? `已设定 · ${worldBackgroundLength} 字` : '未设定'}</span>
+                </summary>
+                <div class="wb-world-background-body">
+                    <div class="wb-world-background-preview ${worldBackground ? 'is-set' : 'is-empty'}">
+                        ${escapeHtml(worldBackground
+                            ? compactText(worldBackground, 150)
+                            : '写下这个世界长期成立的时代、地理、势力、规则与重要时间线～')}
+                    </div>
+                    <button class="wb-world-background-action" type="button" data-wb-action="open-world-editor">
+                        ${worldBackground ? '编辑世界背景' : '开始设定世界背景'}
+                    </button>
+                    <p class="wb-setting-explanation">这份设定是世界的地基～普通推演只会参考，不会自己改写。</p>
                 </div>
-                <div class="wb-world-background-preview ${worldBackground ? 'is-set' : 'is-empty'}">
-                    ${escapeHtml(worldBackground
-                        ? compactText(worldBackground, 150)
-                        : '写下这个世界长期成立的时代、地理、势力、规则与重要时间线～')}
-                </div>
-                <button class="wb-world-background-action" type="button" data-wb-action="open-world-editor">
-                    ${worldBackground ? '编辑世界背景' : '开始设定世界背景'}
-                </button>
-                <p class="wb-setting-explanation">这份设定是世界的地基～普通推演只会参考，不会自己改写。</p>
-            </div>
+            </details>
             <div class="wb-setting-block">
                 <label>时间推进</label>
                 <div class="wb-option-row">

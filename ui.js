@@ -592,6 +592,66 @@ function renderSyncStrip(syncStatus) {
     `;
 }
 
+function coverageLabel(coverage) {
+    return `${Math.round(Math.max(0, Math.min(1, Number(coverage) || 0)) * 100)}%`;
+}
+
+// AI 整理是一键写入的，所以复核信息只能事后给：哪些栏位原文命中率偏低、
+// 哪些片段被当成模型自己编的拦下了、哪些人物没建起来。
+function renderWorldbookImportReport(report) {
+    if (!report || report.phase === 'idle') return '';
+    if (report.running || report.phase === 'running') {
+        return `<div class="wb-worldbook-status is-running">${escapeHtml(report.message || '正在整理～')}</div>`;
+    }
+
+    const reviewed = (report.people || []).filter(person => person.review?.length || person.lengthFuse);
+    const dropped = (report.people || []).flatMap(person => (person.dropped || [])
+        .map(item => ({ ...item, name: person.name })));
+    const details = [
+        ...(report.renamed || []).map(item => `<li class="is-fixed">已把「${escapeHtml(item.from)}」的名字修正为 <strong>${escapeHtml(item.to)}</strong></li>`),
+        ...reviewed.map(person => `<li class="is-review"><strong>${escapeHtml(person.name)}</strong> 建议复核：${
+            person.lengthFuse
+                ? '整理结果比原文还长，可能有扩写'
+                : escapeHtml(person.review.map(item => `${item.label} ${coverageLabel(item.coverage)}`).join('、'))
+        }</li>`),
+        ...dropped.slice(0, 12).map(item => `<li class="is-dropped"><strong>${escapeHtml(item.name)}</strong> · ${escapeHtml(item.label)} 原文里查不到，已拦下：<em>${escapeHtml(String(item.text).slice(0, 60))}</em></li>`),
+        ...(report.untouched || []).map(item => `<li class="is-untouched">勾选的「${escapeHtml(item.name)}」没有产出人物：${escapeHtml(item.reason)}</li>`),
+        ...(report.skipped || []).map(item => `<li class="is-skipped">${escapeHtml(item.name || '无名条目')}：${escapeHtml(item.reason)}</li>`),
+        ...(report.failures || []).map(item => `<li class="is-failed">第 ${item.batch} 批没跑成功（${escapeHtml((item.entries || []).join('、'))}）：${escapeHtml(item.reason)}</li>`),
+    ];
+
+    return `
+        <div class="wb-worldbook-status is-${escapeAttr(report.phase)}">${escapeHtml(report.message || '')}</div>
+        ${details.length ? `
+            <details class="wb-worldbook-import-report">
+                <summary><span>本次整理报告</span><small>${details.length} 条 · 点击展开</small></summary>
+                <ul>${details.join('')}</ul>
+                <p class="wb-worldbook-import-note">被拦下的内容不会丢：每个人物卡里的「世界书原始设定」保留了条目全文。</p>
+            </details>
+        ` : ''}
+    `;
+}
+
+function renderWorldbookImportActions(worldbook, selectedCount) {
+    const report = worldbook?.aiImport || null;
+    const running = Boolean(report?.running);
+    const disabled = !selectedCount || running ? 'disabled' : '';
+    const suffix = selectedCount ? `（${selectedCount}）` : '';
+    return `
+        <div class="wb-worldbook-import-actions">
+            <button class="wb-worldbook-import-button" type="submit" ${disabled}>
+                ${selectedCount ? `规则导入${suffix}` : '请选择要导入的人物'}
+            </button>
+            <button class="wb-primary-button wb-worldbook-ai-import-button" type="button"
+                data-wb-action="ai-import-worldbook" ${disabled}>
+                ${running ? '正在整理…' : `由 AI 整理后导入${suffix}`}
+            </button>
+        </div>
+        <p class="wb-worldbook-import-hint">规则导入不联网、按关键词切分；AI 整理会把设定重新归到对应栏位，只搬运不延伸，查不到原文的内容会被拦下。</p>
+        ${renderWorldbookImportReport(report)}
+    `;
+}
+
 function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}, scope = 'global') {
     const clock = formatWorldCalendar(state);
     const clockLabel = worldClockLabel(state, clock);
@@ -1265,9 +1325,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                         </label>
                                     `).join('') : `<div class="wb-worldbook-empty">当前筛选下没有条目。可以取消筛选或换个关键词。</div>`}
                                 </div>
-                                <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>
-                                    ${worldbookSelectedCount ? `导入已选人物（${worldbookSelectedCount}）` : '请选择要导入的人物'}
-                                </button>
+                                ${renderWorldbookImportActions(worldbook, worldbookSelectedCount)}
                             </div>
                         ` : ''}
                     </form>
@@ -1848,7 +1906,7 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                                     </label>`;
                                 }).join('') : '<div class="wb-worldbook-empty">当前筛选下没有条目。可以取消筛选或换个关键词。</div>'}
                             </div>
-                            <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>${worldbookSelectedCount ? `导入已选人物（${worldbookSelectedCount}）` : '请选择要导入的人物'}</button>
+                            ${renderWorldbookImportActions(worldbook, worldbookSelectedCount)}
                         </div>` : ''}
                 </form>
             </div>
@@ -4569,6 +4627,16 @@ export function createWorldBackstageUI({
                 const personCount = result.entries.filter(entry => entry.importablePerson ?? entry.likelyPerson).length;
                 if (personCount > 0 && personCount < result.entries.length) worldbookOnlyPeople = true;
             }
+            render();
+            return;
+        }
+        if (action === 'ai-import-worldbook') {
+            const form = target.closest('[data-wb-form="worldbook"]');
+            const report = await invokeAction('ai-import-worldbook-people', {
+                bookName: form?.elements?.bookName?.value || '',
+                entryIds: [...worldbookSelectedIds],
+            });
+            if (report?.created || report?.updated) worldbookSelectedIds = new Set();
             render();
             return;
         }

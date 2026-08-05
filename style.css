@@ -6109,6 +6109,121 @@
     border-radius: 999px !important;
 }
 
+#world-backstage-root .wb-worldbook-import-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+#world-backstage-root .wb-worldbook-import-actions > button {
+    min-height: 42px;
+    padding: 0 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+    font-family: var(--wb-font);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    line-height: 1.3;
+}
+
+#world-backstage-root .wb-worldbook-import-actions > button:disabled {
+    opacity: 0.5;
+}
+
+#world-backstage-root .wb-worldbook-import-actions > button:hover:not(:disabled),
+#world-backstage-root .wb-worldbook-import-actions > button:focus-visible:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-worldbook-import-hint {
+    margin: 0;
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 12px);
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-worldbook-status.is-partial {
+    border-color: color-mix(in srgb, var(--wb-amber) 34%, var(--wb-line));
+    color: var(--wb-amber);
+}
+
+#world-backstage-root .wb-worldbook-import-report {
+    border: 1px solid var(--wb-line);
+    border-radius: 11px;
+    background: var(--wb-panel-faint);
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-worldbook-import-report > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    color: var(--wb-text-soft);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-worldbook-import-report > summary small {
+    color: var(--wb-text-faint);
+}
+
+#world-backstage-root .wb-worldbook-import-report ul {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0 12px 10px 12px;
+    list-style: none;
+}
+
+#world-backstage-root .wb-worldbook-import-report li {
+    padding-left: 10px;
+    border-left: 2px solid var(--wb-line);
+    color: var(--wb-text-soft);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 13px);
+    line-height: 1.5;
+}
+
+#world-backstage-root .wb-worldbook-import-report li.is-fixed {
+    border-left-color: color-mix(in srgb, var(--wb-jade) 55%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-import-report li.is-review {
+    border-left-color: color-mix(in srgb, var(--wb-amber) 62%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-import-report li.is-untouched {
+    border-left-color: color-mix(in srgb, var(--wb-amber) 62%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-import-report li.is-dropped,
+#world-backstage-root .wb-worldbook-import-report li.is-skipped,
+#world-backstage-root .wb-worldbook-import-report li.is-failed {
+    border-left-color: color-mix(in srgb, var(--wb-danger) 48%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-import-report li em {
+    color: var(--wb-text-faint);
+    font-style: normal;
+}
+
+#world-backstage-root .wb-worldbook-import-note {
+    margin: 0;
+    padding: 0 12px 10px 12px;
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 12px);
+    line-height: 1.55;
+}
+
+@media (max-width: 420px) {
+    #world-backstage-root .wb-worldbook-import-actions {
+        grid-template-columns: 1fr;
+    }
+}
+
 #world-backstage-root .wb-worldbook-source-profile {
     border: 1px solid var(--wb-line);
     border-radius: 11px;

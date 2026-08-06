@@ -7689,3 +7689,36 @@
         grid-column: 1 / -1;
     }
 }
+
+/* 1.7.3-dev.1 · 舆情单条管理 */
+.wb-opinion-card-tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+}
+
+.wb-opinion-delete {
+    display: inline-grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+}
+
+.wb-opinion-delete:hover,
+.wb-opinion-delete:focus-visible {
+    background: rgba(200, 90, 90, 0.08);
+    color: var(--wb-danger, #c96f6f);
+}
+
+.wb-news-card-foot > span:empty {
+    display: none;
+}

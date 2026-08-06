@@ -1115,6 +1115,15 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             </div>
 
             <div class="wb-setting-toggle">
+                <div><strong>强化后台人物推演</strong><span>把逾期人物塞进现有世界推演一起结算，不额外单开请求；避免角色只在镜头前才活着。</span></div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="enhancedBackgroundSimulation"
+                        ${settings.enhancedBackgroundSimulation ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+
+            <div class="wb-setting-toggle">
                 <div><strong>描写玩家内心</strong><span>默认关闭，避免插件替你决定想法与立场</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="includeUserInnerVoice"
@@ -1729,6 +1738,10 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                 <label class="wb-number-setting">自定义人数上限
                     <input type="number" min="0" max="12" step="1" data-wb-setting="backgroundNpcBudget" value="${escapeAttr(settings.backgroundNpcBudget)}">
                 </label>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>强化后台人物推演</strong><span>逾期人物与当前世界推演合批处理，不额外增加一轮 API 请求。</span></div>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="enhancedBackgroundSimulation" ${settings.enhancedBackgroundSimulation ? 'checked' : ''}><i></i></label>
             </div>
             <div class="wb-setting-toggle">
                 <div><strong>描写玩家内心</strong><span>默认关闭～避免插件替你决定想法与立场。</span></div>
@@ -2399,6 +2412,13 @@ function publicOpinionGeneratedLabel(value) {
     });
 }
 
+function publicOpinionWorldTimeLabel(state, item) {
+    const minute = Number(item?.worldMinute);
+    if (!Number.isFinite(minute) || minute < 0) return '';
+    const calendar = formatWorldCalendar(state, minute);
+    return calendar?.stamp || formatWorldMinute(minute).stamp;
+}
+
 function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = {}) {
     const news = Array.isArray(opinion.news) ? opinion.news : [];
     const forums = Array.isArray(opinion.forums) ? opinion.forums : [];
@@ -2490,7 +2510,11 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                     <article class="wb-news-card">
                         <div class="wb-news-card-top">
                             <span>${escapeHtml(item.category || '世界新闻')}${item.publishedAt && item.updatedAt && item.publishedAt !== item.updatedAt ? ' · 后续' : ''}</span>
-                            <small>${'●'.repeat(Math.max(1, Math.min(3, Number(item.heat) || 1)))}</small>
+                            <span class="wb-opinion-card-tools">
+                                <small>${'●'.repeat(Math.max(1, Math.min(3, Number(item.heat) || 1)))}</small>
+                                <button type="button" class="wb-opinion-delete" data-wb-action="dismiss-public-opinion-item"
+                                    data-opinion-kind="news" data-item-id="${escapeAttr(item.id)}" title="从舆情列表删除这条；不会删除世界事件">×</button>
+                            </span>
                         </div>
                         <div class="wb-opinion-source-row">
                             <span class="is-${escapeAttr(item.sourceType || 'official')}">${escapeHtml(publicOpinionSourceTypeLabel(item.sourceType))}</span>
@@ -2499,7 +2523,7 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                         <p>${escapeHtml(item.summary)}</p>
                         ${renderPublicOpinionAudience(item)}
                         <div class="wb-news-card-foot">
-                            <span>${escapeHtml(item.source || '公开信息')} · ${escapeHtml(publicOpinionConfidenceLabel(item.confidence))}${item.worldSynced ? ' · 世界事件同步' : ''}</span>
+                            <span>${escapeHtml(item.source || '公开信息')} · ${escapeHtml(publicOpinionConfidenceLabel(item.confidence))}${item.worldSynced ? ' · 世界事件同步' : ''}${publicOpinionWorldTimeLabel(state, item) ? ` · ${escapeHtml(publicOpinionWorldTimeLabel(state, item))}` : ''}</span>
                             ${renderRelated(item)}
                         </div>
                     </article>
@@ -2511,7 +2535,11 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                     <article class="wb-forum-card">
                         <div class="wb-forum-card-top">
                             <span>${escapeHtml(item.board || '闲聊')}</span>
-                            <small class="is-${escapeAttr(item.claimStatus || 'mixed')}">${escapeHtml(publicOpinionClaimLabel(item.claimStatus))}</small>
+                            <span class="wb-opinion-card-tools">
+                                <small class="is-${escapeAttr(item.claimStatus || 'mixed')}">${escapeHtml(publicOpinionClaimLabel(item.claimStatus))}</small>
+                                <button type="button" class="wb-opinion-delete" data-wb-action="dismiss-public-opinion-item"
+                                    data-opinion-kind="forum" data-item-id="${escapeAttr(item.id)}" title="从论坛列表删除这条讨论">×</button>
+                            </span>
                         </div>
                         <div class="wb-opinion-source-row">
                             <span class="is-${escapeAttr(item.sourceType || 'unofficial')}">${escapeHtml(publicOpinionSourceTypeLabel(item.sourceType))}</span>
@@ -2530,7 +2558,10 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                                 </div>
                             </details>
                         ` : ''}
-                        <div class="wb-news-card-foot">${renderRelated(item)}</div>
+                        <div class="wb-news-card-foot">
+                            <span>${publicOpinionWorldTimeLabel(state, item) ? escapeHtml(publicOpinionWorldTimeLabel(state, item)) : ''}</span>
+                            ${renderRelated(item)}
+                        </div>
                     </article>
                 `).join('') || renderEmpty('论坛今天没吵起来～', '没有适合公开讨论的事，或者你还没生成舆情快照。')}
             </div>
@@ -4291,6 +4322,14 @@ export function createWorldBackstageUI({
             const confirmed = globalThis.confirm?.('(・_・;)  清空当前舆情快照吗？世界状态不会受到影响。');
             if (confirmed === false) return;
             await invokeAction('clear-public-opinion');
+            render();
+            return;
+        }
+        if (action === 'dismiss-public-opinion-item') {
+            await invokeAction('dismiss-public-opinion-item', {
+                kind: target.dataset.opinionKind === 'forum' ? 'forum' : 'news',
+                itemId: target.dataset.itemId || '',
+            });
             render();
             return;
         }

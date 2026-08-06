@@ -31,6 +31,7 @@ import {
     hashText,
     selectPendingAssistantMessageIds,
     listRecoveryPoints,
+    listDueBackgroundPeople,
     markPendingSync,
     pendingPublicImpactEvents,
     normalizeTagFilterRules,
@@ -71,9 +72,9 @@ import {
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '1.7.2';
+const PLUGIN_VERSION = '1.7.3-dev.1';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 23,
+    settingsVersion: 24,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -88,6 +89,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     autoRetryCount: 1,
     memoryAutoIndexInterval: 10,
     backgroundNpcBudget: 4,
+    enhancedBackgroundSimulation: false,
     customSimulationInstruction: '',
     playerIdentityAnchor: '',
     theme: 'auto',
@@ -608,6 +610,7 @@ function getSettings() {
         12,
         Math.max(0, Number.parseInt(settings.backgroundNpcBudget, 10) || 0),
     );
+    settings.enhancedBackgroundSimulation = Boolean(settings.enhancedBackgroundSimulation);
     settings.customSimulationInstruction = String(
         settings.customSimulationInstruction || '',
     ).trim().slice(0, 1000);
@@ -631,7 +634,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 23;
+    settings.settingsVersion = 24;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -660,7 +663,7 @@ function getSettings() {
         ? (previous?.orbEnabled !== undefined ? Boolean(previous.orbEnabled) : true)
         : settings.orbEnabled !== false;
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 23) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 24) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -680,6 +683,7 @@ function makeStore() {
         personObservations: {},
         publicOpinion: emptyPublicOpinionCache(),
         publicOpinionListHidden: false,
+        publicOpinionDismissed: { news: [], forums: [] },
         publicOpinionSandbox: emptyPublicOpinionSandbox(),
         recoveryPoints: [],
         updatedAt: new Date().toISOString(),
@@ -765,6 +769,59 @@ function getPlayerIdentityAnchor(state = null) {
     return String(getSettings().playerIdentityAnchor || '').trim().slice(0, 400);
 }
 
+
+function normalizePublicOpinionDismissed(value) {
+    const raw = value && typeof value === 'object' ? value : {};
+    const normalize = items => [...new Set(
+        (Array.isArray(items) ? items : [])
+            .map(item => String(item || '').trim())
+            .filter(Boolean),
+    )].slice(-160);
+    return {
+        news: normalize(raw.news),
+        forums: normalize(raw.forums),
+    };
+}
+
+function publicOpinionDismissKey(kind, item) {
+    const related = String(item?.relatedEventId || '').trim();
+    if (kind === 'forum') {
+        return `forum:${related}:${String(item?.board || '').trim()}:${String(item?.title || '').trim()}`;
+    }
+    return `news:${related}:${String(item?.headline || '').trim()}`;
+}
+
+function filterDismissedPublicOpinion(cache, dismissedRaw) {
+    const cacheValue = normalizePublicOpinionCache(cache || emptyPublicOpinionCache());
+    const dismissed = normalizePublicOpinionDismissed(dismissedRaw);
+    const newsKeys = new Set(dismissed.news);
+    const forumKeys = new Set(dismissed.forums);
+    return {
+        ...cacheValue,
+        news: cacheValue.news.filter(item => !newsKeys.has(publicOpinionDismissKey('news', item))),
+        forums: cacheValue.forums.filter(item => !forumKeys.has(publicOpinionDismissKey('forum', item))),
+    };
+}
+
+function dismissPublicOpinionItem(kind, itemId) {
+    const normalizedKind = kind === 'forum' ? 'forum' : 'news';
+    const store = getStore();
+    const cache = normalizePublicOpinionCache(store.publicOpinion || emptyPublicOpinionCache());
+    const list = normalizedKind === 'forum' ? cache.forums : cache.news;
+    const item = list.find(entry => String(entry?.id || '') === String(itemId || ''));
+    if (!item) throw new Error('这条舆情已经不在列表里啦～');
+
+    const dismissed = normalizePublicOpinionDismissed(store.publicOpinionDismissed);
+    const bucket = normalizedKind === 'forum' ? 'forums' : 'news';
+    const key = publicOpinionDismissKey(normalizedKind, item);
+    dismissed[bucket] = [...new Set([...dismissed[bucket], key])].slice(-160);
+    store.publicOpinionDismissed = dismissed;
+    store.publicOpinion = filterDismissedPublicOpinion(cache, dismissed);
+    saveStore(store);
+    runtime.ui?.render();
+    return true;
+}
+
 function getStore({ create = true } = {}) {
     const context = getContext();
     const metadata = context?.chatMetadata;
@@ -825,7 +882,11 @@ function getStore({ create = true } = {}) {
     store.personObservations = store.personObservations && typeof store.personObservations === 'object'
         ? store.personObservations
         : {};
-    store.publicOpinion = normalizePublicOpinionCache(store.publicOpinion || emptyPublicOpinionCache());
+    store.publicOpinionDismissed = normalizePublicOpinionDismissed(store.publicOpinionDismissed);
+    store.publicOpinion = filterDismissedPublicOpinion(
+        store.publicOpinion || emptyPublicOpinionCache(),
+        store.publicOpinionDismissed,
+    );
     store.publicOpinionListHidden = Boolean(store.publicOpinionListHidden);
     store.publicOpinionSandbox = normalizePublicOpinionSandbox(store.publicOpinionSandbox || emptyPublicOpinionSandbox());
     store.recoveryPoints = listRecoveryPoints(store);
@@ -848,7 +909,9 @@ function syncPublicOpinionLedgerFromWorld(store) {
     );
     const merged = mergeWorldNewsIntoPublicOpinion(store.currentState, current);
     store.publicOpinion = merged;
-    return merged;
+    store.publicOpinionDismissed = normalizePublicOpinionDismissed(store.publicOpinionDismissed);
+    store.publicOpinion = filterDismissedPublicOpinion(store.publicOpinion, store.publicOpinionDismissed);
+    return store.publicOpinion;
 }
 
 function saveStore(store, { immediate = false } = {}) {
@@ -2456,6 +2519,9 @@ async function runSimulationForMessage(messageId, {
             return resultState;
         }
 
+        const backgroundPersonTargets = settings.enhancedBackgroundSimulation
+            ? listDueBackgroundPeople(baseState, { maximum: settings.backgroundNpcBudget })
+            : [];
         const prompt = buildSimulationPrompt(baseState, {
             queuedEventIds: offeredEventIds,
             trigger,
@@ -2471,6 +2537,8 @@ async function runSimulationForMessage(messageId, {
             newAssistantTurns: Math.max(1, survivingNewCount),
             backgroundNpcBudget: settings.backgroundNpcBudget,
             worldPulseActivity: settings.worldPulseActivity,
+            enhancedBackgroundSimulation: settings.enhancedBackgroundSimulation,
+            backgroundPersonTargets,
         });
 
         const automaticMaxTokens = settings.autoSimulationMode === 'deep'
@@ -2566,6 +2634,7 @@ async function runSimulationForMessage(messageId, {
             timePolicy: settings.timePolicy,
             narrativeText: newAssistantTexts.join('\n'),
             backgroundNpcBudget: settings.backgroundNpcBudget,
+            lifeSettlementTargetIds: backgroundPersonTargets.map(person => person.id),
         });
         resultState = recordDeliveryOffers(resultState, offeredEventIds, {
             messageId,
@@ -4115,11 +4184,16 @@ async function runWorldPulseTick({
     }
     try {
         const state = getState();
+        const backgroundPersonTargets = settings.enhancedBackgroundSimulation
+            ? listDueBackgroundPeople(state, { maximum: settings.backgroundNpcBudget })
+            : [];
         const prompt = buildWorldPulsePrompt(state, {
             activity: settings.worldPulseActivity,
             reason,
             backgroundNpcBudget: settings.backgroundNpcBudget,
             publicCycle,
+            enhancedBackgroundSimulation: settings.enhancedBackgroundSimulation,
+            backgroundPersonTargets,
         });
         const baseMaxTokens = settings.worldPulseActivity === 'busy'
             ? 3800
@@ -4178,6 +4252,7 @@ async function runWorldPulseTick({
             timePolicy: settings.timePolicy,
             narrativeText: '',
             backgroundNpcBudget: settings.backgroundNpcBudget,
+            lifeSettlementTargetIds: backgroundPersonTargets.map(person => person.id),
         });
 
         const store = getStore();
@@ -5216,7 +5291,11 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
                 maximumForums: 12,
             },
         );
-        latestStore.publicOpinion = cache;
+        latestStore.publicOpinionDismissed = normalizePublicOpinionDismissed(latestStore.publicOpinionDismissed);
+        latestStore.publicOpinion = filterDismissedPublicOpinion(
+            cache,
+            latestStore.publicOpinionDismissed,
+        );
         latestStore.publicOpinionListHidden = false;
         saveStore(latestStore);
         refreshInjection();
@@ -6085,6 +6164,10 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'clear-public-opinion') {
         return clearPublicOpinionSnapshot();
+    }
+
+    if (action === 'dismiss-public-opinion-item') {
+        return dismissPublicOpinionItem(payload.kind, payload.itemId);
     }
 
     if (action === 'scan-tag-candidates') {

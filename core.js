@@ -3076,8 +3076,12 @@ export function applySimulationResult(baseState, rawPayload, {
     timePolicy = 'open',
     narrativeText = '',
     backgroundNpcBudget = LIMITS.peopleTaskBudget,
+    lifeSettlementTargetIds = [],
 } = {}) {
     const payload = normalizeSimulationResult(rawPayload);
+    const lifeSettlementTargets = new Set(
+        asArray(lifeSettlementTargetIds).map(item => String(item || '')).filter(Boolean),
+    );
     const baseClockAnchored = Boolean(baseState?.clock?.anchored);
     const anchor = payload.clockAnchor;
     const narrativeCalendar = extractExplicitCalendarDate(narrativeText);
@@ -3360,7 +3364,15 @@ export function applySimulationResult(baseState, rawPayload, {
             allowUserInnerVoice,
             sourceMessageId: messageId,
         });
-        if (!person.isUser) person.lastLifeTickAt = worldMinute;
+        const targetedLifeSettlement = Boolean(
+            lifeSettlementTargets.has(String(existing?.id || ''))
+            || lifeSettlementTargets.has(String(person.id || ''))
+            || lifeSettlementTargets.has(String(rawPerson?.id || ''))
+        );
+        // 普通后台 upsert 可能只是事件后果/认知变化，不等于整段个人生活已经结算。
+        if (!person.isUser && (foregroundPerson || targetedLifeSettlement)) {
+            person.lastLifeTickAt = worldMinute;
+        }
         if (existing && foregroundPerson && !baseState?.needsReconciliation) {
             const authoritativeLocation = authoritativePersonFact(state, existing.id, 'location');
             const requestedLocation = asString(
@@ -4744,10 +4756,14 @@ export function buildWorldPulsePrompt(state, {
     reason = 'world-clock-advanced',
     backgroundNpcBudget = 4,
     publicCycle = false,
+    enhancedBackgroundSimulation = false,
+    backgroundPersonTargets = [],
 } = {}) {
     const compact = compactStateForModel(state, {
         includeUserInnerVoice: false,
-        maximumPeople: Math.min(20, Math.max(10, Number(backgroundNpcBudget) + 8)),
+        maximumPeople: enhancedBackgroundSimulation
+            ? Math.min(LIMITS.peopleModelContext, Math.max(12, Number(backgroundNpcBudget) * 2 + 4))
+            : Math.min(20, Math.max(10, Number(backgroundNpcBudget) + 8)),
     });
     const activityRule = {
         quiet: '安静：主要推进已存在的压力和到期事件，新公共事件极少。',
@@ -4758,6 +4774,21 @@ export function buildWorldPulsePrompt(state, {
     const publicCycleRule = publicCycle
         ? '本次同时是“公共世界循环”：用户正在刷新真实世界新闻。若当前没有足够的新公共事件，不要跳去虚构闲逛内容；请从既有世界脉搏、地区/行业/组织状态和时代常态中，形成 1—3 条合理的当下公共变化。优先天气、交通、商业、活动、行业、政策执行、设施、治安、文化娱乐等普通新闻；不要求与主角有关，也绝不能为了填新闻硬造灾难。创建可报道事件时 publicity=public，并填写只含公众可知信息的 public_headline/public_summary。'
         : '按正常世界脉搏运行；没有自然变化时可以不新建事件。';
+    const targetList = asArray(backgroundPersonTargets)
+        .filter(item => item?.id)
+        .slice(0, asInteger(backgroundNpcBudget, 4, 0, LIMITS.peopleTaskBudget))
+        .map(item => ({
+            id: asString(item.id, '', 100),
+            name: asString(item.name, '', 80),
+            overdue_minutes: asInteger(item.overdueMinutes, 0, 0),
+        }));
+    const enhancedBackgroundRule = enhancedBackgroundSimulation && targetList.length
+        ? [
+            `强化后台人物推演已开启。本轮必须结算 ${targetList.length} 名最逾期人物：${JSON.stringify(targetList)}。`,
+            '这些人物不是可选参考。逐个检查她们经过这段世界时间后现在在哪里、在做什么、短期意图如何，必要时同步身体/情绪/资源状态；即使没有戏剧性事件，也必须在 people_upsert 中返回每个人的自然当前状态。不得只顾当前与玩家同场的人。',
+            '先完成这些人物的生活结算，再处理其他世界脉搏变化；不要为了交作业额外制造与她们无关的随机事故或新闻。',
+        ].join('\n')
+        : '未开启强化后台人物补齐；仍按普通生活到期规则处理镜头外人物。';
 
     return [
         '你是“世界背面”的世界脉搏引擎。本次没有新的小说正文；主世界时钟已经由用户或系统推进或正在进行一次明确的公共世界刷新。你只根据当前权威世界状态，结算到期变化并让镜头外世界按因果继续。',
@@ -4767,11 +4798,12 @@ export function buildWorldPulsePrompt(state, {
         '所有自主变化都必须发生在这份背景允许的世界里。背景里的规则/时代/地理/势力/时间线是生成边界；世界可以发展，但不能为了制造事件绕开底层规则。',
         `本次触发原因：${modelText(reason, 120)}。世界脉搏活跃度：${activityRule}`,
         `公共世界循环：${publicCycleRule}`,
+        enhancedBackgroundRule,
         '规则：',
         '1. elapsed_minutes 必须返回 0；时间已经在调用前推进完毕，不得再次加时。',
         '2. 先检查 existing events 是否到期、条件是否满足、持续过程是否应该结算；需要时用 events_update。同一场持续中的公共事件（例如同一地区暴雨、同一案件、同一行业风波）有新进展时优先更新原 event 的 public_headline/public_summary/status，而不是另建一条近义重复新闻；只有真正独立的新事件才 events_create。事件在本轮终结且终局已经公开时必须填写 public_result；若终局尚未公开则留空，不能拿旧 public_summary 假装最终结果。',
         '3. 再检查 world_pulse、人物长期目标、势力/地区/环境压力是否自然产生下一步。可以 events_create，但不得因为“没有正文”就硬造事件。',
-        '3A. compact people 中 life_tick_due_minutes>0 的人物已经有一段世界时间没有进行个人生活结算。优先处理最逾期的后台人物：从她原本的位置、工作/日程、长期目标、关系、身体情绪和资源继续；没有大事时就写普通生活推进，不要为了让她“有发展”强制造戏。',
+        '3A. compact people 中 life_tick_due_minutes>0 的人物已经有一段世界时间没有进行个人生活结算。优先处理最逾期的后台人物：从她原本的位置、工作/日程、长期目标、关系、身体情绪和资源继续；没有大事时就写普通生活推进，不要为了让她“有发展”强制造戏。若上方给出了“本轮必须结算人物”，这些人物必须逐个出现在 people_upsert，不能只处理当前场景人物。',
         '4. world_pulse_upsert 只写真正变化的持续宏观状态；不要机械复读原值。',
         '5. 公开世界事件可以与主角完全无关，但必须用 publicity 表示社会公开度，而不是拿 visibility 代替。publicity=trace 只能形成未证实讨论；publicity=public 才能进入新闻，并填写 public_headline/public_summary。',
         '6. visibility 仍只控制事件怎样靠近当前正文。某件私密事件即使 visibility=direct，也可以且通常应该 publicity=private。',
@@ -5213,6 +5245,31 @@ function personLifeTickInfo(state, person) {
     };
 }
 
+export function listDueBackgroundPeople(state, {
+    maximum = LIMITS.peopleTaskBudget,
+} = {}) {
+    const limit = asInteger(maximum, LIMITS.peopleTaskBudget, 0, LIMITS.peopleTaskBudget);
+    if (limit <= 0) return [];
+    return asArray(state?.people)
+        .filter(person => !person?.isUser && person?.simulationEnabled !== false)
+        .map(person => ({ person, life: personLifeTickInfo(state, person) }))
+        .filter(item => item.life.due)
+        .sort((a, b) => (
+            Number(b.life.overdue) - Number(a.life.overdue)
+            || Number(b.person?.relevance || 0) - Number(a.person?.relevance || 0)
+            || Number(a.life.last) - Number(b.life.last)
+        ))
+        .slice(0, limit)
+        .map(({ person, life }) => ({
+            id: String(person.id || ''),
+            name: String(person.name || ''),
+            overdueMinutes: life.overdue,
+            elapsedMinutes: life.elapsed,
+            intervalMinutes: life.interval,
+            lastLifeTickAt: life.last,
+        }));
+}
+
 export function compactStateForModel(state, {
     includeUserInnerVoice = false,
     userName = '',
@@ -5418,11 +5475,15 @@ export function buildSimulationPrompt(state, {
     newAssistantTurns = 1,
     backgroundNpcBudget = 4,
     worldPulseActivity = 'natural',
+    enhancedBackgroundSimulation = false,
+    backgroundPersonTargets = [],
 } = {}) {
     const compact = compactStateForModel(state, {
         includeUserInnerVoice,
         userName,
-        maximumPeople: Math.min(24, Math.max(10, Number(backgroundNpcBudget) + 10)),
+        maximumPeople: enhancedBackgroundSimulation
+            ? Math.min(LIMITS.peopleModelContext, Math.max(14, Number(backgroundNpcBudget) * 2 + 6))
+            : Math.min(24, Math.max(10, Number(backgroundNpcBudget) + 10)),
     });
     const queued = uniqueStrings(queuedEventIds, 24);
     const latestUser = modelText(latestTurn?.user, 6000);
@@ -5482,6 +5543,21 @@ export function buildSimulationPrompt(state, {
         natural: '世界脉搏自然：每次主世界时间真正推进后，都检查环境、城市/地区、组织/势力、经济/资源、公共设施与社会生活是否有自然变化。大多数是普通或地方变化，重大新闻必须稀少且有因果。',
         busy: '世界脉搏偏活跃：在合理因果足够时，可以让更多地区/行业/组织同时出现变化，但仍以日常、地方和行业事件为主；重大事故、战争、灾害与极端巧合仍然必须有强依据。',
     }[worldPulseActivity] || '世界脉搏自然：让镜头外社会按时间与因果正常变化。';
+    const backgroundTargetList = asArray(backgroundPersonTargets)
+        .filter(item => item?.id)
+        .slice(0, asInteger(backgroundNpcBudget, 4, 0, LIMITS.peopleTaskBudget))
+        .map(item => ({
+            id: asString(item.id, '', 100),
+            name: asString(item.name, '', 80),
+            overdue_minutes: asInteger(item.overdueMinutes, 0, 0),
+        }));
+    const enhancedBackgroundRule = enhancedBackgroundSimulation && backgroundTargetList.length
+        ? [
+            `强化后台人物推演已开启。本批除了前台事实协调，还必须结算 ${backgroundTargetList.length} 名最逾期后台人物：${JSON.stringify(backgroundTargetList)}。`,
+            '她们必须逐个出现在 people_upsert。按照各自既有位置、行动、长期目标、日程、关系和身体/情绪/资源状态自然推进到当前世界时间；没有大事也要更新成合理的“现在正在做什么/接下来准备做什么”，不要为了交作业制造冲突。',
+            '不得因为最新正文只与某一人物同场，就把其他到期人物继续冻结。',
+        ].join('\n')
+        : '强化后台人物推演未要求额外指定人物。';
     const npcBudget = asInteger(backgroundNpcBudget, 4, 0, 12);
     const newAssistantRule = newAssistantIndexSet.size === 1
         ? '11. 较早轮次只用于理解因果，不得重复计算；本次只推演最后一个 assistant_turn（new="true"）。'
@@ -5510,6 +5586,7 @@ export function buildSimulationPrompt(state, {
         '3E. “随机事件”只能从当前世界设定、地点环境、社会背景与已有压力中合理采样：可以是日常事故、天气、交通、组织动作、工作变化、资源波动等；不得无缘无故制造重大灾难、巧合强转折或专门围着玩家发生。随机只决定合理候选里哪件先发生，不负责凭空创造因果。',
         '3F. 世界自主运转不是每轮硬凑事件。若主世界时间没有实际推进、已有条件没有变化、人物目标也没有自然下一步，就可以 events_create=[]。但不能因为“正文没提到”就跳过本来已经应该发生的世界变化。',
         `3G. ${pulseActivityRule}`,
+        `3G-LIFE. ${enhancedBackgroundRule}`,
         '3H. world_pulse 是镜头外宏观状态账本，不是新闻列表。它记录持续一段时间的环境、地区、组织/势力、经济资源、基础设施、治安、文化/媒体或社区压力。状态真正变化时才写 world_pulse_upsert；不要每轮重复同一句。pressure=0 表示平稳，1=轻微，2=明显，3=高压；trend 只描述该压力在上升、下降、波动或稳定。',
         '3I. visibility 和 publicity 是两条完全不同的轴。visibility=hidden/trace/known/direct 只表示这个事件怎样进入当前正文/角色视野；它绝不等于社会公开。卧室、私聊、秘密行动即使 visibility=direct，也通常必须 publicity=private。',
         '3J. publicity=private 表示社会不知道；publicity=trace 表示外界只有未证实迹象，可形成论坛传闻但不能成为新闻；publicity=public 表示已有公告、媒体报道、公众可见现象或广泛传播渠道，可以进入新闻。',
@@ -5537,7 +5614,7 @@ export function buildSimulationPrompt(state, {
         '12B. event.visibility 只表示前台/玩家显露边界，不代表 NPC 是否知道。actors 只表示参与/被波及，也不等于知情；event.known_by 只是兼容镜像，插件会从通过防火墙的人物认知账本反推，不要依赖它给角色开知识。',
         '12C. physical_state / emotional_state / resource_state 是人物当前状态。状态变化必须真实影响 action、intent 与执行能力；受伤、疲劳、缺资源、权限不足或情绪压力不能下一轮凭空消失。不得发明角色卡、身份锚点、既有记忆未支持的技能、装备、权限或知识。玩家的 emotional_state 只有正文/玩家明确表达时才能更新，不得替玩家猜内心。',
         '12D. 新事件必须写明 cause。cause 可以来自：已有事件的行动/结果/后果、人物既定目标与主动行动、势力/地点/环境压力、或当前世界条件下自然发生的合理环境事件。若由已有事件继续发酵，必须在 caused_by 填上游事件 ID；若没有上游事件，则在 cause 中明确写出人物目标或环境条件。actors 只列真实参与/经历该事件的人。一个事件解决后如果产生新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命。',
-        '12D-LIFE. compact people 中 life_tick_due_minutes>0 的人物属于“生活结算到期”。优先让其中最多 backgroundNpcBudget 名从她自己的 location/action/intent/long_term_goal/physical/emotional/resource 状态继续生活，而不是围着最新正文找反应。即使这段时间没有戏剧性事件，也应通过 people_upsert 给出自然的当前行动/意图，从而完成生活结算；不要为了交作业硬造冲突。',
+        '12D-LIFE. compact people 中 life_tick_due_minutes>0 的人物属于“生活结算到期”。优先让其中最多 backgroundNpcBudget 名从她自己的 location/action/intent/long_term_goal/physical/emotional/resource 状态继续生活，而不是围着最新正文找反应。即使这段时间没有戏剧性事件，也应通过 people_upsert 给出自然的当前行动/意图，从而完成生活结算；不要为了交作业硬造冲突。强化后台人物推演给出明确目标名单时，该名单为本轮必做项，不得省略。',
         '12D-1. 已解决事件本体不要为了“保留剧情”继续挂在暗流里；保留它已经造成的 world_facts / 人物状态 / 环境后果即可。真正需要继续发展的部分创建为新的事件。这样事件链会往前长，而不是反复复读旧事件。',
         '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
         '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',

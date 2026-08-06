@@ -231,11 +231,7 @@ export function mergeWorldNewsIntoPublicOpinion(state, rawCache = {}) {
         ...cache,
         news: uniqueBy(
             [...currentNews, ...historicalNews]
-                .sort((a, b) => (
-                    Number(b.worldMinute ?? -1) - Number(a.worldMinute ?? -1)
-                    || Date.parse(b.updatedAt || b.publishedAt || 0)
-                    - Date.parse(a.updatedAt || a.publishedAt || 0)
-                )),
+                .sort(compareOpinionRecency),
             item => item.relatedEventId
                 ? `event:${item.relatedEventId}`
                 : `${item.headline}\u0000${item.summary}`,
@@ -249,10 +245,18 @@ function opinionItemChanged(previous, next, fields) {
     return fields.some(field => String(previous?.[field] ?? '') !== String(next?.[field] ?? ''));
 }
 
-function opinionSortValue(item) {
+function opinionWallClockValue(item) {
     const timestamp = Date.parse(item?.updatedAt || item?.publishedAt || '');
-    if (Number.isFinite(timestamp)) return timestamp;
-    return Number(item?.worldMinute || -1);
+    return Number.isFinite(timestamp) ? timestamp : -1;
+}
+
+function compareOpinionRecency(a, b) {
+    // 舆情新旧以主世界时间为第一排序轴；现实生成时间只在同一世界时刻内做次级排序。
+    const worldDifference = Number(b?.worldMinute ?? -1) - Number(a?.worldMinute ?? -1);
+    if (worldDifference) return worldDifference;
+    const wallDifference = opinionWallClockValue(b) - opinionWallClockValue(a);
+    if (wallDifference) return wallDifference;
+    return String(b?.id || '').localeCompare(String(a?.id || ''));
 }
 
 export function mergePublicOpinionStream(previousRaw, nextRaw, {
@@ -310,7 +314,7 @@ export function mergePublicOpinionStream(previousRaw, nextRaw, {
 
     const news = uniqueBy(
         [...freshNews, ...retainedNews]
-            .sort((a, b) => opinionSortValue(b) - opinionSortValue(a)),
+            .sort(compareOpinionRecency),
         item => item.relatedEventId
             ? `event:${item.relatedEventId}`
             : `${item.headline}\u0000${item.summary}`,
@@ -318,7 +322,7 @@ export function mergePublicOpinionStream(previousRaw, nextRaw, {
 
     const forums = uniqueBy(
         [...freshForums, ...retainedForums]
-            .sort((a, b) => opinionSortValue(b) - opinionSortValue(a)),
+            .sort(compareOpinionRecency),
         item => `${item.relatedEventId}\u0000${item.board}\u0000${item.title}`,
     ).slice(0, Math.max(1, Number(maximumForums) || 12));
 

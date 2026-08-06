@@ -875,6 +875,29 @@ export function planImportWrites(drafts, entries = [], { bookName = '' } = {}) {
     });
 }
 
+// 把 incoming 并进 target：来源 uid 取并集，栏位按片段去重后追加。
+function absorbImportedDraft(target, incoming) {
+    target.sourceUids = [...new Set([...target.sourceUids, ...(incoming.sourceUids || []).map(String)])];
+    target.review.push(...(incoming.review || []));
+    target.dropped.push(...(incoming.dropped || []));
+    target.lengthFuse = target.lengthFuse || Boolean(incoming.lengthFuse);
+    for (const field of IMPORT_FIELDS) {
+        const value = incoming.values?.[field.key];
+        if (!value) continue;
+        const current = target.values[field.key] || '';
+        if (!current) {
+            target.values[field.key] = value.slice(0, field.limit);
+            continue;
+        }
+        const seen = new Set(splitImportSegments(current).map(segment => normalizeForGrounding(segment.text)));
+        const additions = splitImportSegments(value)
+            .filter(segment => !seen.has(normalizeForGrounding(segment.text)))
+            .map(segment => segment.text);
+        if (!additions.length) continue;
+        target.values[field.key] = `${current}；${additions.join('；')}`.slice(0, field.limit);
+    }
+}
+
 // 同名不一定是同一个人：「小林」「老板」「莉莉」这种称呼在不同条目里很可能指
 // 不同的人。只有来源条目有交集才敢合并；纯粹撞名的分别保留，并标成需要确认。
 export function mergeImportedDrafts(drafts) {
@@ -884,8 +907,11 @@ export function mergeImportedDrafts(drafts) {
         if (!key) continue;
         const uids = new Set((draft.sourceUids || []).map(String));
         const bucket = groups.get(key) || [];
-        const existing = bucket.find(item => item.sourceUids.some(uid => uids.has(String(uid))));
-        if (!existing) {
+        // 必须找出**所有**有交集的分组一起合并，不能只认第一个：草稿来源可能是
+        // [1]、[2]、[1,2]，[1,2] 会把前两组连起来。只并第一组的话 [2] 会被剩下，
+        // 最后被误判成“同名不同来源”。
+        const overlapping = bucket.filter(item => item.sourceUids.some(uid => uids.has(String(uid))));
+        if (!overlapping.length) {
             bucket.push({
                 name: draft.name,
                 sourceUids: [...uids],
@@ -898,25 +924,13 @@ export function mergeImportedDrafts(drafts) {
             groups.set(key, bucket);
             continue;
         }
-        existing.sourceUids = [...new Set([...existing.sourceUids, ...(draft.sourceUids || [])])];
-        existing.review.push(...(draft.review || []));
-        existing.dropped.push(...(draft.dropped || []));
-        existing.lengthFuse = existing.lengthFuse || Boolean(draft.lengthFuse);
-        for (const field of IMPORT_FIELDS) {
-            const incoming = draft.values?.[field.key];
-            if (!incoming) continue;
-            const current = existing.values[field.key] || '';
-            if (!current) {
-                existing.values[field.key] = incoming.slice(0, field.limit);
-                continue;
-            }
-            const seen = new Set(splitImportSegments(current).map(segment => normalizeForGrounding(segment.text)));
-            const additions = splitImportSegments(incoming)
-                .filter(segment => !seen.has(normalizeForGrounding(segment.text)))
-                .map(segment => segment.text);
-            if (!additions.length) continue;
-            existing.values[field.key] = `${current}；${additions.join('；')}`.slice(0, field.limit);
+        const existing = overlapping[0];
+        // 被这份草稿连起来的其它分组，先并进第一组再从桶里移除。
+        for (const extra of overlapping.slice(1)) {
+            absorbImportedDraft(existing, extra);
+            bucket.splice(bucket.indexOf(extra), 1);
         }
+        absorbImportedDraft(existing, draft);
     }
 
     const result = [];

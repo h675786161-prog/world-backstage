@@ -652,13 +652,14 @@ function renderWorldbookDraftReview(report, draftUi = {}) {
     if (!people.length) return '';
     const skipped = draftUi.skipped instanceof Set ? draftUi.skipped : new Set();
     const droppedFields = draftUi.droppedFields instanceof Set ? draftUi.droppedFields : new Set();
+    const pickedFields = draftUi.pickedFields instanceof Set ? draftUi.pickedFields : new Set();
     const chosen = people.filter(person => !skipped.has(person.reference));
 
     return `
         <div class="wb-worldbook-draft-review">
             <div class="wb-worldbook-draft-head">
                 <strong>确认后写入</strong>
-                <small>共 ${people.length} 人 · 已选 ${chosen.length} 人。取消勾选的不会写进世界。</small>
+                <small>共 ${people.length} 人 · 已选 ${chosen.length} 人。取消勾选的不会写进世界；标黄的栏位原文命中率偏低，默认不写入。</small>
             </div>
             ${people.map(person => {
                 const personSkipped = skipped.has(person.reference);
@@ -685,7 +686,11 @@ function renderWorldbookDraftReview(report, draftUi = {}) {
                         ${Object.entries(person.values || {}).map(([field, value]) => {
                             const key = `${person.reference}::${field}`;
                             const low = reviewFields.has(field);
-                            const off = personSkipped || droppedFields.has(key);
+                            // 命中率偏低的栏位默认不勾选：这个功能的核心是宁可漏掉
+                            // 也不要让模型延伸，所以存疑的内容要人主动确认才写入。
+                            const off = personSkipped
+                                || droppedFields.has(key)
+                                || (low && !pickedFields.has(key));
                             const coverage = coverageOf(field);
                             return `
                             <label class="wb-worldbook-draft-field ${low ? 'is-low' : ''} ${off ? 'is-off' : ''}">
@@ -693,7 +698,7 @@ function renderWorldbookDraftReview(report, draftUi = {}) {
                                     ${off ? '' : 'checked'} ${personSkipped ? 'disabled' : ''}>
                                 <span>
                                     <b>${escapeHtml(IMPORT_FIELD_LABELS[field] || field)}</b>
-                                    ${low ? `<em>原文命中 ${coverageLabel(coverage)}，建议核对</em>` : ''}
+                                    ${low ? `<em>原文命中 ${coverageLabel(coverage)}，默认不写入，确认无误再勾上</em>` : ''}
                                     <p>${escapeHtml(String(value))}</p>
                                 </span>
                             </label>`;
@@ -3542,6 +3547,7 @@ export function createWorldBackstageUI({
     let worldbookDraftToken = '';
     let worldbookDraftSkipped = new Set();
     let worldbookDraftDroppedFields = new Set();
+    let worldbookDraftPickedFields = new Set();
     let worldbookSearchTimer = null;
     let skipApiDraftCapture = false;
     let skipTagFilterDraftCapture = false;
@@ -3681,6 +3687,7 @@ export function createWorldBackstageUI({
             worldbookDraftToken = draftToken;
             worldbookDraftSkipped = new Set();
             worldbookDraftDroppedFields = new Set();
+            worldbookDraftPickedFields = new Set();
         }
         const viewChanged = activeView !== renderedView;
         const animatePanelEntrance = Boolean(isOpen && panelEntrancePending);
@@ -4013,6 +4020,7 @@ export function createWorldBackstageUI({
                                     draft: {
                                         skipped: worldbookDraftSkipped,
                                         droppedFields: worldbookDraftDroppedFields,
+                                        pickedFields: worldbookDraftPickedFields,
                                     },
                                 },
                             )}
@@ -4034,6 +4042,7 @@ export function createWorldBackstageUI({
                                     draft: {
                                         skipped: worldbookDraftSkipped,
                                         droppedFields: worldbookDraftDroppedFields,
+                                        pickedFields: worldbookDraftPickedFields,
                                     },
                                 },
                             )}
@@ -4739,11 +4748,19 @@ export function createWorldBackstageUI({
             const people = getSyncStatus()?.worldbook?.aiImport?.people || [];
             const selections = people
                 .filter(person => !worldbookDraftSkipped.has(person.reference))
-                .map(person => ({
-                    reference: person.reference,
-                    fields: Object.keys(person.values || {})
-                        .filter(field => !worldbookDraftDroppedFields.has(`${person.reference}::${field}`)),
-                }))
+                .map(person => {
+                    const lowFields = new Set((person.review || []).map(item => item.field));
+                    return {
+                        reference: person.reference,
+                        // 与审校台的勾选状态保持一致：命中率偏低的栏位默认不写入，
+                        // 必须用户主动勾上。
+                        fields: Object.keys(person.values || {}).filter(field => {
+                            const key = `${person.reference}::${field}`;
+                            if (worldbookDraftDroppedFields.has(key)) return false;
+                            return !lowFields.has(field) || worldbookDraftPickedFields.has(key);
+                        }),
+                    };
+                })
                 .filter(item => item.fields.length);
             const report = getSyncStatus()?.worldbook?.aiImport || {};
             const done = await invokeAction('commit-worldbook-drafts', {
@@ -4755,6 +4772,7 @@ export function createWorldBackstageUI({
                 worldbookSelectedIds = new Set();
                 worldbookDraftSkipped = new Set();
                 worldbookDraftDroppedFields = new Set();
+                worldbookDraftPickedFields = new Set();
             }
             render();
             return;
@@ -5086,10 +5104,17 @@ export function createWorldBackstageUI({
 
         if (event.target.matches?.('[data-wb-draft-field]')) {
             const key = String(event.target.dataset.wbDraftField || '');
-            const next = new Set(worldbookDraftDroppedFields);
-            if (event.target.checked) next.delete(key);
-            else next.add(key);
-            worldbookDraftDroppedFields = next;
+            const dropped = new Set(worldbookDraftDroppedFields);
+            const picked = new Set(worldbookDraftPickedFields);
+            if (event.target.checked) {
+                dropped.delete(key);
+                picked.add(key);
+            } else {
+                dropped.add(key);
+                picked.delete(key);
+            }
+            worldbookDraftDroppedFields = dropped;
+            worldbookDraftPickedFields = picked;
             render();
             return;
         }

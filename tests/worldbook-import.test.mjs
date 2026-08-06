@@ -186,6 +186,31 @@ test('来源有交集的同名人物合并且不重复堆叠', () => {
     assert.equal(merged[0].nameConflict, false);
 });
 
+test('被后来的草稿连起来的分组要一起合并，不能只并第一个', () => {
+    // [1] 与 [2] 一开始互不相交，[1,2] 到来时把两组连成一片。
+    // 只合并第一个有交集的分组，[2] 会被剩下并误判成「同名不同来源」。
+    const merged = mergeImportedDrafts([
+        { name: '南枫', sourceUids: ['1'], values: { identityAnchor: '琴行老板' } },
+        { name: '南枫', sourceUids: ['2'], values: { personalityAnchor: '言辞犀利' } },
+        { name: '南枫', sourceUids: ['1', '2'], values: { backgroundProfile: '与家庭关系疏离' } },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].nameConflict, false);
+    assert.deepEqual(merged[0].sourceUids, ['1', '2']);
+    assert.deepEqual(Object.keys(merged[0].values), ['identityAnchor', 'personalityAnchor', 'backgroundProfile']);
+});
+
+test('连接顺序颠倒也要合成一个人', () => {
+    const merged = mergeImportedDrafts([
+        { name: '南枫', sourceUids: ['1'], values: { identityAnchor: 'A' } },
+        { name: '南枫', sourceUids: ['3'], values: { personalityAnchor: 'B' } },
+        { name: '南枫', sourceUids: ['2'], values: { speakingStyle: 'C' } },
+        { name: '南枫', sourceUids: ['1', '2', '3'], values: { backgroundProfile: 'D' } },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.deepEqual(merged[0].sourceUids.sort(), ['1', '2', '3']);
+});
+
 test('来源互不相干的同名不合并，各自保留并标成撞名', () => {
     const merged = mergeImportedDrafts([
         { name: '老板', sourceUids: ['12'], values: { identityAnchor: '琴行老板' } },

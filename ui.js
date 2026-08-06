@@ -594,22 +594,6 @@ function renderSyncStrip(syncStatus) {
         </details>
     ` : '';
 
-    const activeBackgroundTasks = Array.isArray(status.activeBackgroundTasks)
-        ? status.activeBackgroundTasks
-        : [];
-    const canCancelBackgroundTask = Boolean(status.canCancelBackgroundTask);
-    const mobileStop = `
-        <button class="wb-sim-action wb-sync-stop-mobile ${canCancelBackgroundTask ? 'is-cancel' : ''}" type="button"
-            data-wb-action="cancel-background-tasks"
-            ${canCancelBackgroundTask ? '' : 'disabled'}
-            title="${canCancelBackgroundTask
-                ? `正在运行：${escapeAttr(activeBackgroundTasks.join('、'))}。点击停止全部后台任务`
-                : '当前没有正在运行或排队的后台任务'}">
-            <i aria-hidden="true"></i>
-            <span>${canCancelBackgroundTask ? '停止全部后台任务' : '当前没有后台任务'}</span>
-        </button>
-    `;
-
     return `
         <div class="wb-sync-strip is-${escapeAttr(phase)}" role="${phase === 'error' ? 'alert' : 'status'}">
             <i class="wb-sync-indicator"></i>
@@ -619,7 +603,6 @@ function renderSyncStrip(syncStatus) {
             </div>
             <span class="wb-sync-connection">${escapeHtml(connectionText || '跟随酒馆当前主 API')}</span>
             ${summaryHtml}
-            ${mobileStop}
         </div>
     `;
 }
@@ -2499,7 +2482,7 @@ function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openRead
 
     return `
         <div class="wb-lingqi-layout">
-            <div class="wb-lingqi-surface">
+            <div class="wb-lingqi-surface ${notesEmpty ? 'is-notes-empty' : 'has-notes'}">
                 <div class="wb-lingqi-perch" aria-hidden="false">
                     <button class="wb-lingqi-mascot is-${mascotState} is-asset-${mascotAssetState}" type="button"
                         data-wb-action="lingqi-pet" data-mascot-state="${mascotState}"

@@ -3,7 +3,8 @@ const WB_STATE_RECONCILE_ORDER = Object.freeze([3, 1, 4, 2]);
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
+export const MAX_CALENDAR_YEAR = 999999;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
 
@@ -45,7 +46,11 @@ const VALID_EVENT_STATES = new Set([
 ]);
 
 const LIMITS = Object.freeze({
-    people: 36,
+    // Persistent people storage is intentionally uncapped. These limits only bound
+    // one model payload / one task / one prompt context so a large world stays usable.
+    peoplePayload: 36,
+    peopleTaskBudget: 36,
+    peopleModelContext: 36,
     events: 96,
     archive: 120,
     echoes: 80,
@@ -252,50 +257,67 @@ function normalizeCalendarDate({ year, month, day } = {}, fallback = {
     month: 1,
     day: 1,
 }) {
-    const safeYear = asInteger(year, fallback.year, 1, 9999);
+    const safeYear = asInteger(year, fallback.year, 1, MAX_CALENDAR_YEAR);
     const safeMonth = asInteger(month, fallback.month, 1, 12);
     return {
         year: safeYear,
         month: safeMonth,
-        day: asInteger(
-            day,
-            fallback.day,
-            1,
-            daysInCalendarMonth(safeYear, safeMonth),
-        ),
+        day: asInteger(day, fallback.day, 1, daysInCalendarMonth(safeYear, safeMonth)),
     };
+}
+
+function daysBeforeCalendarYear(year) {
+    const previous = Math.max(0, asInteger(year, 1, 1, MAX_CALENDAR_YEAR) - 1);
+    return previous * 365 + Math.floor(previous / 4) - Math.floor(previous / 100) + Math.floor(previous / 400);
+}
+
+function calendarOrdinal(date) {
+    const safe = normalizeCalendarDate(date);
+    let ordinal = daysBeforeCalendarYear(safe.year);
+    for (let month = 1; month < safe.month; month += 1) ordinal += daysInCalendarMonth(safe.year, month);
+    return ordinal + safe.day - 1;
+}
+
+function calendarDateFromOrdinal(value) {
+    const maximumOrdinal = daysBeforeCalendarYear(MAX_CALENDAR_YEAR)
+        + 365 + (daysInCalendarMonth(MAX_CALENDAR_YEAR, 2) === 29 ? 1 : 0) - 1;
+    const target = Math.min(maximumOrdinal, Math.max(0, Math.trunc(Number(value) || 0)));
+    let low = 1;
+    let high = MAX_CALENDAR_YEAR;
+    while (low < high) {
+        const middle = Math.floor((low + high + 1) / 2);
+        if (daysBeforeCalendarYear(middle) <= target) low = middle;
+        else high = middle - 1;
+    }
+    const year = low;
+    let dayOfYear = target - daysBeforeCalendarYear(year);
+    let month = 1;
+    while (month < 12) {
+        const monthDays = daysInCalendarMonth(year, month);
+        if (dayOfYear < monthDays) break;
+        dayOfYear -= monthDays;
+        month += 1;
+    }
+    return { year, month, day: dayOfYear + 1 };
 }
 
 function addCalendarDays(date, days) {
     const safe = normalizeCalendarDate(date);
-    const value = new Date(0);
-    value.setUTCHours(12, 0, 0, 0);
-    value.setUTCFullYear(safe.year, safe.month - 1, 1);
-    value.setUTCDate(safe.day + asInteger(days, 0, -1000000, 1000000));
-    return {
-        year: value.getUTCFullYear(),
-        month: value.getUTCMonth() + 1,
-        day: value.getUTCDate(),
-    };
+    const delta = asInteger(days, 0, -1000000, 1000000);
+    return calendarDateFromOrdinal(calendarOrdinal(safe) + delta);
 }
 
 function calendarDayDifference(fromDate, toDate) {
     const from = normalizeCalendarDate(fromDate);
     const to = normalizeCalendarDate(toDate, from);
-    const asUtcDay = value => {
-        const date = new Date(0);
-        date.setUTCHours(12, 0, 0, 0);
-        date.setUTCFullYear(value.year, value.month - 1, value.day);
-        return Math.floor(date.getTime() / (24 * 60 * 60 * 1000));
-    };
-    return asUtcDay(to) - asUtcDay(from);
+    return calendarOrdinal(to) - calendarOrdinal(from);
 }
 
 function extractExplicitCalendarDate(text = '') {
     const source = asString(text, '', 60000);
     const patterns = [
-        /(?:^|\D)(\d{1,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日(?:\D|$)/g,
-        /(?:^|\D)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\D|$)/g,
+        /(?:^|\D)(\d{1,6})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日(?:\D|$)/g,
+        /(?:^|\D)(\d{1,6})[-/.](\d{1,2})[-/.](\d{1,2})(?:\D|$)/g,
     ];
     let latest = null;
     for (const pattern of patterns) {
@@ -303,7 +325,7 @@ function extractExplicitCalendarDate(text = '') {
             const year = Number(match[1]);
             const month = Number(match[2]);
             const day = Number(match[3]);
-            if (year < 1 || year > 9999 || month < 1 || month > 12) continue;
+            if (year < 1 || year > MAX_CALENDAR_YEAR || month < 1 || month > 12) continue;
             if (day < 1 || day > daysInCalendarMonth(year, month)) continue;
             const index = Number(match.index ?? 0);
             if (!latest || index >= latest.index) {
@@ -1064,7 +1086,7 @@ export function applyPublicImpactResult(inputState, rawPayload, {
     sourceEventIds = [],
     userName = '',
     sourceKey = '',
-    backgroundNpcBudget = LIMITS.people,
+    backgroundNpcBudget = LIMITS.peopleTaskBudget,
 } = {}) {
     const sourceEvents = asArray(inputState?.events)
         .filter(event => asArray(sourceEventIds).includes(event?.id))
@@ -1087,7 +1109,6 @@ export function applyPublicImpactResult(inputState, rawPayload, {
         timePolicy: 'world',
         narrativeText: '',
         backgroundNpcBudget,
-        preserveCommitAnchor: true,
     });
 
     recordProcessedPublicImpacts(
@@ -2644,7 +2665,7 @@ function normalizeSimulationResult(payload) {
                 '',
                 40,
             ),
-            year: asInteger(rawClockAnchor?.year, 0, 0, 9999),
+            year: asInteger(rawClockAnchor?.year, 0, 0, MAX_CALENDAR_YEAR),
             month: asInteger(rawClockAnchor?.month, 0, 0, 12),
             day: asInteger(rawClockAnchor?.day, 0, 0, 31),
             hour: asInteger(rawClockAnchor?.hour, 0, 0, 23),
@@ -2653,7 +2674,7 @@ function normalizeSimulationResult(payload) {
                 const year = Number(rawClockAnchor?.year);
                 const month = Number(rawClockAnchor?.month);
                 const day = Number(rawClockAnchor?.day);
-                return Number.isFinite(year) && year >= 1 && year <= 9999
+                return Number.isFinite(year) && year >= 1 && year <= MAX_CALENDAR_YEAR
                     && Number.isFinite(month) && month >= 1 && month <= 12
                     && Number.isFinite(day) && day >= 1 && day <= 31;
             })(),
@@ -2680,8 +2701,8 @@ function normalizeSimulationResult(payload) {
             title: asString(payload?.world?.title, '', 180),
             detail: asString(payload?.world?.detail, '', 640),
         },
-        peopleUpsert: asArray(payload?.people_upsert ?? payload?.peopleUpsert).slice(0, LIMITS.people),
-        peopleRemove: uniqueStrings(payload?.people_remove ?? payload?.peopleRemove, LIMITS.people),
+        peopleUpsert: asArray(payload?.people_upsert ?? payload?.peopleUpsert).slice(0, LIMITS.peoplePayload),
+        peopleRemove: uniqueStrings(payload?.people_remove ?? payload?.peopleRemove, LIMITS.peoplePayload),
         eventsCreate: asArray(payload?.events_create ?? payload?.eventsCreate).slice(0, 24),
         eventsUpdate: asArray(payload?.events_update ?? payload?.eventsUpdate).slice(0, 36),
         deliveriesConfirmed: uniqueStrings(
@@ -3054,8 +3075,7 @@ export function applySimulationResult(baseState, rawPayload, {
     allowUserInnerVoice = true,
     timePolicy = 'open',
     narrativeText = '',
-    backgroundNpcBudget = LIMITS.people,
-    preserveCommitAnchor = false,
+    backgroundNpcBudget = LIMITS.peopleTaskBudget,
 } = {}) {
     const payload = normalizeSimulationResult(rawPayload);
     const baseClockAnchored = Boolean(baseState?.clock?.anchored);
@@ -3295,11 +3315,11 @@ export function applySimulationResult(baseState, rawPayload, {
     let backgroundNpcUpdates = 0;
     const maximumBackgroundNpcUpdates = asInteger(
         backgroundNpcBudget,
-        LIMITS.people,
+        LIMITS.peopleTaskBudget,
         0,
-        LIMITS.people,
+        LIMITS.peopleTaskBudget,
     );
-    const enforceForegroundEvidence = maximumBackgroundNpcUpdates < LIMITS.people;
+    const enforceForegroundEvidence = maximumBackgroundNpcUpdates < LIMITS.peopleTaskBudget;
     const narrativeForPeople = asString(narrativeText, '', 60000).toLocaleLowerCase();
     for (const rawPerson of payload.peopleUpsert) {
         const personName = asString(rawPerson?.name, '', 80).toLocaleLowerCase();
@@ -3695,21 +3715,15 @@ export function applySimulationResult(baseState, rawPayload, {
         });
     }
 
-    if (preserveCommitAnchor) {
-        state.needsReconciliation = Boolean(baseState?.needsReconciliation);
-        state.pendingSync = Boolean(baseState?.pendingSync);
-        state.lastCommit = baseState?.lastCommit ? deepClone(baseState.lastCommit) : null;
-    } else {
-        state.needsReconciliation = false;
-        state.pendingSync = false;
-        state.lastCommit = {
-            messageId,
-            swipeId,
-            sourceKey: asString(sourceKey, '', 180),
-            at: worldMinute,
-            committedAt: nowIso(),
-        };
-    }
+    state.needsReconciliation = false;
+    state.pendingSync = false;
+    state.lastCommit = {
+        messageId,
+        swipeId,
+        sourceKey: asString(sourceKey, '', 180),
+        at: worldMinute,
+        committedAt: nowIso(),
+    };
     state.revision = asInteger(state.revision, 0, 0) + 1;
     state.updatedAt = nowIso();
     appendAudit(state, {
@@ -4705,7 +4719,7 @@ export function applyWorldBootstrapResult(inputState, rawPayload, {
         allowUserInnerVoice,
         timePolicy: 'world',
         narrativeText,
-        backgroundNpcBudget: LIMITS.people,
+        backgroundNpcBudget: LIMITS.peopleTaskBudget,
     });
 
     state.worldPulse = normalizeWorldPulse(state.worldPulse, state.clock.absoluteMinute);
@@ -4834,7 +4848,7 @@ export function buildHistoryIndexPrompt(state, {
     const identityAnchor = modelText(playerIdentityAnchor, 400);
     const characterIdentityAnchors = asArray(state?.people)
         .filter(person => modelText(person?.identityAnchor, LIMITS.identityAnchor))
-        .slice(0, LIMITS.people)
+        .slice(0, LIMITS.peopleModelContext)
         .map(person => ({
             name: modelText(person?.name, 80),
             identity_anchor: modelText(person?.identityAnchor, LIMITS.identityAnchor),
@@ -5204,7 +5218,7 @@ export function compactStateForModel(state, {
     userName = '',
     maximumPeople = 14,
 } = {}) {
-    const maximum = asInteger(maximumPeople, 14, 1, LIMITS.people);
+    const maximum = asInteger(maximumPeople, 14, 1, LIMITS.peopleModelContext);
     const candidates = [...state.people]
         .filter(person => person?.simulationEnabled !== false || person?.isUser)
         .map(person => ({
@@ -5482,7 +5496,7 @@ export function buildSimulationPrompt(state, {
         '',
         '推演原则：',
         `1. 主世界时间是唯一进度轴。${timeRule}`,
-        '1A. clock_anchor 是绝对时间校准口。年月日与钟点可以分开成立：若正文明确给出 YYYY年M月D日，即使只有“清晨/下午”等模糊时段，也必须把 year/month/day 填入 clock_anchor；只有能够可靠确定具体钟点时才填写 hour/minute。minute 精度锚点表示本批 new 正文结束时的完整时间，插件不会再叠加 elapsed_minutes；date/daypart 精度只校准历法日期，elapsed_minutes 仍用于结算本批经过时长。',
+        '1A. clock_anchor 是绝对时间校准口。年月日与钟点可以分开成立：若正文明确给出 Y年M月D日（年份可超过四位），即使只有“清晨/下午”等模糊时段，也必须把 year/month/day 填入 clock_anchor；只有能够可靠确定具体钟点时才填写 hour/minute。minute 精度锚点表示本批 new 正文结束时的完整时间，插件不会再叠加 elapsed_minutes；date/daypart 精度只校准历法日期，elapsed_minutes 仍用于结算本批经过时长。',
         '1B. 当推演前状态 world_clock_anchored=false：必须优先扫描当前上下文，寻找最可靠的故事时间锚点并返回 clock_anchor.mode="initialize"。明确年月日属于强锚点，必须同步；钟点可以由剧情证据推断，若证据不足就只返回 date/daypart 精度，不要为了凑字段编造分钟。建立后不要每轮重猜。',
         '1C. 当 world_clock_anchored=true：旧的正文时间栏只视为展示信息，可能已经滞后，不能单凭它反向覆盖主世界时钟。只有本批新正文在剧情内容里明确建立了新的绝对时间事实（例如“第二天早上七点”“看表是15:20”“三天后上午十点”），且与连续时间明显冲突或发生跳时，才返回 clock_anchor.mode="calibrate"；此时 confidence 必须为 high。',
         '1D. 模糊时段只能辅助 elapsed_minutes 或首次初始化，不得在每轮把主时钟重新对齐到某个固定“清晨/晚上”钟点。',
@@ -5950,27 +5964,6 @@ export function listRecoveryPoints(inputStore) {
         .slice(-RECOVERY_LIMIT);
 }
 
-// Hot UI paths only need recovery-point metadata. Avoid cloning the full saved
-// world state just to render a count/label; the full snapshot is normalized
-// only when a recovery operation actually needs it.
-export function listRecoveryPointHeaders(inputStore) {
-    return asArray(inputStore?.recoveryPoints)
-        .filter(raw => raw && typeof raw === 'object' && raw.state && typeof raw.state === 'object')
-        .map(raw => ({
-            id: asString(raw.id, '', 120),
-            createdAt: asString(raw.createdAt, '', 40),
-            reason: asString(raw.reason, 'manual', 60),
-            label: asString(raw.label, '手动恢复点', 120),
-            schemaVersion: asInteger(raw.schemaVersion, 0, 0),
-            worldName: asString(raw.worldName, raw.state?.world?.name || '主世界', 80),
-            worldMinute: asInteger(raw.worldMinute, raw.state?.clock?.absoluteMinute ?? 0, 0),
-            revision: asInteger(raw.revision, raw.state?.revision ?? 0, 0),
-        }))
-        .filter(point => point.id)
-        .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
-        .slice(-RECOVERY_LIMIT);
-}
-
 export function addRecoveryPoint(inputStore, {
     reason = 'manual',
     label = '手动恢复点',
@@ -6326,7 +6319,6 @@ export function trimState(inputState) {
     // ID，并为后续冲突项生成新的稳定 ID。
     const seenPersonIds = new Set();
     state.people = asArray(state.people)
-        .slice(-LIMITS.people)
         .map(person => normalizePerson(person, person, state.clock.absoluteMinute))
         .map(person => {
             if (!seenPersonIds.has(person.id)) {

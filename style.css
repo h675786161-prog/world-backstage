@@ -7370,95 +7370,60 @@
 }
 #world-backstage-root .wb-route-setting select { width: 100%; }
 
-/* 1.7.2 · 世界背景入口本身就是唯一一层折叠，不再外套/内嵌第二层 details。 */
+/* 1.7.2 · 世界背景在「此刻设置」里有一个真正看得见的入口。 */
 #world-backstage-root .wb-world-background-setting {
-    display: block;
-    padding: 0;
-    overflow: hidden;
+    display: grid;
+    gap: 9px;
 }
 #world-backstage-root .wb-world-background-heading {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 10px;
-    min-height: 44px;
-    padding: 10px 12px;
-    cursor: pointer;
-    list-style: none;
-    user-select: none;
 }
-#world-backstage-root .wb-world-background-heading::-webkit-details-marker {
-    display: none;
-}
-#world-backstage-root .wb-world-background-heading::after {
-    content: '⌄';
-    color: var(--wb-text-faint);
-    font-size: 13px;
-    line-height: 1;
-    transition: transform .16s ease;
-}
-#world-backstage-root .wb-world-background-setting[open] > .wb-world-background-heading::after {
-    transform: rotate(180deg);
-}
-#world-backstage-root .wb-world-background-heading > strong {
-    min-width: 0;
-    color: var(--wb-text);
-    font-size: clamp(13px, calc(13px + var(--wb-reading-bump)), 18px);
-    font-weight: 650;
-    line-height: 1.35;
+#world-backstage-root .wb-world-background-heading > label {
+    color: var(--wb-text-soft);
+    font-size: 9px;
 }
 #world-backstage-root .wb-world-background-heading > span {
-    padding: 4px 8px;
+    flex: 0 0 auto;
+    padding: 3px 7px;
     border: 1px solid var(--wb-line);
     border-radius: 999px;
     color: var(--wb-text-faint);
     background: color-mix(in srgb, var(--wb-panel) 82%, transparent);
-    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 15px);
-    font-weight: 550;
-    line-height: 1.2;
+    font-size: 8px;
 }
 #world-backstage-root .wb-world-background-heading > span.is-set {
     border-color: color-mix(in srgb, var(--wb-jade) 30%, var(--wb-line));
     color: var(--wb-jade);
     background: color-mix(in srgb, var(--wb-jade) 8%, var(--wb-panel));
 }
-#world-backstage-root .wb-world-background-body {
-    display: grid;
-    gap: 9px;
-    padding: 0 12px 12px;
-}
 #world-backstage-root .wb-world-background-preview {
-    display: block;
-    width: 100%;
-    min-height: 52px;
-    box-sizing: border-box;
-    padding: 10px 12px;
+    min-height: 44px;
+    padding: 9px 10px;
     border: 1px solid color-mix(in srgb, var(--wb-line) 78%, transparent);
     border-radius: 10px;
     background: color-mix(in srgb, var(--wb-panel) 70%, transparent);
     color: var(--wb-text-soft);
-    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 17px);
-    font-weight: 450;
-    line-height: calc(1.55 + var(--wb-reading-leading));
-    text-align: left;
-    text-indent: 0;
+    font-size: 8px;
+    line-height: 1.6;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
 #world-backstage-root .wb-world-background-preview.is-empty {
-    color: color-mix(in srgb, var(--wb-text-soft) 76%, var(--wb-text-faint));
+    color: var(--wb-text-faint);
 }
 #world-backstage-root .wb-world-background-action {
     width: 100%;
-    min-height: 38px;
-    padding: 8px 12px;
+    min-height: 34px;
+    padding: 7px 10px;
     border: 1px solid var(--wb-line) !important;
     border-radius: 9px;
     background: var(--wb-accent-soft);
     color: var(--wb-accent);
-    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 17px);
+    font-size: 9px;
     font-weight: 650;
-    line-height: 1.25;
     cursor: pointer;
 }
 #world-backstage-root .wb-world-background-action:hover,

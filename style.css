@@ -9217,144 +9217,73 @@
 }
 
 
-/* 小猫版 V2.0 · 手机版保留「推演世界」主操作
-   之前手机底栏只有 62px，却仍有第 9 个 wb-side-sync；
-   结果它不是该被隐藏，而是被挤到第二行后直接裁掉。 */
-@media (max-width: 680px) {
-    #world-backstage-root .wb-window-body {
-        grid-template-rows: minmax(0, 1fr) auto;
-    }
+/* 小猫版 V2.0 · 手机任务按钮并排，不改玲七原布局 */
+#world-backstage-root .wb-footer-task-controls {
+    display: contents;
+}
 
-    #world-backstage-root .wb-side-nav {
-        grid-template-columns: repeat(8, minmax(0, 1fr));
-        grid-template-rows: auto auto;
-        align-items: center;
-        row-gap: 3px;
-        padding:
-            5px
-            6px
-            max(5px, env(safe-area-inset-bottom, 0px));
-    }
+#world-backstage-root .wb-footer-sim-mobile {
+    display: none !important;
+}
 
-    #world-backstage-root .wb-side-nav > button:not(.wb-side-sync) {
-        grid-row: 2;
-    }
-
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
+    /* 手机继续使用原来的 8 项底部导航；第 9 个侧栏推演按钮不塞进导航。 */
     #world-backstage-root .wb-side-sync {
-        grid-column: 1 / -1;
-        grid-row: 1;
+        display: none !important;
+    }
+
+    /* footer 保留一行任务控制，两个按钮并排。 */
+    #world-backstage-root .wb-window-footer {
+        display: block !important;
+        min-height: 50px;
+        height: auto;
+        padding:
+            7px
+            max(10px, env(safe-area-inset-right, 0px))
+            7px
+            max(10px, env(safe-area-inset-left, 0px));
+    }
+
+    #world-backstage-root .wb-footer-world-meta {
+        display: none !important;
+    }
+
+    #world-backstage-root .wb-footer-task-controls {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 8px;
+        width: min(100%, 430px);
+        margin: 0 auto;
+    }
+
+    #world-backstage-root .wb-footer-sim-mobile,
+    #world-backstage-root .wb-footer-task-controls .wb-global-stop {
         display: inline-flex !important;
-        justify-self: center;
-        width: auto;
-        max-width: calc(100% - 12px);
-        min-height: 34px;
-        margin: 0 0 2px;
-        padding: 7px 18px !important;
+        justify-content: center;
+        width: 100%;
+        min-width: 0;
+        min-height: 36px;
+        margin: 0;
+        padding: 7px 9px !important;
         white-space: nowrap;
     }
 
-    #world-backstage-root .wb-side-sync > span {
+    #world-backstage-root .wb-footer-task-controls .wb-sim-action > span {
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
     }
 }
 
 @media (max-width: 390px) {
-    #world-backstage-root .wb-side-sync {
-        min-height: 32px;
-        padding: 6px 14px !important;
-        font-size: 11px;
-    }
-}
-
-
-/* 小猫版 V2.0 · 手机版玲七不能被自己的栖台裁掉
-   旧规则让 95px 高的猫塞进 70px 的第一行，再由 surface overflow:hidden 裁切。
-   手机上直接给猫一块真实能站住的高度，聊天框再从下面轻轻叠到爪子下。 */
-@media (max-width: 680px) {
-    #world-backstage-root .wb-lingqi-surface {
-        grid-template-rows: 90px minmax(0, 58fr) minmax(0, 42fr) !important;
-        padding-top: 0;
+    #world-backstage-root .wb-footer-task-controls {
+        gap: 6px;
     }
 
-    #world-backstage-root .wb-lingqi-perch {
-        z-index: 5;
-        display: grid !important;
-        height: 90px !important;
-        overflow: visible;
-        transform: translateY(7px);
-        visibility: visible !important;
-        opacity: 1 !important;
-    }
-
-    #world-backstage-root .wb-lingqi-mascot {
-        z-index: 6;
-        display: block !important;
-        width: 110px !important;
-        height: 86px !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-    }
-
-    #world-backstage-root .wb-lingqi-mascot > img {
-        display: block !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-    }
-
-    #world-backstage-root .wb-lingqi-chat-card {
-        margin-top: -10px !important;
-    }
-}
-
-@media (max-width: 390px) {
-    #world-backstage-root .wb-lingqi-surface {
-        grid-template-rows: 84px minmax(0, 58fr) minmax(0, 42fr) !important;
-    }
-
-    #world-backstage-root .wb-lingqi-perch {
-        height: 84px !important;
-        transform: translateY(6px);
-    }
-
-    #world-backstage-root .wb-lingqi-mascot {
-        width: 104px !important;
-        height: 81px !important;
-    }
-}
-
-
-/* 小猫版 V2.0 · 手机空纸条时不再白白预留 42% 高度
-   输入框属于聊天卡底部；真正的问题是空纸条行还占着空间。
-   空纸条：聊天吃满剩余高度，纸条只按自身内容占 auto。
-   有纸条：仍保留聊天 / 纸条分区。 */
-@media (max-width: 680px) {
-    #world-backstage-root .wb-lingqi-surface.is-notes-empty {
-        grid-template-rows: 90px minmax(0, 1fr) auto !important;
-    }
-
-    #world-backstage-root .wb-lingqi-surface.is-notes-empty .wb-lingqi-chat-card {
-        min-height: 0;
-        height: 100%;
-    }
-
-    #world-backstage-root .wb-lingqi-surface.is-notes-empty .wb-lingqi-notes-card {
-        align-self: start;
-        height: auto !important;
-        min-height: 0;
-    }
-
-    #world-backstage-root .wb-lingqi-surface.has-notes {
-        grid-template-rows: 90px minmax(0, 58fr) minmax(0, 42fr) !important;
-    }
-}
-
-@media (max-width: 390px) {
-    #world-backstage-root .wb-lingqi-surface.is-notes-empty {
-        grid-template-rows: 84px minmax(0, 1fr) auto !important;
-    }
-
-    #world-backstage-root .wb-lingqi-surface.has-notes {
-        grid-template-rows: 84px minmax(0, 58fr) minmax(0, 42fr) !important;
+    #world-backstage-root .wb-footer-sim-mobile,
+    #world-backstage-root .wb-footer-task-controls .wb-global-stop {
+        min-height: 34px;
+        padding-inline: 6px !important;
+        font-size: 10px;
     }
 }

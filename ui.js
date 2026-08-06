@@ -1,3 +1,4 @@
+import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 import {
     eventProgress,
     formatDuration,
@@ -2415,14 +2416,7 @@ export function sortPeopleForDisplay(people, activeEvents, presentPersonIds = ne
 
 
 
-const LINGQI_MASCOT_ASSETS = Object.freeze({
-    idle: new URL('./assets/lingqi/idle.png', import.meta.url).href,
-    watch: new URL('./assets/lingqi/watch.png', import.meta.url).href,
-    note: new URL('./assets/lingqi/note.png', import.meta.url).href,
-    confused: new URL('./assets/lingqi/confused.png', import.meta.url).href,
-    happy: new URL('./assets/lingqi/happy.png', import.meta.url).href,
-    hold: new URL('./assets/lingqi/hold.png', import.meta.url).href,
-});
+const LINGQI_MASCOT_ASSETS = LINGQI_MASCOT_DATA_URLS;
 
 function lingqiMascotState(lingqi = {}, _activeNotes = [], pending = null, override = '') {
     // 模型硬状态永远优先于随机待机/点击反应。
@@ -2482,7 +2476,7 @@ function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openRead
 
     return `
         <div class="wb-lingqi-layout">
-            <div class="wb-lingqi-surface ${notesEmpty ? 'is-notes-empty' : 'has-notes'}">
+            <div class="wb-lingqi-surface">
                 <div class="wb-lingqi-perch" aria-hidden="false">
                     <button class="wb-lingqi-mascot is-${mascotState} is-asset-${mascotAssetState}" type="button"
                         data-wb-action="lingqi-pet" data-mascot-state="${mascotState}"
@@ -4322,19 +4316,34 @@ export function createWorldBackstageUI({
                                 ${renderSyncStrip(syncStatus)}
                                 <div class="wb-view-content ${activeView === 'lingqi' ? 'is-lingqi-view' : ''} ${viewChanged ? 'is-entering' : ''}">${content}</div>
                                 <footer class="wb-window-footer">
-                                    <div>
+                                    <div class="wb-footer-world-meta">
                                         <span>主世界 ${escapeHtml(clockLabel)}</span><i></i>
                                         <span>AI回复：由世界钟结算实际耗时</span><i></i>
                                         <span>独白：仅幕后可见</span>
                                     </div>
-                                    <button class="wb-sim-action wb-global-stop ${canCancelBackgroundTask ? 'is-cancel' : ''}" type="button"
-                                        data-wb-action="cancel-background-tasks"
-                                        ${canCancelBackgroundTask ? '' : 'disabled'}
-                                        title="${canCancelBackgroundTask
-                                            ? `正在运行：${escapeAttr(activeBackgroundTasks.join('、'))}。点击停止全部后台任务`
-                                            : '当前没有正在运行或排队的后台任务'}">
-                                        <i aria-hidden="true"></i><span>停止全部后台任务</span>
-                                    </button>
+                                    <div class="wb-footer-task-controls">
+                                        <button class="wb-sim-action wb-footer-sim-mobile ${canCancelSimulation ? 'is-cancel' : manualSimulationQueued ? 'is-queued' : ''}"
+                                            type="button" data-wb-action="${canCancelSimulation ? 'cancel-simulation' : 'manual-sync'}"
+                                            ${manualSimulationQueued ? 'disabled' : ''}
+                                            title="${canCancelSimulation
+                                                ? '只停止当前世界推演，不影响其他后台任务'
+                                                : manualSimulationQueued
+                                                    ? '已排队；会在当前后台任务安全结束后自动开始'
+                                                    : busy
+                                                        ? '当前有后台任务在运行；点击后安全排队，不会并发写世界状态'
+                                                        : '推演最新正文'}">
+                                            <i aria-hidden="true"></i>
+                                            <span>${canCancelSimulation ? '停止推演' : manualSimulationQueued ? '推演已排队' : '推演世界'}</span>
+                                        </button>
+                                        <button class="wb-sim-action wb-global-stop ${canCancelBackgroundTask ? 'is-cancel' : ''}" type="button"
+                                            data-wb-action="cancel-background-tasks"
+                                            ${canCancelBackgroundTask ? '' : 'disabled'}
+                                            title="${canCancelBackgroundTask
+                                                ? `正在运行：${escapeAttr(activeBackgroundTasks.join('、'))}。点击停止全部后台任务`
+                                                : '当前没有正在运行或排队的后台任务'}">
+                                            <i aria-hidden="true"></i><span>停止全部后台任务</span>
+                                        </button>
+                                    </div>
                                 </footer>
                             </div>
                         </div>

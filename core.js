@@ -262,26 +262,43 @@ function normalizeCalendarDate({ year, month, day } = {}, fallback = {
     return {
         year: safeYear,
         month: safeMonth,
-        day: asInteger(day, fallback.day, 1, daysInCalendarMonth(safeYear, safeMonth)),
+        day: asInteger(
+            day,
+            fallback.day,
+            1,
+            daysInCalendarMonth(safeYear, safeMonth),
+        ),
     };
 }
 
 function daysBeforeCalendarYear(year) {
     const previous = Math.max(0, asInteger(year, 1, 1, MAX_CALENDAR_YEAR) - 1);
-    return previous * 365 + Math.floor(previous / 4) - Math.floor(previous / 100) + Math.floor(previous / 400);
+    return (
+        previous * 365
+        + Math.floor(previous / 4)
+        - Math.floor(previous / 100)
+        + Math.floor(previous / 400)
+    );
 }
 
 function calendarOrdinal(date) {
     const safe = normalizeCalendarDate(date);
     let ordinal = daysBeforeCalendarYear(safe.year);
-    for (let month = 1; month < safe.month; month += 1) ordinal += daysInCalendarMonth(safe.year, month);
+    for (let month = 1; month < safe.month; month += 1) {
+        ordinal += daysInCalendarMonth(safe.year, month);
+    }
     return ordinal + safe.day - 1;
 }
 
 function calendarDateFromOrdinal(value) {
-    const maximumOrdinal = daysBeforeCalendarYear(MAX_CALENDAR_YEAR)
-        + 365 + (daysInCalendarMonth(MAX_CALENDAR_YEAR, 2) === 29 ? 1 : 0) - 1;
+    const maximumOrdinal = (
+        daysBeforeCalendarYear(MAX_CALENDAR_YEAR)
+        + 365
+        + (daysInCalendarMonth(MAX_CALENDAR_YEAR, 2) === 29 ? 1 : 0)
+        - 1
+    );
     const target = Math.min(maximumOrdinal, Math.max(0, Math.trunc(Number(value) || 0)));
+
     let low = 1;
     let high = MAX_CALENDAR_YEAR;
     while (low < high) {
@@ -289,6 +306,7 @@ function calendarDateFromOrdinal(value) {
         if (daysBeforeCalendarYear(middle) <= target) low = middle;
         else high = middle - 1;
     }
+
     const year = low;
     let dayOfYear = target - daysBeforeCalendarYear(year);
     let month = 1;
@@ -538,6 +556,77 @@ export function normalizeWorldFact(raw, existing = null, worldMinute = 0) {
     };
 }
 
+function worldFactAuthorityScore(fact) {
+    const sourceWeight = {
+        manual: 40,
+        narrative: 35,
+        'event-settlement': 30,
+        simulation: 10,
+    }[fact?.source] ?? 10;
+    const confidenceWeight = {
+        high: 3,
+        medium: 2,
+        low: 0,
+    }[fact?.confidence] ?? 1;
+    return sourceWeight + confidenceWeight;
+}
+
+function isStableIdentityFact(fact) {
+    const field = String(fact?.field || '').toLocaleLowerCase();
+    return /(?:婚姻|离婚|结婚|配偶|伴侣|亲属|父母|子女|兄弟|姐妹|身份|性别|物种|生死|死亡|存活|marriage|marital|spouse|partner|family|identity|gender|species|death|alive)/iu.test(field);
+}
+
+function factTransitionHasCausalEvent(state, fact) {
+    const eventId = String(fact?.eventId || '').trim();
+    return Boolean(eventId && asArray(state?.events).some(event => event?.id === eventId));
+}
+
+function lowerAuthorityFactOverwriteMustBeRejected(state, existing, incoming, worldMinute) {
+    if (!existing || !incoming || existing.value === incoming.value) return false;
+    if (incoming.source !== 'simulation') return false;
+
+    // Stable identity/relationship facts cannot silently flip because the model
+    // guessed a different value. A backstage transition is allowed only when the
+    // new fact points at an actual causal event created/updated in world state.
+    if (
+        isStableIdentityFact(existing)
+        && ['manual', 'narrative', 'event-settlement'].includes(existing.source)
+        && !factTransitionHasCausalEvent(state, incoming)
+    ) {
+        return true;
+    }
+
+    // At the same world moment, a background inference never beats a stronger
+    // foreground/manual fact. Once world time has genuinely advanced, ordinary
+    // dynamic facts (location, shop status, resources, etc.) may evolve normally.
+    return (
+        worldFactAuthorityScore(incoming) < worldFactAuthorityScore(existing)
+        && Number(worldMinute || 0) <= Number(existing.updatedAt || existing.settledAt || 0)
+    );
+}
+
+function appendFactConsistencyConflict(state, {
+    existing,
+    incoming,
+    resolution = 'keep-world',
+    reason = '',
+    messageId = null,
+} = {}) {
+    if (!existing || !incoming || existing.value === incoming.value) return;
+    state.consistencyConflicts = [
+        normalizeConsistencyConflict({
+            subject: existing.subject || incoming.subject || existing.subjectId || incoming.subjectId || '世界状态',
+            field: existing.field || incoming.field || 'state',
+            previous_value: existing.value,
+            narrative_value: incoming.value,
+            resolution,
+            reason,
+            message_id: messageId ?? incoming.messageId ?? existing.messageId ?? -1,
+        }, state?.clock?.absoluteMinute || 0, messageId),
+        ...asArray(state.consistencyConflicts),
+    ].slice(0, LIMITS.consistencyConflicts);
+}
+
 function upsertWorldFact(state, raw, {
     worldMinute = state?.clock?.absoluteMinute || 0,
     source = '',
@@ -553,6 +642,52 @@ function upsertWorldFact(state, raw, {
     const existing = asArray(state.worldFacts).find(item => item.key === key) || null;
     const fact = normalizeWorldFact(prepared, existing, worldMinute);
     if (!fact.value) return null;
+
+    if (existing && existing.value !== fact.value) {
+        if (lowerAuthorityFactOverwriteMustBeRejected(state, existing, fact, worldMinute)) {
+            appendFactConsistencyConflict(state, {
+                existing,
+                incoming: fact,
+                resolution: 'keep-world',
+                reason: isStableIdentityFact(existing)
+                    ? '稳定身份/关系事实没有对应的新因果事件，拒绝用后台推断直接翻转'
+                    : `同一世界时刻的低权威来源 ${fact.source} 不能覆盖 ${existing.source}`,
+                messageId,
+            });
+            return existing;
+        }
+
+        const incomingAuthority = worldFactAuthorityScore(fact);
+        const existingAuthority = worldFactAuthorityScore(existing);
+        if (
+            incomingAuthority > existingAuthority
+            || fact.source === 'narrative'
+            || fact.source === 'manual'
+        ) {
+            freezeKnownFactBeforeChange(state, existing);
+            appendFactConsistencyConflict(state, {
+                existing,
+                incoming: fact,
+                resolution: 'accept-narrative',
+                reason: fact.source === 'narrative'
+                    ? '正文明确事实更新了后台旧状态'
+                    : fact.source === 'manual'
+                        ? '用户/作者维护事实更新了后台旧状态'
+                        : `更高权威来源 ${fact.source} 修正了较低权威来源 ${existing.source}`,
+                messageId,
+            });
+            appendAudit(state, {
+                type: 'fact_authority_correction',
+                text: `${existing.subject || existing.subjectId || '世界'}｜${existing.field}：${existing.value} → ${fact.value}`,
+                reason: fact.source === 'narrative'
+                    ? '正文明确事实优先'
+                    : fact.source === 'manual'
+                        ? '用户/作者维护事实优先'
+                        : `事实来源优先级：${fact.source} > ${existing.source}`,
+            });
+        }
+    }
+
     if (existing) Object.assign(existing, fact);
     else state.worldFacts.unshift(fact);
     state.worldFacts = state.worldFacts.slice(0, LIMITS.worldFacts);
@@ -936,6 +1071,7 @@ export function buildPublicImpactPrompt(state, {
     sourceEventIds = [],
     userName = '',
     maximumEvents = 8,
+    recordPlayerCharacter = true,
 } = {}) {
     const wanted = new Set(asArray(sourceEventIds).map(String).filter(Boolean));
     const sourceEvents = (wanted.size
@@ -946,6 +1082,7 @@ export function buildPublicImpactPrompt(state, {
 
     const compact = compactStateForModel(state, {
         includeUserInnerVoice: false,
+        includeUserCharacter: recordPlayerCharacter,
         userName,
         maximumPeople: 24,
     });
@@ -972,7 +1109,9 @@ export function buildPublicImpactPrompt(state, {
         '3. 影响可以落到人物、组织/势力、地点、行业、资源、机会、合同、行程、声誉、价格、政策执行、基础设施和社会压力。该变的人物状态就 people_upsert；该留下的客观结果写 world_facts_upsert；持续压力写 world_pulse_upsert；需要继续发展的后果写 events_create/update。world_facts_upsert 必须填写 validity：current / upcoming / historical / persistent。源新闻已经结束，不代表它造成的后果也结束；仍然有效的后果用 current/persistent。',
         '4. 新建的后果事件必须 caused_by 包含源公共事件 id，避免因果链断掉。source_public_events 本身是本轮已确认输入，不要在 events_update 里改写它们；需要的新进展另建后果事件。不要为了“有影响”硬制造戏剧性后果；无直接影响完全允许。',
         '5. 对非玩家角色：只有当她本轮确实通过公开渠道/职业渠道/组织通知等接触到信息时，才在 people_upsert 写 knowledge_updates；禁止直接写 known_event_ids / known_fact_keys。public_channel 必须写清 evidence 和 source_event_id；其他镜头外 confirmed 获知也必须有 source_event_id 指向明确的通知/目击/调查过程事件，不能因为新闻公开或人物被波及就默认她自动知道。',
-        '6. 对玩家：绝不能因为“新闻公开”就自动假定玩家已经看到了。若公共事件会直接影响玩家，但玩家当前未必知道，优先建立一个可被正文自然承接的后果事件（例如经纪人通知、行程变更、公司群消息、道路封闭导致到场受阻），并用 delivery_route/visibility 描述它如何进入前台；不要替玩家决定反应。',
+        recordPlayerCharacter
+            ? '6. 对玩家：绝不能因为“新闻公开”就自动假定玩家已经看到了。若公共事件会直接影响玩家，但玩家当前未必知道，优先建立一个可被正文自然承接的后果事件（例如经纪人通知、行程变更、公司群消息、道路封闭导致到场受阻），并用 delivery_route/visibility 描述它如何进入前台；不要替玩家决定反应。'
+            : '6. 玩家角色当前设置为“不记录”。公共事件仍可客观影响玩家所在地点、资源、行程或关系，但禁止通过 people_upsert 建立/更新玩家人物卡；需要显露的影响用事件、世界事实或 delivery_route 进入前台，不替玩家决定反应。',
         '7. 如果公共事件已经在物理层面直接影响当前地点/行程，例如停电、封路、航班取消，可以把这些后果写成世界事实；“角色知道这件新闻”仍然是另一层认知。',
         '8. 影响传播不是每条新闻都必须撞主角。先判断世界范围，再判断当前人物与之有没有真实连接。娱乐圈、政商、战争、灾害等题材里，行业/组织级新闻往往会自然波及大量角色；日常地方新闻则可能只影响局部。',
         '9. 不推进主世界时间，elapsed_minutes 必须为 0；不写长期记忆 memory_update。这里只结算公共传播造成的世界后果。',
@@ -1087,6 +1226,7 @@ export function applyPublicImpactResult(inputState, rawPayload, {
     userName = '',
     sourceKey = '',
     backgroundNpcBudget = LIMITS.peopleTaskBudget,
+    recordPlayerCharacter = true,
 } = {}) {
     const sourceEvents = asArray(inputState?.events)
         .filter(event => asArray(sourceEventIds).includes(event?.id))
@@ -1106,9 +1246,11 @@ export function applyPublicImpactResult(inputState, rawPayload, {
         sourceKey: sourceKey || `public-impact:${sourceEventIds.join(',')}`,
         userName,
         allowUserInnerVoice: false,
+        recordPlayerCharacter,
         timePolicy: 'world',
         narrativeText: '',
         backgroundNpcBudget,
+        preserveCommitAnchor: true,
     });
 
     recordProcessedPublicImpacts(
@@ -1895,6 +2037,17 @@ function freezeKnownFactBeforeChange(state, fact) {
     }
 }
 
+function isUserPersonLike(person, userName = '') {
+    const normalizedUserName = asString(userName, '', 80).toLocaleLowerCase();
+    const name = asString(person?.name, '', 80).toLocaleLowerCase();
+    return Boolean(
+        person?.isUser
+        || person?.is_user
+        || person?.role === 'user'
+        || (normalizedUserName && name && normalizedUserName === name)
+    );
+}
+
 function normalizePerson(raw, existing = null, worldMinute = 0, {
     userName = '',
     allowUserInnerVoice = true,
@@ -1974,16 +2127,9 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
             && Number(sourceMessageId) > 0
         )
     );
-    const normalizedUserName = asString(userName, '', 80).toLocaleLowerCase();
     const isUser = Boolean(
-        (
-            normalizedUserName
-            && name.toLocaleLowerCase() === normalizedUserName
-        )
-        || raw?.is_user
-        || raw?.isUser
-        || raw?.role === 'user'
-        || existing?.isUser,
+        isUserPersonLike(raw, userName)
+        || isUserPersonLike(existing, userName)
     );
     const storedInnerVoice = isUser && !allowUserInnerVoice
         ? ''
@@ -3106,15 +3252,23 @@ export function applySimulationResult(baseState, rawPayload, {
     sourceKey = '',
     userName = '',
     allowUserInnerVoice = true,
+    recordPlayerCharacter = true,
     timePolicy = 'open',
     narrativeText = '',
     backgroundNpcBudget = LIMITS.peopleTaskBudget,
     lifeSettlementTargetIds = [],
+    preserveCommitAnchor = false,
 } = {}) {
     const payload = normalizeSimulationResult(rawPayload);
     const lifeSettlementTargets = new Set(
         asArray(lifeSettlementTargetIds).map(item => String(item || '')).filter(Boolean),
     );
+    if (!recordPlayerCharacter) {
+        baseState = {
+            ...baseState,
+            people: asArray(baseState?.people).filter(person => !isUserPersonLike(person, userName)),
+        };
+    }
     const baseClockAnchored = Boolean(baseState?.clock?.anchored);
     const anchor = payload.clockAnchor;
     const narrativeCalendar = extractExplicitCalendarDate(narrativeText);
@@ -3361,10 +3515,10 @@ export function applySimulationResult(baseState, rawPayload, {
     for (const rawPerson of payload.peopleUpsert) {
         const personName = asString(rawPerson?.name, '', 80).toLocaleLowerCase();
         const playerPerson = Boolean(
-            rawPerson?.is_user
-            || rawPerson?.isUser
-            || rawPerson?.role === 'user'
+            isUserPersonLike(rawPerson, userName)
+            || isUserPersonLike(findPerson(state, rawPerson), userName)
         );
+        if (playerPerson && !recordPlayerCharacter) continue;
         const namedInNarrative = Boolean(
             personName
             && narrativeForPeople
@@ -3766,15 +3920,21 @@ export function applySimulationResult(baseState, rawPayload, {
         });
     }
 
-    state.needsReconciliation = false;
-    state.pendingSync = false;
-    state.lastCommit = {
-        messageId,
-        swipeId,
-        sourceKey: asString(sourceKey, '', 180),
-        at: worldMinute,
-        committedAt: nowIso(),
-    };
+    if (preserveCommitAnchor) {
+        state.needsReconciliation = Boolean(baseState?.needsReconciliation);
+        state.pendingSync = Boolean(baseState?.pendingSync);
+        state.lastCommit = baseState?.lastCommit ? deepClone(baseState.lastCommit) : null;
+    } else {
+        state.needsReconciliation = false;
+        state.pendingSync = false;
+        state.lastCommit = {
+            messageId,
+            swipeId,
+            sourceKey: asString(sourceKey, '', 180),
+            at: worldMinute,
+            committedAt: nowIso(),
+        };
+    }
     state.revision = asInteger(state.revision, 0, 0) + 1;
     state.updatedAt = nowIso();
     appendAudit(state, {
@@ -3952,35 +4112,77 @@ function selectRelevantPeople(state, recentText = '', maximum = 6) {
 }
 
 export function buildInjectionPackage(state, settings = {}, recentText = '', { contextText = recentText } = {}) {
-    if (!settings.enabled) {
+    if (!settings.enabled || settings.worldPromptInjection === false) {
         return { text: '', authorityText: '', supportText: '', eventIds: [] };
     }
 
-    // Authoritative world state is a continuity contract, not an optional reveal.
-    // `worldPromptInjection` is kept as the legacy setting key, but from schema 14
-    // onward it only controls whether settled outcomes may proactively surface in
-    // the foreground. While the world engine itself is enabled, time / person state
-    // / settled facts always participate in the prompt so the model cannot silently
-    // fork a second world by ignoring backstage facts.
-    const injectWorldState = settings.worldSimulationEnabled !== false;
-    const injectWorldReveals = injectWorldState && settings.worldPromptInjection !== false;
+    // 注入只决定“当前镜头能拿到什么”，不决定后台模块是否存在或运行。
+    const worldRunning = settings.worldSimulationEnabled !== false;
+    const injectBackground = worldRunning && settings.injectionWorldBackground !== false;
+    const injectPeople = worldRunning && settings.injectionPeople !== false;
+    const injectEvents = worldRunning && settings.injectionEvents !== false;
+    const injectEchoes = worldRunning && settings.injectionEchoes !== false;
+    const injectFacts = worldRunning && settings.injectionFacts !== false;
     const injectMemory = settings.memorySystemEnabled !== false
-        && settings.memoryPromptInjection !== false;
-    if (!injectWorldState && !injectMemory) return { text: '', authorityText: '', supportText: '', eventIds: [] };
+        && settings.memoryPromptInjection !== false
+        && settings.injectionMemory !== false;
+    const timeMode = worldRunning && ['full', 'anchor', 'off'].includes(settings.injectionTimeMode)
+        ? settings.injectionTimeMode
+        : (worldRunning ? 'full' : 'off');
+
+    if (
+        !injectBackground
+        && !injectPeople
+        && !injectEvents
+        && !injectEchoes
+        && !injectFacts
+        && !injectMemory
+        && timeMode === 'off'
+    ) {
+        return { text: '', authorityText: '', supportText: '', eventIds: [] };
+    }
 
     const clock = formatWorldCalendar(state);
-    const people = injectWorldState ? selectRelevantPeople(state, recentText) : [];
-    const contextReality = injectWorldState ? selectContextRelevantReality(state, contextText, 7) : [];
+    const people = injectPeople
+        ? selectRelevantPeople(state, recentText)
+            .filter(person => settings.recordPlayerCharacter !== false || !person?.isUser)
+        : [];
+    const rawContextReality = (injectEvents || injectFacts)
+        ? selectContextRelevantReality(state, contextText, 9)
+        : [];
+    const eventContextText = `${recentText || ''}\n${contextText || ''}`.toLocaleLowerCase();
+    const ongoingEvents = injectEvents
+        ? asArray(state?.events)
+            .filter(event => ACTIVE_EVENT_STATES.has(event?.status))
+            .map(event => {
+                const terms = [
+                    event.title,
+                    event.place,
+                    ...(event.actors || []),
+                ].map(value => String(value || '').trim().toLocaleLowerCase()).filter(value => value.length >= 2);
+                let score = Number(event.updatedAt || event.startedAt || 0) / 1_000_000;
+                if (terms.some(term => eventContextText.includes(term))) score += 100;
+                if (event.delivery?.manualQueued) score += 80;
+                return { event, score };
+            })
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 5)
+            .map(item => item.event)
+        : [];
+    const contextReality = rawContextReality.filter(item => (
+        (item.kind === 'world-fact' && injectFacts)
+        || (item.kind !== 'world-fact' && injectEvents)
+    ));
     const contextFactKeys = new Set(
         contextReality
             .filter(item => item.kind === 'world-fact' && String(item.id || '').startsWith('fact:'))
             .map(item => String(item.id).slice(5)),
     );
-    const authoritativeFacts = injectWorldState
+    const authoritativeFacts = injectFacts
         ? selectRelevantWorldFacts(state, recentText, 12)
             .filter(fact => !contextFactKeys.has(fact.key))
         : [];
-    const deliveries = injectWorldReveals ? selectDeliveryCandidates(state, settings) : [];
+    const deliveries = injectEchoes ? selectDeliveryCandidates(state, settings) : [];
     const recalledMemory = injectMemory ? selectRelevantStoryMemory(state, recentText, {
         maximumFacts: 6,
         maximumClues: 3,
@@ -4003,27 +4205,37 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
 
     const authorityLines = ['<world_backstage_state>'];
     const supportLines = ['<world_backstage_support>'];
-    if (injectWorldState && state.world?.background) {
-        authorityLines.push(
-            '世界背景基础约束（用户手动设定，不是动态剧情建议；不得被正文随意改写）：',
-            modelText(state.world.background, 1600),
-            '背景规则负责定义这个世界允许什么；若后续已经发生的权威世界事实明确改变了某个“状态”，以最新事实为准，但不得无因果违反背景中的底层规则。',
-        );
-    }
-    if (injectWorldState) {
-        if (state.clock?.anchored) {
+
+    if (injectBackground) {
+        if (state.world?.background) {
             authorityLines.push(
-                `权威主世界时间：${state.world.name} · ${clock.stamp}`,
-                `权威日期字段：year=${clock.year}; month=${clock.month}; day=${clock.dayOfMonth}; time=${clock.time}`,
-                `整体状态：${state.world.title}；${state.world.detail}`,
-                '时间一致性规则：主世界时间由世界背面维护，是本轮正文的事实源。若正文含“时间与地点”栏、日期标题或钟点显示，必须把其中的年、月、日逐项改为上面的权威 year/month/day；不得保留上一轮旧年月日，也不得自行另起日期。钟点同样以权威 time 为本轮起点。',
-                `若输出“时间与地点”栏，日期应明确写成：${clock.year}年${clock.month}月${clock.dayOfMonth}日。`,
-                '正文只负责叙事，不要在本轮自行额外推进世界时钟；本轮实际经过多久会在正文结束后由世界背面结算。',
+                '世界背景基础约束（用户手动设定，不是动态剧情建议；不得被正文随意改写）：',
+                modelText(state.world.background, 1600),
+                '背景规则负责定义这个世界允许什么；若后续已经发生的权威世界事实明确改变了某个“状态”，以最新事实为准，但不得无因果违反背景中的底层规则。',
             );
-        } else {
+        }
+        authorityLines.push(`整体状态：${state.world.title}；${state.world.detail}`);
+    }
+
+    if (timeMode !== 'off') {
+        if (state.clock?.anchored) {
+            if (timeMode === 'full') {
+                authorityLines.push(
+                    `权威主世界时间：${state.world.name} · ${clock.stamp}`,
+                    `权威日期字段：year=${clock.year}; month=${clock.month}; day=${clock.dayOfMonth}; time=${clock.time}`,
+                    '时间一致性规则：主世界时间由世界背面维护，是本轮正文的事实源。若正文含“时间与地点”栏、日期标题或钟点显示，必须把其中的年、月、日逐项改为上面的权威 year/month/day；不得保留上一轮旧年月日，也不得自行另起日期。钟点同样以权威 time 为本轮起点。',
+                    `若输出“时间与地点”栏，日期应明确写成：${clock.year}年${clock.month}月${clock.dayOfMonth}日。`,
+                    '正文只负责叙事，不要在本轮自行额外推进世界时钟；本轮实际经过多久会在正文结束后由世界背面结算。',
+                );
+            } else {
+                authorityLines.push(
+                    `最小时间一致性锚点：${clock.stamp}`,
+                    '只用于防止正文把时间无因果倒退、跨日或跳回旧日期；不要求正文主动显示时间，也不要把它当成必须播报的信息。',
+                );
+            }
+        } else if (timeMode === 'full') {
             authorityLines.push(
                 '主世界时间：尚未完成故事时间锚点校准。',
-                `整体状态：${state.world.title}；${state.world.detail}`,
                 '时间一致性规则：当前不要把占位历法/占位钟点当作剧情事实；本轮正文结束后由世界背面从上下文建立主世界时间锚点。',
             );
         }
@@ -4045,6 +4257,18 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
             const boundary = person.knowledge === 'known' ? '可知' : '幕后';
             authorityLines.push(`- ${person.name}｜${person.location}｜${person.action}｜${boundary}`);
         }
+    }
+
+    if (ongoingEvents.length) {
+        authorityLines.push(
+            '当前相关进行中事件 / 暗流（它们在世界里客观存在，但不等于任何角色已经知道）：',
+        );
+        for (const event of ongoingEvents) {
+            authorityLines.push(
+                `- [${event.id}] ${event.title}｜${event.place}｜${event.summary || event.expectedResult || event.cause || '正在发展'}｜显露=${event.visibility}`,
+            );
+        }
+        authorityLines.push('这些进行中事件只约束世界连续性；隐藏事件不得因此直接泄漏成角色知识或后台播报。');
     }
 
     if (contextReality.length) {
@@ -4069,7 +4293,6 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         );
     }
 
-
     if (authoritativeFacts.length) {
         authorityLines.push(
             '已结算世界事实（这是世界客观状态，不是可选剧情建议；必须保持一致，但角色是否知道仍看认知边界）：',
@@ -4080,7 +4303,6 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         }
         authorityLines.push('显露度只决定这些事实如何进入镜头，不决定它们是否存在。隐藏事实可以约束连续性，但不得因此让不知情角色突然知晓。');
     }
-
 
     if (knownFacts.length || knownClues.length) {
         supportLines.push('与当前场景相关、且角色已经有资格知道的长期记忆：');
@@ -4105,9 +4327,10 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         supportLines.push('只把真正写进正文、被角色感知或留下可见痕迹的结果视为已承接；不要声称“后台已递交”。');
     }
 
-    authorityLines.push('禁止提及“世界背面”、状态表、注入块或幕后独白。');
-    authorityLines.push('</world_backstage_state>');
-
+    if (authorityLines.length > 1) {
+        authorityLines.push('禁止提及“世界背面”、状态表、注入块或幕后独白。');
+        authorityLines.push('</world_backstage_state>');
+    }
     const supportHasContent = supportLines.length > 1;
     if (supportHasContent) {
         supportLines.push('辅助信息只用于自然承接和长期连续性；不得覆盖上面的权威世界状态。');
@@ -4115,7 +4338,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     }
 
     const compactLayer = (sourceLines, maximumCharacters, closingTag) => {
-        if (!sourceLines.length) return { text: '', omitted: 0 };
+        if (sourceLines.length <= 1) return { text: '', omitted: 0 };
         const kept = [];
         let usedCharacters = 0;
         for (const line of sourceLines) {
@@ -4139,18 +4362,12 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         };
     };
 
-    // Hard continuity stays closest to the latest user message. Memory, optional
-    // reveal candidates and public-opinion additions are injected separately at
-    // a deeper position by index.js so they cannot compete with world facts.
     const authority = compactLayer(authorityLines, 4600, '</world_backstage_state>');
     const support = supportHasContent
         ? compactLayer(supportLines, 1100, '</world_backstage_support>')
         : { text: '', omitted: 0 };
 
     return {
-        // Keep a combined legacy field for diagnostics/tests and generation-offer
-        // accounting. Authority is deliberately last so legacy consumers still
-        // end on the world-state closing tag.
         text: [support.text, authority.text].filter(Boolean).join('\n\n'),
         authorityText: authority.text,
         supportText: support.text,
@@ -4503,6 +4720,7 @@ export function buildWorldBootstrapPrompt(state, {
     messages = [],
     userName = '',
     playerIdentityAnchor = '',
+    recordPlayerCharacter = true,
     compact = false,
 } = {}) {
     const compactMode = Boolean(compact);
@@ -4530,6 +4748,7 @@ export function buildWorldBootstrapPrompt(state, {
     const identityAnchor = modelText(playerIdentityAnchor, 400);
     const compactState = compactStateForModel(state, {
         includeUserInnerVoice: false,
+        includeUserCharacter: recordPlayerCharacter,
         userName,
         maximumPeople: compactMode ? 12 : 22,
     });
@@ -4551,7 +4770,9 @@ export function buildWorldBootstrapPrompt(state, {
             : '当前没有额外填写世界背景设定。',
         '世界背景设定不是历史回溯的输出字段，也不能由聊天回溯覆盖；历史只能在这份地基上恢复已经发生的状态。',
         '1. 本批每条 assistant 正文仍要生成一条 turn_summaries L0 摘要；同时整理长期记忆 facts/clues。',
-        '2. people_upsert 恢复截至本批末尾仍有意义的人物当前状态：最后可靠位置、行动/处境、长期目标与已明确状态。只写正文有证据的内容；不得根据外貌猜身份，不得替玩家补内心。',
+        recordPlayerCharacter
+            ? '2. people_upsert 恢复截至本批末尾仍有意义的人物当前状态：最后可靠位置、行动/处境、长期目标与已明确状态。只写正文有证据的内容；不得根据外貌猜身份，不得替玩家补内心。'
+            : '2. people_upsert 只恢复 NPC / 非玩家人物。玩家角色当前设置为“不记录”，禁止为玩家建立或更新人物卡；玩家已经发生的行动仍可沉淀为事件、世界事实和长期记忆。',
         '3. events_create 只恢复“到本批末尾仍未解决”的过程、承诺、计划、威胁、调查、旅程、任务、环境压力等。已经明确结束的旧事件不要重新挂回暗流；它们应沉淀为 world_facts_upsert / 长期记忆。',
         '3A. 如果上一批已经恢复的 existing event 在本批历史里继续推进、完成、取消或错过，必须用 events_update 更新原 ID。特别是已经结束的事件必须给 terminal status + result，不能因为它曾经未完成就让它错误地一直挂到当前时间。',
         '4. world_facts_upsert 恢复已经客观成立、会约束后续世界的一致性事实。正文传闻、角色误解、未经确认的猜测不能升级为世界事实。必须标 validity：current=截至本批末尾仍成立，upcoming=已明确预定但尚未发生，historical=已经结束，persistent=起因结束但后果仍持续。',
@@ -4729,6 +4950,7 @@ export function applyWorldBootstrapResult(inputState, rawPayload, {
     narrativeText = '',
     userName = '',
     allowUserInnerVoice = false,
+    recordPlayerCharacter = true,
     memoryEnabled = true,
 } = {}) {
     let state = deepClone(inputState);
@@ -4768,6 +4990,7 @@ export function applyWorldBootstrapResult(inputState, rawPayload, {
         sourceKey: `history-bootstrap:${startMessageId}:${endMessageId}`,
         userName,
         allowUserInnerVoice,
+        recordPlayerCharacter,
         timePolicy: 'world',
         narrativeText,
         backgroundNpcBudget: LIMITS.peopleTaskBudget,
@@ -4797,9 +5020,11 @@ export function buildWorldPulsePrompt(state, {
     publicCycle = false,
     enhancedBackgroundSimulation = false,
     backgroundPersonTargets = [],
+    recordPlayerCharacter = true,
 } = {}) {
     const compact = compactStateForModel(state, {
         includeUserInnerVoice: false,
+        includeUserCharacter: recordPlayerCharacter,
         maximumPeople: enhancedBackgroundSimulation
             ? Math.min(LIMITS.peopleModelContext, Math.max(12, Number(backgroundNpcBudget) * 2 + 4))
             : Math.min(20, Math.max(10, Number(backgroundNpcBudget) + 8)),
@@ -4847,7 +5072,9 @@ export function buildWorldPulsePrompt(state, {
         '5. 公开世界事件可以与主角完全无关，但必须用 publicity 表示社会公开度，而不是拿 visibility 代替。publicity=trace 只能形成未证实讨论；publicity=public 才能进入新闻，并填写 public_headline/public_summary。',
         '6. visibility 仍只控制事件怎样靠近当前正文。某件私密事件即使 visibility=direct，也可以且通常应该 publicity=private。',
         '7. 普通天气、交通、商业、地方政策、设施、行业、社区与网络热点远多于战争/灾难/巨型阴谋。重大事件必须罕见且有强因果。',
-        '7. 可以更新镜头外 NPC 的位置、行动、意图和状态，但不得删除 author_managed / locked 人物，不得替玩家补行动或内心。',
+        recordPlayerCharacter
+            ? '7. 可以更新镜头外 NPC 的位置、行动、意图和状态，但不得删除 author_managed / locked 人物，不得替玩家补行动或内心。'
+            : '7. 可以更新镜头外 NPC，但玩家角色当前设置为“不记录”：禁止在 people_upsert / people_remove 中创建、更新或删除玩家。玩家只通过已发生的正文事实影响世界。',
         '8. 已结算的客观结果写 world_facts_upsert，并同步对应人物/事件状态。',
         '9. 不写 memory_update；没有新正文，不应该凭空形成“正文长期记忆”。',
         '10. 只输出合法 JSON。',
@@ -5113,8 +5340,8 @@ export function buildPersonObservationPrompt(state, person, {
             && person?.name?.toLocaleLowerCase() === String(userName).toLocaleLowerCase()
         )
     );
-    if (isUser && !includeUserInnerVoice) {
-        throw new Error('玩家视角默认关闭；如确实需要，请先开启“描写玩家内心”');
+    if (isUser) {
+        throw new Error('玩家角色不使用镜头外人物观测');
     }
 
     // IMPORTANT: raw recent narrative is intentionally NOT passed to the person POV.
@@ -5311,12 +5538,14 @@ export function listDueBackgroundPeople(state, {
 
 export function compactStateForModel(state, {
     includeUserInnerVoice = false,
+    includeUserCharacter = true,
     userName = '',
     maximumPeople = 14,
 } = {}) {
     const maximum = asInteger(maximumPeople, 14, 1, LIMITS.peopleModelContext);
     const candidates = [...state.people]
-        .filter(person => person?.simulationEnabled !== false || person?.isUser)
+        .filter(person => includeUserCharacter || !isUserPersonLike(person, userName))
+        .filter(person => person?.simulationEnabled !== false || isUserPersonLike(person, userName))
         .map(person => ({
             person,
             life: personLifeTickInfo(state, person),
@@ -5421,13 +5650,7 @@ export function compactStateForModel(state, {
                 updated_at: fact.updatedAt,
             })),
         people: people.map(person => {
-            const isUser = Boolean(
-                person.isUser
-                || (
-                    userName
-                    && person.name.toLocaleLowerCase() === String(userName).toLocaleLowerCase()
-                )
-            );
+            const isUser = isUserPersonLike(person, userName);
             return {
                 id: person.id,
                 name: modelText(person.name, 80),
@@ -5500,6 +5723,459 @@ export function compactStateForModel(state, {
     };
 }
 
+
+function correctionEvidenceSource(raw) {
+    const source = asString(
+        raw?.evidence_source ?? raw?.evidenceSource,
+        'narrative',
+        40,
+    ).toLowerCase();
+    return ['narrative', 'character_anchor', 'world_background', 'manual_fact'].includes(source)
+        ? source
+        : 'narrative';
+}
+
+function correctionEvidenceSupported(state, narrativeText, correction) {
+    const evidence = normalizedEvidenceText(
+        correction?.evidence
+        ?? correction?.evidence_excerpt
+        ?? correction?.evidenceExcerpt,
+    );
+    if (!evidence || evidence.length < 4) return false;
+    const source = correctionEvidenceSource(correction);
+
+    if (source === 'narrative') {
+        return normalizedEvidenceText(narrativeText).includes(evidence);
+    }
+    if (source === 'world_background') {
+        return normalizedEvidenceText(state?.world?.background).includes(evidence);
+    }
+    if (source === 'character_anchor') {
+        const personId = asString(
+            correction?.person_id ?? correction?.personId ?? correction?.subject_id ?? correction?.subjectId,
+            '',
+            120,
+        );
+        const targetMemoryFact = findMemoryFactForCorrection(state, correction);
+        const targetWorldFact = findWorldFactForCorrection(state, correction);
+        const personName = asString(
+            correction?.person_name
+            ?? correction?.personName
+            ?? correction?.subject
+            ?? targetMemoryFact?.subject
+            ?? targetWorldFact?.subject,
+            '',
+            100,
+        );
+        const person = asArray(state?.people).find(item => (
+            (personId && item?.id === personId)
+            || (personName && item?.name === personName)
+        ));
+        if (!person) return false;
+        const anchorText = normalizedEvidenceText([
+            person.identityAnchor,
+            person.personalityAnchor,
+            person.backgroundProfile,
+            person.worldbookRaw,
+            person.speakingStyle,
+            person.behaviorBoundaries,
+        ].filter(Boolean).join('\n'));
+        return anchorText.includes(evidence);
+    }
+    if (source === 'manual_fact') {
+        return asArray(state?.worldFacts).some(fact => (
+            fact?.source === 'manual'
+            && normalizedEvidenceText(`${fact.subject}${fact.field}${fact.value}`).includes(evidence)
+        ));
+    }
+    return false;
+}
+
+function correctionSourceForEvidence(correction) {
+    return correctionEvidenceSource(correction) === 'narrative'
+        ? 'narrative'
+        : 'manual';
+}
+
+function findWorldFactForCorrection(state, correction) {
+    const key = asString(correction?.key, '', 180);
+    if (key) {
+        return asArray(state?.worldFacts).find(fact => fact?.key === key) || null;
+    }
+    const subjectId = asString(
+        correction?.subject_id ?? correction?.subjectId,
+        '',
+        120,
+    ).toLocaleLowerCase();
+    const subject = asString(correction?.subject, '', 140).toLocaleLowerCase();
+    const field = asString(correction?.field, '', 80).toLocaleLowerCase();
+    return asArray(state?.worldFacts).find(fact => (
+        (!field || String(fact?.field || '').toLocaleLowerCase() === field)
+        && (
+            (subjectId && String(fact?.subjectId || '').toLocaleLowerCase() === subjectId)
+            || (subject && String(fact?.subject || '').toLocaleLowerCase() === subject)
+        )
+    )) || null;
+}
+
+function findMemoryFactForCorrection(state, correction) {
+    const factId = asString(
+        correction?.fact_id ?? correction?.factId ?? correction?.id,
+        '',
+        120,
+    );
+    const key = asString(correction?.key, '', 180);
+    return asArray(state?.storyMemory?.facts).find(fact => (
+        (factId && fact?.id === factId)
+        || (key && fact?.key === key)
+    )) || null;
+}
+
+function correctionPersonField(rawField) {
+    const field = asString(rawField, '', 80);
+    const aliases = {
+        location: 'location',
+        action: 'action',
+        intent: 'intent',
+        physical_state: 'physicalState',
+        physicalState: 'physicalState',
+        emotional_state: 'emotionalState',
+        emotionalState: 'emotionalState',
+        resource_state: 'resourceState',
+        resourceState: 'resourceState',
+    };
+    return aliases[field] || '';
+}
+
+export function buildStateCorrectionPrompt(state, {
+    narrativeText = '',
+    userName = '',
+} = {}) {
+    const people = asArray(state?.people)
+        .slice(0, LIMITS.peopleModelContext)
+        .map(person => ({
+            id: person.id,
+            name: person.name,
+            is_user: Boolean(person.isUser),
+            current: {
+                location: modelText(person.location, 160),
+                action: modelText(person.action, 220),
+                intent: modelText(person.intent, 240),
+                physical_state: modelText(person.physicalState, 180),
+                emotional_state: modelText(person.emotionalState, 180),
+                resource_state: modelText(person.resourceState, 180),
+            },
+            author_anchors: {
+                identity: modelText(person.identityAnchor, 360),
+                background: modelText(person.backgroundProfile, 700),
+                worldbook_raw: modelText(person.worldbookRaw, 1200),
+                behavior_boundaries: modelText(person.behaviorBoundaries, 320),
+            },
+        }));
+
+    const worldFacts = asArray(state?.worldFacts)
+        .slice(0, 100)
+        .map(fact => ({
+            key: fact.key,
+            subject: fact.subject,
+            subject_id: fact.subjectId,
+            field: fact.field,
+            value: fact.value,
+            source: fact.source,
+            confidence: fact.confidence,
+            validity: fact.validity,
+            message_id: fact.messageId,
+        }));
+
+    const memoryFacts = asArray(state?.storyMemory?.facts)
+        .filter(fact => ['active', 'disputed'].includes(fact?.status))
+        .slice(0, 100)
+        .map(fact => ({
+            id: fact.id,
+            key: fact.key,
+            subject: fact.subject,
+            predicate: fact.predicate,
+            value: fact.value,
+            status: fact.status,
+            confidence: fact.confidence,
+            locked: Boolean(fact.locked),
+            manual: Boolean(fact.manual),
+            source_excerpt: fact.sourceExcerpt,
+        }));
+
+    const activeEvents = asArray(state?.events)
+        .filter(event => !TERMINAL_EVENT_STATES.has(event?.status))
+        .slice(0, 60)
+        .map(event => ({
+            id: event.id,
+            title: event.title,
+            summary: event.summary,
+            expected_result: event.expectedResult,
+            cause: event.cause,
+            caused_by: event.causedBy,
+            status: event.status,
+            delivery_state: event.delivery?.state || 'none',
+            publicity: event.publicity,
+        }));
+
+    return [
+        '你是“世界背面”的事实一致性校对员。你的任务只有纠错，不续写剧情、不创造新发展。',
+        '权威顺序：用户/作者维护设定 > 正文明示事实 > 已结算事件结果 > AI后台推断。',
+        '绝对禁止：',
+        '1. 不能改写、删除或否认已经真实出现在正文里的历史。',
+        '2. 不能因为“更合理”就创造正文没有发生过的新事实。',
+        '3. 不能把角色设定里的倾向、可能性当成已经发生的状态。',
+        '4. 只有能给出明确证据摘录的错误才允许修正；拿不准就不要改。',
+        '5. 需要撤销派生暗流时，只能列出尚未终结、尚未递交正文的 event id；已 delivered / resolved / cancelled / missed 的事件绝不能要求删除。',
+        '',
+        '证据来源 evidence_source 只能是：',
+        '- narrative：下面“最近正文证据”中的逐字短句；',
+        '- character_anchor：人物 author_anchors 中的逐字短句；',
+        '- world_background：世界背景中的逐字短句；',
+        '- manual_fact：当前 source=manual 的世界事实逐字短句。',
+        '',
+        '允许的 correction kind：',
+        '- world_fact：修正已存在的世界事实。给 key/value。',
+        '- memory_fact：修正错误长期事实。给 fact_id 或 key，以及 value。',
+        '- person_state：只修 location/action/intent/physical_state/emotional_state/resource_state，不得改人物性格、身份、背景、外貌或历史。',
+        '',
+        '如果某个错误后台事实已经衍生出尚未发生的暗流，可把 event id 放入 cancel_event_ids。不要取消只是“不喜欢”的事件，只取消明确依赖错误事实的派生。',
+        '只返回合法 JSON，不要代码围栏和解释。',
+        '',
+        `玩家角色名：${modelText(userName, 80) || '未提供'}`,
+        `世界背景：${modelText(state?.world?.background, 2400) || '（空）'}`,
+        '人物状态与作者锚点：',
+        JSON.stringify(people),
+        '当前世界事实：',
+        JSON.stringify(worldFacts),
+        '当前长期事实：',
+        JSON.stringify(memoryFacts),
+        '当前未终结事件：',
+        JSON.stringify(activeEvents),
+        '最近正文证据：',
+        modelText(narrativeText, 16000),
+        '',
+        '返回结构：',
+        JSON.stringify({
+            corrections: [
+                {
+                    kind: 'world_fact',
+                    key: 'person:xxx:relationship',
+                    value: '正确值',
+                    evidence_source: 'character_anchor',
+                    evidence: '必须逐字存在的短证据',
+                    reason: '为什么现状态与证据冲突',
+                },
+            ],
+            cancel_event_ids: [],
+        }),
+    ].join('\n');
+}
+
+export function applyStateCorrectionResult(inputState, rawPayload, {
+    narrativeText = '',
+    messageId = null,
+} = {}) {
+    const state = deepClone(inputState);
+    state.storyMemory = normalizeStoryMemory(state.storyMemory, state.clock?.absoluteMinute || 0);
+    const corrections = asArray(rawPayload?.corrections).slice(0, 24);
+    const appliedCorrections = [];
+    const skippedCorrections = [];
+    const correctedOldValues = [];
+
+    for (const rawCorrection of corrections) {
+        const kind = asString(rawCorrection?.kind, '', 40);
+        const value = asString(rawCorrection?.value, '', 520);
+        if (!kind || !value || !correctionEvidenceSupported(state, narrativeText, rawCorrection)) {
+            skippedCorrections.push(rawCorrection);
+            continue;
+        }
+
+        if (kind === 'world_fact') {
+            const existing = findWorldFactForCorrection(state, rawCorrection);
+            if (!existing || existing.value === value) {
+                skippedCorrections.push(rawCorrection);
+                continue;
+            }
+            if (existing.source === 'manual') {
+                skippedCorrections.push(rawCorrection);
+                continue;
+            }
+            const oldValue = existing.value;
+            const result = upsertWorldFact(state, {
+                ...existing,
+                value,
+                confidence: 'high',
+                source: correctionSourceForEvidence(rawCorrection),
+                message_id: messageId ?? existing.messageId,
+            }, {
+                source: correctionSourceForEvidence(rawCorrection),
+                messageId,
+            });
+            if (result?.value === value) {
+                correctedOldValues.push(oldValue);
+                appliedCorrections.push({
+                    kind,
+                    key: existing.key,
+                    from: oldValue,
+                    to: value,
+                    evidence: asString(rawCorrection?.evidence, '', 220),
+                });
+            } else {
+                skippedCorrections.push(rawCorrection);
+            }
+            continue;
+        }
+
+        if (kind === 'memory_fact') {
+            const existing = findMemoryFactForCorrection(state, rawCorrection);
+            if (!existing || existing.locked || existing.manual || existing.value === value) {
+                skippedCorrections.push(rawCorrection);
+                continue;
+            }
+            const oldValue = existing.value;
+            applyMemoryFactUpdates(state, {
+                factsUpsert: [{
+                    key: existing.key,
+                    subject: existing.subject,
+                    predicate: existing.predicate,
+                    value,
+                    confidence: 'high',
+                    importance: existing.importance,
+                    visibility: existing.visibility,
+                    people: existing.people,
+                    locations: existing.locations,
+                    tags: uniqueStrings([...(existing.tags || []), '事实纠错'], 24),
+                    source_excerpt: asString(rawCorrection?.evidence, '', 220),
+                    manual: false,
+                    status: 'active',
+                }],
+            }, {
+                sourceMessageId: messageId ?? existing.sourceMessageId ?? 0,
+                sourceSwipeId: existing.sourceSwipeId ?? 0,
+            });
+            const corrected = asArray(state.storyMemory.facts).find(fact => (
+                fact.key === existing.key
+                && fact.value === value
+                && ['active', 'disputed'].includes(fact.status)
+            ));
+            if (corrected) {
+                correctedOldValues.push(oldValue);
+                appliedCorrections.push({
+                    kind,
+                    key: existing.key,
+                    from: oldValue,
+                    to: value,
+                    evidence: asString(rawCorrection?.evidence, '', 220),
+                });
+            } else {
+                skippedCorrections.push(rawCorrection);
+            }
+            continue;
+        }
+
+        if (kind === 'person_state') {
+            const personId = asString(
+                rawCorrection?.person_id ?? rawCorrection?.personId ?? rawCorrection?.subject_id ?? rawCorrection?.subjectId,
+                '',
+                120,
+            );
+            const personName = asString(rawCorrection?.person_name ?? rawCorrection?.personName ?? rawCorrection?.subject, '', 100);
+            const person = asArray(state.people).find(item => (
+                (personId && item?.id === personId)
+                || (personName && item?.name === personName)
+            ));
+            const field = correctionPersonField(rawCorrection?.field);
+            if (!person || !field || person[field] === value) {
+                skippedCorrections.push(rawCorrection);
+                continue;
+            }
+            const oldValue = asString(person[field], '', 520);
+            person[field] = value;
+            person.updatedAt = state.clock?.absoluteMinute || 0;
+            settlePersonStateFacts(
+                state,
+                person,
+                correctionSourceForEvidence(rawCorrection),
+                messageId,
+            );
+            correctedOldValues.push(oldValue);
+            appliedCorrections.push({
+                kind,
+                key: `${person.id}:${field}`,
+                from: oldValue,
+                to: value,
+                evidence: asString(rawCorrection?.evidence, '', 220),
+            });
+            continue;
+        }
+
+        skippedCorrections.push(rawCorrection);
+    }
+
+    const requestedEventIds = new Set(
+        uniqueStrings(rawPayload?.cancel_event_ids ?? rawPayload?.cancelEventIds, 24),
+    );
+    const removedEventIds = [];
+    if (requestedEventIds.size && appliedCorrections.length) {
+        state.events = asArray(state.events).filter(event => {
+            if (!requestedEventIds.has(event?.id)) return true;
+            if (
+                TERMINAL_EVENT_STATES.has(event?.status)
+                || event?.delivery?.state === 'delivered'
+            ) return true;
+            const dependencyText = normalizedEvidenceText([
+                event?.title,
+                event?.summary,
+                event?.cause,
+                event?.expectedResult,
+                event?.consequence,
+            ].filter(Boolean).join('\n'));
+            const explicitlyDependsOnCorrectedError = correctedOldValues.some(oldValue => {
+                const normalizedOld = normalizedEvidenceText(oldValue);
+                return normalizedOld.length >= 2 && dependencyText.includes(normalizedOld);
+            });
+            if (!explicitlyDependsOnCorrectedError) return true;
+            removedEventIds.push(event.id);
+            return false;
+        });
+        if (removedEventIds.length) {
+            const removed = new Set(removedEventIds);
+            state.echoes = asArray(state.echoes).filter(echo => !removed.has(echo?.eventId));
+            state.archive = asArray(state.archive).filter(entry => !removed.has(entry?.eventId));
+            state.worldFacts = asArray(state.worldFacts).filter(fact => !(
+                removed.has(fact?.eventId)
+                || removedEventIds.some(eventId => String(fact?.key || '').startsWith(`event:${eventId}:`))
+                || removedEventIds.some(eventId => String(fact?.key || '').startsWith(`public_event:${eventId}:`))
+            ));
+            state.publicImpactLedger = asArray(state.publicImpactLedger)
+                .filter(record => !removed.has(record?.sourceEventId));
+        }
+    }
+
+    if (appliedCorrections.length || removedEventIds.length) {
+        appendAudit(state, {
+            type: 'state_correction',
+            text: `事实纠错：修正 ${appliedCorrections.length} 项${removedEventIds.length ? `，撤销 ${removedEventIds.length} 条未发生派生事件` : ''}`,
+            reason: appliedCorrections
+                .slice(0, 4)
+                .map(item => `${item.key}：${item.from} → ${item.to}`)
+                .join('；')
+                .slice(0, 700),
+        });
+        state.revision = asInteger(state.revision, 0, 0) + 1;
+        state.updatedAt = nowIso();
+    }
+
+    return {
+        state: trimState(state),
+        applied: appliedCorrections,
+        skipped: skippedCorrections.length,
+        removedEventIds,
+        oldValues: uniqueStrings(correctedOldValues, 24),
+    };
+}
+
 export function buildSimulationPrompt(state, {
     queuedEventIds = [],
     trigger = 'reply',
@@ -5507,6 +6183,7 @@ export function buildSimulationPrompt(state, {
     narrativeTurns = [],
     userName = '',
     includeUserInnerVoice = false,
+    recordPlayerCharacter = true,
     timePolicy = 'world',
     simulationMode = 'balanced',
     customInstruction = '',
@@ -5516,9 +6193,11 @@ export function buildSimulationPrompt(state, {
     worldPulseActivity = 'natural',
     enhancedBackgroundSimulation = false,
     backgroundPersonTargets = [],
+    directorNotes = [],
 } = {}) {
     const compact = compactStateForModel(state, {
         includeUserInnerVoice,
+        includeUserCharacter: recordPlayerCharacter,
         userName,
         maximumPeople: enhancedBackgroundSimulation
             ? Math.min(LIMITS.peopleModelContext, Math.max(14, Number(backgroundNpcBudget) * 2 + 6))
@@ -5567,9 +6246,9 @@ export function buildSimulationPrompt(state, {
     const playerIdentityRule = identityAnchor
         ? `用户明确设定的玩家身份锚点：${identityAnchor}。涉及玩家的性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守，除非用户更新此锚点；不得根据外貌、衣着、身体或物种反推性别。`
         : '用户没有设置玩家身份锚点；正文没有明确身份或称谓时必须使用中性表述，不得根据外貌、衣着、身体或物种猜测性别。';
-    const userVoiceRule = includeUserInnerVoice
-        ? `玩家角色名为“${modelText(userName, 80) || '未提供'}”；允许在正文已经明确体现其情绪时写入玩家角色 inner_voice，但不得替玩家新增决定、欲望或立场。`
-        : `玩家角色名为“${modelText(userName, 80) || '未提供'}”；可以追踪玩家角色的位置与行动，但必须标记 is_user=true，且 inner_voice 必须为空，绝不替玩家描写内心活动。`;
+    const userVoiceRule = recordPlayerCharacter
+        ? `玩家角色名为“${modelText(userName, 80) || '未提供'}”；允许把正文已经明确发生的玩家位置、行动与客观状态记录进 people_upsert，必须标记 is_user=true；inner_voice 必须为空，绝不替玩家描写内心活动。`
+        : `玩家角色名为“${modelText(userName, 80) || '未提供'}”；本次设置明确禁止记录玩家角色：不要为玩家创建或更新 people_upsert，也不要把玩家放进 people_remove。玩家在正文里已经发生的行动仍然是世界事实，可以影响事件、物品、地点、关系和 world_facts，但不得为玩家建立人物状态卡或猜测内心。`;
     const simulationRule = {
         light: '轻量推演：先同步正文事实，再做一次很轻的世界自主检查。若已有事件后果、人物既定目标或明确环境压力已经自然形成下一步，可以新建最多1条镜头外暗流；没有因果就保持安静。',
         balanced: '均衡推演：同步正文后必须检查世界本身有没有继续往前走的理由。已有事件后果、人物目标、势力行动与环境变化都可以独立产生新的暗流；通常新增0—2条，宁缺毋滥。',
@@ -5597,6 +6276,28 @@ export function buildSimulationPrompt(state, {
             '不得因为最新正文只与某一人物同场，就把其他到期人物继续冻结。',
         ].join('\n')
         : '强化后台人物推演未要求额外指定人物。';
+
+const activeDirectorNotes = asArray(directorNotes)
+        .filter(note => note?.id && note?.directive)
+        .slice(0, 3)
+        .map(note => ({
+            id: asString(note.id, '', 100),
+            directive: asString(note.directive, '', 900),
+            scope: note.scope === 'next' ? 'next' : 'short',
+            strength: ['natural', 'priority', 'force'].includes(note.strength) ? note.strength : 'priority',
+            consumed: Boolean(note.consumed),
+        }));
+    const directorRule = activeDirectorNotes.length
+        ? [
+            '玲七导演纸条（用户明确确认的创作愿望，不是世界事实）：',
+            ...activeDirectorNotes.map(note => `- [${note.id}] 强度=${note.strength}；范围=${note.scope}；${note.directive}`),
+            '实现方式必须服从当前权威世界状态、人物稳定设定、知识边界、时间连续性和玩家自主意志。natural=有机会就顺势靠近；priority=本轮明显优先尝试；force=在不违反硬事实与玩家意志的前提下尽量兑现。条件不足时可以先铺设自然条件，绝不能为了兑现愿望而瞬移、改写既有事实、让人物性格突变或替玩家决定行动。',
+            activeDirectorNotes.some(note => note.consumed)
+                ? '这些纸条已经在本批正文生成前提供给前台模型；此处以“核对结果”为主。不要为了补做纸条而额外制造镜头外事件，只同步 new 正文已经发生的变化，并按正常世界因果维护后台。'
+                : '如果纸条尚未提供给前台正文，只能在正常世界因果本来就成立时顺势支持，不能为了完成纸条凭空制造事件。',
+            '对每张本轮提供的纸条，在 director_note_updates 中判断本批 new 正文实际结果：completed=已经真正兑现；continue=尚未完成但仍适合继续寻找机会；blocked=本轮客观条件不适合。memo 用一句简短说明，不要假装未发生的内容已经发生。',
+        ].join('\n')
+        : '本轮没有玲七导演纸条。';
     const npcBudget = asInteger(backgroundNpcBudget, 4, 0, 12);
     const newAssistantRule = newAssistantIndexSet.size === 1
         ? '11. 较早轮次只用于理解因果，不得重复计算；本次只推演最后一个 assistant_turn（new="true"）。'
@@ -5662,6 +6363,7 @@ export function buildSimulationPrompt(state, {
         '14A. 事实层更新只代表世界真相/档案更新，绝不能因此自动把新值塞进所有 NPC 的 known_fact_keys；NPC 认知仍只按 12A 的知情证据单独变化。',
         '同一类事实使用稳定 key。正文给出新值时保留 key；插件会保留旧版本并标为 superseded。正文明确否定某条旧事实时写入 facts_invalidate；真假未定时用 status=disputed。',
         '人物 source 只有在本批 new="true" 正文真实描写到该人物时才填 foreground；镜头外人物必须填 background。present_in_scene 只有人物本人在当前场景中实际行动、说话或被直接感知时才为 true；仅被提及、回忆、谈论、作为目标或出现在内心想法里一律为 false。last_seen_message_id 必须填该人物最后实际出现的 assistant 消息 ID。',
+        directorRule,
         customRule
             ? `用户自定义侧重点：${customRule}（它只能调整侧重点，不能覆盖时间证据、知识边界、玩家意志或 JSON 格式规则。）`
             : '用户没有追加自定义推演要求。',
@@ -5770,6 +6472,11 @@ export function buildSimulationPrompt(state, {
                 delivery_route: '',
             }],
             deliveries_confirmed: [],
+            director_note_updates: [{
+                id: 'note_xxx',
+                status: 'completed | continue | blocked',
+                memo: '基于本批 new 正文实际结果的一句简短说明',
+            }],
             front_facts: [{
                 text: '',
                 affects: [],
@@ -6076,6 +6783,27 @@ export function listRecoveryPoints(inputStore) {
     return asArray(inputStore?.recoveryPoints)
         .map(normalizeRecoveryPoint)
         .filter(point => point?.id)
+        .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+        .slice(-RECOVERY_LIMIT);
+}
+
+// Hot UI paths only need recovery-point metadata. Avoid cloning the full saved
+// world state just to render a count/label; the full snapshot is normalized
+// only when a recovery operation actually needs it.
+export function listRecoveryPointHeaders(inputStore) {
+    return asArray(inputStore?.recoveryPoints)
+        .filter(raw => raw && typeof raw === 'object' && raw.state && typeof raw.state === 'object')
+        .map(raw => ({
+            id: asString(raw.id, '', 120),
+            createdAt: asString(raw.createdAt, '', 40),
+            reason: asString(raw.reason, 'manual', 60),
+            label: asString(raw.label, '手动恢复点', 120),
+            schemaVersion: asInteger(raw.schemaVersion, 0, 0),
+            worldName: asString(raw.worldName, raw.state?.world?.name || '主世界', 80),
+            worldMinute: asInteger(raw.worldMinute, raw.state?.clock?.absoluteMinute ?? 0, 0),
+            revision: asInteger(raw.revision, raw.state?.revision ?? 0, 0),
+        }))
+        .filter(point => point.id)
         .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
         .slice(-RECOVERY_LIMIT);
 }

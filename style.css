@@ -3457,7 +3457,7 @@
     .wb-side-nav {
         grid-row: 2;
         display: grid;
-        grid-template-columns: repeat(7, minmax(0, 1fr));
+        grid-template-columns: repeat(8, minmax(0, 1fr));
         gap: 2px;
         padding: 5px 6px max(5px, env(safe-area-inset-bottom));
         border-top: 1px solid var(--wb-line);
@@ -6455,7 +6455,7 @@
 
 @media (max-width: 720px) {
     #world-backstage-root .wb-side-nav {
-        grid-template-columns: repeat(7, minmax(0, 1fr));
+        grid-template-columns: repeat(8, minmax(0, 1fr));
     }
 
     #world-backstage-root .wb-side-nav strong {
@@ -7308,19 +7308,167 @@
 #world-backstage-root .wb-view-settings-action .wb-settings-glyph { transform: scale(.9); }
 #world-backstage-root .wb-module-settings-layer > .wb-settings-popover { top: 84px; }
 
-/* 全局设置：真正只留全局项。外观已经直接摊开，不再“界面与显露 -> 界面”。 */
+/* 1.8.0-rc.5 · 全局设置按“用户想做什么”分四页。
+   旧的大分组不再参与界面；板块自己的运行设置继续留在各板块 ⚙。 */
 #world-backstage-root .wb-settings-scope-global > [data-settings-group="appearance"],
 #world-backstage-root .wb-settings-scope-global > [data-settings-group="simulation"],
 #world-backstage-root .wb-settings-scope-global > [data-settings-group="worldbook"],
 #world-backstage-root .wb-settings-scope-global > [data-settings-group="memory"],
-#world-backstage-root .wb-settings-scope-global > [data-settings-group="calendar"],
-#world-backstage-root .wb-settings-scope-global [data-settings-subgroup="connection-routing"] {
+#world-backstage-root .wb-settings-scope-global > [data-settings-group="calendar"] {
     display: none !important;
+}
+
+#world-backstage-root .wb-settings-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    padding: 8px 14px 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--wb-line) 72%, transparent);
+    background: color-mix(in srgb, var(--wb-panel) 94%, transparent);
+}
+#world-backstage-root .wb-settings-tabs button {
+    min-width: 0;
+    min-height: 34px;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    font-size: .78em;
+    font-weight: 650;
+    cursor: pointer;
+}
+#world-backstage-root .wb-settings-tabs button:hover {
+    color: var(--wb-text);
+    background: var(--wb-panel-faint);
+}
+#world-backstage-root .wb-settings-tabs button.is-active {
+    color: var(--wb-text);
+    border-color: var(--wb-line);
+    background: var(--wb-accent-soft);
+    box-shadow: 0 4px 14px rgb(18 24 40 / 5%);
+}
+
+#world-backstage-root .wb-settings-section-body {
+    display: none;
+    padding: 14px 16px 18px;
+}
+#world-backstage-root .wb-settings-section-common .wb-settings-common-section,
+#world-backstage-root .wb-settings-section-injection .wb-settings-injection-section {
+    display: grid;
+    gap: 14px;
+}
+#world-backstage-root .wb-settings-scope-global > .wb-settings-connection-section,
+#world-backstage-root .wb-settings-scope-global > .wb-settings-advanced-section {
+    display: none;
+}
+#world-backstage-root .wb-settings-section-connection > .wb-settings-connection-section,
+#world-backstage-root .wb-settings-section-advanced > .wb-settings-advanced-section {
+    display: block;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+#world-backstage-root .wb-settings-section-connection > .wb-settings-connection-section > summary,
+#world-backstage-root .wb-settings-section-advanced > .wb-settings-advanced-section > summary {
+    display: none;
+}
+#world-backstage-root .wb-settings-section-connection > .wb-settings-connection-section > .wb-settings-group-body,
+#world-backstage-root .wb-settings-section-advanced > .wb-settings-advanced-section > .wb-settings-group-body {
+    padding: 14px 16px 18px;
 }
 #world-backstage-root .wb-global-flat-block {
     display: grid;
     gap: 10px;
-    margin-bottom: 12px;
+    margin: 0;
+}
+#world-backstage-root .wb-global-common-grid {
+    display: grid;
+    gap: 9px;
+}
+#world-backstage-root .wb-settings-common-hint,
+#world-backstage-root .wb-injection-bottom-note {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: 11px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-faint);
+    font-size: .77em;
+    line-height: 1.55;
+}
+#world-backstage-root .wb-settings-common-hint strong {
+    color: var(--wb-text-soft);
+    font-size: 1.05em;
+}
+
+#world-backstage-root .wb-injection-intro {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+    padding: 13px 14px;
+    border: 1px solid var(--wb-line);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--wb-accent-soft) 44%, var(--wb-panel));
+}
+#world-backstage-root .wb-injection-intro > div {
+    display: grid;
+    gap: 4px;
+}
+#world-backstage-root .wb-injection-intro span {
+    color: var(--wb-text-faint);
+    font-size: .66em;
+    letter-spacing: .13em;
+}
+#world-backstage-root .wb-injection-intro strong {
+    color: var(--wb-text);
+    font-size: .92em;
+    line-height: 1.45;
+}
+#world-backstage-root .wb-injection-source-list {
+    display: grid;
+    gap: 8px;
+}
+#world-backstage-root .wb-injection-source-list.is-master-off {
+    opacity: .58;
+}
+#world-backstage-root .wb-injection-source {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    min-height: 52px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 78%, transparent);
+    border-radius: 12px;
+    background: var(--wb-panel-faint);
+}
+#world-backstage-root .wb-injection-source.is-time {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, .9fr);
+}
+#world-backstage-root .wb-injection-source-copy {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+#world-backstage-root .wb-injection-source-copy strong {
+    color: var(--wb-text);
+    font-size: .86em;
+}
+#world-backstage-root .wb-injection-source-copy span {
+    color: var(--wb-text-faint);
+    font-size: .72em;
+    line-height: 1.45;
+}
+#world-backstage-root .wb-injection-behavior {
+    display: grid;
+    gap: 10px;
+    margin-top: 2px;
+}
+#world-backstage-root .wb-injection-behavior > .wb-setting-block {
+    margin: 0;
 }
 
 /* 板块设置：标题 + 留白 + 单个设置项，边框不再承担信息层级。 */
@@ -7370,60 +7518,147 @@
 }
 #world-backstage-root .wb-route-setting select { width: 100%; }
 
-/* 1.7.2 · 世界背景在「此刻设置」里有一个真正看得见的入口。 */
-#world-backstage-root .wb-world-background-setting {
+#world-backstage-root .wb-module-visibility-card,
+#world-backstage-root .wb-module-runtime-summary {
     display: grid;
-    gap: 9px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 12px;
+    background: var(--wb-panel-faint);
+}
+#world-backstage-root .wb-module-visibility-card > div,
+#world-backstage-root .wb-module-runtime-summary > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+#world-backstage-root .wb-module-visibility-card span,
+#world-backstage-root .wb-module-runtime-summary span {
+    color: var(--wb-text-faint);
+    font-size: .68em;
+    letter-spacing: .08em;
+}
+#world-backstage-root .wb-module-visibility-card strong,
+#world-backstage-root .wb-module-runtime-summary strong {
+    color: var(--wb-text);
+    font-size: .86em;
+}
+#world-backstage-root .wb-module-visibility-card small {
+    color: var(--wb-text-faint);
+    font-size: .7em;
+    line-height: 1.45;
+}
+#world-backstage-root .wb-module-visibility-card.is-off strong {
+    color: var(--wb-text-soft);
+}
+#world-backstage-root .wb-module-visibility-card button,
+#world-backstage-root .wb-module-runtime-summary button {
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    padding: 6px 10px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+    font-size: .72em;
+    cursor: pointer;
+}
+#world-backstage-root .wb-module-visibility-card button:hover,
+#world-backstage-root .wb-module-runtime-summary button:hover {
+    color: var(--wb-text);
+    border-color: var(--wb-line-strong);
+}
+
+/* 1.7.2 · 世界背景入口本身就是唯一一层折叠，不再外套/内嵌第二层 details。 */
+#world-backstage-root .wb-world-background-setting {
+    display: block;
+    padding: 0;
+    overflow: hidden;
 }
 #world-backstage-root .wb-world-background-heading {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
-    justify-content: space-between;
     gap: 10px;
+    min-height: 44px;
+    padding: 10px 12px;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
 }
-#world-backstage-root .wb-world-background-heading > label {
-    color: var(--wb-text-soft);
-    font-size: 9px;
+#world-backstage-root .wb-world-background-heading::-webkit-details-marker {
+    display: none;
+}
+#world-backstage-root .wb-world-background-heading::after {
+    content: '⌄';
+    color: var(--wb-text-faint);
+    font-size: 13px;
+    line-height: 1;
+    transition: transform .16s ease;
+}
+#world-backstage-root .wb-world-background-setting[open] > .wb-world-background-heading::after {
+    transform: rotate(180deg);
+}
+#world-backstage-root .wb-world-background-heading > strong {
+    min-width: 0;
+    color: var(--wb-text);
+    font-size: clamp(13px, calc(13px + var(--wb-reading-bump)), 18px);
+    font-weight: 650;
+    line-height: 1.35;
 }
 #world-backstage-root .wb-world-background-heading > span {
-    flex: 0 0 auto;
-    padding: 3px 7px;
+    padding: 4px 8px;
     border: 1px solid var(--wb-line);
     border-radius: 999px;
     color: var(--wb-text-faint);
     background: color-mix(in srgb, var(--wb-panel) 82%, transparent);
-    font-size: 8px;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 15px);
+    font-weight: 550;
+    line-height: 1.2;
 }
 #world-backstage-root .wb-world-background-heading > span.is-set {
     border-color: color-mix(in srgb, var(--wb-jade) 30%, var(--wb-line));
     color: var(--wb-jade);
     background: color-mix(in srgb, var(--wb-jade) 8%, var(--wb-panel));
 }
+#world-backstage-root .wb-world-background-body {
+    display: grid;
+    gap: 9px;
+    padding: 0 12px 12px;
+}
 #world-backstage-root .wb-world-background-preview {
-    min-height: 44px;
-    padding: 9px 10px;
+    display: block;
+    width: 100%;
+    min-height: 52px;
+    box-sizing: border-box;
+    padding: 10px 12px;
     border: 1px solid color-mix(in srgb, var(--wb-line) 78%, transparent);
     border-radius: 10px;
     background: color-mix(in srgb, var(--wb-panel) 70%, transparent);
     color: var(--wb-text-soft);
-    font-size: 8px;
-    line-height: 1.6;
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 17px);
+    font-weight: 450;
+    line-height: calc(1.55 + var(--wb-reading-leading));
+    text-align: left;
+    text-indent: 0;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
 #world-backstage-root .wb-world-background-preview.is-empty {
-    color: var(--wb-text-faint);
+    color: color-mix(in srgb, var(--wb-text-soft) 76%, var(--wb-text-faint));
 }
 #world-backstage-root .wb-world-background-action {
     width: 100%;
-    min-height: 34px;
-    padding: 7px 10px;
+    min-height: 38px;
+    padding: 8px 12px;
     border: 1px solid var(--wb-line) !important;
     border-radius: 9px;
     background: var(--wb-accent-soft);
     color: var(--wb-accent);
-    font-size: 9px;
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 17px);
     font-weight: 650;
+    line-height: 1.25;
     cursor: pointer;
 }
 #world-backstage-root .wb-world-background-action:hover,
@@ -7821,5 +8056,1162 @@
 
     .wb-maintenance-card > button {
         width: 100%;
+    }
+}
+
+/* 1.7.3-dev.6 · 模块化正文注入 */
+.wb-injection-grid {
+    display: grid;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.wb-injection-grid.is-disabled {
+    opacity: 0.58;
+}
+
+.wb-injection-grid .wb-setting-toggle {
+    margin: 0;
+}
+
+.wb-injection-time {
+    margin: 0 !important;
+    padding-bottom: 4px;
+}
+
+.wb-injection-flat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px 10px;
+    padding: 9px 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 10px;
+    background: var(--wb-panel-faint);
+}
+
+.wb-injection-flat-grid label {
+    display: flex !important;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    line-height: 1.4;
+}
+
+.wb-injection-flat-grid input {
+    width: auto !important;
+    margin: 0 !important;
+    flex: 0 0 auto;
+}
+
+@media (max-width: 560px) {
+    .wb-injection-flat-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ── 玲七 · 猫猫导演与小纸条 ─────────────────────────────────────────── */
+.wb-content-column.is-lingqi-column {
+    grid-template-rows: 54px auto minmax(0, 1fr) 52px;
+}
+
+.wb-content-column.is-lingqi-column .wb-view-header {
+    padding: 0 18px;
+}
+
+.wb-content-column.is-lingqi-column .wb-view-header > div:first-child > span {
+    margin-bottom: 2px;
+    font-size: 7px;
+    letter-spacing: 0.16em;
+}
+
+.wb-content-column.is-lingqi-column .wb-view-header h2 {
+    font-size: 20px;
+    line-height: 1;
+}
+
+.wb-content-column.is-lingqi-column .wb-lingqi-header-badge {
+    min-width: 30px;
+    min-height: 24px;
+    padding: 0 6px;
+    font-size: 13px;
+}
+
+.wb-content-column.is-lingqi-column .wb-sync-strip {
+    min-height: 32px;
+    gap: 7px;
+    padding: 4px 18px;
+}
+
+.wb-content-column.is-lingqi-column .wb-sync-copy {
+    gap: 7px;
+}
+
+.wb-content-column.is-lingqi-column .wb-sync-copy strong {
+    font-size: 9px;
+}
+
+.wb-content-column.is-lingqi-column .wb-sync-copy span,
+.wb-content-column.is-lingqi-column .wb-sync-connection,
+.wb-content-column.is-lingqi-column .wb-sync-summary {
+    font-size: 8px;
+}
+
+.wb-lingqi-header-badge {
+    display: inline-grid;
+    place-items: center;
+    min-width: 34px;
+    min-height: 28px;
+    padding: 0 7px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-soft);
+    font-size: 15px;
+    line-height: 1;
+}
+
+.wb-view-content.is-lingqi-view {
+    overflow: hidden;
+    padding: 0;
+}
+
+.wb-lingqi-layout {
+    position: relative;
+    box-sizing: border-box;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.wb-lingqi-surface {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1.9fr) minmax(250px, 0.9fr);
+    grid-template-rows: 96px minmax(0, 1fr);
+    gap: 10px 12px;
+    height: 100%;
+    min-height: 0;
+    padding: 0 12px 12px;
+    overflow: hidden;
+    background: transparent;
+}
+
+.wb-lingqi-chat-card,
+.wb-lingqi-notes-card {
+    min-width: 0;
+    border: 1px solid var(--wb-line);
+    border-radius: 16px;
+    background: var(--wb-panel-strong);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.045);
+}
+
+.wb-lingqi-chat-card {
+    position: relative;
+    z-index: 1;
+    grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    margin-top: -18px;
+    overflow: hidden;
+}
+
+.wb-lingqi-perch {
+    position: relative;
+    z-index: 4;
+    grid-column: 1;
+    grid-row: 1;
+    align-self: end;
+    justify-self: center;
+    display: grid;
+    place-items: end center;
+    width: min(100%, 360px);
+    height: 96px;
+    margin: 0;
+    transform: translateY(6px);
+    pointer-events: none;
+}
+
+.wb-lingqi-mascot {
+    position: relative;
+    z-index: 2;
+    display: block;
+    width: 148px;
+    height: 116px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    cursor: pointer;
+    pointer-events: auto;
+    filter: drop-shadow(0 8px 10px rgba(0, 0, 0, 0.12));
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+.wb-lingqi-mascot img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: 50% 100%;
+    user-select: none;
+    pointer-events: none;
+    transform-origin: 50% 100%;
+    animation: wb-lingqi-breathe 4.8s ease-in-out infinite;
+    transition: filter 180ms ease, opacity 120ms ease;
+}
+
+.wb-lingqi-mascot:hover img {
+    filter: brightness(1.035);
+}
+
+.wb-lingqi-mascot:active img {
+    transform: scale(0.985);
+}
+
+.wb-lingqi-mascot.is-watch img {
+    animation: wb-lingqi-watch 2.8s ease-in-out infinite;
+}
+
+.wb-lingqi-mascot.is-note img {
+    animation: wb-lingqi-note-watch 3.6s ease-in-out infinite;
+}
+
+.wb-lingqi-mascot.is-confused img {
+    animation: wb-lingqi-confused 2.2s ease-in-out infinite;
+}
+
+.wb-lingqi-mascot.is-happy img {
+    animation: wb-lingqi-pop 620ms cubic-bezier(.2,.9,.3,1) both;
+}
+
+.wb-lingqi-mascot.is-hold img {
+    animation: wb-lingqi-hold 2.6s ease-in-out infinite;
+}
+
+@keyframes wb-lingqi-breathe {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.006); }
+}
+
+@keyframes wb-lingqi-watch {
+    0%, 100% { transform: scale(1); filter: brightness(1); }
+    50% { transform: scale(1.012); filter: brightness(1.025); }
+}
+
+@keyframes wb-lingqi-note-watch {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(0.996); }
+}
+
+@keyframes wb-lingqi-confused {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.008); }
+}
+
+@keyframes wb-lingqi-pop {
+    0% { transform: scale(0.97); }
+    58% { transform: scale(1.035); }
+    100% { transform: scale(1); }
+}
+
+@keyframes wb-lingqi-hold {
+    0%, 100% { transform: scale(1); filter: saturate(1); }
+    55% { transform: scale(0.994); filter: saturate(0.92); }
+}
+
+.wb-lingqi-chat-log {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    padding: 8px 12px 14px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+}
+
+.wb-lingqi-chat-log.is-empty {
+    justify-content: flex-start;
+}
+
+.wb-lingqi-message {
+    max-width: min(82%, 620px);
+    box-sizing: border-box;
+}
+
+.wb-lingqi-message.is-assistant,
+.wb-lingqi-message.is-user {
+    padding: 9px 12px 10px;
+    border: 1px solid rgba(159, 154, 231, 0.18);
+    border-radius: 13px;
+}
+
+.wb-lingqi-message.is-assistant {
+    align-self: flex-start;
+    background: rgba(255, 255, 255, 0.018);
+}
+
+.wb-lingqi-message.is-user {
+    align-self: flex-end;
+    background: rgba(159, 154, 231, 0.10);
+}
+
+.wb-lingqi-message p {
+    margin: 0;
+    color: var(--wb-text);
+    font-size: calc(12px + var(--wb-reading-bump));
+    line-height: calc(1.64 + var(--wb-reading-leading));
+}
+
+.wb-lingqi-readable {
+    margin-top: 4px;
+}
+
+.wb-lingqi-readable summary {
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 16px;
+    margin-left: -2px;
+    color: var(--wb-text-faint);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    list-style: none;
+    opacity: 0.72;
+    user-select: none;
+}
+
+.wb-lingqi-readable summary::-webkit-details-marker {
+    display: none;
+}
+
+.wb-lingqi-readable[open] summary {
+    transform: rotate(180deg);
+}
+
+.wb-lingqi-readable > div {
+    margin-top: 3px;
+    padding: 7px 0 0;
+    border-top: 1px dashed rgba(159, 154, 231, 0.13);
+    color: var(--wb-text-soft);
+    font-size: calc(10px + var(--wb-reading-bump));
+    line-height: calc(1.52 + var(--wb-reading-leading));
+}
+
+.wb-lingqi-readable.is-paper > div {
+    border-top-color: rgba(198, 170, 116, 0.20);
+}
+
+.wb-lingqi-proposal {
+    position: relative;
+    width: min(78%, 520px);
+    margin: 2px 18px 12px;
+    padding: 18px 15px 13px;
+    border: 1px solid rgba(198, 170, 116, 0.30);
+    border-radius: 6px 9px 8px 7px;
+    background:
+        linear-gradient(180deg, rgba(255, 241, 180, 0.14), rgba(198, 170, 116, 0.07)),
+        var(--wb-panel-strong);
+    transform: rotate(-0.2deg);
+    box-shadow: 0 9px 18px rgba(0, 0, 0, 0.08);
+}
+
+.theme-day .wb-lingqi-proposal {
+    background: linear-gradient(180deg, #fff6c9, #f5e6ad);
+    color: #51462f;
+}
+
+.wb-lingqi-tape {
+    position: absolute;
+    top: -7px;
+    left: 50%;
+    width: 48px;
+    height: 13px;
+    border-radius: 2px;
+    background: rgba(235, 220, 183, 0.58);
+    transform: translateX(-50%) rotate(1.2deg);
+}
+
+.wb-lingqi-proposal p {
+    margin: 0;
+    font-size: calc(12px + var(--wb-reading-bump));
+    line-height: calc(1.62 + var(--wb-reading-leading));
+}
+
+.wb-lingqi-proposal-actions,
+.wb-lingqi-note-foot > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.wb-lingqi-proposal-actions {
+    margin-top: 11px;
+}
+
+.wb-lingqi-proposal-actions button,
+.wb-lingqi-note-foot button {
+    min-height: 24px;
+    padding: 2px 4px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--wb-text-soft);
+    cursor: pointer;
+    font-size: calc(10px + var(--wb-reading-bump));
+    font-weight: 500;
+}
+
+.wb-lingqi-proposal-actions button:hover,
+.wb-lingqi-note-foot button:hover {
+    background: rgba(159, 154, 231, 0.055);
+}
+
+.wb-lingqi-proposal-actions button:first-child {
+    color: var(--wb-text-soft);
+}
+
+.wb-lingqi-proposal-actions button:last-child {
+    color: var(--wb-text-faint);
+}
+
+.wb-lingqi-input {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    margin: 0 10px 10px;
+    padding: 5px 6px 5px 8px;
+    border: 1px solid rgba(159, 154, 231, 0.14);
+    border-radius: 13px;
+    background: rgba(255, 255, 255, 0.018);
+    box-shadow: 0 5px 14px rgba(0, 0, 0, 0.045);
+}
+
+.theme-day .wb-lingqi-input {
+    background: rgba(224, 237, 220, 0.72);
+    border-color: rgba(139, 164, 137, 0.16);
+}
+
+.wb-lingqi-input textarea {
+    min-height: 30px;
+    max-height: 92px;
+    resize: none;
+    padding: 6px 7px;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--wb-text);
+    font-size: calc(12px + var(--wb-reading-bump));
+    line-height: calc(1.35 + var(--wb-reading-leading));
+}
+
+.wb-lingqi-input textarea:focus {
+    box-shadow: none;
+}
+
+.wb-lingqi-input:focus-within {
+    border-color: var(--wb-line-strong);
+    box-shadow: 0 0 0 2px var(--wb-accent-soft), 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+
+.wb-lingqi-input button {
+    align-self: center;
+    min-width: 50px;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid rgba(159, 154, 231, 0.18);
+    border-radius: 10px;
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+    cursor: pointer;
+    font-size: calc(11px + var(--wb-reading-bump));
+    font-weight: 650;
+    line-height: 1;
+}
+
+.wb-lingqi-input button:disabled,
+.wb-lingqi-input textarea:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.wb-lingqi-notes-card {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    margin-top: -18px;
+    overflow: hidden;
+    background: var(--wb-panel-faint);
+}
+
+
+.wb-lingqi-notes-card.is-empty {
+    align-self: start;
+    height: auto;
+    min-height: 0;
+}
+
+.wb-lingqi-notes-card.is-empty .wb-lingqi-notes-scroll {
+    flex: 0 0 auto;
+    min-height: 0;
+    overflow: hidden;
+    scrollbar-gutter: auto;
+}
+
+.wb-lingqi-notes-card.is-empty .wb-lingqi-note-board {
+    min-height: 0;
+    padding: 0;
+    background: var(--wb-panel-faint);
+}
+
+.wb-lingqi-notes-card.is-empty .wb-lingqi-note-empty {
+    min-height: 68px;
+    padding: 14px 10px 16px;
+}
+
+.wb-lingqi-notes-card.is-empty .wb-lingqi-note-empty span {
+    font-size: 23px;
+    opacity: 0.62;
+}
+
+.wb-lingqi-notes-head {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 13px 14px 11px;
+    border-bottom: 1px solid var(--wb-line);
+    background: var(--wb-panel-strong);
+}
+
+.wb-lingqi-notes-head > div {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.wb-lingqi-notes-head strong {
+    font-size: calc(12px + var(--wb-reading-bump));
+}
+
+.wb-lingqi-notes-head small {
+    color: var(--wb-text-faint);
+    font-size: calc(10px + var(--wb-reading-bump));
+}
+
+.wb-lingqi-notes-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+}
+
+.wb-lingqi-note-board {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 14px;
+    min-height: 190px;
+    padding: 16px 14px 20px;
+    background:
+        radial-gradient(circle at 12px 12px, rgba(159, 154, 231, 0.045) 1px, transparent 1.1px) 0 0 / 18px 18px,
+        linear-gradient(180deg, rgba(198, 170, 116, 0.018), transparent 70%);
+}
+
+.wb-lingqi-note {
+    --wb-note-paper: rgba(255, 235, 151, 0.12);
+    position: relative;
+    min-height: 138px;
+    padding: 24px 14px 11px;
+    border: 1px solid rgba(198, 170, 116, 0.15);
+    border-radius: 2px 3px 5px 2px;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 38%),
+        var(--wb-note-paper),
+        var(--wb-panel-strong);
+    transform: rotate(var(--wb-note-tilt, 0deg));
+    box-shadow:
+        0 2px 0 rgba(255, 255, 255, 0.025) inset,
+        0 9px 18px rgba(0, 0, 0, 0.10),
+        2px 3px 0 rgba(198, 170, 116, 0.035);
+    transform-origin: 50% 8px;
+}
+
+.wb-lingqi-note.is-tone-1 { --wb-note-paper: rgba(235, 198, 218, 0.11); }
+.wb-lingqi-note.is-tone-2 { --wb-note-paper: rgba(185, 222, 198, 0.10); }
+.wb-lingqi-note.is-tone-3 { --wb-note-paper: rgba(187, 211, 239, 0.10); }
+
+.theme-day .wb-lingqi-note {
+    --wb-note-paper: #fff1ae;
+    background: var(--wb-note-paper);
+    color: #4d4432;
+    border-color: rgba(138, 112, 68, 0.12);
+    box-shadow: 0 8px 16px rgba(101, 79, 37, 0.12), 2px 3px 0 rgba(138, 112, 68, 0.05);
+}
+
+.theme-day .wb-lingqi-note.is-tone-1 { --wb-note-paper: #f8dfeb; }
+.theme-day .wb-lingqi-note.is-tone-2 { --wb-note-paper: #e4f0df; }
+.theme-day .wb-lingqi-note.is-tone-3 { --wb-note-paper: #e4edf7; }
+
+.wb-lingqi-note.is-paused {
+    opacity: 0.68;
+    filter: saturate(0.62);
+}
+
+.wb-lingqi-note-tape {
+    position: absolute;
+    top: -8px;
+    left: 50%;
+    width: 52px;
+    height: 16px;
+    border: 1px solid rgba(221, 205, 170, 0.16);
+    border-radius: 2px;
+    background:
+        linear-gradient(90deg, rgba(255,255,255,.08), transparent 24%, rgba(255,255,255,.04) 70%, transparent),
+        rgba(225, 211, 177, 0.34);
+    transform: translateX(-50%) rotate(-1.4deg);
+    box-shadow: 0 2px 3px rgba(0, 0, 0, 0.045);
+}
+
+.theme-day .wb-lingqi-note-tape {
+    background: rgba(235, 220, 183, 0.72);
+    border-color: rgba(159, 135, 88, 0.10);
+}
+
+.wb-lingqi-note p {
+    margin: 0 0 10px;
+    font-size: calc(12px + var(--wb-reading-bump));
+    line-height: calc(1.68 + var(--wb-reading-leading));
+    letter-spacing: 0.015em;
+}
+
+.wb-lingqi-note > small {
+    display: block;
+    margin: 0 0 9px;
+    color: var(--wb-text-soft);
+    font-size: calc(10px + var(--wb-reading-bump));
+    line-height: calc(1.45 + var(--wb-reading-leading));
+}
+
+.theme-day .wb-lingqi-note > small {
+    color: #7a6c4d;
+}
+
+.wb-lingqi-note-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 7px;
+    border-top: 1px solid rgba(198, 170, 116, 0.12);
+}
+
+.wb-lingqi-note-foot > div {
+    margin-left: auto;
+    gap: 10px;
+}
+
+.wb-lingqi-note-foot em {
+    color: var(--wb-amber);
+    font-size: calc(10px + var(--wb-reading-bump));
+    font-style: normal;
+    font-weight: 700;
+}
+
+.theme-day .wb-lingqi-note-foot em {
+    color: #80683b;
+}
+
+.wb-lingqi-note-empty {
+    display: grid;
+    place-items: center;
+    min-height: 150px;
+    padding: 24px 10px;
+    color: var(--wb-text-faint);
+    text-align: center;
+}
+
+.wb-lingqi-note-empty span {
+    display: block;
+    font-size: 28px;
+    line-height: 1;
+    opacity: 0.78;
+}
+
+.wb-lingqi-note-box {
+    margin: 0 14px 14px;
+    padding: 10px 11px;
+    border: 1px dashed var(--wb-line);
+    border-radius: 12px;
+    background: var(--wb-panel-faint);
+}
+
+.wb-lingqi-note-box > strong {
+    display: block;
+    margin-bottom: 7px;
+    color: var(--wb-text-soft);
+    font-size: calc(10px + var(--wb-reading-bump));
+}
+
+.wb-lingqi-note-box > div {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 7px;
+    padding: 6px 0;
+    border-top: 1px solid rgba(151, 160, 220, 0.08);
+}
+
+.wb-lingqi-note-box > div:first-of-type {
+    border-top: 0;
+}
+
+.wb-lingqi-note-box span {
+    color: var(--wb-text-faint);
+    font-size: calc(10px + var(--wb-reading-bump));
+}
+
+.wb-lingqi-note-box p {
+    margin: 0;
+    color: var(--wb-text-soft);
+    font-size: calc(10px + var(--wb-reading-bump));
+    line-height: calc(1.45 + var(--wb-reading-leading));
+}
+
+@media (max-width: 820px) {
+    .wb-content-column.is-lingqi-column {
+        grid-template-rows: 48px auto minmax(0, 1fr) 52px;
+    }
+
+    .wb-content-column.is-lingqi-column .wb-view-header {
+        padding: 0 12px;
+    }
+
+    .wb-content-column.is-lingqi-column .wb-sync-strip {
+        min-height: 30px;
+        padding: 3px 12px;
+    }
+
+    .wb-lingqi-layout {
+        height: 100%;
+    }
+
+    .wb-lingqi-surface {
+        grid-template-columns: 1fr;
+        grid-template-rows: 78px minmax(0, 58fr) minmax(0, 42fr);
+        gap: 7px;
+        height: 100%;
+        min-height: 0;
+        padding: 0 8px 8px;
+        overflow: hidden;
+    }
+
+    .wb-lingqi-perch {
+        grid-column: 1;
+        grid-row: 1;
+        height: 78px;
+    }
+
+    .wb-lingqi-chat-card {
+        grid-column: 1;
+        grid-row: 2;
+        margin-top: -12px;
+    }
+
+    .wb-lingqi-notes-card {
+        grid-column: 1;
+        grid-row: 3;
+        margin-top: -12px;
+    }
+
+    .wb-lingqi-chat-card,
+    .wb-lingqi-notes-card {
+        min-height: 0;
+        height: 100%;
+        border-radius: 14px;
+    }
+
+    .wb-lingqi-notes-card.is-empty {
+        align-self: start;
+        height: auto;
+    }
+
+    .wb-lingqi-mascot {
+        width: 132px;
+        height: 103px;
+    }
+
+    .wb-lingqi-note-board {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 560px) {
+    .wb-lingqi-layout {
+        height: 100%;
+    }
+
+    .wb-lingqi-surface {
+        grid-template-rows: 70px minmax(0, 58fr) minmax(0, 42fr);
+        padding: 0 6px 6px;
+        gap: 6px;
+    }
+
+    .wb-lingqi-perch {
+        height: 70px;
+        transform: translateY(4px);
+    }
+
+    .wb-lingqi-chat-card {
+        margin-top: -10px;
+    }
+
+    .wb-lingqi-notes-card {
+        margin-top: -10px;
+    }
+
+    .wb-lingqi-mascot {
+        width: 122px;
+        height: 95px;
+    }
+
+    .wb-lingqi-chat-log {
+        padding: 7px 10px 12px;
+    }
+
+    .wb-lingqi-message {
+        max-width: 90%;
+    }
+
+    .wb-lingqi-proposal {
+        width: auto;
+        margin-inline: 10px;
+    }
+
+    .wb-lingqi-input {
+        grid-template-columns: minmax(0, 1fr) auto;
+        margin: 0 8px 8px;
+        padding: 4px 5px 4px 8px;
+    }
+
+    .wb-lingqi-input button {
+        min-width: 46px;
+        height: 30px;
+        padding-inline: 8px;
+    }
+}
+
+
+/* 1.8.0-alpha.6.4 · 玲七问题分流小纸条 */
+.wb-lingqi-support-card {
+    margin-top: 9px;
+    padding: 9px 10px 10px;
+    border: 1px dashed var(--wb-line);
+    border-radius: 12px;
+    background: var(--wb-panel-faint);
+}
+
+.wb-lingqi-support-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--wb-text);
+}
+
+.wb-lingqi-support-head strong {
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+}
+
+.wb-lingqi-support-card > p {
+    margin: 6px 0 0;
+    color: var(--wb-text);
+    font-size: 9px;
+    line-height: 1.55;
+}
+
+.wb-lingqi-support-card > small {
+    display: block;
+    margin-top: 5px;
+    color: var(--wb-text-muted);
+    font-size: 8px;
+    line-height: 1.5;
+}
+
+/* 1.8.0-alpha.6 · 玲七管家求助入口 */
+.wb-lingqi-support-row {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: 9px;
+}
+
+.wb-lingqi-support-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
+    padding: 5px 12px 5px 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-soft);
+    font-size: 9px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    box-shadow: 0 3px 10px rgb(22 26 45 / 5%);
+    cursor: pointer;
+    transition:
+        transform 150ms ease,
+        background 150ms ease,
+        color 150ms ease,
+        border-color 150ms ease,
+        box-shadow 150ms ease;
+}
+
+.wb-lingqi-support-note-icon {
+    position: relative;
+    display: inline-block;
+    box-sizing: border-box;
+    width: 12px;
+    height: 14px;
+    flex: 0 0 auto;
+    border: 1px solid currentColor;
+    border-radius: 3px 3px 4px 3px;
+    opacity: 0.72;
+    transform: rotate(-4deg);
+}
+
+.wb-lingqi-support-note-icon::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: -1px;
+    width: 4px;
+    height: 4px;
+    border-left: 1px solid currentColor;
+    border-bottom: 1px solid currentColor;
+    border-bottom-left-radius: 2px;
+    opacity: 0.72;
+}
+
+.wb-lingqi-support-note:hover,
+.wb-lingqi-support-note:focus-visible {
+    background: var(--wb-panel);
+    color: var(--wb-text);
+    border-color: var(--wb-line-strong, var(--wb-line));
+    box-shadow: 0 5px 14px rgb(22 26 45 / 8%);
+    transform: translateY(-1px);
+}
+
+.wb-lingqi-support-note:active {
+    transform: translateY(0) scale(0.985);
+}
+
+
+/* 1.8.0-rc.1 · 手动推演安全排队 */
+.wb-side-sync.is-queued {
+    opacity: 0.78;
+    cursor: wait;
+}
+
+.wb-side-sync.is-queued > i {
+    animation: wb-spin 1.15s linear infinite;
+}
+
+
+@media (max-width: 640px) {
+    #world-backstage-root .wb-settings-tabs {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        padding-inline: 10px;
+    }
+    #world-backstage-root .wb-settings-section-body,
+    #world-backstage-root .wb-settings-section-connection > .wb-settings-connection-section > .wb-settings-group-body,
+    #world-backstage-root .wb-settings-section-advanced > .wb-settings-advanced-section > .wb-settings-group-body {
+        padding: 12px 10px 16px;
+    }
+    #world-backstage-root .wb-injection-source.is-time {
+        grid-template-columns: 1fr;
+    }
+    #world-backstage-root .wb-injection-source.is-time .wb-option-row {
+        width: 100%;
+    }
+    #world-backstage-root .wb-module-visibility-card,
+    #world-backstage-root .wb-module-runtime-summary {
+        grid-template-columns: 1fr auto;
+    }
+}
+
+/* 1.8.0-rc.8 · 设置折叠标题长说明防溢出 */
+#world-backstage-root .wb-settings-subgroup > summary,
+#world-backstage-root .wb-settings-group > summary {
+    min-width: 0;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary > span,
+#world-backstage-root .wb-settings-group > summary > span {
+    min-width: 0;
+    flex: 0 0 auto;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary > small,
+#world-backstage-root .wb-settings-group > summary > small {
+    min-width: 0;
+    max-width: 58%;
+    margin-left: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+}
+
+@media (max-width: 640px) {
+    #world-backstage-root .wb-settings-subgroup > summary,
+    #world-backstage-root .wb-settings-group > summary {
+        align-items: center;
+    }
+
+    #world-backstage-root .wb-settings-subgroup > summary > small,
+    #world-backstage-root .wb-settings-group > summary > small {
+        max-width: 52%;
+    }
+}
+
+/* 1.8.0-rc.9 · 设置标题说明完整可读 + 世界时间控件收口 */
+
+/* RC.8 的单行省略只解决“别溢出”，但会把玲七的话砍掉。
+   现在允许两行自然换行：卡片可以长高一点，文案不能凭空消失。 */
+#world-backstage-root .wb-settings-subgroup > summary > small,
+#world-backstage-root .wb-settings-group > summary > small {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+    margin-left: 12px;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: normal;
+    text-align: right;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
+#world-backstage-root .wb-settings-subgroup > summary,
+#world-backstage-root .wb-settings-group > summary {
+    align-items: center;
+    min-height: 48px;
+}
+
+/* 世界时间不是三个各自为政的按钮，而是一只完整的三态选择器。 */
+#world-backstage-root .wb-injection-source.is-time {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 10px;
+}
+
+#world-backstage-root .wb-time-mode-picker {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 3px;
+    width: 100%;
+    padding: 3px;
+    border: 1px solid var(--wb-line);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--wb-bg-soft) 78%, transparent);
+}
+
+#world-backstage-root .wb-time-mode-picker > button {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 2px;
+    min-width: 0;
+    min-height: 42px;
+    padding: 6px 8px;
+    border: 0 !important;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    box-shadow: none !important;
+    cursor: pointer;
+    transition:
+        background 150ms ease,
+        color 150ms ease,
+        box-shadow 150ms ease,
+        transform 120ms ease;
+}
+
+#world-backstage-root .wb-time-mode-picker > button strong {
+    color: inherit;
+    font-size: .82em;
+    font-weight: 650;
+    line-height: 1.2;
+}
+
+#world-backstage-root .wb-time-mode-picker > button small {
+    color: inherit;
+    font-size: .64em;
+    line-height: 1.25;
+    opacity: .72;
+    text-align: center;
+}
+
+#world-backstage-root .wb-time-mode-picker > button:hover {
+    color: var(--wb-text-soft);
+    background: color-mix(in srgb, var(--wb-panel) 70%, transparent);
+}
+
+#world-backstage-root .wb-time-mode-picker > button.is-active {
+    color: var(--wb-text);
+    background: var(--wb-panel);
+    box-shadow: 0 2px 8px rgb(18 24 40 / 7%) !important;
+}
+
+#world-backstage-root .wb-time-mode-picker > button:active {
+    transform: scale(.985);
+}
+
+@media (max-width: 520px) {
+    #world-backstage-root .wb-settings-subgroup > summary,
+    #world-backstage-root .wb-settings-group > summary {
+        align-items: flex-start;
+        min-height: 52px;
+    }
+
+    #world-backstage-root .wb-settings-subgroup > summary > small,
+    #world-backstage-root .wb-settings-group > summary > small {
+        margin-left: 10px;
+        text-align: left;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+    }
+
+    #world-backstage-root .wb-time-mode-picker > button {
+        min-height: 38px;
+        padding-inline: 4px;
+    }
+
+    #world-backstage-root .wb-time-mode-picker > button small {
+        display: none;
     }
 }

@@ -659,8 +659,16 @@ export function normalizeImportedPeople(payload, entries = [], { userName = '' }
             ? payload
             : [];
     const batch = (Array.isArray(entries) ? entries : []).filter(Boolean);
-    const byUid = new Map(batch.map(entry => [String(entry.uid ?? ''), entry]));
-    const batchUids = batch.map(entry => String(entry.uid ?? ''));
+    // 同一条目切出的多个 fragment 会共享 uid，可能落在同一批里。这里必须按 uid
+    // 收成数组：写成 Map<uid, entry> 的话后一个 fragment 会覆盖前一个，从前一段
+    // 搬来的正确内容回查时找不到出处，会被误判成模型编的。
+    const byUid = new Map();
+    for (const entry of batch) {
+        const key = String(entry.uid ?? '');
+        if (!byUid.has(key)) byUid.set(key, []);
+        byUid.get(key).push(entry);
+    }
+    const batchUids = [...byUid.keys()];
     const people = [];
     const skipped = [];
 
@@ -687,11 +695,11 @@ export function normalizeImportedPeople(payload, entries = [], { userName = '' }
         // 同批里 B 人物的原文通过校验。改成按人物名定位候选条目，只对命中的条目
         // 回查；一条都定位不到就直接拦下。
         const sources = requestedUids.length
-            ? requestedUids.map(uid => byUid.get(uid))
+            ? requestedUids.flatMap(uid => byUid.get(uid) || [])
             : batch.filter(entry => normalizeForGrounding(entrySourceText(entry))
                 .includes(normalizeForGrounding(name)));
         const sourceUids = sources.length
-            ? sources.map(entry => String(entry.uid ?? ''))
+            ? [...new Set(sources.map(entry => String(entry.uid ?? '')))]
             : batchUids;
         if (!sources.length) {
             skipped.push({
@@ -751,6 +759,39 @@ export function normalizeImportedPeople(payload, entries = [], { userName = '' }
     }
 
     return { people, skipped };
+}
+
+// 把草稿对应到世界里已有的人物。三条规则必须分优先级，不能混在一个 find() 里：
+// worldbookRef 是精确身份，人物名次之，条目名当别名最弱。混在一起时，世界里排在
+// 前面的同名人物会抢走本该按 ref 命中的那条记录。
+// 任一层出现多个候选就算有歧义，不自动认领，交给审校台让人决定。
+export function matchImportTarget(people, { reference = '', name = '', aliases = [] } = {}, claimedIds = null) {
+    const candidates = (Array.isArray(people) ? people : [])
+        .filter(person => person && !claimedIds?.has(person.id));
+    const none = { person: null, matchedBy: '', ambiguous: false };
+
+    const byReference = reference
+        ? candidates.filter(person => person.worldbookRef && person.worldbookRef === reference)
+        : [];
+    if (byReference.length) return { person: byReference[0], matchedBy: 'reference', ambiguous: false };
+
+    const lowerName = String(name || '').trim().toLocaleLowerCase();
+    const byName = lowerName
+        ? candidates.filter(person => String(person.name || '').toLocaleLowerCase() === lowerName)
+        : [];
+    if (byName.length === 1) return { person: byName[0], matchedBy: 'name', ambiguous: false };
+    if (byName.length > 1) return { person: null, matchedBy: 'name', ambiguous: true };
+
+    const aliasNames = new Set((Array.isArray(aliases) ? aliases : [])
+        .map(alias => String(alias || '').trim().toLocaleLowerCase())
+        .filter(Boolean));
+    const byAlias = aliasNames.size
+        ? candidates.filter(person => aliasNames.has(String(person.name || '').toLocaleLowerCase()))
+        : [];
+    if (byAlias.length === 1) return { person: byAlias[0], matchedBy: 'alias', ambiguous: false };
+    if (byAlias.length > 1) return { person: null, matchedBy: 'alias', ambiguous: true };
+
+    return none;
 }
 
 // 勾了却没产出人物的条目必须能说出原因。模型静悄悄地不返回某条条目，是这套

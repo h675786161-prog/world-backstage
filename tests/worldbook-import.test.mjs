@@ -4,6 +4,7 @@ import {
     IMPORT_PASS_COVERAGE,
     buildWorldbookImportPrompt,
     groundingCoverage,
+    matchImportTarget,
     mergeImportedDrafts,
     normalizeImportedPeople,
     planImportWrites,
@@ -301,6 +302,40 @@ test('被跳过的人物带着来源 uid，能回指到具体条目', () => {
     assert.deepEqual(summarizeUntouchedEntries([entry], { people, skipped }).map(item => item.uid), ['2']);
 });
 
+test('匹配已有人物时 worldbookRef 优先于同名，别名最弱', () => {
+    const people = [
+        { id: 'p1', name: '南枫', worldbookRef: '' },
+        { id: 'p2', name: '枫姐', worldbookRef: '灵汐塔::9::南枫' },
+    ];
+    // ref 命中的是 p2；若三条规则混在一个 find() 里，排在前面的同名 p1 会抢走。
+    const byRef = matchImportTarget(people, { reference: '灵汐塔::9::南枫', name: '南枫', aliases: [] });
+    assert.equal(byRef.person.id, 'p2');
+    assert.equal(byRef.matchedBy, 'reference');
+
+    const byName = matchImportTarget(people, { reference: '别的::1::x', name: '南枫', aliases: ['枫姐'] });
+    assert.equal(byName.person.id, 'p1', '名字命中优先于别名');
+    assert.equal(byName.matchedBy, 'name');
+
+    const byAlias = matchImportTarget(people, { reference: '别的::1::x', name: '无人', aliases: ['枫姐'] });
+    assert.equal(byAlias.person.id, 'p2');
+    assert.equal(byAlias.matchedBy, 'alias');
+});
+
+test('同名候选不止一个时不自动认领，标成有歧义', () => {
+    const people = [
+        { id: 'p1', name: '老板', worldbookRef: 'a' },
+        { id: 'p2', name: '老板', worldbookRef: 'b' },
+    ];
+    const result = matchImportTarget(people, { reference: 'c', name: '老板', aliases: [] });
+    assert.equal(result.person, null, '有歧义时不能随便挑一个覆盖');
+    assert.equal(result.ambiguous, true);
+
+    // 已被本次导入认领过的记录不再参与匹配。
+    const claimed = matchImportTarget(people, { reference: 'c', name: '老板' }, new Set(['p1']));
+    assert.equal(claimed.person.id, 'p2');
+    assert.equal(claimed.ambiguous, false);
+});
+
 test('原文覆盖率能区分搬运与改写', () => {
     const source = '愤世嫉俗，厌恶虚伪与崇洋媚外，追求精神与文化的深度共鸣';
     assert.ok(groundingCoverage('厌恶虚伪与崇洋媚外', source) >= IMPORT_PASS_COVERAGE);
@@ -324,6 +359,26 @@ test('超长条目切成带重叠的片段，不直接截断', () => {
 
     const short = { uid: '6', content: 'B'.repeat(100) };
     assert.deepEqual(splitLongEntries([short]), [short], '短条目原样通过，不加 chunk 标记');
+});
+
+test('同一条目的多个片段落在同一批时不会互相覆盖', () => {
+    // 7000 字切成 3 段，前两段刚好进同一批。若按 uid 只留最后一个片段，
+    // 从第一段搬来的内容回查时会找不到出处，被误判成模型编的。
+    // 「南枫是琴行老板」只出现在开头，落在第一段里；重叠窗口（2700 起）够不到它。
+    const content = `南枫是琴行老板${'甲'.repeat(2900)}南枫性格高冷${'乙'.repeat(4000)}`;
+    const chunks = splitLongEntries([{ uid: '5', name: '王国志', content }]);
+    const batches = planWorldbookImportBatches(chunks);
+    const firstBatch = batches[0];
+    assert.ok(firstBatch.length > 1, '前提：前两段确实在同一批');
+    assert.deepEqual([...new Set(firstBatch.map(entry => entry.uid))], ['5'], '前提：它们共享 uid');
+
+    const { people, skipped } = normalizeImportedPeople({
+        people: [{ name: '南枫', source_uids: ['5'], identity_anchor: '南枫是琴行老板' }],
+    }, firstBatch);
+
+    assert.equal(skipped.length, 0, `第一段的内容不该被判成原文不存在：${skipped[0]?.reason || ''}`);
+    assert.equal(people[0].values.identityAnchor, '南枫是琴行老板');
+    assert.deepEqual(people[0].sourceUids, ['5'], 'uid 不能因为多片段而重复');
 });
 
 test('分块后的片段会告诉模型这只是片段', () => {

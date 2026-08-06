@@ -630,7 +630,7 @@ function renderWorldbookImportReport(report) {
             <details class="wb-worldbook-import-report">
                 <summary><span>本次整理报告</span><small>${details.length} 条 · 点击展开</small></summary>
                 <ul>${details.join('')}</ul>
-                <p class="wb-worldbook-import-note">被拦下的内容不会丢：每个人物卡里的「世界书原始设定」保留了条目全文。</p>
+                <p class="wb-worldbook-import-note">被拦下的内容不会丢：每个人物卡里的「世界书原始设定」保留了来源条目正文的前 4000 字。</p>
             </details>
         ` : ''}
     `;
@@ -671,7 +671,11 @@ function renderWorldbookDraftReview(report, draftUi = {}) {
                             ${personSkipped ? '' : 'checked'}>
                         <span>
                             <strong>${escapeHtml(person.name)}</strong>
-                            ${person.existing ? '<em class="is-existing">更新已有人物</em>' : '<em>新建</em>'}
+                            ${person.ambiguous
+                                ? '<em class="is-warn">世界里有多个同名人物，无法确定是谁，确认后会另建一条</em>'
+                                : person.existing
+                                    ? `<em class="is-existing">更新已有的「${escapeHtml(person.existingName || person.name)}」</em>`
+                                    : '<em>新建</em>'}
                             ${person.nameConflict ? '<em class="is-warn">同名不同来源，请确认是不是同一个人</em>' : ''}
                             ${person.lengthFuse ? '<em class="is-warn">整理结果比原文长，疑似扩写</em>' : ''}
                             <small>来自：${escapeHtml((person.sourceNames || []).join('、') || '未知条目')}</small>
@@ -4741,7 +4745,12 @@ export function createWorldBackstageUI({
                         .filter(field => !worldbookDraftDroppedFields.has(`${person.reference}::${field}`)),
                 }))
                 .filter(item => item.fields.length);
-            const done = await invokeAction('commit-worldbook-drafts', { selections });
+            const report = getSyncStatus()?.worldbook?.aiImport || {};
+            const done = await invokeAction('commit-worldbook-drafts', {
+                selections,
+                token: report.token || '',
+                bookName: report.bookName || '',
+            });
             if (done) {
                 worldbookSelectedIds = new Set();
                 worldbookDraftSkipped = new Set();

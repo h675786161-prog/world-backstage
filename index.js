@@ -62,6 +62,7 @@ import {
     detectWorldbookTechnicalEntry,
     extractWorldbookCharacterCandidates,
     extractWorldbookCharacterProfile,
+    matchImportTarget,
     mergeImportedDrafts,
     normalizeImportedPeople,
     planImportWrites,
@@ -196,6 +197,7 @@ const runtime = {
     },
     worldbookImport: emptyWorldbookImportReport(),
     worldbookImportDrafts: [],
+    worldbookImportSession: null,
     worldbookImportRunning: false,
     historyProgress: {
         kind: 'memory',
@@ -256,6 +258,7 @@ async function scanWorldbook(bookName) {
     };
     runtime.worldbookImport = emptyWorldbookImportReport();
     runtime.worldbookImportDrafts = [];
+    runtime.worldbookImportSession = null;
     runtime.ui?.render();
 
     try {
@@ -442,21 +445,15 @@ const IMPORTABLE_PERSON_FIELDS = Object.freeze([
     'behaviorBoundaries',
 ]);
 
-// 同一次导入里，一条人物记录只能被认领一次。否则一条目拆出的多个人物会顺着
-// 同一条匹配规则全部写进第一个人身上。
-function findImportTarget(state, { reference = '', name = '', aliases = [] } = {}, claimedIds = null) {
-    const lowerName = String(name || '').trim().toLocaleLowerCase();
-    const aliasNames = new Set((Array.isArray(aliases) ? aliases : [])
-        .map(alias => String(alias || '').trim().toLocaleLowerCase())
-        .filter(Boolean));
-    return (state?.people || []).find(person => (
-        !claimedIds?.has(person.id)
-        && (
-            person.worldbookRef === reference
-            || person.name.toLocaleLowerCase() === lowerName
-            || aliasNames.has(person.name.toLocaleLowerCase())
-        )
-    )) || null;
+// 审校台要显示这次会新建还是更新谁，以及匹配是否有歧义。
+function describeImportTarget(state, draft) {
+    const match = matchImportTarget(state?.people, draft);
+    return {
+        existing: Boolean(match.person),
+        existingName: match.person?.name || '',
+        matchedBy: match.matchedBy,
+        ambiguous: match.ambiguous,
+    };
 }
 
 // 规则导入与 AI 整理导入共用的写入口。默认只补空栏位，绝不覆盖作者已经写好的
@@ -478,7 +475,8 @@ function upsertImportedPerson(next, {
 } = {}) {
     const importedName = String(name || '').trim().slice(0, 80);
     if (!importedName) return null;
-    const existing = findImportTarget(next, { reference, name: importedName, aliases }, claimedIds);
+    // 有歧义时不认领任何一条，另建新记录——审校台已经把这件事标出来让用户决定。
+    const existing = matchImportTarget(next.people, { reference, name: importedName, aliases }, claimedIds).person;
 
     if (existing) {
         let renamed = '';
@@ -670,6 +668,7 @@ function emptyWorldbookImportReport() {
 
 function discardWorldbookDrafts() {
     runtime.worldbookImportDrafts = [];
+    runtime.worldbookImportSession = null;
     runtime.worldbookImport = emptyWorldbookImportReport();
     runtime.ui?.render();
     return true;
@@ -677,9 +676,21 @@ function discardWorldbookDrafts() {
 
 // 审校台按「确认」后才走到这里。selections 只带人物与栏位的取舍，值本身仍然
 // 取自 runtime 里那份已经过原文回查的草稿，不接受界面回传的正文。
-function commitWorldbookDrafts(selections = []) {
+function commitWorldbookDrafts(selections = [], { token = '', bookName = '' } = {}) {
     const pending = Array.isArray(runtime.worldbookImportDrafts) ? runtime.worldbookImportDrafts : [];
     if (!pending.length) throw new Error('没有待确认的整理结果，请重新整理一次');
+
+    // 草稿绑定在生成它的聊天与世界书上。三者任一对不上就作废，绝不把上一个
+    // 聊天整理出来的人物写进当前世界。
+    const session = runtime.worldbookImportSession;
+    const mismatch = !session
+        || session.chatToken !== currentChatToken()
+        || (token && session.token !== String(token))
+        || (bookName && session.bookName !== String(bookName));
+    if (mismatch) {
+        discardWorldbookDrafts();
+        throw new Error('这份整理草稿不属于当前聊天或世界书，已作废；请重新整理一次');
+    }
 
     const wanted = new Map();
     for (const item of Array.isArray(selections) ? selections : []) {
@@ -728,6 +739,7 @@ function commitWorldbookDrafts(selections = []) {
 
     const previous = runtime.worldbookImport || emptyWorldbookImportReport();
     runtime.worldbookImportDrafts = [];
+    runtime.worldbookImportSession = null;
     runtime.worldbookImport = {
         ...previous,
         phase: 'success',
@@ -772,7 +784,16 @@ async function runWorldbookAiImport(bookName, entryIds = []) {
     });
     if (runtime.worldbookImportRunning) throw new Error('上一次 AI 整理还在跑～等它结束再来');
 
+    const chatToken = currentChatToken();
+    const abortIfChatChanged = () => {
+        if (currentChatToken() === chatToken) return;
+        const error = new Error('聊天已经切换，这次整理作废');
+        error.name = 'AbortError';
+        throw error;
+    };
+
     const selected = await loadFullWorldbookEntries(name, scanned);
+    abortIfChatChanged();
     const batches = planWorldbookImportBatches(splitLongEntries(selected));
     const userName = String(getContext()?.name1 || '');
     const drafts = [];
@@ -781,6 +802,7 @@ async function runWorldbookAiImport(bookName, entryIds = []) {
 
     runtime.worldbookImportRunning = true;
     runtime.worldbookImportDrafts = [];
+    runtime.worldbookImportSession = null;
     runtime.worldbookImport = {
         ...emptyWorldbookImportReport(),
         phase: 'running',
@@ -791,6 +813,7 @@ async function runWorldbookAiImport(bookName, entryIds = []) {
 
     try {
         for (let index = 0; index < batches.length; index += 1) {
+            abortIfChatChanged();
             const batch = batches[index];
             runtime.worldbookImport.message = `正在整理第 ${index + 1}/${batches.length} 批（${batch.length} 条）～`;
             runtime.ui?.render();
@@ -869,14 +892,16 @@ async function runWorldbookAiImport(bookName, entryIds = []) {
 
         // 整理结果先落成待确认草稿，不直接改世界状态：整理错了的话，用户是在
         // 数据已经被改之后才发现的，事后编辑并不等于没发生过。
+        abortIfChatChanged();
         const writes = planImportWrites(merged, selected, { bookName: name });
         const state = getState();
         const needsReview = writes.filter(draft => draft.review.length || draft.nameConflict).length;
+        const reviewToken = `${chatToken}:${Date.now().toString(36)}-${writes.length}`;
         const report = {
             ...emptyWorldbookImportReport(),
             phase: 'review',
             bookName: name,
-            token: `${Date.now().toString(36)}-${writes.length}`,
+            token: reviewToken,
             message: [
                 `整理出 ${writes.length} 人，确认后才会写进世界`,
                 needsReview ? `其中 ${needsReview} 人需要你看一眼` : '',
@@ -894,17 +919,27 @@ async function runWorldbookAiImport(bookName, entryIds = []) {
                 sourceNames: draft.sourceUids
                     .map(uid => selected.find(entry => String(entry.uid) === uid)?.name)
                     .filter(Boolean),
-                existing: Boolean(findImportTarget(state, draft)),
+                ...describeImportTarget(state, draft),
             })),
             skipped,
             untouched,
             failures,
         };
         runtime.worldbookImportDrafts = writes;
+        runtime.worldbookImportSession = { chatToken, bookName: name, token: reviewToken };
         runtime.worldbookImport = report;
         return report;
     } finally {
         runtime.worldbookImportRunning = false;
+        // 中途抛错（比如切了聊天）时别把面板永远停在“正在整理”。
+        if (runtime.worldbookImport?.phase === 'running') {
+            runtime.worldbookImport = {
+                ...emptyWorldbookImportReport(),
+                phase: 'error',
+                bookName: name,
+                message: '这次整理没有完成',
+            };
+        }
         runtime.ui?.render();
     }
 }
@@ -3943,6 +3978,10 @@ function onMessageDeleted() {
 }
 
 function onChatChanged() {
+    // 审校草稿属于生成它的那个聊天。切聊天就作废，否则确认时会把 A 的人物写进 B。
+    if (runtime.worldbookImportDrafts?.length || runtime.worldbookImport?.phase === 'review') {
+        discardWorldbookDrafts();
+    }
     runtime.activePublicOpinion?.controller?.abort?.();
     runtime.activePublicOpinionSandbox?.controller?.abort?.();
     runtime.activeObservation?.controller?.abort?.();
@@ -7019,7 +7058,10 @@ async function handleUiAction(action, payload = {}) {
     }
 
     if (action === 'commit-worldbook-drafts') {
-        return commitWorldbookDrafts(payload.selections);
+        return commitWorldbookDrafts(payload.selections, {
+            token: payload.token,
+            bookName: payload.bookName,
+        });
     }
 
     if (action === 'discard-worldbook-drafts') {

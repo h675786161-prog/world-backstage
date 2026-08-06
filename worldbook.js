@@ -162,6 +162,218 @@ export function detectWorldbookCharacter(entry, profile = extractWorldbookCharac
     };
 }
 
+
+const TECHNICAL_TITLE_PATTERN = /(?:mvu|变量(?:表|初始化|定义|更新)?|状态栏|状态变量|正则|regex|json\s*patch|jsonpatch|脚本|宏|指令模板|系统提示|system\s*prompt|前端(?:美化|配置)?|样式表|css|javascript)/iu;
+const TECHNICAL_CONTENT_PATTERNS = [
+    /<\s*(?:updatevariable|variable|variables|jsonpatch|regex|script|style)\b/iu,
+    /"(?:op|path|value)"\s*:\s*"(?:replace|add|remove|\/)/iu,
+    /\bjson\s*patch\b|\bjsonpatch\b/iu,
+    /(?:变量更新|变量初始化|更新变量|状态变量|mvu\s*变量)/iu,
+    /(?:<%|%>|\{\{[^{}]{0,120}\}\}|\$\{[^{}]{0,120}\})/u,
+];
+
+export function detectWorldbookTechnicalEntry(entry) {
+    const title = `${entry?.name || ''} ${(entry?.keys || []).join(' ')} ${(entry?.tags || []).join(' ')}`.trim();
+    const content = String(entry?.content || '');
+    let score = 0;
+    const signals = [];
+
+    if (TECHNICAL_TITLE_PATTERN.test(title)) {
+        score += 4;
+        signals.push('条目名像技术/MVU配置');
+    }
+    for (const pattern of TECHNICAL_CONTENT_PATTERNS) {
+        if (!pattern.test(content)) continue;
+        score += 2;
+        if (signals.length < 4) signals.push('正文含变量/脚本结构');
+    }
+
+    const codeLikeLines = content.split(/\n/).filter(line => (
+        /(?:^\s*[{[]|^\s*[-+]\s*\/|"(?:op|path|value)"\s*:|^\s*(?:const|let|var|function)\b)/u.test(line)
+    )).length;
+    if (codeLikeLines >= 4) {
+        score += 2;
+        signals.push('技术结构占比较高');
+    }
+
+    return {
+        technicalEntry: score >= 4,
+        technicalScore: score,
+        technicalSignals: signals.slice(0, 4),
+    };
+}
+
+function cleanCandidateName(value) {
+    return compactValue(value, 80)
+        .replace(/^(?:角色|人物|npc)\s*[:：\-—]?\s*/iu, '')
+        .replace(/[【】[\]<>]/g, '')
+        .replace(/[：:，,。；;].*$/u, '')
+        .trim()
+        .slice(0, 80);
+}
+
+function candidateProfileFromBlock(block, fallbackName, parentName = '') {
+    const profile = extractWorldbookCharacterProfile(block, fallbackName);
+    const name = cleanCandidateName(profile.name || fallbackName);
+    if (!name) return null;
+
+    const context = String(parentName || '').trim();
+    const sameAsParent = context && context.toLocaleLowerCase() === name.toLocaleLowerCase();
+    if (context && !sameAsParent && !/(?:角色|人物|npc|character)/iu.test(context)) {
+        const contextNote = `所属条目/势力：${context}`;
+        profile.backgroundProfile = [
+            profile.backgroundProfile,
+            contextNote,
+        ].filter(Boolean).join('；').slice(0, 900);
+    }
+
+    return {
+        name,
+        profile: {
+            ...profile,
+            name,
+        },
+        content: String(block || '').trim().slice(0, 4000),
+    };
+}
+
+function splitByExplicitNameLabels(content, parentName = '') {
+    const readable = readableText(content);
+    const pattern = /(?:^|\n)\s*(?:[-*•#>]+\s*)?(?:中文名|姓名|角色名|人物名|name)\s*(?:[（(][^）)\n]{0,40}[）)])?\s*[:：]\s*([^\n|]{1,80})/giu;
+    const matches = [...readable.matchAll(pattern)];
+    if (matches.length < 2) return [];
+
+    return matches.map((match, index) => {
+        const start = Number(match.index || 0);
+        const end = index + 1 < matches.length
+            ? Number(matches[index + 1].index || readable.length)
+            : readable.length;
+        const block = readable.slice(start, end).trim();
+        return candidateProfileFromBlock(block, match[1], parentName);
+    }).filter(Boolean);
+}
+
+function splitXmlCharacterBlocks(content, parentName = '') {
+    const raw = String(content || '');
+    const results = [];
+    const pattern = /<\s*(character|char|npc|person)\b([^>]*)>([\s\S]*?)<\s*\/\s*\1\s*>/giu;
+    for (const match of raw.matchAll(pattern)) {
+        const attrs = String(match[2] || '');
+        const body = String(match[3] || '');
+        const named = attrs.match(/\b(?:name|id)\s*=\s*["']([^"']{1,80})["']/iu)?.[1] || '';
+        const candidate = candidateProfileFromBlock(body, named, parentName);
+        if (candidate) results.push(candidate);
+    }
+    return results;
+}
+
+function splitRoleHeadings(content, parentName = '') {
+    const raw = String(content || '').replace(/\r/g, '');
+    const lines = raw.split('\n');
+    const starts = [];
+
+    for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index].trim();
+        let match = line.match(/^#{1,6}\s*(?:角色|人物|npc)\s*[:：\-—]?\s*([^#\n]{1,60})$/iu);
+        if (!match) {
+            match = line.match(/^(?:[-*•]\s*)?(?:角色|人物|npc)\s*[:：]\s*([^，,。；;\n]{1,60})$/iu);
+        }
+        if (!match) continue;
+        const name = cleanCandidateName(match[1]);
+        if (name) starts.push({ index, name });
+    }
+
+    if (!starts.length) return [];
+    return starts.map((item, position) => {
+        const end = position + 1 < starts.length ? starts[position + 1].index : lines.length;
+        const block = lines.slice(item.index, end).join('\n').trim();
+        return candidateProfileFromBlock(block, item.name, parentName);
+    }).filter(Boolean);
+}
+
+function candidateStrength(candidate) {
+    const profile = candidate?.profile || {};
+    const strongFields = new Set([
+        'personality', 'appearance', 'background', 'speech',
+        'gender', 'age', 'identity', 'relations', 'behavior',
+    ]);
+    const strongCount = (profile.matchedFields || []).filter(field => strongFields.has(field)).length;
+    let score = 0;
+    if (profile.explicitName) score += 3;
+    score += Math.min(5, strongCount);
+    if (strongCount >= 2) score += 2;
+    if (/<\s*(?:character|char|npc|person)\b/iu.test(candidate?.content || '')) score += 2;
+    if (/(?:性格|外貌|身份|职业|年龄|性别|背景|经历|关系|说话|行为|personality|appearance|identity|age|gender|background)/iu.test(candidate?.content || '')) {
+        score += 1;
+    }
+    return score;
+}
+
+export function extractWorldbookCharacterCandidates(entry) {
+    const content = String(entry?.content || '').trim();
+    const parentName = String(entry?.name || '').trim();
+    if (!content) return [];
+
+    const candidates = [
+        ...splitXmlCharacterBlocks(content, parentName),
+        ...splitByExplicitNameLabels(content, parentName),
+        ...splitRoleHeadings(content, parentName),
+    ];
+
+    const seen = new Set();
+    const unique = [];
+    for (const candidate of candidates) {
+        const key = candidate.name.toLocaleLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+
+        const technical = detectWorldbookTechnicalEntry({
+            name: candidate.name,
+            content: candidate.content,
+            keys: [],
+            tags: [],
+        });
+        const strength = candidateStrength(candidate);
+        unique.push({
+            ...candidate,
+            confidence: strength >= 6 ? 'high' : strength >= 4 ? 'medium' : 'low',
+            characterScore: strength,
+            technicalEntry: technical.technicalEntry,
+            technicalSignals: technical.technicalSignals,
+        });
+    }
+    return unique;
+}
+
+export function planSmartWorldbookImport(entries) {
+    const auto = [];
+    const review = [];
+    const skippedTechnical = [];
+    const skippedDisabled = [];
+
+    for (const entry of Array.isArray(entries) ? entries : []) {
+        if (entry?.disabled) {
+            skippedDisabled.push(entry);
+            continue;
+        }
+        if (entry?.technicalEntry && !entry?.embeddedPerson) {
+            skippedTechnical.push(entry);
+            continue;
+        }
+        if (!entry?.importablePerson) continue;
+
+        if (entry?.smartAuto) auto.push(entry);
+        else review.push(entry);
+    }
+
+    return {
+        auto,
+        review,
+        skippedTechnical,
+        skippedDisabled,
+    };
+}
+
 export function filterWorldbookEntries(entries, {
     query = '',
     onlyPeople = false,
@@ -169,7 +381,7 @@ export function filterWorldbookEntries(entries, {
 } = {}) {
     const needle = String(query || '').trim().toLocaleLowerCase();
     return (Array.isArray(entries) ? entries : []).filter(entry => {
-        if (onlyPeople && !entry?.likelyPerson) return false;
+        if (onlyPeople && !(entry?.importablePerson ?? entry?.likelyPerson)) return false;
         if (onlyEnabled && entry?.disabled) return false;
         if (!needle) return true;
         const haystack = [

@@ -424,10 +424,32 @@ function renderEventCard(event, state, wide = false, openFolds = new Set()) {
     `;
 }
 
+function echoOutcomeMinute(event) {
+    const resolvedAt = Number(event?.resolvedAt);
+    const dueAt = Number(event?.dueAt);
+    const updatedAt = Number(event?.updatedAt);
+    const status = String(event?.status || '');
+    const timed = ['duration', 'scheduled'].includes(event?.clockMode);
+
+    if (status === 'ready' && Number.isFinite(dueAt)) return dueAt;
+    if (
+        ['resolved', 'missed'].includes(status)
+        && timed
+        && Number.isFinite(dueAt)
+        && dueAt >= 0
+        && (!Number.isFinite(resolvedAt) || dueAt <= resolvedAt)
+    ) {
+        return dueAt;
+    }
+    if (Number.isFinite(resolvedAt)) return resolvedAt;
+    if (Number.isFinite(dueAt)) return dueAt;
+    return Number.isFinite(updatedAt) ? updatedAt : 0;
+}
+
 function renderOutcome(event, state, openFolds = new Set()) {
     const time = formatWorldCalendar(
         state,
-        event.resolvedAt ?? event.updatedAt ?? event.dueAt ?? 0,
+        echoOutcomeMinute(event),
     );
     const result = event.result || event.expectedResult || event.consequence || '结果等待确认。';
     const foldKey = `echoes:${event.id}`;
@@ -1433,6 +1455,27 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         </div>
                     </details>
 
+                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-maintenance" ${subgroupOpen('advanced-maintenance')}>
+                        <summary><span>数据维护</span><small>清缓存 / 重置当前聊天</small></summary>
+                        <div class="wb-settings-subgroup-body">
+                            <div class="wb-maintenance-card">
+                                <div>
+                                    <strong>清理当前聊天缓存</strong>
+                                    <p>清掉人物观测缓存、闲逛缓存、临时任务/模型列表等可重建内容；人物、事件、回声、记忆、世界钟和 API 配置都保留。</p>
+                                </div>
+                                <button type="button" data-wb-action="clear-current-chat-cache">清理缓存</button>
+                            </div>
+                            <div class="wb-maintenance-card is-danger">
+                                <div>
+                                    <strong>重置当前聊天数据</strong>
+                                    <p>彻底清空当前聊天的世界状态、人物、事件、暗流、回声、记忆、舆情、观测缓存、恢复点、分支快照和删除记录。聊天正文与全部 API / 模型配置不会被修改。</p>
+                                    <small>这是干净重测用的真正重置，不会偷偷创建“重置前恢复点”。</small>
+                                </div>
+                                <button type="button" class="is-danger" data-wb-action="reset-current-chat-data">一键重置</button>
+                            </div>
+                        </div>
+                    </details>
+
                     <details class="wb-settings-subgroup" data-settings-subgroup="advanced-tagfilter" ${subgroupOpen('advanced-tagfilter')}>
                         <summary><span>正文过滤</span><small>只把真正的叙事喂给后台～</small></summary>
                         <div class="wb-settings-subgroup-body">
@@ -1760,9 +1803,15 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                                 : '<option value="">酒馆当前没有可读取的世界书</option>'}
                         </select>
                     </label>
-                    <button class="wb-worldbook-scan-button" type="button" data-wb-action="scan-worldbook" ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
-                        ${worldbook.phase === 'running' ? '正在读取…' : '读取并识别人物'}
-                    </button>
+                    <div class="wb-worldbook-action-row">
+                        <button class="wb-primary-button wb-worldbook-smart-button" type="button" data-wb-action="smart-import-worldbook-people" ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
+                            ${worldbook.phase === 'running' ? '正在读取…' : '一键智能导入人物'}
+                        </button>
+                        <button class="wb-worldbook-scan-button" type="button" data-wb-action="scan-worldbook" ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
+                            高级手动挑选
+                        </button>
+                    </div>
+                    <p class="wb-setting-explanation">会自动跳过 MVU / 变量 / 脚本类技术条目；角色和势力写在同一条里时，会先尝试把人物拆出来再导入。</p>
                     ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
                     ${worldbookEntries.length ? `
                         <div class="wb-worldbook-browser">
@@ -1771,19 +1820,33 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                                 <label class="wb-worldbook-filter-chip ${worldbookOnlyPeople ? 'is-active' : ''}"><input type="checkbox" data-wb-worldbook-filter="people" ${worldbookOnlyPeople ? 'checked' : ''}><span>只看疑似人物</span></label>
                                 <label class="wb-worldbook-filter-chip ${worldbookOnlyEnabled ? 'is-active' : ''}"><input type="checkbox" data-wb-worldbook-filter="enabled" ${worldbookOnlyEnabled ? 'checked' : ''}><span>只看启用条目</span></label>
                             </div>
-                            <div class="wb-worldbook-toolbar"><span>共 ${worldbookEntries.length} 条 · 当前 ${filteredWorldbookEntries.length} 条 · 已选 ${worldbookSelectedCount} 条</span><div>
-                                <button type="button" data-wb-action="select-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>全选当前</button>
+                            <div class="wb-worldbook-toolbar"><span>候选 ${worldbookEntries.filter(entry => entry.importablePerson ?? entry.likelyPerson).length} 人 · 当前 ${filteredWorldbookEntries.length} 条 · 已选 ${worldbookSelectedCount} 人</span><div>
+                                <button type="button" data-wb-action="select-worldbook-visible" ${filteredWorldbookEntries.some(entry => entry.importablePerson ?? entry.likelyPerson) ? '' : 'disabled'}>全选当前人物</button>
                                 <button type="button" data-wb-action="clear-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>取消当前</button>
                             </div></div>
                             <div class="wb-worldbook-entry-list">
-                                ${filteredWorldbookEntries.length ? filteredWorldbookEntries.map(entry => `
-                                    <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''} ${entry.likelyPerson ? 'is-person-candidate' : ''}">
-                                        <input id="wb-worldbook-entry-${escapeAttr(entry.uid)}" type="checkbox" name="entryIds" data-wb-worldbook-entry-id="${escapeAttr(entry.uid)}" value="${escapeAttr(entry.uid)}" ${worldbookSelectedIds.has(String(entry.uid)) ? 'checked' : ''}>
-                                        <span><span class="wb-worldbook-entry-heading"><strong>${escapeHtml(entry.parsedName || entry.name)}</strong>${entry.likelyPerson ? '<em>疑似人物</em>' : ''}${entry.disabled ? '<em class="is-muted">已停用</em>' : ''}</span>
-                                            <small>${escapeHtml((entry.keys || []).join('、') || `UID ${entry.uid}`)}</small>
+                                ${filteredWorldbookEntries.length ? filteredWorldbookEntries.map(entry => {
+                                    const importable = Boolean(entry.importablePerson ?? entry.likelyPerson);
+                                    const badge = entry.embeddedPerson
+                                        ? '<em>从混合条目拆出</em>'
+                                        : entry.smartAuto
+                                            ? '<em>人物</em>'
+                                            : importable
+                                                ? '<em>建议确认</em>'
+                                                : entry.technicalEntry
+                                                    ? '<em class="is-muted">技术 / MVU</em>'
+                                                    : entry.mixedSource
+                                                        ? '<em class="is-muted">混合设定</em>'
+                                                        : '';
+                                    return `
+                                    <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''} ${importable ? 'is-person-candidate' : ''} ${entry.embeddedPerson ? 'is-embedded-person' : ''}">
+                                        <input id="wb-worldbook-entry-${escapeAttr(entry.uid)}" type="checkbox" name="entryIds" data-wb-worldbook-entry-id="${escapeAttr(entry.uid)}" value="${escapeAttr(entry.uid)}" ${worldbookSelectedIds.has(String(entry.uid)) ? 'checked' : ''} ${importable ? '' : 'disabled'}>
+                                        <span><span class="wb-worldbook-entry-heading"><strong>${escapeHtml(entry.parsedName || entry.name)}</strong>${badge}${entry.disabled ? '<em class="is-muted">已停用</em>' : ''}</span>
+                                            <small>${escapeHtml(entry.embeddedPerson && entry.sourceEntryName ? `来自：${entry.sourceEntryName}` : ((entry.keys || []).join('、') || `UID ${entry.sourceUid || entry.uid}`))}</small>
                                             <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? '…' : ''}</p>
                                         </span>
-                                    </label>`).join('') : '<div class="wb-worldbook-empty">当前筛选下没有条目。可以取消筛选或换个关键词。</div>'}
+                                    </label>`;
+                                }).join('') : '<div class="wb-worldbook-empty">当前筛选下没有条目。可以取消筛选或换个关键词。</div>'}
                             </div>
                             <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>${worldbookSelectedCount ? `导入已选人物（${worldbookSelectedCount}）` : '请选择要导入的人物'}</button>
                         </div>` : ''}
@@ -3576,7 +3639,7 @@ export function createWorldBackstageUI({
         );
         const outcomes = visibleEvents
             .filter(event => (event.status === 'ready' || isTerminalEvent(event)) && event.delivery?.state !== 'expired')
-            .sort((a, b) => Number(b.resolvedAt ?? b.updatedAt) - Number(a.resolvedAt ?? a.updatedAt));
+            .sort((a, b) => echoOutcomeMinute(b) - echoOutcomeMinute(a));
         const person = displayPeople.find(item => item.id === selectedPersonId);
         const canObservePerson = Boolean(
             person
@@ -4474,6 +4537,28 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'smart-import-worldbook-people') {
+            const form = target.closest('[data-wb-form="worldbook"]');
+            worldbookSelectedIds = new Set();
+            const result = await invokeAction('smart-import-worldbook-people', {
+                bookName: form?.elements?.bookName?.value || '',
+            });
+            if (result && typeof result === 'object') {
+                const imported = Number(result.created || 0) + Number(result.updated || 0);
+                if (result.needsReview) {
+                    worldbookOnlyPeople = true;
+                    notify(`自动导入没有贸然下手～还有 ${Number(result.reviewCount) || 0} 个人物候选需要你确认。`, 'info');
+                } else {
+                    const tail = Number(result.reviewCount) > 0
+                        ? `，另有 ${result.reviewCount} 个不太确定的候选留在下面`
+                        : '';
+                    notify(`世界书人物导入完成：处理 ${imported} 人${tail}。`, 'success');
+                    worldbookOnlyPeople = Number(result.reviewCount) > 0;
+                }
+            }
+            render();
+            return;
+        }
         if (action === 'scan-worldbook') {
             const form = target.closest('[data-wb-form="worldbook"]');
             worldbookSelectedIds = new Set();
@@ -4481,8 +4566,8 @@ export function createWorldBackstageUI({
                 bookName: form?.elements?.bookName?.value || '',
             });
             if (result && Array.isArray(result.entries)) {
-                const likelyCount = result.entries.filter(entry => entry.likelyPerson).length;
-                if (likelyCount > 0 && likelyCount < result.entries.length) worldbookOnlyPeople = true;
+                const personCount = result.entries.filter(entry => entry.importablePerson ?? entry.likelyPerson).length;
+                if (personCount > 0 && personCount < result.entries.length) worldbookOnlyPeople = true;
             }
             render();
             return;
@@ -4498,8 +4583,11 @@ export function createWorldBackstageUI({
             });
             const next = new Set(worldbookSelectedIds);
             for (const entry of visible) {
-                if (action === 'select-worldbook-visible') next.add(String(entry.uid));
-                else next.delete(String(entry.uid));
+                if (action === 'select-worldbook-visible') {
+                    if (entry.importablePerson ?? entry.likelyPerson) next.add(String(entry.uid));
+                } else {
+                    next.delete(String(entry.uid));
+                }
             }
             worldbookSelectedIds = next;
             render();
@@ -4711,6 +4799,53 @@ export function createWorldBackstageUI({
             target.setAttribute('aria-pressed', String(visible));
             target.textContent = visible ? '隐藏' : '显示';
             field.focus();
+            return;
+        }
+
+        if (action === 'clear-current-chat-cache') {
+            const completed = await invokeAction('clear-current-chat-cache');
+            if (completed) {
+                personObservation = null;
+                worldbookSelectedIds = new Set();
+                notify('当前聊天的可重建缓存已经清干净啦～世界数据和 API 都没动。', 'success');
+            }
+            render();
+            return;
+        }
+
+        if (action === 'reset-current-chat-data') {
+            const first = globalThis.confirm?.(
+                '确定要重置“当前聊天”的全部世界背面数据吗？\n\n'
+                + '会清除人物、事件、暗流、回声、记忆、舆情、观测、恢复点与分支快照。\n'
+                + '聊天正文和 API / 模型配置不会被删除。',
+            );
+            if (first === false) return;
+            const second = globalThis.confirm?.(
+                '最后确认：这次重置不会创建恢复点，旧世界数据将不能从世界背面恢复。\n\n确定继续吗？',
+            );
+            if (second === false) return;
+
+            const result = await invokeAction('reset-current-chat-data');
+            if (result) {
+                selectedPersonId = null;
+                personObservation = null;
+                memorySelectedKeys = new Set();
+                memoryEditor = null;
+                personEditor = null;
+                recordEditor = null;
+                eventFormOpen = false;
+                eventEditorId = '';
+                worldEditorOpen = false;
+                worldbookSelectedIds = new Set();
+                worldbookQuery = '';
+                worldbookOnlyPeople = false;
+                worldbookOnlyEnabled = false;
+                notify(
+                    `当前聊天已经重置为空白世界${Number(result.removedSnapshots) > 0 ? `，并清掉 ${result.removedSnapshots} 份旧分支快照` : ''}。API 配置和聊天正文都保留。`,
+                    'success',
+                );
+            }
+            render();
             return;
         }
 

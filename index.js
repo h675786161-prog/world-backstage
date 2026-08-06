@@ -50,12 +50,19 @@ import {
     requestCustomCompletion,
     requestCustomModels,
     resetLastCustomApiOperation,
+    resetRetryControl,
     runWithRetries,
 } from './api.js';
 import { createWorldBackstageUI } from './ui.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
-import { detectWorldbookCharacter, extractWorldbookCharacterProfile } from './worldbook.js';
+import {
+    detectWorldbookCharacter,
+    detectWorldbookTechnicalEntry,
+    extractWorldbookCharacterCandidates,
+    extractWorldbookCharacterProfile,
+    planSmartWorldbookImport,
+} from './worldbook.js';
 import {
     buildPublicOpinionPrompt,
     buildPublicOpinionSandboxPrompt,
@@ -72,7 +79,7 @@ import {
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '1.7.3-dev.1';
+const PLUGIN_VERSION = '1.7.3-dev.4';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 24,
     enabled: true,
@@ -141,6 +148,7 @@ const runtime = {
     generationOffer: { eventIds: [], at: 0 },
     simulationChain: Promise.resolve(),
     simulationCount: 0,
+    dataEpoch: 0,
     activeSimulation: null,
     activeHistoryScan: null,
     activeWorldPulse: null,
@@ -237,13 +245,14 @@ async function scanWorldbook(bookName) {
         entries: [],
     };
     runtime.ui?.render();
+
     try {
         const data = await context.loadWorldInfo(name);
-        const entries = Object.values(data?.entries || {})
+        const sourceEntries = Object.values(data?.entries || {})
             .filter(entry => entry && String(entry.content || '').trim())
             .map(entry => {
-                const name = worldbookEntryLabel(entry);
-                const content = String(entry.content || '').trim().slice(0, 4000);
+                const entryName = worldbookEntryLabel(entry);
+                const content = String(entry.content || '').trim().slice(0, 12000);
                 const keys = [...new Set([
                     ...(Array.isArray(entry.key) ? entry.key : [entry.key]),
                     ...(Array.isArray(entry.keysecondary) ? entry.keysecondary : [entry.keysecondary]),
@@ -258,11 +267,30 @@ async function scanWorldbook(bookName) {
                         .map(match => String(match[1] || '').toLocaleLowerCase())
                         .filter(Boolean),
                 )].slice(0, 12);
-                const profile = extractWorldbookCharacterProfile(content, name);
-                const detection = detectWorldbookCharacter({ name, content, keys, tags, formatHints }, profile);
+                const profile = extractWorldbookCharacterProfile(content, entryName);
+                const detection = detectWorldbookCharacter({
+                    name: entryName,
+                    content,
+                    keys,
+                    tags,
+                    formatHints,
+                }, profile);
+                const technical = detectWorldbookTechnicalEntry({
+                    name: entryName,
+                    content,
+                    keys,
+                    tags,
+                });
+                const embedded = extractWorldbookCharacterCandidates({
+                    name: entryName,
+                    content,
+                    keys,
+                    tags,
+                });
+
                 return {
                     uid: String(entry.uid ?? ''),
-                    name,
+                    name: entryName,
                     parsedName: profile.explicitName ? profile.name : '',
                     content,
                     keys,
@@ -272,17 +300,103 @@ async function scanWorldbook(bookName) {
                     order: Number(entry.order) || 0,
                     profile,
                     ...detection,
+                    ...technical,
+                    embedded,
                 };
             })
             .sort((a, b) => Number(a.disabled) - Number(b.disabled) || b.order - a.order)
             .slice(0, 1000);
+
+        const entries = [];
+        for (const source of sourceEntries) {
+            const strongEmbedded = source.embedded.filter(item => item.confidence !== 'low' && !item.technicalEntry);
+            const shouldSplitEmbedded = strongEmbedded.length >= 2
+                || (strongEmbedded.length === 1 && (!source.likelyPerson || source.technicalEntry));
+
+            if (!shouldSplitEmbedded) {
+                const importablePerson = Boolean(
+                    source.likelyPerson
+                    && !source.technicalEntry
+                    && !source.disabled
+                );
+                entries.push({
+                    ...source,
+                    embedded: undefined,
+                    importablePerson,
+                    smartAuto: importablePerson,
+                    sourceUid: source.uid,
+                    sourceEntryName: source.name,
+                });
+                continue;
+            }
+
+            // Keep the parent setting entry visible for context/search, but it is not a selectable person.
+            entries.push({
+                ...source,
+                embedded: undefined,
+                likelyPerson: false,
+                importablePerson: false,
+                smartAuto: false,
+                mixedSource: true,
+                sourceUid: source.uid,
+                sourceEntryName: source.name,
+                characterSignals: [
+                    `内含 ${strongEmbedded.length} 个人物`,
+                    ...(source.characterSignals || []),
+                ].slice(0, 4),
+            });
+
+            strongEmbedded.forEach((candidate, index) => {
+                const stableNameKey = hashText(candidate.name.toLocaleLowerCase());
+                entries.push({
+                    uid: `${source.uid}::person::${stableNameKey}`,
+                    sourceUid: source.uid,
+                    sourceEntryName: source.name,
+                    name: candidate.name,
+                    parsedName: candidate.name,
+                    content: candidate.content,
+                    keys: source.keys,
+                    tags: [...new Set([...(source.tags || []), '条目内人物'])].slice(0, 8),
+                    formatHints: source.formatHints,
+                    disabled: source.disabled,
+                    order: source.order - (index + 1) / 1000,
+                    profile: candidate.profile,
+                    likelyPerson: true,
+                    importablePerson: true,
+                    smartAuto: candidate.confidence === 'high',
+                    embeddedPerson: true,
+                    characterScore: candidate.characterScore,
+                    characterSignals: [
+                        `从“${source.name}”里拆出`,
+                        candidate.confidence === 'high' ? '人物信息较完整' : '人物信息需确认',
+                    ],
+                    technicalEntry: false,
+                    technicalScore: 0,
+                    technicalSignals: [],
+                });
+            });
+        }
+
+        const plan = planSmartWorldbookImport(entries);
+        const embeddedCount = entries.filter(entry => entry.embeddedPerson).length;
         runtime.worldbookScan = {
             phase: 'success',
             message: entries.length
-                ? `翻到 ${entries.length} 条内容啦～其中 ${entries.filter(entry => entry.likelyPerson).length} 条看起来像人物，确认一下再导入就好`
+                ? [
+                    `翻到 ${sourceEntries.length} 条世界书内容`,
+                    `识别出 ${entries.filter(entry => entry.importablePerson).length} 个人物候选`,
+                    embeddedCount ? `其中 ${embeddedCount} 个从混合条目里拆出来` : '',
+                    plan.skippedTechnical.length ? `跳过 ${plan.skippedTechnical.length} 条技术/MVU内容` : '',
+                ].filter(Boolean).join(' · ')
                 : '这本世界书里暂时没翻到能读的内容哦～',
             bookName: name,
             entries,
+            smartPlan: {
+                autoCount: plan.auto.length,
+                reviewCount: plan.review.length,
+                skippedTechnicalCount: plan.skippedTechnical.length,
+                skippedDisabledCount: plan.skippedDisabled.length,
+            },
         };
         return runtime.worldbookScan;
     } catch (error) {
@@ -313,7 +427,11 @@ function importWorldbookPeople(bookName, entryIds = []) {
         throw new Error('世界书预览已经变化，请重新扫描');
     }
     const wanted = new Set((Array.isArray(entryIds) ? entryIds : [entryIds]).map(String));
-    const selected = runtime.worldbookScan.entries.filter(entry => wanted.has(String(entry.uid)));
+    const selected = runtime.worldbookScan.entries.filter(entry => (
+        wanted.has(String(entry.uid))
+        && (entry.importablePerson ?? entry.likelyPerson)
+        && !entry.technicalEntry
+    ));
     if (!selected.length) throw new Error('请至少勾选一个人物条目');
 
     const next = clone(getState());
@@ -321,6 +439,7 @@ function importWorldbookPeople(bookName, entryIds = []) {
     let updated = 0;
     for (const candidate of selected) {
         const reference = `${name}::${candidate.uid}`;
+        const sourceReference = `${name}::${candidate.sourceUid || candidate.uid}`;
         const profile = candidate.profile || extractWorldbookCharacterProfile(candidate.content, candidate.name);
         const importedName = String(profile.name || candidate.parsedName || candidate.name || '').trim().slice(0, 80);
         if (!importedName) continue;
@@ -349,6 +468,8 @@ function importWorldbookPeople(bookName, entryIds = []) {
             fillIfBlank('behaviorBoundaries', profile.behaviorBoundaries);
             existing.worldbookRaw = profile.worldbookRaw || existing.worldbookRaw || '';
             existing.worldbookRef = reference;
+            existing.worldbookSourceRef = sourceReference;
+            existing.worldbookSourceEntry = candidate.sourceEntryName || candidate.name || '';
             existing.manual = true;
             existing.updatedAt = next.clock.absoluteMinute;
             updated += 1;
@@ -381,12 +502,61 @@ function importWorldbookPeople(bookName, entryIds = []) {
             isUser: false,
             lastSeenMessageId: -1,
             worldbookRef: reference,
+            worldbookSourceRef: sourceReference,
+            worldbookSourceEntry: candidate.sourceEntryName || candidate.name || '',
             updatedAt: next.clock.absoluteMinute,
         });
         created += 1;
     }
-    commitManualState(next, `世界书人物已导入：新增 ${created} 人，更新 ${updated} 人。`);
+    const importedPeople = next.people.filter(person => (
+        person.worldbookRef
+        && selected.some(candidate => `${name}::${candidate.uid}` === person.worldbookRef)
+    ));
+    commitManualState(
+        next,
+        `世界书人物已导入：新增 ${created} 人，更新 ${updated} 人。`,
+        {
+            mutateStore: store => {
+                for (const person of importedPeople) clearPersonDeletionTombstone(store, person);
+            },
+        },
+    );
     return { created, updated };
+}
+
+async function smartImportWorldbookPeople(bookName) {
+    const name = String(bookName || '').trim();
+    if (!name) throw new Error('先挑一本世界书给我看看嘛～');
+
+    let scan = runtime.worldbookScan;
+    if (scan.bookName !== name || scan.phase !== 'success' || !Array.isArray(scan.entries)) {
+        scan = await scanWorldbook(name);
+    }
+
+    const plan = planSmartWorldbookImport(scan.entries);
+    if (!plan.auto.length) {
+        if (plan.review.length) {
+            return {
+                created: 0,
+                updated: 0,
+                reviewCount: plan.review.length,
+                skippedTechnicalCount: plan.skippedTechnical.length,
+                needsReview: true,
+            };
+        }
+        throw new Error('这本世界书里暂时没识别到可以安全自动导入的人物');
+    }
+
+    const result = importWorldbookPeople(
+        name,
+        plan.auto.map(entry => entry.uid),
+    );
+    return {
+        ...result,
+        reviewCount: plan.review.length,
+        skippedTechnicalCount: plan.skippedTechnical.length,
+        importedCount: plan.auto.length,
+    };
 }
 
 function toast(message, tone = 'info') {
@@ -685,6 +855,7 @@ function makeStore() {
         publicOpinionListHidden: false,
         publicOpinionDismissed: { news: [], forums: [] },
         publicOpinionSandbox: emptyPublicOpinionSandbox(),
+        manualDeletions: { eventIds: [], people: [] },
         recoveryPoints: [],
         updatedAt: new Date().toISOString(),
     };
@@ -725,11 +896,12 @@ function createBranchSnapshot(state, meta = {}, store = getStore()) {
 }
 
 function restoreBranchSnapshot(snapshot, fallback = null, store = getStore()) {
-    return restoreCompactSnapshot(
+    const restored = restoreCompactSnapshot(
         snapshot,
         fallback || store?.initialState || null,
         store?.memorySummaryArchive || [],
     );
+    return applyManualDeletionFilters(restored, store);
 }
 
 function currentChatToken() {
@@ -822,6 +994,97 @@ function dismissPublicOpinionItem(kind, itemId) {
     return true;
 }
 
+
+function normalizeManualDeletions(value) {
+    const raw = value && typeof value === 'object' ? value : {};
+    const eventIds = [...new Set(
+        (Array.isArray(raw.eventIds) ? raw.eventIds : [])
+            .map(item => String(item || '').trim())
+            .filter(Boolean),
+    )].slice(-240);
+
+    const seenPeople = new Set();
+    const people = [];
+    for (const item of Array.isArray(raw.people) ? raw.people : []) {
+        if (!item || typeof item !== 'object') continue;
+        const entry = {
+            id: String(item.id || '').trim(),
+            name: String(item.name || '').trim(),
+            worldbookRef: String(item.worldbookRef || '').trim(),
+        };
+        if (!entry.id && !entry.name && !entry.worldbookRef) continue;
+        const key = `${entry.id.toLocaleLowerCase()}\u0000${entry.name.toLocaleLowerCase()}\u0000${entry.worldbookRef.toLocaleLowerCase()}`;
+        if (seenPeople.has(key)) continue;
+        seenPeople.add(key);
+        people.push(entry);
+    }
+    return { eventIds, people: people.slice(-240) };
+}
+
+function personMatchesDeletion(person, deletion) {
+    const id = String(person?.id || '').trim().toLocaleLowerCase();
+    const name = String(person?.name || '').trim().toLocaleLowerCase();
+    const worldbookRef = String(person?.worldbookRef || '').trim().toLocaleLowerCase();
+    const deletedId = String(deletion?.id || '').trim().toLocaleLowerCase();
+    const deletedName = String(deletion?.name || '').trim().toLocaleLowerCase();
+    const deletedWorldbookRef = String(deletion?.worldbookRef || '').trim().toLocaleLowerCase();
+    return Boolean(
+        (deletedId && id && deletedId === id)
+        || (deletedWorldbookRef && worldbookRef && deletedWorldbookRef === worldbookRef)
+        || (deletedName && name && deletedName === name)
+    );
+}
+
+function applyManualDeletionFilters(inputState, store) {
+    const state = trimState(inputState);
+    const deletions = normalizeManualDeletions(store?.manualDeletions);
+    const deletedEvents = new Set(deletions.eventIds);
+
+    if (deletedEvents.size) {
+        state.events = (state.events || []).filter(event => !deletedEvents.has(String(event?.id || '')));
+        state.echoes = (state.echoes || []).filter(echo => !deletedEvents.has(String(echo?.eventId || '')));
+        state.archive = (state.archive || []).filter(entry => !deletedEvents.has(String(entry?.eventId || '')));
+    }
+    if (deletions.people.length) {
+        state.people = (state.people || []).filter(person => (
+            person?.isUser || !deletions.people.some(deletion => personMatchesDeletion(person, deletion))
+        ));
+    }
+    return trimState(state);
+}
+
+function addEventDeletionTombstone(store, event) {
+    store.manualDeletions = normalizeManualDeletions(store.manualDeletions);
+    const id = String(event?.id || '').trim();
+    if (id) {
+        store.manualDeletions.eventIds = [...new Set([
+            ...store.manualDeletions.eventIds,
+            id,
+        ])].slice(-240);
+    }
+}
+
+function addPersonDeletionTombstone(store, person) {
+    store.manualDeletions = normalizeManualDeletions(store.manualDeletions);
+    const entry = {
+        id: String(person?.id || '').trim(),
+        name: String(person?.name || '').trim(),
+        worldbookRef: String(person?.worldbookRef || '').trim(),
+    };
+    store.manualDeletions.people = normalizeManualDeletions({
+        ...store.manualDeletions,
+        people: [...store.manualDeletions.people, entry],
+    }).people;
+    if (store.personObservations && entry.id) delete store.personObservations[entry.id];
+}
+
+function clearPersonDeletionTombstone(store, person) {
+    store.manualDeletions = normalizeManualDeletions(store.manualDeletions);
+    store.manualDeletions.people = store.manualDeletions.people.filter(
+        deletion => !personMatchesDeletion(person, deletion),
+    );
+}
+
 function getStore({ create = true } = {}) {
     const context = getContext();
     const metadata = context?.chatMetadata;
@@ -858,8 +1121,12 @@ function getStore({ create = true } = {}) {
         createdMigrationRecovery = true;
     }
     store.schemaVersion = SCHEMA_VERSION;
+    store.manualDeletions = normalizeManualDeletions(store.manualDeletions);
     store.initialState = trimState(store.initialState || createInitialState({ worldName: '主世界' }));
-    store.currentState = trimState(store.currentState || store.initialState);
+    store.currentState = applyManualDeletionFilters(
+        store.currentState || store.initialState,
+        store,
+    );
     store.memorySummaryArchive = Array.isArray(store.memorySummaryArchive)
         ? store.memorySummaryArchive
         : [];
@@ -916,6 +1183,8 @@ function syncPublicOpinionLedgerFromWorld(store) {
 
 function saveStore(store, { immediate = false } = {}) {
     const context = getContext();
+    store.manualDeletions = normalizeManualDeletions(store.manualDeletions);
+    store.currentState = applyManualDeletionFilters(store.currentState, store);
     mergeMemorySummaryArchive(store, store.currentState);
     syncPublicOpinionLedgerFromWorld(store);
     store.updatedAt = new Date().toISOString();
@@ -1525,7 +1794,7 @@ function setCurrentState(nextState, {
     immediate = false,
 } = {}) {
     const store = getStore();
-    store.currentState = trimState(nextState);
+    store.currentState = applyManualDeletionFilters(nextState, store);
 
     if (overrideKey) {
         store.branchOverrides[overrideKey] = createBranchSnapshot(store.currentState, {
@@ -2337,7 +2606,13 @@ async function runSimulationForMessage(messageId, {
     job = null,
 } = {}) {
     const chatTokenAtStart = currentChatToken();
+    const dataEpochAtStart = runtime.dataEpoch;
+    const taskStillCurrent = () => (
+        currentChatToken() === chatTokenAtStart
+        && runtime.dataEpoch === dataEpochAtStart
+    );
     if (job?.chatToken && job.chatToken !== chatTokenAtStart) return null;
+    if (job?.dataEpoch !== undefined && job.dataEpoch !== dataEpochAtStart) return null;
 
     const beforeContext = getContext();
     const beforeMessage = beforeContext?.chat?.[messageId];
@@ -2469,8 +2744,8 @@ async function runSimulationForMessage(messageId, {
                 injection: nextInjection,
             });
             const target = locateTargetBranch(messageId, swipeId, expectedHash);
-            if (!target || currentChatToken() !== chatTokenAtStart) {
-                if (currentChatToken() === chatTokenAtStart) {
+            if (!target || !taskStillCurrent()) {
+                if (taskStillCurrent()) {
                     setSyncStatus({
                         phase: 'pending',
                         message: '正文分支已变化，旧结果未提交；最新正文仍等待推演',
@@ -2652,8 +2927,8 @@ async function runSimulationForMessage(messageId, {
         });
 
         const target = locateTargetBranch(messageId, swipeId, expectedHash);
-        if (!target || currentChatToken() !== chatTokenAtStart) {
-            if (currentChatToken() === chatTokenAtStart) {
+        if (!target || !taskStillCurrent()) {
+            if (taskStillCurrent()) {
                 setSyncStatus({
                     phase: 'pending',
                     message: '正文分支已变化，旧结果未提交；最新正文仍等待推演',
@@ -2707,7 +2982,7 @@ async function runSimulationForMessage(messageId, {
         return resultState;
     } catch (error) {
         if (isAbortError(error) || controller.signal.aborted) {
-            const target = currentChatToken() === chatTokenAtStart
+            const target = taskStillCurrent()
                 ? locateTargetBranch(messageId, swipeId, expectedHash)
                 : null;
             if (target) {
@@ -2718,14 +2993,14 @@ async function runSimulationForMessage(messageId, {
                 });
                 await target.context.saveChat?.();
             }
-            if (currentChatToken() === chatTokenAtStart) {
+            if (taskStillCurrent()) {
                 const store = getStore();
                 store.currentState = markPendingSync(baseState, true);
                 saveStore(store);
                 refreshInjection();
                 runtime.ui?.render();
             }
-            if (currentChatToken() === chatTokenAtStart) {
+            if (taskStillCurrent()) {
                 setSyncStatus({
                     phase: 'pending',
                     message: '本次推演已取消，正文仍保持待同步',
@@ -2736,7 +3011,7 @@ async function runSimulationForMessage(messageId, {
             throw error;
         }
         const errorMessage = describeError(error);
-        const target = currentChatToken() === chatTokenAtStart
+        const target = taskStillCurrent()
             ? locateTargetBranch(messageId, swipeId, expectedHash)
             : null;
         if (target) {
@@ -2749,7 +3024,7 @@ async function runSimulationForMessage(messageId, {
             await target.context.saveChat?.();
         }
 
-        if (currentChatToken() === chatTokenAtStart) {
+        if (taskStillCurrent()) {
             const store = getStore();
             store.currentState = markPendingSync(baseState, true);
             saveStore(store);
@@ -2757,7 +3032,7 @@ async function runSimulationForMessage(messageId, {
             runtime.ui?.render();
         }
 
-        if (currentChatToken() === chatTokenAtStart) {
+        if (taskStillCurrent()) {
             setSyncStatus({
                 phase: 'error',
                 message: '世界推演没有完成',
@@ -2792,6 +3067,7 @@ function queueSimulation(messageId, options = {}) {
         swipeId,
         sourceKey,
         queueKey,
+        dataEpoch: runtime.dataEpoch,
         trigger: options.trigger || 'reply',
         force: Boolean(options.force),
         newAssistantCount: Math.max(1, Number(options.newAssistantCount) || 1),
@@ -3368,11 +3644,15 @@ function armManualUndo(previousState, {
     key = currentAnchorKey(),
     label = '撤销刚才的手动更改',
     previousInitialState = null,
+    previousManualDeletions = null,
 } = {}) {
     if (runtime.manualUndoTimer !== null) window.clearTimeout(runtime.manualUndoTimer);
     runtime.manualUndo = {
         state: clone(previousState),
         previousInitialState: previousInitialState ? clone(previousInitialState) : null,
+        previousManualDeletions: previousManualDeletions
+            ? clone(previousManualDeletions)
+            : null,
         key,
         label,
         chatToken: currentChatToken(),
@@ -3401,7 +3681,10 @@ function undoManualChange() {
     runtime.manualUndoTimer = null;
 
     const store = getStore();
-    store.currentState = trimState(undo.state);
+    if (undo.previousManualDeletions) {
+        store.manualDeletions = normalizeManualDeletions(undo.previousManualDeletions);
+    }
+    store.currentState = applyManualDeletionFilters(undo.state, store);
     if (undo.previousInitialState) store.initialState = trimState(undo.previousInitialState);
     store.branchOverrides[undo.key] = createBranchSnapshot(store.currentState, {
         sourceKey: undo.key,
@@ -3413,11 +3696,21 @@ function undoManualChange() {
     toast('刚才的手动更改已经撤销。', 'success');
 }
 
-function commitManualState(nextState, message = '世界状态已更新') {
+function commitManualState(nextState, message = '世界状态已更新', {
+    mutateStore = null,
+} = {}) {
     const key = currentAnchorKey();
-    const previousState = getState();
+    const store = getStore();
+    const previousState = clone(store.currentState);
+    const previousManualDeletions = clone(
+        normalizeManualDeletions(store.manualDeletions),
+    );
+    if (typeof mutateStore === 'function') mutateStore(store);
     const committed = setCurrentState(nextState, { overrideKey: key });
-    armManualUndo(previousState, { key });
+    armManualUndo(previousState, {
+        key,
+        previousManualDeletions,
+    });
     schedulePublicImpactPropagation(committed, 120);
     scheduleAutoPublicOpinion(committed, 520);
     toast(message, 'success');
@@ -5494,6 +5787,168 @@ function recentRawAssistantTexts(count = 1) {
     return result;
 }
 
+
+function resetRuntimeMaintenanceState({
+    clearRetryState = false,
+} = {}) {
+    runtime.dataEpoch += 1;
+
+    const abortables = [
+        runtime.activeSimulation?.controller,
+        runtime.activeHistoryScan,
+        runtime.activeWorldPulse?.controller,
+        runtime.activePublicImpact?.controller,
+        runtime.activePublicOpinion?.controller,
+        runtime.publicOpinionRefreshTransaction?.controller,
+        runtime.activePublicOpinionSandbox?.controller,
+        runtime.activeObservation?.controller,
+    ];
+    for (const abortable of abortables) {
+        try {
+            abortable?.abort?.();
+        } catch {
+            // Maintenance must continue even if one stale task object is malformed.
+        }
+    }
+
+    if (runtime.autoMemoryTimer !== null) {
+        window.clearTimeout(runtime.autoMemoryTimer);
+        runtime.autoMemoryTimer = null;
+    }
+    if (runtime.manualUndoTimer !== null) {
+        window.clearTimeout(runtime.manualUndoTimer);
+        runtime.manualUndoTimer = null;
+    }
+
+    runtime.activeSimulation = null;
+    runtime.activeHistoryScan = null;
+    runtime.activeWorldPulse = null;
+    runtime.activePublicImpact = null;
+    runtime.activePublicOpinion = null;
+    runtime.publicOpinionRefreshTransaction = null;
+    runtime.activePublicOpinionSandbox = null;
+    runtime.activeObservation = null;
+    runtime.pendingPublicImpact = false;
+    runtime.pendingPublicOpinion = false;
+    runtime.inBackgroundGeneration = false;
+    runtime.consistencyBarrierRunning = false;
+    runtime.queuedSimulations.clear();
+    runtime.simulationChain = Promise.resolve();
+    runtime.simulationCount = 0;
+    runtime.manualUndo = null;
+    runtime.editDecision = null;
+    runtime.injection = { text: '', eventIds: [] };
+    runtime.generationOffer = { eventIds: [], at: 0 };
+    runtime.lastPromptBridge = null;
+    runtime.lastTaskConnection = null;
+    runtime.customModels = [];
+    runtime.modelPullStatus = { phase: 'idle', message: '' };
+    runtime.worldbookScan = {
+        phase: 'idle',
+        message: '',
+        bookName: '',
+        entries: [],
+    };
+    runtime.historyProgress = {
+        kind: 'memory',
+        phase: 'idle',
+        processed: 0,
+        total: 0,
+        message: '',
+    };
+    runtime.publicOpinionStatus = {
+        phase: 'idle',
+        message: '舆情还没开张呢～',
+        error: '',
+    };
+    runtime.publicOpinionSandboxStatus = {
+        phase: 'idle',
+        message: '',
+        error: '',
+    };
+    runtime.syncStatus = {
+        phase: 'idle',
+        message: '还没推演过～世界先在这里等你',
+        error: '',
+        attemptedAt: '',
+        succeededAt: '',
+        method: '',
+        summary: null,
+    };
+
+    resetLastCustomApiOperation();
+    if (clearRetryState) resetRetryControl();
+}
+
+function clearStoredChatCaches() {
+    const store = getStore();
+    store.personObservations = {};
+    store.publicOpinionSandbox = emptyPublicOpinionSandbox();
+    saveStore(store, { immediate: true });
+    return store;
+}
+
+function clearCurrentChatCache() {
+    // Keep route cooldowns: a real 429 cooldown is protection, not corrupt cache.
+    resetRuntimeMaintenanceState({ clearRetryState: false });
+    clearStoredChatCaches();
+    refreshInjection();
+    runtime.ui?.render();
+    return {
+        cleared: true,
+        preservedWorldState: true,
+        preservedApiSettings: true,
+    };
+}
+
+function clearMessageBranchSnapshots(context = getContext()) {
+    let removed = 0;
+    for (const message of context?.chat || []) {
+        if (message?.extra && Object.prototype.hasOwnProperty.call(message.extra, SNAPSHOT_KEY)) {
+            delete message.extra[SNAPSHOT_KEY];
+            removed += 1;
+        }
+        for (const swipe of Array.isArray(message?.swipe_info) ? message.swipe_info : []) {
+            if (swipe?.extra && Object.prototype.hasOwnProperty.call(swipe.extra, SNAPSHOT_KEY)) {
+                delete swipe.extra[SNAPSHOT_KEY];
+                removed += 1;
+            }
+        }
+    }
+    return removed;
+}
+
+async function resetCurrentChatData() {
+    const context = getContext();
+    if (!hasChatContext()) throw new Error('当前没有可重置的聊天');
+
+    // Do not create a recovery point here. A reset that secretly leaves a complete
+    // restore copy would not be a real clean-room test.
+    resetRuntimeMaintenanceState({ clearRetryState: false });
+
+    const removedSnapshots = clearMessageBranchSnapshots(context);
+    const freshStore = makeStore();
+    runtime.transientStore = null;
+    context.chatMetadata[STATE_KEY] = freshStore;
+
+    if (typeof context.saveMetadata === 'function') {
+        await context.saveMetadata();
+    } else {
+        context.saveMetadataDebounced?.();
+    }
+    await context.saveChat?.();
+
+    refreshInjection();
+    runtime.ui?.render();
+
+    return {
+        reset: true,
+        removedSnapshots,
+        preservedChatMessages: true,
+        preservedApiSettings: true,
+    };
+}
+
 async function handleUiAction(action, payload = {}) {
     if (action === 'undo-manual') {
         undoManualChange();
@@ -5510,6 +5965,14 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'copy-diagnostics') {
         return copyDiagnosticReport();
+    }
+
+    if (action === 'clear-current-chat-cache') {
+        return clearCurrentChatCache();
+    }
+
+    if (action === 'reset-current-chat-data') {
+        return await resetCurrentChatData();
     }
 
     if (action === 'preview-notice') {
@@ -5691,8 +6154,10 @@ async function handleUiAction(action, payload = {}) {
             const [removed] = next.events.splice(index, 1);
             next.echoes = (next.echoes || []).filter(item => item.eventId !== removed.id);
             next.archive = (next.archive || []).filter(item => item.eventId !== removed.id);
-            commitManualState(next, `回声“${removed.title}”已经删除。`);
-            return;
+            commitManualState(next, `回声“${removed.title}”已经删除。`, {
+                mutateStore: store => addEventDeletionTombstone(store, removed),
+            });
+            return true;
         }
         const index = next.archive.findIndex(item => item.id === id);
         if (index < 0) throw new Error('没有找到这条纪事');
@@ -5945,7 +6410,13 @@ async function handleUiAction(action, payload = {}) {
         if (existing) Object.assign(existing, person);
         else next.people.push(person);
         const reconciled = settlePersonWorldState(next, person.id, { source: 'manual' });
-        commitManualState(reconciled, existing ? '后台人物卡已经更新。' : `已将 ${person.name} 加入后台人物。`);
+        commitManualState(
+            reconciled,
+            existing ? '后台人物卡已经更新。' : `已将 ${person.name} 加入后台人物。`,
+            {
+                mutateStore: store => clearPersonDeletionTombstone(store, person),
+            },
+        );
         return person;
     }
 
@@ -5965,8 +6436,10 @@ async function handleUiAction(action, payload = {}) {
         if (index < 0) throw new Error('没有找到这个人物');
         if (next.people[index].locked) throw new Error('锁定的人物卡不能删除，请先解锁');
         const [removed] = next.people.splice(index, 1);
-        commitManualState(next, `已移除后台人物 ${removed.name}。`);
-        return;
+        commitManualState(next, `已移除后台人物 ${removed.name}。`, {
+            mutateStore: store => addPersonDeletionTombstone(store, removed),
+        });
+        return true;
     }
 
     if (action === 'sync-clock-from-story') {
@@ -6181,6 +6654,10 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'import-worldbook-people') {
         return importWorldbookPeople(payload.bookName, payload.entryIds);
+    }
+
+    if (action === 'smart-import-worldbook-people') {
+        return await smartImportWorldbookPeople(payload.bookName);
     }
 
     if (action === 'cancel-simulation') {

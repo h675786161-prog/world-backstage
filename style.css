@@ -7722,3 +7722,104 @@
 .wb-news-card-foot > span:empty {
     display: none;
 }
+
+/* 1.7.3-dev.3 · 世界书人物一键智能导入 */
+.wb-worldbook-action-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+    gap: 8px;
+    align-items: stretch;
+}
+
+.wb-worldbook-action-row > button {
+    min-width: 0;
+}
+
+.wb-worldbook-smart-button {
+    min-height: 38px;
+}
+
+.wb-worldbook-entry.is-embedded-person {
+    border-style: solid;
+}
+
+.wb-worldbook-entry.is-embedded-person .wb-worldbook-entry-heading em {
+    white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+    .wb-worldbook-action-row {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* 1.7.3-dev.4 · 当前聊天缓存与重置 */
+.wb-maintenance-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 11px;
+    background: var(--wb-panel-faint);
+}
+
+.wb-maintenance-card + .wb-maintenance-card {
+    margin-top: 8px;
+}
+
+.wb-maintenance-card > div {
+    min-width: 0;
+}
+
+.wb-maintenance-card strong {
+    display: block;
+    color: var(--wb-text);
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.wb-maintenance-card p,
+.wb-maintenance-card small {
+    display: block;
+    margin: 4px 0 0;
+    color: var(--wb-text-faint);
+    font-size: 8.5px;
+    line-height: 1.55;
+}
+
+.wb-maintenance-card > button {
+    min-width: 82px;
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--wb-text-soft);
+    cursor: pointer;
+}
+
+.wb-maintenance-card.is-danger {
+    border-color: color-mix(in srgb, #c96f6f 30%, var(--wb-line));
+}
+
+.wb-maintenance-card > button.is-danger {
+    border-color: color-mix(in srgb, #c96f6f 42%, var(--wb-line)) !important;
+    color: #c96f6f;
+}
+
+.wb-maintenance-card > button.is-danger:hover,
+.wb-maintenance-card > button.is-danger:focus-visible {
+    background: color-mix(in srgb, #c96f6f 9%, transparent);
+}
+
+@media (max-width: 560px) {
+    .wb-maintenance-card {
+        grid-template-columns: 1fr;
+    }
+
+    .wb-maintenance-card > button {
+        width: 100%;
+    }
+}

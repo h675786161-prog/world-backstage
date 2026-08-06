@@ -2218,7 +2218,18 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
             0,
         ),
         resolvedAt: TERMINAL_EVENT_STATES.has(status)
-            ? (existing?.resolvedAt ?? worldMinute)
+            ? (
+                Number.isFinite(Number(raw?.resolved_at ?? raw?.resolvedAt))
+                    ? asInteger(raw?.resolved_at ?? raw?.resolvedAt, worldMinute, 0)
+                    : (
+                        existing?.resolvedAt
+                        ?? terminalResolutionMinute(
+                            { clockMode, dueAt },
+                            status,
+                            worldMinute,
+                        )
+                    )
+            )
             : null,
     };
 }
@@ -2396,11 +2407,33 @@ function synchronizeCognitiveLedger(state) {
     }
 }
 
-function markTerminal(event, status, worldMinute, result = '') {
+function terminalResolutionMinute(event, status, worldMinute, explicitMinute = null) {
+    const hasExplicit = explicitMinute !== null
+        && explicitMinute !== undefined
+        && String(explicitMinute).trim() !== '';
+    const explicit = hasExplicit ? Number(explicitMinute) : Number.NaN;
+    if (Number.isFinite(explicit) && explicit >= 0) {
+        return Math.min(asInteger(explicit, worldMinute, 0), worldMinute);
+    }
+    const dueAt = Number(event?.dueAt);
+    if (
+        ['resolved', 'missed'].includes(status)
+        && ['duration', 'scheduled'].includes(event?.clockMode)
+        && Number.isFinite(dueAt)
+        && dueAt >= 0
+        && dueAt <= worldMinute
+    ) {
+        return dueAt;
+    }
+    return worldMinute;
+}
+
+function markTerminal(event, status, worldMinute, result = '', explicitMinute = null) {
+    const resolvedMinute = terminalResolutionMinute(event, status, worldMinute, explicitMinute);
     event.status = status;
     event.result = asString(result, event.result || event.expectedResult || '', 520);
-    event.resolvedAt = worldMinute;
-    event.updatedAt = worldMinute;
+    event.resolvedAt = resolvedMinute;
+    event.updatedAt = Math.max(Number(event.updatedAt) || 0, resolvedMinute);
     if (event.visibility !== 'hidden' && event.delivery.state !== 'delivered') {
         event.delivery.state = 'pending';
     }
@@ -3567,7 +3600,13 @@ export function applySimulationResult(baseState, rawPayload, {
 
         const requestedStatus = normalizeEventStatus(update?.status ?? event.status);
         if (TERMINAL_EVENT_STATES.has(requestedStatus)) {
-            markTerminal(event, requestedStatus, worldMinute, update?.result);
+            markTerminal(
+                event,
+                requestedStatus,
+                worldMinute,
+                update?.result,
+                update?.resolved_at ?? update?.resolvedAt,
+            );
         } else {
             event.status = requestedStatus;
             event.updatedAt = worldMinute;

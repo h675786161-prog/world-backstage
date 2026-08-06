@@ -6109,6 +6109,250 @@
     border-radius: 999px !important;
 }
 
+#world-backstage-root .wb-worldbook-import-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+#world-backstage-root .wb-worldbook-import-actions > button {
+    min-height: 42px;
+    padding: 0 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+    font-family: var(--wb-font);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    line-height: 1.3;
+}
+
+#world-backstage-root .wb-worldbook-import-actions > button:disabled {
+    opacity: 0.5;
+}
+
+#world-backstage-root .wb-worldbook-import-actions > button:hover:not(:disabled),
+#world-backstage-root .wb-worldbook-import-actions > button:focus-visible:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-worldbook-import-hint {
+    margin: 0;
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 12px);
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-worldbook-status.is-review {
+    border-color: color-mix(in srgb, var(--wb-accent) 40%, var(--wb-line));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-worldbook-draft-review {
+    display: grid;
+    gap: 8px;
+}
+
+#world-backstage-root .wb-worldbook-draft-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    color: var(--wb-text-soft);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+}
+
+#world-backstage-root .wb-worldbook-draft-head small {
+    color: var(--wb-text-faint);
+}
+
+#world-backstage-root .wb-worldbook-draft-card {
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 12px;
+    background: var(--wb-panel-faint);
+}
+
+#world-backstage-root .wb-worldbook-draft-card.is-skipped {
+    opacity: 0.45;
+}
+
+#world-backstage-root .wb-worldbook-draft-person,
+#world-backstage-root .wb-worldbook-draft-field {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-worldbook-draft-person > span,
+#world-backstage-root .wb-worldbook-draft-field > span {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-worldbook-draft-person em,
+#world-backstage-root .wb-worldbook-draft-field em {
+    color: var(--wb-text-faint);
+    font-style: normal;
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 12px);
+}
+
+#world-backstage-root .wb-worldbook-draft-person em.is-existing {
+    color: var(--wb-jade);
+}
+
+#world-backstage-root .wb-worldbook-draft-person em.is-warn,
+#world-backstage-root .wb-worldbook-draft-field em {
+    color: var(--wb-amber);
+}
+
+#world-backstage-root .wb-worldbook-draft-person small {
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 12px);
+}
+
+#world-backstage-root .wb-worldbook-draft-fields {
+    display: grid;
+    gap: 6px;
+    padding-left: 4px;
+}
+
+#world-backstage-root .wb-worldbook-draft-field {
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: var(--wb-panel);
+}
+
+#world-backstage-root .wb-worldbook-draft-field.is-low {
+    border-color: color-mix(in srgb, var(--wb-amber) 55%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-amber) 8%, var(--wb-panel));
+}
+
+#world-backstage-root .wb-worldbook-draft-field.is-off {
+    opacity: 0.45;
+}
+
+#world-backstage-root .wb-worldbook-draft-field b {
+    color: var(--wb-text-soft);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px);
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-worldbook-draft-field p {
+    margin: 0;
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 13px);
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+#world-backstage-root .wb-worldbook-draft-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+#world-backstage-root .wb-worldbook-draft-actions > button {
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel);
+    color: var(--wb-text-soft);
+    font-family: var(--wb-font);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+}
+
+#world-backstage-root .wb-worldbook-draft-actions > button:disabled {
+    opacity: 0.5;
+}
+
+#world-backstage-root .wb-worldbook-status.is-partial {
+    border-color: color-mix(in srgb, var(--wb-amber) 34%, var(--wb-line));
+    color: var(--wb-amber);
+}
+
+#world-backstage-root .wb-worldbook-import-report {
+    border: 1px solid var(--wb-line);
+    border-radius: 11px;
+    background: var(--wb-panel-faint);
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-worldbook-import-report > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    color: var(--wb-text-soft);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 14px);
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-worldbook-import-report > summary small {
+    color: var(--wb-text-faint);
+}
+
+#world-backstage-root .wb-worldbook-import-report ul {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0 12px 10px 12px;
+    list-style: none;
+}
+
+#world-backstage-root .wb-worldbook-import-report li {
+    padding-left: 10px;
+    border-left: 2px solid var(--wb-line);
+    color: var(--wb-text-soft);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 13px);
+    line-height: 1.5;
+}
+
+#world-backstage-root .wb-worldbook-import-report li.is-fixed {
+    border-left-color: color-mix(in srgb, var(--wb-jade) 55%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-import-report li.is-review {
+    border-left-color: color-mix(in srgb, var(--wb-amber) 62%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-import-report li.is-untouched {
+    border-left-color: color-mix(in srgb, var(--wb-amber) 62%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-import-report li.is-dropped,
+#world-backstage-root .wb-worldbook-import-report li.is-skipped,
+#world-backstage-root .wb-worldbook-import-report li.is-failed {
+    border-left-color: color-mix(in srgb, var(--wb-danger) 48%, var(--wb-line));
+}
+
+#world-backstage-root .wb-worldbook-import-report li em {
+    color: var(--wb-text-faint);
+    font-style: normal;
+}
+
+#world-backstage-root .wb-worldbook-import-note {
+    margin: 0;
+    padding: 0 12px 10px 12px;
+    color: var(--wb-text-faint);
+    font-size: clamp(9px, calc(9px + var(--wb-reading-bump)), 12px);
+    line-height: 1.55;
+}
+
+@media (max-width: 420px) {
+    #world-backstage-root .wb-worldbook-import-actions {
+        grid-template-columns: 1fr;
+    }
+}
+
 #world-backstage-root .wb-worldbook-source-profile {
     border: 1px solid var(--wb-line);
     border-radius: 11px;

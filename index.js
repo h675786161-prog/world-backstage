@@ -57,11 +57,19 @@ import { createWorldBackstageUI } from './ui.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 import {
+    buildWorldbookImportPrompt,
     detectWorldbookCharacter,
     detectWorldbookTechnicalEntry,
     extractWorldbookCharacterCandidates,
     extractWorldbookCharacterProfile,
+    matchImportTarget,
+    mergeImportedDrafts,
+    normalizeImportedPeople,
+    planImportWrites,
     planSmartWorldbookImport,
+    planWorldbookImportBatches,
+    splitLongEntries,
+    summarizeUntouchedEntries,
 } from './worldbook.js';
 import {
     buildPublicOpinionPrompt,
@@ -187,6 +195,10 @@ const runtime = {
         bookName: '',
         entries: [],
     },
+    worldbookImport: emptyWorldbookImportReport(),
+    worldbookImportDrafts: [],
+    worldbookImportSession: null,
+    worldbookImportRunning: false,
     historyProgress: {
         kind: 'memory',
         phase: 'idle',
@@ -244,6 +256,9 @@ async function scanWorldbook(bookName) {
         bookName: name,
         entries: [],
     };
+    runtime.worldbookImport = emptyWorldbookImportReport();
+    runtime.worldbookImportDrafts = [];
+    runtime.worldbookImportSession = null;
     runtime.ui?.render();
 
     try {
@@ -421,7 +436,123 @@ function looksLikeLegacyWorldbookPersonalityDump(value, candidateContent = '') {
     return markerHits >= 3;
 }
 
-function importWorldbookPeople(bookName, entryIds = []) {
+const IMPORTABLE_PERSON_FIELDS = Object.freeze([
+    'identityAnchor',
+    'personalityAnchor',
+    'appearanceProfile',
+    'backgroundProfile',
+    'speakingStyle',
+    'behaviorBoundaries',
+]);
+
+// 审校台要显示这次会新建还是更新谁，以及匹配是否有歧义。
+function describeImportTarget(state, draft) {
+    const match = matchImportTarget(state?.people, draft);
+    return {
+        existing: Boolean(match.person),
+        existingName: match.person?.name || '',
+        matchedBy: match.matchedBy,
+        ambiguous: match.ambiguous,
+    };
+}
+
+// 规则导入与 AI 整理导入共用的写入口。默认只补空栏位，绝不覆盖作者已经写好的
+// 设定；legacyDumpFields 里的栏位额外允许覆盖“整段世界书糊进来”的旧值。
+function upsertImportedPerson(next, {
+    name,
+    reference,
+    // 上游的智能拆分会把一条世界书拆成多个候选，sourceReference / sourceEntryName
+    // 记的是拆分前那条原始条目。AI 整理没有拆分层，默认回落到 reference 本身。
+    sourceReference = '',
+    sourceEntryName = '',
+    values = {},
+    worldbookRaw = '',
+    aliases = [],
+    sourceContent = '',
+    legacyDumpFields = [],
+    allowRename = false,
+    claimedIds = null,
+} = {}) {
+    const importedName = String(name || '').trim().slice(0, 80);
+    if (!importedName) return null;
+    // 有歧义时不认领任何一条，另建新记录——审校台已经把这件事标出来让用户决定。
+    const existing = matchImportTarget(next.people, { reference, name: importedName, aliases }, claimedIds).person;
+
+    if (existing) {
+        let renamed = '';
+        for (const field of IMPORTABLE_PERSON_FIELDS) {
+            const value = String(values[field] || '').trim();
+            if (!value) continue;
+            const current = String(existing[field] || '').trim();
+            const replaceable = !current
+                || (
+                    legacyDumpFields.includes(field)
+                    && looksLikeLegacyWorldbookPersonalityDump(current, sourceContent)
+                );
+            if (replaceable) existing[field] = value;
+        }
+        // 旧的正则导入会把「南枫 nicknames: [...] version: 4」整串当成名字。
+        // 重新整理时如果认出了干净的名字，就把这条记录修回来。
+        if (
+            allowRename
+            && existing.worldbookRef
+            && existing.name !== importedName
+            && existing.name.length > importedName.length
+            && existing.name.includes(importedName)
+        ) {
+            renamed = existing.name;
+            existing.name = importedName;
+            existing.monogram = importedName.slice(0, 1);
+        }
+        existing.worldbookRaw = worldbookRaw || existing.worldbookRaw || '';
+        existing.worldbookRef = reference;
+        existing.worldbookSourceRef = sourceReference || reference;
+        existing.worldbookSourceEntry = sourceEntryName;
+        existing.manual = true;
+        existing.updatedAt = next.clock.absoluteMinute;
+        claimedIds?.add(existing.id);
+        return { outcome: 'updated', id: existing.id, name: importedName, renamedFrom: renamed };
+    }
+
+    const id = `person_worldbook_${hashText(reference)}`;
+    next.people.push({
+        id,
+        name: importedName,
+        monogram: importedName.slice(0, 1),
+        location: '位置待确认',
+        action: '当前行动待确认',
+        intent: '短期意图待确认',
+        longTermGoal: '',
+        identityAnchor: values.identityAnchor || '',
+        personalityAnchor: values.personalityAnchor || '',
+        appearanceProfile: values.appearanceProfile || '',
+        backgroundProfile: values.backgroundProfile || '',
+        worldbookRaw,
+        speakingStyle: values.speakingStyle || '',
+        behaviorBoundaries: values.behaviorBoundaries || '',
+        trace: '',
+        innerVoice: '',
+        innerVoiceAt: next.clock.absoluteMinute,
+        knowledge: 'hidden',
+        relevance: 1,
+        simulationEnabled: true,
+        locked: false,
+        manual: true,
+        source: 'manual',
+        isUser: false,
+        lastSeenMessageId: -1,
+        worldbookRef: reference,
+        worldbookSourceRef: sourceReference || reference,
+        worldbookSourceEntry: sourceEntryName,
+        updatedAt: next.clock.absoluteMinute,
+    });
+    claimedIds?.add(id);
+    return { outcome: 'created', id, name: importedName, renamedFrom: '' };
+}
+
+// 规则导入只收智能拆分认定可导入的人物条目；AI 整理的存在意义恰恰是处理正则
+// 认不出来的写法，所以那条路线不套 importablePerson，但同样不喂技术条目。
+function selectedWorldbookEntries(bookName, entryIds = [], { requirePerson = true } = {}) {
     const name = String(bookName || '').trim();
     if (runtime.worldbookScan.bookName !== name) {
         throw new Error('世界书预览已经变化，请重新扫描');
@@ -429,10 +560,15 @@ function importWorldbookPeople(bookName, entryIds = []) {
     const wanted = new Set((Array.isArray(entryIds) ? entryIds : [entryIds]).map(String));
     const selected = runtime.worldbookScan.entries.filter(entry => (
         wanted.has(String(entry.uid))
-        && (entry.importablePerson ?? entry.likelyPerson)
         && !entry.technicalEntry
+        && (!requirePerson || (entry.importablePerson ?? entry.likelyPerson))
     ));
     if (!selected.length) throw new Error('请至少勾选一个人物条目');
+    return { bookName: name, selected };
+}
+
+function importWorldbookPeople(bookName, entryIds = []) {
+    const { bookName: name, selected } = selectedWorldbookEntries(bookName, entryIds);
 
     const next = clone(getState());
     let created = 0;
@@ -442,71 +578,26 @@ function importWorldbookPeople(bookName, entryIds = []) {
         const sourceReference = `${name}::${candidate.sourceUid || candidate.uid}`;
         const profile = candidate.profile || extractWorldbookCharacterProfile(candidate.content, candidate.name);
         const importedName = String(profile.name || candidate.parsedName || candidate.name || '').trim().slice(0, 80);
-        if (!importedName) continue;
-        const existing = next.people.find(person => (
-            person.worldbookRef === reference
-            || person.name.toLocaleLowerCase() === importedName.toLocaleLowerCase()
-            || person.name.toLocaleLowerCase() === candidate.name.toLocaleLowerCase()
-        ));
-        if (existing) {
-            const fillIfBlank = (field, value) => {
-                if (value && !String(existing[field] || '').trim()) existing[field] = value;
-            };
-            fillIfBlank('identityAnchor', profile.identityAnchor);
-            if (
-                profile.personalityAnchor
-                && (
-                    !String(existing.personalityAnchor || '').trim()
-                    || looksLikeLegacyWorldbookPersonalityDump(existing.personalityAnchor, candidate.content)
-                )
-            ) {
-                existing.personalityAnchor = profile.personalityAnchor;
-            }
-            fillIfBlank('appearanceProfile', profile.appearanceProfile);
-            fillIfBlank('backgroundProfile', profile.backgroundProfile);
-            fillIfBlank('speakingStyle', profile.speakingStyle);
-            fillIfBlank('behaviorBoundaries', profile.behaviorBoundaries);
-            existing.worldbookRaw = profile.worldbookRaw || existing.worldbookRaw || '';
-            existing.worldbookRef = reference;
-            existing.worldbookSourceRef = sourceReference;
-            existing.worldbookSourceEntry = candidate.sourceEntryName || candidate.name || '';
-            existing.manual = true;
-            existing.updatedAt = next.clock.absoluteMinute;
-            updated += 1;
-            continue;
-        }
-        next.people.push({
-            id: `person_worldbook_${hashText(reference)}`,
+        const result = upsertImportedPerson(next, {
             name: importedName,
-            monogram: importedName.slice(0, 1),
-            location: '位置待确认',
-            action: '当前行动待确认',
-            intent: '短期意图待确认',
-            longTermGoal: '',
-            identityAnchor: profile.identityAnchor,
-            personalityAnchor: profile.personalityAnchor,
-            appearanceProfile: profile.appearanceProfile,
-            backgroundProfile: profile.backgroundProfile,
+            reference,
+            sourceReference,
+            sourceEntryName: candidate.sourceEntryName || candidate.name || '',
+            values: {
+                identityAnchor: profile.identityAnchor,
+                personalityAnchor: profile.personalityAnchor,
+                appearanceProfile: profile.appearanceProfile,
+                backgroundProfile: profile.backgroundProfile,
+                speakingStyle: profile.speakingStyle,
+                behaviorBoundaries: profile.behaviorBoundaries,
+            },
             worldbookRaw: profile.worldbookRaw,
-            speakingStyle: profile.speakingStyle,
-            behaviorBoundaries: profile.behaviorBoundaries,
-            trace: '',
-            innerVoice: '',
-            innerVoiceAt: next.clock.absoluteMinute,
-            knowledge: 'hidden',
-            relevance: 1,
-            simulationEnabled: true,
-            locked: false,
-            manual: true,
-            source: 'manual',
-            isUser: false,
-            lastSeenMessageId: -1,
-            worldbookRef: reference,
-            worldbookSourceRef: sourceReference,
-            worldbookSourceEntry: candidate.sourceEntryName || candidate.name || '',
-            updatedAt: next.clock.absoluteMinute,
+            aliases: [candidate.name],
+            sourceContent: candidate.content,
+            legacyDumpFields: ['personalityAnchor'],
         });
-        created += 1;
+        if (result?.outcome === 'created') created += 1;
+        if (result?.outcome === 'updated') updated += 1;
     }
     const importedPeople = next.people.filter(person => (
         person.worldbookRef
@@ -557,6 +648,300 @@ async function smartImportWorldbookPeople(bookName) {
         skippedTechnicalCount: plan.skippedTechnical.length,
         importedCount: plan.auto.length,
     };
+}
+
+function emptyWorldbookImportReport() {
+    return {
+        phase: 'idle',
+        message: '',
+        bookName: '',
+        created: 0,
+        updated: 0,
+        token: '',
+        people: [],
+        skipped: [],
+        untouched: [],
+        failures: [],
+        renamed: [],
+    };
+}
+
+function discardWorldbookDrafts() {
+    runtime.worldbookImportDrafts = [];
+    runtime.worldbookImportSession = null;
+    runtime.worldbookImport = emptyWorldbookImportReport();
+    runtime.ui?.render();
+    return true;
+}
+
+// 审校台按「确认」后才走到这里。selections 只带人物与栏位的取舍，值本身仍然
+// 取自 runtime 里那份已经过原文回查的草稿，不接受界面回传的正文。
+function commitWorldbookDrafts(selections = [], { token = '', bookName = '' } = {}) {
+    const pending = Array.isArray(runtime.worldbookImportDrafts) ? runtime.worldbookImportDrafts : [];
+    if (!pending.length) throw new Error('没有待确认的整理结果，请重新整理一次');
+
+    // 草稿绑定在生成它的聊天与世界书上。三者任一对不上就作废，绝不把上一个
+    // 聊天整理出来的人物写进当前世界。
+    const session = runtime.worldbookImportSession;
+    const mismatch = !session
+        || session.chatToken !== currentChatToken()
+        || (token && session.token !== String(token))
+        || (bookName && session.bookName !== String(bookName));
+    if (mismatch) {
+        discardWorldbookDrafts();
+        throw new Error('这份整理草稿不属于当前聊天或世界书，已作废；请重新整理一次');
+    }
+
+    const wanted = new Map();
+    for (const item of Array.isArray(selections) ? selections : []) {
+        const reference = String(item?.reference || '');
+        if (!reference) continue;
+        wanted.set(reference, new Set((Array.isArray(item?.fields) ? item.fields : []).map(String)));
+    }
+
+    const next = clone(getState());
+    const claimedIds = new Set();
+    const renamed = [];
+    let created = 0;
+    let updated = 0;
+    let skippedByUser = 0;
+    for (const draft of pending) {
+        const fields = wanted.get(draft.reference);
+        if (!fields?.size) {
+            skippedByUser += 1;
+            continue;
+        }
+        const values = {};
+        for (const field of IMPORTABLE_PERSON_FIELDS) {
+            if (fields.has(field) && draft.values?.[field]) values[field] = draft.values[field];
+        }
+        if (!Object.keys(values).length) {
+            skippedByUser += 1;
+            continue;
+        }
+        const result = upsertImportedPerson(next, {
+            name: draft.name,
+            reference: draft.reference,
+            values,
+            worldbookRaw: draft.sourceContent.slice(0, 4000),
+            aliases: draft.aliases,
+            sourceContent: draft.sourceContent,
+            legacyDumpFields: IMPORTABLE_PERSON_FIELDS,
+            allowRename: true,
+            claimedIds,
+        });
+        if (result?.outcome === 'created') created += 1;
+        if (result?.outcome === 'updated') updated += 1;
+        if (result?.renamedFrom) renamed.push({ from: result.renamedFrom, to: result.name });
+    }
+
+    if (!created && !updated) throw new Error('没有勾选任何要写入的内容');
+
+    const previous = runtime.worldbookImport || emptyWorldbookImportReport();
+    runtime.worldbookImportDrafts = [];
+    runtime.worldbookImportSession = null;
+    runtime.worldbookImport = {
+        ...previous,
+        phase: 'success',
+        people: [],
+        token: '',
+        created,
+        updated,
+        renamed,
+        message: [
+            `已写入：新增 ${created} 人，更新 ${updated} 人`,
+            skippedByUser ? `${skippedByUser} 人被你取消了` : '',
+        ].filter(Boolean).join('；'),
+    };
+    commitManualState(next, `AI 整理导入：新增 ${created} 人，更新 ${updated} 人。`);
+    return { created, updated, skippedByUser };
+}
+
+// 扫描阶段为了预览把正文截到 4000 字。整理要看全文，所以这里按需重新读一次。
+async function loadFullWorldbookEntries(bookName, selected) {
+    const context = getContext();
+    if (typeof context?.loadWorldInfo !== 'function') return selected;
+    try {
+        const data = await context.loadWorldInfo(bookName);
+        const byUid = new Map(Object.values(data?.entries || {})
+            .filter(Boolean)
+            .map(entry => [String(entry.uid ?? ''), entry]));
+        return selected.map(entry => {
+            const content = String(byUid.get(String(entry.uid))?.content || '').trim();
+            return content.length > String(entry.content || '').length
+                ? { ...entry, content: content.slice(0, 40000) }
+                : entry;
+        });
+    } catch (error) {
+        console.warn('[世界背面] 世界书全文没读成功，改用扫描时的内容', error);
+        return selected;
+    }
+}
+
+async function runWorldbookAiImport(bookName, entryIds = []) {
+    const { bookName: name, selected: scanned } = selectedWorldbookEntries(bookName, entryIds, {
+        requirePerson: false,
+    });
+    if (runtime.worldbookImportRunning) throw new Error('上一次 AI 整理还在跑～等它结束再来');
+
+    const chatToken = currentChatToken();
+    const abortIfChatChanged = () => {
+        if (currentChatToken() === chatToken) return;
+        const error = new Error('聊天已经切换，这次整理作废');
+        error.name = 'AbortError';
+        throw error;
+    };
+
+    const selected = await loadFullWorldbookEntries(name, scanned);
+    abortIfChatChanged();
+    const batches = planWorldbookImportBatches(splitLongEntries(selected));
+    const userName = String(getContext()?.name1 || '');
+    const drafts = [];
+    const skipped = [];
+    const failures = [];
+
+    runtime.worldbookImportRunning = true;
+    runtime.worldbookImportDrafts = [];
+    runtime.worldbookImportSession = null;
+    runtime.worldbookImport = {
+        ...emptyWorldbookImportReport(),
+        phase: 'running',
+        bookName: name,
+        message: `准备整理 ${selected.length} 条条目，共 ${batches.length} 批～`,
+    };
+    runtime.ui?.render();
+
+    try {
+        for (let index = 0; index < batches.length; index += 1) {
+            abortIfChatChanged();
+            const batch = batches[index];
+            runtime.worldbookImport.message = `正在整理第 ${index + 1}/${batches.length} 批（${batch.length} 条）～`;
+            runtime.ui?.render();
+            const sourceChars = batch.reduce((sum, entry) => sum + String(entry.content || '').length, 0);
+            const baseMaxTokens = Math.min(4000, Math.max(1200, Math.round(sourceChars * 1.2)));
+            try {
+                const payload = await runWithRetries(async attempt => {
+                    const prompt = buildWorldbookImportPrompt(batch, { userName });
+                    const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
+                        maxTokens: retryTokenBudget(baseMaxTokens, attempt),
+                        temperature: 0.05,
+                        taskKind: 'worldbook-import',
+                    });
+                    const parsed = extractJsonObject(raw);
+                    if (parsed) return parsed;
+                    throw unreadableJsonError(raw, '世界书整理模型');
+                }, {
+                    retries: getSettings().autoRetryCount,
+                    shouldRetry: error => !(
+                        /请先填写独立 API|HTTP 40[0134]|没有提供安静生成接口/
+                            .test(describeError(error))
+                    ),
+                    onRetry: ({ attempt, total, delayMs, rateLimited }) => {
+                        runtime.worldbookImport.message = rateLimited
+                            ? `人物路线被限流啦～冷却 ${cooldownSeconds(delayMs)} 秒后继续第 ${index + 1} 批`
+                            : `第 ${index + 1} 批没收好，正在重试 ${attempt}/${total}`;
+                        runtime.ui?.render();
+                    },
+                    ...retryTaskOptions(
+                        'worldbook-import',
+                        `worldbook-import:${name}:${batch.map(entry => entry.uid).join(',')}`,
+                        {
+                            onCooldown: ({ delayMs }) => {
+                                runtime.worldbookImport.message = `人物 API 正在冷却～还剩约 ${cooldownSeconds(delayMs)} 秒`;
+                                runtime.ui?.render();
+                            },
+                        },
+                    ),
+                });
+                const result = normalizeImportedPeople(payload, batch, { userName });
+                drafts.push(...result.people);
+                skipped.push(...result.skipped);
+            } catch (error) {
+                // 单批失败不拖垮其它批，最后一起回报。
+                failures.push({
+                    batch: index + 1,
+                    entries: batch.map(entry => entry.name).slice(0, 3),
+                    uids: batch.map(entry => String(entry.uid ?? '')),
+                    reason: describeError(error),
+                });
+            }
+        }
+
+        const merged = mergeImportedDrafts(drafts);
+        const failedUids = failures.flatMap(failure => failure.uids || []);
+        const untouched = summarizeUntouchedEntries(selected, {
+            people: merged,
+            skipped,
+            failedUids,
+        });
+        if (!merged.length) {
+            const report = {
+                ...emptyWorldbookImportReport(),
+                phase: failures.length ? 'error' : 'success',
+                bookName: name,
+                message: failures.length
+                    ? '这次整理没有成功的批次，可以再试一次或改用规则导入'
+                    : '这些条目里没有整理出可导入的人物',
+                skipped,
+                untouched,
+                failures,
+            };
+            runtime.worldbookImport = report;
+            return report;
+        }
+
+        // 整理结果先落成待确认草稿，不直接改世界状态：整理错了的话，用户是在
+        // 数据已经被改之后才发现的，事后编辑并不等于没发生过。
+        abortIfChatChanged();
+        const writes = planImportWrites(merged, selected, { bookName: name });
+        const state = getState();
+        const needsReview = writes.filter(draft => draft.review.length || draft.nameConflict).length;
+        const reviewToken = `${chatToken}:${Date.now().toString(36)}-${writes.length}`;
+        const report = {
+            ...emptyWorldbookImportReport(),
+            phase: 'review',
+            bookName: name,
+            token: reviewToken,
+            message: [
+                `整理出 ${writes.length} 人，确认后才会写进世界`,
+                needsReview ? `其中 ${needsReview} 人需要你看一眼` : '',
+                untouched.length ? `${untouched.length} 条勾选的条目没产出人物` : '',
+                failures.length ? `${failures.length} 批没跑成功` : '',
+            ].filter(Boolean).join('；'),
+            people: writes.map(draft => ({
+                reference: draft.reference,
+                name: draft.name,
+                values: { ...draft.values },
+                review: draft.review,
+                dropped: draft.dropped,
+                lengthFuse: draft.lengthFuse,
+                nameConflict: Boolean(draft.nameConflict),
+                sourceNames: draft.sourceUids
+                    .map(uid => selected.find(entry => String(entry.uid) === uid)?.name)
+                    .filter(Boolean),
+                ...describeImportTarget(state, draft),
+            })),
+            skipped,
+            untouched,
+            failures,
+        };
+        runtime.worldbookImportDrafts = writes;
+        runtime.worldbookImportSession = { chatToken, bookName: name, token: reviewToken };
+        runtime.worldbookImport = report;
+        return report;
+    } finally {
+        runtime.worldbookImportRunning = false;
+        // 中途抛错（比如切了聊天）时别把面板永远停在“正在整理”。
+        if (runtime.worldbookImport?.phase === 'running') {
+            runtime.worldbookImport = {
+                ...emptyWorldbookImportReport(),
+                phase: 'error',
+                bookName: name,
+                message: '这次整理没有完成',
+            };
+        }
+        runtime.ui?.render();
+    }
 }
 
 function toast(message, tone = 'info') {
@@ -1232,7 +1617,7 @@ function latestAssistantEntry() {
 }
 
 function taskRouteKey(taskKind = 'simulation') {
-    if (taskKind === 'person-observation') return 'observation';
+    if (taskKind === 'person-observation' || taskKind === 'worldbook-import') return 'observation';
     if (taskKind === 'public-opinion' || taskKind === 'public-opinion-sandbox') return 'opinion';
     if (taskKind === 'history' || taskKind === 'history-index' || taskKind === 'memory') return 'history';
     return 'simulation';
@@ -1514,6 +1899,10 @@ function getSyncStatus() {
         worldbook: {
             ...runtime.worldbookScan,
             books: getWorldbookNames(),
+            aiImport: {
+                ...runtime.worldbookImport,
+                running: Boolean(runtime.worldbookImportRunning),
+            },
         },
         recovery: {
             count: recoveryPoints.length,
@@ -3589,6 +3978,10 @@ function onMessageDeleted() {
 }
 
 function onChatChanged() {
+    // 审校草稿属于生成它的那个聊天。切聊天就作废，否则确认时会把 A 的人物写进 B。
+    if (runtime.worldbookImportDrafts?.length || runtime.worldbookImport?.phase === 'review') {
+        discardWorldbookDrafts();
+    }
     runtime.activePublicOpinion?.controller?.abort?.();
     runtime.activePublicOpinionSandbox?.controller?.abort?.();
     runtime.activeObservation?.controller?.abort?.();
@@ -6658,6 +7051,21 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'smart-import-worldbook-people') {
         return await smartImportWorldbookPeople(payload.bookName);
+    }
+
+    if (action === 'ai-import-worldbook-people') {
+        return await runWorldbookAiImport(payload.bookName, payload.entryIds);
+    }
+
+    if (action === 'commit-worldbook-drafts') {
+        return commitWorldbookDrafts(payload.selections, {
+            token: payload.token,
+            bookName: payload.bookName,
+        });
+    }
+
+    if (action === 'discard-worldbook-drafts') {
+        return discardWorldbookDrafts();
     }
 
     if (action === 'cancel-simulation') {

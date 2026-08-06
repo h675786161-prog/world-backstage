@@ -9215,3 +9215,53 @@
         display: none;
     }
 }
+
+
+/* 小猫版 V2.0 · 手机把「停止全部后台任务」从最底边捞到同步状态条 */
+#world-backstage-root .wb-sync-stop-mobile {
+    display: none !important;
+}
+
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
+    /* 手机底部已经有主导航，再塞 footer 控件很容易撞系统导航栏。
+       直接取消手机 footer，把真正有用的任务控制搬到同步状态下面。 */
+    #world-backstage-root .wb-content-column {
+        grid-template-rows: 64px auto minmax(0, 1fr) !important;
+    }
+
+    #world-backstage-root .wb-window-footer {
+        display: none !important;
+    }
+
+    #world-backstage-root .wb-sync-stop-mobile {
+        grid-column: 1 / -1;
+        display: inline-flex !important;
+        width: 100%;
+        min-width: 0;
+        min-height: 34px;
+        margin-top: 3px;
+        padding: 7px 11px !important;
+        border: 1px solid color-mix(in srgb, var(--wb-accent) 30%, var(--wb-line)) !important;
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--wb-panel) 76%, var(--wb-accent-soft)) !important;
+        color: var(--wb-text-soft);
+        box-shadow: none !important;
+    }
+
+    #world-backstage-root .wb-sync-stop-mobile.is-cancel {
+        border-color: color-mix(in srgb, var(--wb-danger) 46%, var(--wb-line)) !important;
+        background: color-mix(in srgb, var(--wb-danger) 8%, var(--wb-panel)) !important;
+        color: var(--wb-danger) !important;
+    }
+
+    #world-backstage-root .wb-sync-stop-mobile:disabled {
+        opacity: .48;
+        cursor: default;
+    }
+
+    #world-backstage-root .wb-sync-strip {
+        align-content: center;
+        row-gap: 5px;
+        padding-bottom: 8px;
+    }
+}

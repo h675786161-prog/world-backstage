@@ -1905,7 +1905,7 @@
     width: min(390px, calc(100% - 36px));
     max-height: calc(100% - 90px);
     overflow: auto;
-    padding: 18px;
+    padding: 0 18px 18px;
     border: 1px solid var(--wb-line-strong);
     border-radius: 16px;
     background: var(--wb-panel-strong);
@@ -1913,6 +1913,27 @@
     scrollbar-width: thin;
     pointer-events: auto;
     display: block;
+}
+
+#world-backstage-root .wb-settings-sticky-head {
+    position: sticky;
+    z-index: 6;
+    top: 0;
+    margin: 0 -18px 14px;
+    padding: 18px 18px 0;
+    border-bottom: 1px solid var(--wb-line);
+    background: color-mix(in srgb, var(--wb-panel-strong) 97%, transparent);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 8px 18px color-mix(in srgb, var(--wb-bg) 9%, transparent);
+}
+
+#world-backstage-root .wb-settings-sticky-head .wb-popover-heading {
+    margin-bottom: 8px;
+}
+
+#world-backstage-root .wb-settings-sticky-head .wb-settings-tabs {
+    margin: 0 -18px;
+    border-bottom: 0;
 }
 
 .wb-popover-heading,
@@ -2400,6 +2421,28 @@
 
 .wb-world-orb:hover {
     transform: translateY(-2px);
+}
+
+.wb-world-orb.is-edge-hidden {
+    opacity: 0.94;
+    transform: none;
+}
+
+.wb-world-orb.is-edge-hidden.is-edge-right,
+.wb-world-orb.is-edge-hidden.is-edge-left,
+.wb-world-orb.is-edge-hidden:hover,
+.wb-world-orb.is-edge-hidden:focus-visible {
+    transform: none;
+}
+
+.wb-world-orb.is-edge-hidden.is-edge-right .wb-orb-notice {
+    right: auto;
+    left: 3px;
+}
+
+.wb-world-orb.is-edge-hidden.is-edge-left .wb-orb-notice {
+    right: 3px;
+    left: auto;
 }
 
 .wb-world-orb.is-dragging {
@@ -3646,13 +3689,12 @@
     }
 
     #world-backstage-root .wb-settings-layer > .wb-settings-popover > .wb-popover-heading {
-        position: sticky;
-        z-index: 3;
-        top: -18px;
-        margin: -18px -18px 14px;
-        padding: 18px 18px 12px;
-        border-bottom: 1px solid var(--wb-line);
-        background: var(--wb-panel-strong);
+        position: static;
+    }
+
+    #world-backstage-root .wb-settings-layer > .wb-settings-popover > .wb-settings-sticky-head {
+        top: 0;
+        margin: 0 -18px 14px;
     }
 
     .wb-world-orb {
@@ -4265,7 +4307,7 @@
 
 .wb-memory-tools {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(190px, 0.7fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(150px, 0.55fr) minmax(190px, 0.7fr) auto;
     align-items: end;
     gap: 12px;
     margin-bottom: 16px;
@@ -4298,14 +4340,16 @@
     color: var(--wb-accent);
 }
 
-.wb-memory-search {
+.wb-memory-search,
+.wb-clue-relation-filter {
     display: grid;
     gap: 5px;
     color: var(--wb-text-faint);
     font-size: 8px;
 }
 
-.wb-memory-search input {
+.wb-memory-search input,
+.wb-clue-relation-filter select {
     width: 100%;
     min-height: 32px;
     padding: 6px 9px;
@@ -4316,7 +4360,11 @@
     outline: none;
 }
 
-.wb-memory-search input:focus {
+.wb-memory-search input {
+}
+
+.wb-memory-search input:focus,
+.wb-clue-relation-filter select:focus {
     border-color: var(--wb-accent);
     box-shadow: 0 0 0 3px var(--wb-accent-soft);
 }
@@ -4478,6 +4526,67 @@
     color: var(--wb-jade);
     font-size: 9px;
     line-height: 1.6;
+}
+
+.wb-clue-card.is-archived {
+    opacity: 0.58;
+    background: color-mix(in srgb, var(--wb-panel) 72%, var(--wb-bg));
+}
+
+.wb-clue-meta > button {
+    padding: 2px 7px;
+    border: 1px solid var(--wb-line) !important;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    font-size: 8px;
+    cursor: pointer;
+}
+
+.wb-clue-meta > button:hover {
+    color: var(--wb-accent);
+    border-color: color-mix(in srgb, var(--wb-accent) 40%, var(--wb-line)) !important;
+}
+
+.wb-clue-relations {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin: 8px 0 0;
+}
+
+.wb-clue-relations > span {
+    padding: 3px 7px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    background: var(--wb-panel-faint);
+    color: var(--wb-text-faint);
+    font-size: 8px;
+    line-height: 1.35;
+}
+
+.wb-clue-relations > span.is-person {
+    color: var(--wb-accent);
+}
+
+.wb-clue-relations > span.is-event {
+    color: var(--wb-blue);
+}
+
+.wb-clue-relations > span.is-location {
+    color: var(--wb-jade);
+}
+
+.wb-memory-relation-editor {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.wb-memory-intro-buttons {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
 }
 
 .wb-clue-tags {
@@ -4661,6 +4770,10 @@
 
     .wb-memory-tools > small {
         padding-bottom: 0;
+    }
+
+    .wb-memory-relation-editor {
+        grid-template-columns: 1fr;
     }
 }
 
@@ -5496,7 +5609,8 @@
     white-space: nowrap;
 }
 
-#world-backstage-root .wb-memory-intro-actions > button {
+#world-backstage-root .wb-memory-intro-actions > button,
+#world-backstage-root .wb-memory-intro-buttons > button {
     min-height: 29px;
     border-radius: 999px !important;
 }
@@ -9285,5 +9399,605 @@
         min-height: 34px;
         padding-inline: 6px !important;
         font-size: 10px;
+    }
+}
+
+/* 小猫版 V2.2 · 设置操作区精修：按钮层级、维护卡片与后台停止控件 */
+#world-backstage-root .wb-api-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+}
+
+#world-backstage-root .wb-api-actions .wb-api-action,
+#world-backstage-root .wb-api-actions .wb-api-action.is-primary,
+#world-backstage-root .wb-api-actions .wb-api-action.is-accent {
+    grid-column: auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    padding: 8px 10px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 88%, var(--wb-accent) 12%) !important;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--wb-panel) 96%, var(--wb-accent-soft) 4%);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 22%, transparent);
+    color: var(--wb-text-soft);
+    font-weight: 600;
+    line-height: 1.25;
+    text-align: center;
+}
+
+#world-backstage-root .wb-api-actions .wb-api-action.is-primary {
+    border-color: color-mix(in srgb, var(--wb-accent) 28%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-accent-soft) 72%, var(--wb-panel));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-api-actions .wb-api-action.is-accent {
+    background: color-mix(in srgb, var(--wb-accent-soft) 42%, var(--wb-panel));
+    color: var(--wb-text);
+}
+
+#world-backstage-root .wb-api-actions .wb-api-action:hover:not(:disabled),
+#world-backstage-root .wb-api-actions .wb-api-action:focus-visible:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-accent) 46%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-accent-soft) 55%, var(--wb-panel));
+    color: var(--wb-accent);
+    transform: translateY(-1px);
+}
+
+#world-backstage-root .wb-api-actions .wb-api-action:disabled {
+    opacity: .52;
+    box-shadow: none;
+}
+
+#world-backstage-root .wb-maintenance-card {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 9px;
+    padding: 12px 13px;
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--wb-panel-faint) 92%, var(--wb-panel) 8%);
+}
+
+#world-backstage-root .wb-maintenance-card + .wb-maintenance-card {
+    margin-top: 9px;
+}
+
+#world-backstage-root .wb-maintenance-card strong {
+    font-size: 10.5px;
+    line-height: 1.35;
+}
+
+#world-backstage-root .wb-maintenance-card p,
+#world-backstage-root .wb-maintenance-card small {
+    margin-top: 4px;
+    font-size: 9px;
+    line-height: 1.5;
+}
+
+#world-backstage-root .wb-maintenance-card > button {
+    align-self: flex-end;
+    width: auto;
+    min-width: 82px;
+    min-height: 32px;
+    padding: 6px 12px !important;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--wb-panel) 94%, var(--wb-accent-soft) 6%);
+}
+
+#world-backstage-root .wb-maintenance-card > button:hover:not(:disabled),
+#world-backstage-root .wb-maintenance-card > button:focus-visible:not(:disabled) {
+    border-color: color-mix(in srgb, var(--wb-accent) 36%, var(--wb-line)) !important;
+    color: var(--wb-accent);
+    background: color-mix(in srgb, var(--wb-accent-soft) 36%, var(--wb-panel));
+}
+
+#world-backstage-root .wb-maintenance-card.is-danger {
+    border-color: color-mix(in srgb, var(--wb-danger) 30%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-panel) 96%, var(--wb-danger) 4%);
+}
+
+#world-backstage-root .wb-global-stop {
+    min-height: 38px;
+    padding: 8px 15px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 20%, var(--wb-line)) !important;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-panel) 96%, var(--wb-accent-soft) 4%);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 22%, transparent);
+    color: var(--wb-text-faint);
+}
+
+#world-backstage-root .wb-global-stop:not(:disabled):hover,
+#world-backstage-root .wb-global-stop:not(:disabled):focus-visible {
+    border-color: color-mix(in srgb, var(--wb-danger) 34%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-danger) 6%, var(--wb-panel));
+    color: var(--wb-danger);
+}
+
+#world-backstage-root .wb-global-stop:disabled {
+    cursor: default;
+    opacity: .64;
+    box-shadow: none;
+}
+
+#world-backstage-root .wb-global-stop > i {
+    width: 10px;
+    height: 10px;
+    border-width: 1.4px;
+    opacity: .62;
+}
+
+#world-backstage-root .wb-global-stop.is-cancel {
+    border-color: color-mix(in srgb, var(--wb-danger) 42%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-danger) 8%, var(--wb-panel)) !important;
+    color: var(--wb-danger) !important;
+}
+
+@media (max-width: 360px) {
+    #world-backstage-root .wb-api-actions {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* 2.2.0 · memory toolbar polish */
+#world-backstage-root .wb-memory-tools {
+    grid-template-columns: minmax(180px, 0.38fr) minmax(260px, 1fr) auto;
+    grid-template-areas:
+        "filters filters filters"
+        "relation search count";
+    align-items: end;
+    gap: 12px 14px;
+    padding: 14px 16px;
+    border-color: color-mix(in srgb, var(--wb-line-strong) 70%, var(--wb-line));
+    border-radius: 16px;
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--wb-panel) 82%, transparent), transparent 72%),
+        var(--wb-panel-faint);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.035);
+}
+
+#world-backstage-root .wb-memory-filters {
+    grid-area: filters;
+    display: flex;
+    flex-wrap: wrap;
+    width: fit-content;
+    max-width: 100%;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 78%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--wb-bg) 34%, transparent);
+}
+
+#world-backstage-root .wb-memory-filters button {
+    min-height: 30px;
+    padding: 5px 11px;
+    border: 1px solid transparent !important;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    font-size: 10px;
+    transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+#world-backstage-root .wb-memory-filters button:hover:not(.is-active) {
+    background: color-mix(in srgb, var(--wb-panel) 74%, transparent);
+    color: var(--wb-text-soft);
+}
+
+#world-backstage-root .wb-memory-filters button.is-active {
+    border-color: color-mix(in srgb, var(--wb-accent) 32%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-accent-soft) 78%, var(--wb-panel));
+    color: var(--wb-accent);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--wb-accent) 11%, transparent);
+}
+
+#world-backstage-root .wb-clue-relation-filter {
+    grid-area: relation;
+}
+
+#world-backstage-root .wb-memory-search {
+    grid-area: search;
+}
+
+#world-backstage-root .wb-memory-search,
+#world-backstage-root .wb-clue-relation-filter {
+    gap: 6px;
+    font-size: 8px;
+    letter-spacing: 0.02em;
+}
+
+#world-backstage-root .wb-memory-search > span,
+#world-backstage-root .wb-clue-relation-filter > span {
+    padding-left: 2px;
+    color: var(--wb-text-faint);
+}
+
+#world-backstage-root .wb-memory-search input,
+#world-backstage-root .wb-clue-relation-filter select {
+    min-height: 38px;
+    padding: 8px 11px;
+    border-color: color-mix(in srgb, var(--wb-line-strong) 62%, var(--wb-line));
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--wb-panel) 94%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+    font-size: 10px;
+}
+
+#world-backstage-root .wb-memory-search input:hover,
+#world-backstage-root .wb-clue-relation-filter select:hover {
+    border-color: color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line));
+}
+
+#world-backstage-root .wb-memory-search input:focus,
+#world-backstage-root .wb-clue-relation-filter select:focus {
+    border-color: color-mix(in srgb, var(--wb-accent) 58%, var(--wb-line));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent-soft) 72%, transparent);
+}
+
+#world-backstage-root .wb-memory-tools > small {
+    grid-area: count;
+    align-self: end;
+    min-width: 52px;
+    margin-bottom: 1px;
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 74%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--wb-panel) 70%, transparent);
+    color: var(--wb-text-faint);
+    font-size: 9px;
+    line-height: 18px;
+    text-align: center;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-memory-bulk-tools {
+    grid-area: bulk;
+}
+
+@media (max-width: 820px) {
+    #world-backstage-root .wb-memory-tools {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            "filters filters"
+            "relation count"
+            "search search";
+        gap: 10px;
+        padding: 12px;
+    }
+
+    #world-backstage-root .wb-memory-filters {
+        width: 100%;
+    }
+
+    #world-backstage-root .wb-memory-filters button {
+        flex: 1 1 auto;
+    }
+
+    #world-backstage-root .wb-memory-tools > small {
+        min-width: 48px;
+    }
+
+    #world-backstage-root .wb-memory-bulk-tools {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 520px) {
+    #world-backstage-root .wb-memory-tools {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "filters"
+            "relation"
+            "search"
+            "count";
+    }
+
+    #world-backstage-root .wb-memory-filters {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        width: 100%;
+    }
+
+    #world-backstage-root .wb-memory-filters button {
+        width: 100%;
+        padding-inline: 7px;
+    }
+
+    #world-backstage-root .wb-memory-tools > small {
+        justify-self: end;
+        padding: 5px 9px;
+        line-height: 16px;
+    }
+}
+
+/* 2.2.0 · memory header + filters unified panel */
+#world-backstage-root .wb-memory-shell {
+    padding-top: 10px;
+}
+
+#world-backstage-root .wb-memory-toolbar {
+    margin-bottom: 16px;
+    padding: 12px 14px 14px;
+    border: 1px solid color-mix(in srgb, var(--wb-line-strong) 72%, var(--wb-line));
+    border-radius: 15px;
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--wb-panel) 82%, transparent), transparent 76%),
+        var(--wb-panel-faint);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.028);
+    font-family: var(--wb-font) !important;
+}
+
+#world-backstage-root .wb-memory-toolbar-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 34px;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--wb-line) 72%, transparent);
+}
+
+#world-backstage-root .wb-memory-toolbar-summary {
+    color: var(--wb-text-faint);
+    font-family: var(--wb-font) !important;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 15px);
+    font-weight: 450;
+    line-height: 1.4;
+    letter-spacing: 0;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-intro-buttons {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-intro-buttons > button {
+    min-height: 30px;
+    padding: 5px 10px !important;
+    border: 1px solid color-mix(in srgb, var(--wb-line-strong) 66%, var(--wb-line)) !important;
+    border-radius: 9px !important;
+    background: color-mix(in srgb, var(--wb-panel) 82%, transparent);
+    color: var(--wb-text-soft);
+    box-shadow: none;
+    font: inherit !important;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 14px) !important;
+    font-weight: 500;
+    line-height: 1.2;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-intro-buttons > button:hover {
+    border-color: color-mix(in srgb, var(--wb-accent) 34%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-accent-soft) 48%, var(--wb-panel));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-tools {
+    display: grid;
+    grid-template-columns: max-content minmax(150px, 0.52fr) minmax(230px, 1fr) auto;
+    grid-template-areas:
+        "filters relation search count"
+        "bulk bulk bulk bulk";
+    align-items: end;
+    gap: 10px 12px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-filters {
+    grid-area: filters;
+    display: inline-flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    width: max-content;
+    max-width: 100%;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 74%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--wb-panel) 56%, transparent);
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-filters button {
+    min-height: 30px;
+    padding: 5px 9px;
+    border: 1px solid transparent !important;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    font-family: var(--wb-font) !important;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 14px) !important;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: 0;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-filters button:hover:not(.is-active) {
+    background: color-mix(in srgb, var(--wb-panel) 82%, transparent);
+    color: var(--wb-text-soft);
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-filters button.is-active {
+    border-color: color-mix(in srgb, var(--wb-accent) 36%, var(--wb-line)) !important;
+    background: color-mix(in srgb, var(--wb-accent-soft) 70%, var(--wb-panel));
+    color: var(--wb-accent);
+    box-shadow: none;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-clue-relation-filter {
+    grid-area: relation;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-search {
+    grid-area: search;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-search,
+#world-backstage-root .wb-memory-toolbar .wb-clue-relation-filter {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+    color: var(--wb-text-faint);
+    font-family: var(--wb-font) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px) !important;
+    font-weight: 450;
+    line-height: 1.2;
+    letter-spacing: 0;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-search > span,
+#world-backstage-root .wb-memory-toolbar .wb-clue-relation-filter > span {
+    padding-left: 2px;
+    color: var(--wb-text-faint);
+    font: inherit !important;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-search input,
+#world-backstage-root .wb-memory-toolbar .wb-clue-relation-filter select {
+    width: 100%;
+    min-height: 36px;
+    padding: 7px 10px;
+    border: 1px solid color-mix(in srgb, var(--wb-line-strong) 60%, var(--wb-line));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--wb-panel) 92%, transparent) !important;
+    color: var(--wb-text);
+    box-shadow: none;
+    outline: none;
+    font-family: var(--wb-font) !important;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 14px) !important;
+    font-weight: 400;
+    line-height: 1.3;
+    letter-spacing: 0;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-search input::placeholder {
+    color: color-mix(in srgb, var(--wb-text-faint) 82%, transparent);
+    font-family: var(--wb-font) !important;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-search input:hover,
+#world-backstage-root .wb-memory-toolbar .wb-clue-relation-filter select:hover {
+    border-color: color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line));
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-search input:focus,
+#world-backstage-root .wb-memory-toolbar .wb-clue-relation-filter select:focus {
+    border-color: color-mix(in srgb, var(--wb-accent) 52%, var(--wb-line));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--wb-accent-soft) 68%, transparent);
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-tools > small {
+    grid-area: count;
+    align-self: end;
+    min-width: 48px;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 7px 9px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 68%, transparent);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--wb-panel) 56%, transparent);
+    color: var(--wb-text-faint);
+    font-family: var(--wb-font) !important;
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px) !important;
+    font-weight: 450;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-memory-toolbar .wb-memory-bulk-tools {
+    grid-area: bulk;
+    margin-top: 2px;
+    padding-top: 10px;
+    border-top: 1px solid color-mix(in srgb, var(--wb-line) 64%, transparent);
+}
+
+@media (max-width: 980px) {
+    #world-backstage-root .wb-memory-toolbar .wb-memory-tools {
+        grid-template-columns: minmax(0, 1fr) minmax(150px, 0.46fr) minmax(220px, 0.8fr) auto;
+    }
+
+    #world-backstage-root .wb-memory-toolbar .wb-memory-filters button {
+        padding-inline: 7px;
+    }
+}
+
+@media (max-width: 820px) {
+    #world-backstage-root .wb-memory-toolbar-top {
+        align-items: flex-start;
+    }
+
+    #world-backstage-root .wb-memory-toolbar-summary {
+        white-space: normal;
+    }
+
+    #world-backstage-root .wb-memory-toolbar .wb-memory-tools {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        grid-template-areas:
+            "filters filters filters"
+            "relation search count"
+            "bulk bulk bulk";
+    }
+
+    #world-backstage-root .wb-memory-toolbar .wb-memory-filters {
+        width: 100%;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    #world-backstage-root .wb-memory-toolbar .wb-memory-filters::-webkit-scrollbar {
+        display: none;
+    }
+}
+
+@media (max-width: 560px) {
+    #world-backstage-root .wb-memory-shell {
+        padding-inline: 12px;
+    }
+
+    #world-backstage-root .wb-memory-toolbar {
+        padding: 11px;
+        border-radius: 13px;
+    }
+
+    #world-backstage-root .wb-memory-toolbar-top {
+        display: grid;
+        gap: 8px;
+    }
+
+    #world-backstage-root .wb-memory-toolbar .wb-memory-intro-buttons {
+        width: 100%;
+    }
+
+    #world-backstage-root .wb-memory-toolbar .wb-memory-intro-buttons > button {
+        flex: 1 1 0;
+    }
+
+    #world-backstage-root .wb-memory-toolbar .wb-memory-tools {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            "filters filters"
+            "relation count"
+            "search search"
+            "bulk bulk";
+        gap: 9px;
+    }
+
+    #world-backstage-root .wb-memory-toolbar .wb-memory-filters {
+        display: flex;
     }
 }

@@ -102,9 +102,9 @@ import {
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.0.0';
+const PLUGIN_VERSION = '2.2.0';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 26,
+    settingsVersion: 28,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -135,6 +135,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     sceneTiming: 'strict',
     orbPosition: null,
     orbEnabled: true,
+    orbEdgeHide: false,
     recordPlayerCharacter: true,
     includeUserInnerVoice: false,
     uiScale: 'comfortable',
@@ -142,6 +143,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     customContextTurns: 8,
     timePolicy: 'world',
     apiMode: 'tavern',
+    tavernApiProfileId: '',
     customApiUrl: '',
     customApiKey: '',
     customApiModel: '',
@@ -200,6 +202,8 @@ const runtime = {
     activeChatToken: '',
     contextEpoch: 0,
     queuedSimulations: new Map(),
+    connectionLanes: new Map(),
+    apiRequestTimeline: [],
     pendingManualSimulation: null,
     manualSimulationTimer: null,
     autoMemoryTimer: null,
@@ -646,6 +650,7 @@ function normalizeApiModuleRoutes(value, profiles = []) {
     const normalizeRoute = route => {
         const text = String(route || 'default');
         if (text === 'default' || text === 'tavern') return text;
+        if (/^tavern-profile:[^\s:][^\s]*$/.test(text)) return text.slice(0, 220);
         return validProfiles.has(text) ? text : 'default';
     };
     const raw = value && typeof value === 'object' ? value : {};
@@ -891,11 +896,12 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 26;
+    settings.settingsVersion = 28;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
-    if (!['tavern', 'custom'].includes(settings.apiMode)) settings.apiMode = 'tavern';
+    if (!['tavern', 'tavern-profile', 'custom'].includes(settings.apiMode)) settings.apiMode = 'tavern';
+    settings.tavernApiProfileId = String(settings.tavernApiProfileId || '').trim().slice(0, 120);
     settings.customApiUrl = String(settings.customApiUrl || '').trim().slice(0, 500);
     settings.customApiKey = String(settings.customApiKey || '').trim().slice(0, 1000);
     settings.customApiModel = String(settings.customApiModel || '').trim().slice(0, 180);
@@ -919,8 +925,9 @@ function getSettings() {
     settings.orbEnabled = previousSettingsVersion < 22
         ? (previous?.orbEnabled !== undefined ? Boolean(previous.orbEnabled) : true)
         : settings.orbEnabled !== false;
+    settings.orbEdgeHide = Boolean(settings.orbEdgeHide);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 26) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 28) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -943,7 +950,11 @@ function makeStore() {
         publicOpinionListHidden: false,
         publicOpinionDismissed: { news: [], forums: [] },
         publicOpinionSandbox: emptyPublicOpinionSandbox(),
-        manualDeletions: { eventIds: [], people: [] },
+        manualDeletions: {
+            eventIds: [],
+            people: [],
+            memory: { factIds: [], clueIds: [], summaryIds: [] },
+        },
         recoveryPoints: [],
         updatedAt: new Date().toISOString(),
     };
@@ -1122,6 +1133,16 @@ function normalizeManualDeletions(value) {
             .filter(Boolean),
     )].slice(-240);
 
+    const memoryRaw = raw.memory && typeof raw.memory === 'object' ? raw.memory : {};
+    const memory = {
+        factIds: [...new Set((Array.isArray(memoryRaw.factIds) ? memoryRaw.factIds : [])
+            .map(item => String(item || '').trim()).filter(Boolean))].slice(-480),
+        clueIds: [...new Set((Array.isArray(memoryRaw.clueIds) ? memoryRaw.clueIds : [])
+            .map(item => String(item || '').trim()).filter(Boolean))].slice(-480),
+        summaryIds: [...new Set((Array.isArray(memoryRaw.summaryIds) ? memoryRaw.summaryIds : [])
+            .map(item => String(item || '').trim()).filter(Boolean))].slice(-480),
+    };
+
     const seenPeople = new Set();
     const people = [];
     for (const item of Array.isArray(raw.people) ? raw.people : []) {
@@ -1137,7 +1158,7 @@ function normalizeManualDeletions(value) {
         seenPeople.add(key);
         people.push(entry);
     }
-    return { eventIds, people: people.slice(-240) };
+    return { eventIds, people: people.slice(-240), memory };
 }
 
 function personMatchesDeletion(person, deletion) {
@@ -1169,6 +1190,25 @@ function applyManualDeletionFilters(inputState, store) {
             person?.isUser || !deletions.people.some(deletion => personMatchesDeletion(person, deletion))
         ));
     }
+    state.storyMemory ||= { facts: [], clues: [], summaries: [] };
+    const deletedFacts = new Set(deletions.memory.factIds);
+    const deletedClues = new Set(deletions.memory.clueIds);
+    const deletedSummaries = new Set(deletions.memory.summaryIds);
+    if (deletedFacts.size) {
+        state.storyMemory.facts = (state.storyMemory.facts || []).filter(
+            item => !deletedFacts.has(String(item?.id || '')),
+        );
+    }
+    if (deletedClues.size) {
+        state.storyMemory.clues = (state.storyMemory.clues || []).filter(
+            item => !deletedClues.has(String(item?.id || '')),
+        );
+    }
+    if (deletedSummaries.size) {
+        state.storyMemory.summaries = (state.storyMemory.summaries || []).filter(
+            item => !deletedSummaries.has(String(item?.id || '')),
+        );
+    }
     return trimState(state);
 }
 
@@ -1181,6 +1221,21 @@ function addEventDeletionTombstone(store, event) {
             id,
         ])].slice(-240);
     }
+}
+
+function addMemoryDeletionTombstone(store, kind, item) {
+    store.manualDeletions = normalizeManualDeletions(store.manualDeletions);
+    const id = String(item?.id || '').trim();
+    if (!id) return;
+    const key = kind === 'clue'
+        ? 'clueIds'
+        : kind === 'summary'
+            ? 'summaryIds'
+            : 'factIds';
+    store.manualDeletions.memory[key] = [...new Set([
+        ...store.manualDeletions.memory[key],
+        id,
+    ])].slice(-480);
 }
 
 function addPersonDeletionTombstone(store, person) {
@@ -1370,6 +1425,72 @@ function taskRouteKey(taskKind = 'simulation') {
     return 'simulation';
 }
 
+function tavernConnectionManagerDisabled(context = getContext()) {
+    const disabled = context?.extensionSettings?.disabledExtensions;
+    return Array.isArray(disabled) && disabled.includes('connection-manager');
+}
+
+function rawTavernConnectionProfiles(context = getContext()) {
+    const profiles = context?.extensionSettings?.connectionManager?.profiles;
+    return Array.isArray(profiles) ? profiles : [];
+}
+
+function tavernConnectionProfileById(profileId, context = getContext()) {
+    const id = String(profileId || '').trim();
+    if (!id) return null;
+    return rawTavernConnectionProfiles(context).find(profile => String(profile?.id || '') === id) || null;
+}
+
+function listTavernConnectionProfiles() {
+    const context = getContext();
+    if (tavernConnectionManagerDisabled(context)) return [];
+    let profiles = [];
+    try {
+        const service = context?.ConnectionManagerRequestService;
+        profiles = typeof service?.getSupportedProfiles === 'function'
+            ? service.getSupportedProfiles()
+            : rawTavernConnectionProfiles(context);
+    } catch (error) {
+        console.warn('[世界背面] 读取酒馆连接方案失败，暂时只显示原始方案列表', error);
+        profiles = rawTavernConnectionProfiles(context);
+    }
+    const seen = new Set();
+    return (Array.isArray(profiles) ? profiles : [])
+        .filter(profile => profile && typeof profile === 'object')
+        .map(profile => {
+            const id = String(profile.id || '').trim().slice(0, 120);
+            if (!id || seen.has(id)) return null;
+            seen.add(id);
+            return {
+                id,
+                name: String(profile.name || '未命名酒馆方案').trim().slice(0, 120) || '未命名酒馆方案',
+                api: String(profile.api || '').trim().slice(0, 80),
+                model: String(profile.model || '').trim().slice(0, 180),
+                mode: String(profile.mode || '').trim().slice(0, 20),
+            };
+        })
+        .filter(Boolean)
+        .slice(0, 100);
+}
+
+function tavernProfileRoute(profileId, {
+    route = 'default',
+    routeKey = 'simulation',
+    settings = getSettings(),
+} = {}) {
+    const id = String(profileId || '').trim();
+    const profile = tavernConnectionProfileById(id);
+    return {
+        mode: 'tavern-profile',
+        route,
+        routeKey,
+        label: profile?.name || '酒馆已保存方案',
+        profileId: id,
+        profile,
+        settings,
+    };
+}
+
 function settingsForApiProfile(baseSettings, profile) {
     return {
         ...baseSettings,
@@ -1386,6 +1507,13 @@ function resolveTaskConnection(settings, taskKind = 'simulation') {
     const route = String(settings.apiModuleRoutes?.[routeKey] || 'default');
     if (route === 'tavern') {
         return { mode: 'tavern', route, routeKey, label: '跟随当前酒馆', settings };
+    }
+    if (route.startsWith('tavern-profile:')) {
+        return tavernProfileRoute(route.slice('tavern-profile:'.length), {
+            route,
+            routeKey,
+            settings,
+        });
     }
     if (route.startsWith('profile:')) {
         const id = route.slice('profile:'.length);
@@ -1410,13 +1538,53 @@ function resolveTaskConnection(settings, taskKind = 'simulation') {
             settings,
         };
     }
+    if (settings.apiMode === 'tavern-profile') {
+        return tavernProfileRoute(settings.tavernApiProfileId, {
+            route: 'default',
+            routeKey,
+            settings,
+        });
+    }
     return { mode: 'tavern', route: 'default', routeKey, label: '跟随当前酒馆', settings };
 }
 
+function physicalConnectionKey(taskKind = 'simulation') {
+    const settings = getSettings();
+    const route = resolveTaskConnection(settings, taskKind);
+    if (route.mode === 'tavern-profile') {
+        return [
+            'tavern-profile-physical',
+            String(route.profileId || 'missing'),
+        ].join(':');
+    }
+    if (route.mode === 'custom') {
+        const requestSettings = route.settings;
+        return [
+            'custom-physical',
+            requestSettings.customApiTransport || 'proxy',
+            hashText(String(requestSettings.customApiUrl || '')),
+            hashText(String(requestSettings.customApiKey || '')),
+            String(requestSettings.customApiModel || ''),
+        ].join(':');
+    }
+    const connection = getConnectionInfo();
+    return [
+        'tavern-physical',
+        String(connection?.source || 'tavern'),
+        String(connection?.model || ''),
+    ].join(':');
+}
 
 function retryConnectionKey(taskKind = 'simulation') {
     const settings = getSettings();
     const route = resolveTaskConnection(settings, taskKind);
+    if (route.mode === 'tavern-profile') {
+        return [
+            'tavern-profile',
+            route.route || 'default',
+            String(route.profileId || 'missing'),
+        ].join(':');
+    }
     if (route.mode === 'custom') {
         const requestSettings = route.settings;
         return [
@@ -1446,6 +1614,112 @@ function retryTaskOptions(taskKind, taskKey, {
     };
 }
 
+function pushApiRequestTimeline(entry = {}) {
+    runtime.apiRequestTimeline.push({
+        chatToken: String(entry.chatToken || ''),
+        taskKind: String(entry.taskKind || ''),
+        route: String(entry.route || '').slice(0, 120),
+        model: String(entry.model || '').slice(0, 180),
+        lane: String(entry.lane || '').slice(0, 180),
+        queuedAt: entry.queuedAt || '',
+        startedAt: entry.startedAt || '',
+        finishedAt: entry.finishedAt || '',
+        waitMs: Math.max(0, Number(entry.waitMs) || 0),
+        durationMs: Math.max(0, Number(entry.durationMs) || 0),
+        outcome: String(entry.outcome || 'unknown'),
+    });
+    if (runtime.apiRequestTimeline.length > 32) {
+        runtime.apiRequestTimeline.splice(0, runtime.apiRequestTimeline.length - 32);
+    }
+}
+
+function waitForPromiseOrAbort(promise, signal) {
+    if (!signal) return Promise.resolve(promise);
+    if (signal.aborted) {
+        const error = new Error('后台任务已取消');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+    }
+    return new Promise((resolve, reject) => {
+        const onAbort = () => {
+            const error = new Error('后台任务已取消');
+            error.name = 'AbortError';
+            reject(error);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        Promise.resolve(promise).then(
+            value => {
+                signal.removeEventListener?.('abort', onAbort);
+                resolve(value);
+            },
+            error => {
+                signal.removeEventListener?.('abort', onAbort);
+                reject(error);
+            },
+        );
+    });
+}
+
+async function runInConnectionLane(taskKind, signal, operation) {
+    const laneKey = physicalConnectionKey(taskKind);
+    const routeAtQueue = resolveTaskConnection(getSettings(), taskKind);
+    const timelineModel = routeAtQueue.mode === 'custom'
+        ? String(routeAtQueue.settings?.customApiModel || '')
+        : routeAtQueue.mode === 'tavern-profile'
+            ? String(routeAtQueue.profile?.model || '')
+            : String(getCurrentTavernConnectionInfo()?.model || '');
+    const previousTail = runtime.connectionLanes.get(laneKey) || Promise.resolve();
+    let release;
+    const ownDone = new Promise(resolve => { release = resolve; });
+    const waitForPrevious = Promise.resolve(previousTail).catch(() => undefined);
+    const laneTail = waitForPrevious.then(() => ownDone);
+    runtime.connectionLanes.set(laneKey, laneTail);
+
+    const queuedAtMs = Date.now();
+    const queuedAt = new Date(queuedAtMs).toISOString();
+    const chatTokenAtQueue = currentChatToken();
+    let startedAtMs = 0;
+    let outcome = 'cancelled';
+    try {
+        await waitForPromiseOrAbort(waitForPrevious, signal);
+        if (signal?.aborted) {
+            const error = new Error('后台任务已取消');
+            error.name = 'AbortError';
+            throw error;
+        }
+        startedAtMs = Date.now();
+        try {
+            const result = await operation();
+            outcome = 'success';
+            return result;
+        } catch (error) {
+            outcome = isAbortError(error) || signal?.aborted ? 'cancelled' : 'error';
+            throw error;
+        }
+    } finally {
+        const finishedAtMs = Date.now();
+        pushApiRequestTimeline({
+            chatToken: chatTokenAtQueue,
+            taskKind,
+            route: routeAtQueue.label || '',
+            model: timelineModel,
+            lane: laneKey,
+            queuedAt,
+            startedAt: startedAtMs ? new Date(startedAtMs).toISOString() : '',
+            finishedAt: new Date(finishedAtMs).toISOString(),
+            waitMs: startedAtMs ? startedAtMs - queuedAtMs : finishedAtMs - queuedAtMs,
+            durationMs: startedAtMs ? finishedAtMs - startedAtMs : 0,
+            outcome,
+        });
+        release?.();
+        void laneTail.finally(() => {
+            if (runtime.connectionLanes.get(laneKey) === laneTail) {
+                runtime.connectionLanes.delete(laneKey);
+            }
+        });
+    }
+}
+
 function cooldownSeconds(milliseconds) {
     return Math.max(1, Math.ceil(Math.max(0, Number(milliseconds) || 0) / 1000));
 }
@@ -1458,34 +1732,8 @@ function rateLimitLike(error) {
             .test(String(error?.message || error || ''));
 }
 
-function getConnectionInfo() {
+function getCurrentTavernConnectionInfo() {
     const context = getContext();
-    const pluginSettings = getSettings();
-    if (pluginSettings.apiMode === 'custom') {
-        let host = '';
-        try {
-            host = new URL(pluginSettings.customApiUrl).host;
-        } catch {
-            host = pluginSettings.customApiUrl;
-        }
-        return {
-            mainApi: 'custom-independent',
-            source: 'custom-independent',
-            apiLabel: '独立 OpenAI 兼容接口',
-            model: pluginSettings.customApiModel || '模型尚未配置',
-            profile: host || '接口地址尚未配置',
-            online: '',
-            method: pluginSettings.customApiTransport === 'direct'
-                ? '浏览器直连（不继承酒馆模型）'
-                : '经酒馆转发（不继承酒馆模型）',
-            configured: Boolean(
-                pluginSettings.customApiUrl
-                && pluginSettings.customApiKey
-                && pluginSettings.customApiModel
-            ),
-        };
-    }
-
     const settings = context?.chatCompletionSettings || {};
     const mainApi = String(context?.mainApi || 'unknown');
     const source = mainApi === 'openai'
@@ -1533,6 +1781,58 @@ function getConnectionInfo() {
         method: typeof context?.generateRaw === 'function' ? '独立上下文推演' : '安静推演兼容模式',
         configured: true,
     };
+}
+
+function getConnectionInfo() {
+    const context = getContext();
+    const pluginSettings = getSettings();
+    if (pluginSettings.apiMode === 'custom') {
+        let host = '';
+        try {
+            host = new URL(pluginSettings.customApiUrl).host;
+        } catch {
+            host = pluginSettings.customApiUrl;
+        }
+        return {
+            mainApi: 'custom-independent',
+            source: 'custom-independent',
+            apiLabel: '独立 OpenAI 兼容接口',
+            model: pluginSettings.customApiModel || '模型尚未配置',
+            profile: host || '接口地址尚未配置',
+            online: '',
+            method: pluginSettings.customApiTransport === 'direct'
+                ? '浏览器直连（不继承酒馆模型）'
+                : '经酒馆 Custom 转发（不继承酒馆模型）',
+            configured: Boolean(
+                pluginSettings.customApiUrl
+                && pluginSettings.customApiKey
+                && pluginSettings.customApiModel
+            ),
+        };
+    }
+
+    if (pluginSettings.apiMode === 'tavern-profile') {
+        const profile = tavernConnectionProfileById(pluginSettings.tavernApiProfileId, context);
+        const supported = listTavernConnectionProfiles()
+            .some(item => item.id === String(pluginSettings.tavernApiProfileId || ''));
+        return {
+            mainApi: 'tavern-profile',
+            source: String(profile?.api || 'tavern-profile'),
+            apiLabel: '酒馆已保存 API 方案',
+            model: String(profile?.model || '方案模型不可用'),
+            profile: String(profile?.name || (pluginSettings.tavernApiProfileId ? '引用的方案已不存在' : '尚未选择方案')),
+            online: String(context?.onlineStatus || ''),
+            method: '引用酒馆连接方案（Key / URL 仍由酒馆管理）',
+            configured: Boolean(
+                profile
+                && supported
+                && !tavernConnectionManagerDisabled(context)
+                && typeof context?.ConnectionManagerRequestService?.sendRequest === 'function'
+            ),
+        };
+    }
+
+    return getCurrentTavernConnectionInfo();
 }
 
 
@@ -2325,6 +2625,18 @@ function schedulePublicImpactPropagation(state = getState(), delay = 160) {
     return true;
 }
 
+function schedulePublicPostProcessing(state = getState(), {
+    impactDelay = 160,
+    opinionDelay = 520,
+} = {}) {
+    const impactScheduled = schedulePublicImpactPropagation(state, impactDelay);
+    if (!impactScheduled) {
+        scheduleAutoPublicOpinion(state, opinionDelay);
+    }
+    return impactScheduled;
+}
+
+
 function publicOpinionRevealInjection(state, cache, settings, recentText = '') {
     if (
         settings.worldPromptInjection === false
@@ -2432,8 +2744,45 @@ function coreSimulationBusy() {
         || runtime.activeWorldPulse
         || runtime.activePublicImpact
         || runtime.activeCorrection
+        || runtime.activeHistoryScan
+        || runtime.activePublicOpinion
         || runtime.queuedSimulations.size > 0
     );
+}
+
+function coreStateWriterBusyForSimulation() {
+    return Boolean(
+        runtime.activeHistoryScan
+        || runtime.activeWorldPulse
+        || runtime.activePublicImpact
+        || runtime.activeCorrection
+        || runtime.activePublicOpinion
+    );
+}
+
+async function waitForCoreStateWritersToSettle({
+    chatToken,
+    dataEpoch,
+    contextEpoch,
+} = {}) {
+    let announced = false;
+    while (coreStateWriterBusyForSimulation()) {
+        if (
+            (chatToken && currentChatToken() !== chatToken)
+            || (dataEpoch !== undefined && runtime.dataEpoch !== dataEpoch)
+            || (contextEpoch !== undefined && runtime.contextEpoch !== contextEpoch)
+        ) return false;
+        if (!announced) {
+            announced = true;
+            setSyncStatus({
+                phase: 'queued',
+                message: '前一个后台批次已经发出～等它收尾后再推演最新正文，不再中途掐掉重发',
+                error: '',
+            });
+        }
+        await new Promise(resolve => window.setTimeout(resolve, 80));
+    }
+    return true;
 }
 
 function latestAssistantSourceStamp() {
@@ -2443,7 +2792,27 @@ function latestAssistantSourceStamp() {
     return branchSourceKey(latest.index, latest.message, swipeId);
 }
 
-function preemptLowPriorityTasksForCore({ includeWorldWriters = false } = {}) {
+function preemptLowPriorityTasksForCore({
+    includeWorldWriters = false,
+    hardAbort = false,
+} = {}) {
+    if (!hardAbort) {
+        // A request that has already reached an upstream proxy may keep consuming
+        // RPM/TPM even if the browser aborts fetch(). For normal new正文, do not
+        // create “abort old request → immediately fire new request” bursts.
+        if (runtime.activePublicOpinion && !runtime.activePublicOpinion.controller.signal.aborted) {
+            runtime.pendingPublicOpinion = true;
+        }
+        if (runtime.activeHistoryScan && !runtime.activeHistoryScan.signal.aborted) {
+            runtime.historyProgress = {
+                ...runtime.historyProgress,
+                message: '新正文已经排队～我先把当前这批收好，再把路让给世界推演',
+            };
+            runtime.ui?.render();
+        }
+        return;
+    }
+
     if (runtime.activePublicOpinion && !runtime.activePublicOpinion.controller.signal.aborted) {
         runtime.pendingPublicOpinion = true;
         runtime.activePublicOpinion.controller.abort();
@@ -2456,16 +2825,14 @@ function preemptLowPriorityTasksForCore({ includeWorldWriters = false } = {}) {
         runtime.historyProgress = {
             ...runtime.historyProgress,
             message: runtime.historyProgress.kind === 'world-bootstrap'
-                ? '新正文来啦～本次历史回溯已停止，现有世界不会写入半成品'
-                : '新正文来啦～先把世界主线追上，记忆会从已保存批次继续整理',
+                ? '上下文已失效～本次历史回溯停止，现有世界不会写入半成品'
+                : '上下文已失效～记忆停在上一个已保存批次',
         };
         runtime.ui?.render();
     }
     if (includeWorldWriters) {
         runtime.activeWorldPulse?.controller?.abort?.();
         if (runtime.activePublicImpact && !runtime.activePublicImpact.controller.signal.aborted) {
-            // 前台正文抢占传播任务时，把传播需求留着。旧请求停掉后会基于最新世界状态重跑，
-            // 不会因为一次抢占就永久漏掉尚未传播的公共事件。
             runtime.pendingPublicImpact = true;
             runtime.activePublicImpact.controller.abort();
         }
@@ -2477,7 +2844,7 @@ function invalidateAsyncWorldContext() {
     runtime.activeSimulation?.controller?.abort?.();
     runtime.queuedSimulations.clear();
     clearDeferredManualSimulation();
-    preemptLowPriorityTasksForCore({ includeWorldWriters: true });
+    preemptLowPriorityTasksForCore({ includeWorldWriters: true, hardAbort: true });
 }
 
 function scheduleDeferredPublicImpact(delay = 180, expectedChatToken = currentChatToken()) {
@@ -2531,7 +2898,7 @@ function cancelActiveSimulation() {
     if (!active || active.controller.signal.aborted) return false;
     active.cancelled = true;
     active.controller.abort();
-    if (active.apiMode !== 'custom') {
+    if (active.apiMode === 'tavern') {
         try {
             getContext()?.stopGeneration?.();
         } catch (error) {
@@ -2827,19 +3194,31 @@ async function backgroundSimulation(prompt, {
     const limits = resolveGenerationLimits(settings, taskKind, maxTokens);
     const effectiveMaxTokens = limits.maxTokens;
     const effectiveTimeoutMs = limits.timeoutMs;
-    const tavernConnection = route.mode === 'tavern' ? getConnectionInfo() : null;
+    const tavernConnection = route.mode === 'tavern' ? getCurrentTavernConnectionInfo() : null;
     runtime.lastTaskConnection = {
         taskKind,
         routeKey: route.routeKey,
         route: route.route,
-        apiLabel: route.mode === 'custom' ? route.label : '跟随当前酒馆',
+        apiLabel: route.mode === 'custom'
+            ? route.label
+            : route.mode === 'tavern-profile'
+                ? route.label
+                : '跟随当前酒馆',
         model: route.mode === 'custom'
             ? String(requestSettings.customApiModel || '模型尚未配置')
-            : String(tavernConnection?.model || '跟随酒馆当前模型'),
+            : route.mode === 'tavern-profile'
+                ? String(route.profile?.model || '方案模型不可用')
+                : String(tavernConnection?.model || '跟随酒馆当前模型'),
         method: route.mode === 'custom'
-            ? (requestSettings.customApiTransport === 'direct' ? '浏览器直连' : '酒馆转发')
-            : '酒馆独立上下文',
-        source: route.mode === 'custom' ? 'custom-independent' : tavernConnection?.source || 'tavern',
+            ? (requestSettings.customApiTransport === 'direct' ? '浏览器直连' : '酒馆 Custom 转发')
+            : route.mode === 'tavern-profile'
+                ? '酒馆已保存方案'
+                : '酒馆独立上下文',
+        source: route.mode === 'custom'
+            ? 'custom-independent'
+            : route.mode === 'tavern-profile'
+                ? String(route.profile?.api || 'tavern-profile')
+                : tavernConnection?.source || 'tavern',
         requestedMaxTokens: limits.requestedMaxTokens,
         maxTokens: effectiveMaxTokens,
         tokenLimitSource: limits.tokenSource,
@@ -2854,13 +3233,79 @@ async function backgroundSimulation(prompt, {
     }
     const foregroundNeutralTask = taskKind === 'public-opinion-sandbox' || taskKind === 'lingqi';
 
+    if (route.mode === 'tavern-profile') {
+        const profileId = String(route.profileId || '');
+        if (!profileId) throw new Error('还没选择酒馆已保存的 API 方案');
+        if (tavernConnectionManagerDisabled(context)) {
+            throw new Error('SillyTavern 的 Connection Manager 当前不可用，不能读取已保存 API 方案');
+        }
+        if (!route.profile) {
+            throw new Error(`酒馆已保存方案已不存在（ID: ${profileId}）。我没有偷偷换成别的连接，请重新选择。`);
+        }
+        const service = context?.ConnectionManagerRequestService;
+        if (typeof service?.sendRequest !== 'function') {
+            throw new Error('当前 SillyTavern 没有提供连接方案请求服务；请更新 SillyTavern 或改用其他连接方式');
+        }
+
+        if (!foregroundNeutralTask) runtime.inBackgroundGeneration = true;
+        const guard = createActiveGenerationGuard(effectiveTimeoutMs, signal, taskKind);
+        try {
+            runtime.syncStatus.method = `${route.label} · 酒馆已保存方案`;
+            resetLastCustomApiOperation();
+            const result = await runInConnectionLane(taskKind, guard.signal, () => service.sendRequest(
+                profileId,
+                messages,
+                effectiveMaxTokens,
+                {
+                    stream: false,
+                    signal: guard.signal,
+                    extractData: true,
+                    includePreset: false,
+                    includeInstruct: true,
+                },
+                {
+                    temperature,
+                    include_reasoning: false,
+                },
+            ));
+            const text = typeof result === 'string'
+                ? result
+                : typeof result?.content === 'string'
+                    ? result.content
+                    : '';
+            if (!String(text || '').trim()) {
+                throw new Error(`酒馆方案“${route.label}”没有返回可用正文`);
+            }
+            return String(text).trim();
+        } catch (error) {
+            if (guard.timedOut()) {
+                const timeoutError = new Error(`酒馆方案“${route.label}”请求超时（${Math.ceil(effectiveTimeoutMs / 1000)} 秒）`);
+                timeoutError.code = 'GENERATION_TIMEOUT';
+                timeoutError.errorType = 'timeout';
+                throw timeoutError;
+            }
+            const cause = error?.cause;
+            if (cause && String(error?.message || '') === 'API request failed') {
+                const wrapped = new Error(`酒馆方案“${route.label}”请求失败：${String(cause?.message || cause)}`);
+                wrapped.cause = error;
+                wrapped.errorType = classifyDiagnosticIssue(wrapped.message);
+                throw wrapped;
+            }
+            throw error;
+        } finally {
+            guard.cleanup();
+            if (!foregroundNeutralTask) runtime.inBackgroundGeneration = false;
+            refreshInjection();
+        }
+    }
+
     if (route.mode === 'custom') {
         if (!foregroundNeutralTask) runtime.inBackgroundGeneration = true;
         try {
             runtime.syncStatus.method = requestSettings.customApiTransport === 'direct'
                 ? `${route.label} · 浏览器直连`
                 : `${route.label} · 酒馆转发`;
-            return await requestCustomCompletion(requestSettings, messages, {
+            return await runInConnectionLane(taskKind, signal, () => requestCustomCompletion(requestSettings, messages, {
                 fetchImpl: globalThis.fetch.bind(globalThis),
                 getRequestHeaders: () => context?.getRequestHeaders?.() || {},
                 maxTokens: effectiveMaxTokens,
@@ -2870,7 +3315,7 @@ async function backgroundSimulation(prompt, {
                 rejectTruncated,
                 operation: taskKind,
                 routeLabel: route.label,
-            });
+            }));
         } finally {
             if (!foregroundNeutralTask) runtime.inBackgroundGeneration = false;
             refreshInjection();
@@ -2963,6 +3408,13 @@ async function runSimulationForMessage(messageId, {
     );
     if (job?.chatToken && job.chatToken !== chatTokenAtStart) return null;
     if (job?.dataEpoch !== undefined && job.dataEpoch !== dataEpochAtStart) return null;
+
+    const writerSettled = await waitForCoreStateWritersToSettle({
+        chatToken: chatTokenAtStart,
+        dataEpoch: dataEpochAtStart,
+        contextEpoch: contextEpochAtStart,
+    });
+    if (!writerSettled) return null;
 
     const beforeContext = getContext();
     const beforeMessage = beforeContext?.chat?.[messageId];
@@ -3248,12 +3700,14 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             : {
                 ...payload,
                 memory_update: {
+                    turn_summaries: [],
                     facts_upsert: [],
                     facts_invalidate: [],
                     clues_upsert: [],
                     clues_resolve: [],
                 },
                 memoryUpdate: {
+                    turnSummaries: [],
                     factsUpsert: [],
                     factsInvalidate: [],
                     cluesUpsert: [],
@@ -3295,7 +3749,11 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             narrativeText: newAssistantTexts.join('\n'),
             backgroundNpcBudget: settings.backgroundNpcBudget,
             lifeSettlementTargetIds: backgroundPersonTargets.map(person => person.id),
+            memorySummaryMessageIds: memoryEnabledAtCommit ? pendingMessageIds : [],
         });
+        if (memoryEnabledAtCommit) {
+            resultState = advanceMemoryCursorThroughSummaries(resultState, messageId);
+        }
         resultState = recordDeliveryOffers(resultState, offeredEventIds, {
             messageId,
             expireAfter: 3,
@@ -3355,8 +3813,10 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             saveStore(store, { immediate: true });
             refreshInjection();
             runtime.ui?.render();
-            schedulePublicImpactPropagation(resultState, 120);
-            scheduleAutoPublicOpinion(resultState, 520);
+            schedulePublicPostProcessing(resultState, {
+                impactDelay: 160,
+                opinionDelay: 620,
+            });
         }
 
         await target.context.saveChat?.();
@@ -3748,7 +4208,6 @@ function queueSimulation(messageId, options = {}) {
                 runtime.queuedSimulations.delete(queueKey);
             }
             window.setTimeout(schedulePendingCatchUp, 40);
-            window.setTimeout(scheduleDeferredPublicOpinion, 180);
             window.setTimeout(scheduleAutoMemoryIndex, 700);
         },
         error => {
@@ -3887,6 +4346,34 @@ function schedulePendingCatchUp({ afterMessageId = -1 } = {}) {
     }).catch(() => undefined);
 }
 
+function hasL0SummaryForMessage(state, messageId) {
+    return (state?.storyMemory?.summaries || []).some(summary => (
+        Number(summary?.level) === 0
+        && Number(summary?.startMessageId) === Number(messageId)
+        && Number(summary?.endMessageId) === Number(messageId)
+    ));
+}
+
+function advanceMemoryCursorThroughSummaries(state, throughMessageId) {
+    if (!state?.storyMemory) return state;
+    const chat = getContext()?.chat || [];
+    const target = Math.min(chat.length - 1, Math.max(-1, Number(throughMessageId) || -1));
+    let cursor = Math.max(-1, Number(state.storyMemory.indexedThroughMessageId ?? -1));
+    for (let index = cursor + 1; index <= target; index += 1) {
+        const message = chat[index];
+        if (
+            hasUsableAssistantText(message)
+            && !hasL0SummaryForMessage(state, index)
+        ) break;
+        cursor = index;
+    }
+    if (cursor > Number(state.storyMemory.indexedThroughMessageId ?? -1)) {
+        state.storyMemory.indexedThroughMessageId = cursor;
+        state.storyMemory.indexedAt = new Date().toISOString();
+    }
+    return state;
+}
+
 function unindexedAssistantCount() {
     const state = getState();
     const cursor = Math.max(
@@ -3951,8 +4438,21 @@ function onMessageReceived(messageId, type) {
         refreshInjection();
         runtime.ui?.render();
     }
+    const settings = getSettings();
     scheduleAutoSync(Number(messageId), type);
-    scheduleAutoMemoryIndex();
+    const worldOwnsThisBatch = Boolean(
+        settings.enabled
+        && settings.worldSimulationEnabled
+        && settings.worldAutoEnabled
+        && (
+            runtime.activeSimulation
+            || runtime.queuedSimulations.size > 0
+            || pendingAssistantEntriesThrough(Number(messageId)).length >= settings.autoSimulationInterval
+        )
+    );
+    if (!worldOwnsThisBatch) {
+        scheduleAutoMemoryIndex();
+    }
 }
 
 async function runPreGenerationConsistencyBarrier(_chat, _contextSize, _abort, type) {
@@ -4427,8 +4927,10 @@ function commitManualState(nextState, message = '世界状态已更新', {
         key,
         previousManualDeletions,
     });
-    schedulePublicImpactPropagation(committed, 120);
-    scheduleAutoPublicOpinion(committed, 520);
+    schedulePublicPostProcessing(committed, {
+        impactDelay: 160,
+        opinionDelay: 620,
+    });
     toast(message, 'success');
 }
 
@@ -4513,6 +5015,23 @@ function buildDiagnosticReport() {
     const recoveryPoints = listRecoveryPoints(store);
     const activeEvents = state.events.filter(event => ['active', 'waiting', 'ready'].includes(event.status));
     const viewport = globalThis.visualViewport;
+    const nowMs = Date.now();
+    const currentApiTimeline = runtime.apiRequestTimeline
+        .filter(item => item.chatToken === currentChatToken());
+    const requestStartedAtMs = item => {
+        const value = Date.parse(item.startedAt || item.queuedAt || '');
+        return Number.isFinite(value) ? value : 0;
+    };
+    const requestsInWindow = milliseconds => currentApiTimeline.filter(item => (
+        requestStartedAtMs(item) > 0
+        && nowMs - requestStartedAtMs(item) <= milliseconds
+    ));
+    const recentFiveMinuteRequests = requestsInWindow(5 * 60 * 1000);
+    const recentByTask = recentFiveMinuteRequests.reduce((result, item) => {
+        const key = String(item.taskKind || 'unknown');
+        result[key] = (result[key] || 0) + 1;
+        return result;
+    }, {});
     const report = {
         plugin: {
             name: 'World Backstage',
@@ -4537,7 +5056,11 @@ function buildDiagnosticReport() {
             api: connection.apiLabel,
             source: connection.source,
             model: redactDiagnosticText(connection.model),
-            transport: settings.apiMode === 'custom' ? settings.customApiTransport : 'tavern',
+            transport: settings.apiMode === 'custom'
+                ? settings.customApiTransport
+                : settings.apiMode === 'tavern-profile'
+                    ? 'tavern-profile'
+                    : 'tavern',
             configured: connection.configured,
             method: connection.method,
             internalCompatChars: Number(runtime.lastPromptBridge?.internalCompatChars
@@ -4560,6 +5083,7 @@ function buildDiagnosticReport() {
             publicOpinionAuto: settings.publicOpinionAutoEnabled,
             publicOpinionRevealMode: settings.publicOpinionRevealMode,
             apiProfileCount: settings.apiProfiles?.length || 0,
+            tavernProfileCount: listTavernConnectionProfiles().length,
             apiModuleRoutes: { ...(settings.apiModuleRoutes || {}) },
             generationMaxTokenCap: settings.maxOutputTokens,
             generationTimeoutMs: settings.generationTimeoutMs,
@@ -4606,6 +5130,26 @@ function buildDiagnosticReport() {
             memoryMessageType: classifyDiagnosticIssue(runtime.historyProgress.message),
         },
         retryControl: getRetryControlStatus(),
+        apiCadence: {
+            last60Seconds: requestsInWindow(60 * 1000).length,
+            last5Minutes: recentFiveMinuteRequests.length,
+            byTaskLast5Minutes: recentByTask,
+            queuedPhysicalRoutes: runtime.connectionLanes.size,
+        },
+        recentApiRequests: runtime.apiRequestTimeline
+            .filter(item => item.chatToken === currentChatToken())
+            .slice(-20)
+            .map(item => ({
+            taskKind: item.taskKind,
+            route: redactDiagnosticText(item.route || ''),
+            model: redactDiagnosticText(item.model || ''),
+            queuedAt: item.queuedAt,
+            startedAt: item.startedAt,
+            finishedAt: item.finishedAt,
+            waitMs: item.waitMs,
+            durationMs: item.durationMs,
+            outcome: item.outcome,
+        })),
         lastApiOperation: (() => {
             const operation = getLastCustomApiOperation();
             if (!operation) return null;
@@ -5035,6 +5579,7 @@ async function runPublicImpactPropagation({
     quiet = false,
     force = false,
     maximumEvents = 8,
+    scheduleOpinion = true,
 } = {}) {
     const settings = getSettings();
     if (
@@ -5050,6 +5595,7 @@ async function runPublicImpactPropagation({
         runtime.activeSimulation
         || runtime.activeWorldPulse
         || runtime.activeHistoryScan
+        || runtime.activePublicOpinion
         || runtime.queuedSimulations.size > 0
     ) return false;
 
@@ -5155,7 +5701,7 @@ async function runPublicImpactPropagation({
             saveStore(store, { immediate: true });
             refreshInjection();
             runtime.ui?.render();
-            scheduleAutoPublicOpinion(next, 180);
+            if (scheduleOpinion) scheduleAutoPublicOpinion(next, 180);
 
             if (!quiet) {
                 setSyncStatus({
@@ -5321,8 +5867,10 @@ async function runWorldPulseTick({
         });
         saveStore(store, { immediate: true });
         refreshInjection();
-        schedulePublicImpactPropagation(next, 120);
-        scheduleAutoPublicOpinion(next, 520);
+        schedulePublicPostProcessing(next, {
+            impactDelay: 160,
+            opinionDelay: 620,
+        });
         runtime.ui?.render();
         if (!quiet) {
             setSyncStatus({
@@ -5573,7 +6121,10 @@ async function bootstrapWorldFromHistory() {
         };
         refreshInjection();
         runtime.ui?.render();
-        scheduleAutoPublicOpinion(stagedState, 180);
+        schedulePublicPostProcessing(stagedState, {
+            impactDelay: 180,
+            opinionDelay: 320,
+        });
 
         const activeCurrents = (stagedState.events || []).filter(event => (
             !['resolved', 'cancelled', 'missed'].includes(event.status)
@@ -5797,21 +6348,29 @@ async function scanStoryMemoryHistory({
             runtime.historyProgress.processed = Math.min(chatLength, cursor);
             refreshInjection();
             runtime.ui?.render();
+
+            if (runtime.queuedSimulations.size > 0) {
+                runtime.historyProgress.message = '当前记忆批次已经收好～世界推演在排队，先把路让出去';
+                runtime.ui?.render();
+                break;
+            }
         }
 
         let rolledUp = false;
-        const rollupBaseRevision = Math.max(0, Number(state?.revision) || 0);
-        const rollup = await runOneMemoryRollup(state, controller);
-        if (
-            runtime.contextEpoch !== contextEpochAtStart
-            || Math.max(0, Number(getState()?.revision) || 0) !== rollupBaseRevision
-        ) {
-            const error = new Error('记忆压缩期间世界状态被修改，旧结果不会覆盖新状态');
-            error.name = 'AbortError';
-            throw error;
+        if (runtime.queuedSimulations.size === 0) {
+            const rollupBaseRevision = Math.max(0, Number(state?.revision) || 0);
+            const rollup = await runOneMemoryRollup(state, controller);
+            if (
+                runtime.contextEpoch !== contextEpochAtStart
+                || Math.max(0, Number(getState()?.revision) || 0) !== rollupBaseRevision
+            ) {
+                const error = new Error('记忆压缩期间世界状态被修改，旧结果不会覆盖新状态');
+                error.name = 'AbortError';
+                throw error;
+            }
+            state = rollup.state;
+            rolledUp = rollup.rolledUp;
         }
-        state = rollup.state;
-        rolledUp = rollup.rolledUp;
         if (rolledUp) {
             const store = getStore();
             store.currentState = ensureMonotonicRevision(state, store.currentState);
@@ -6019,7 +6578,9 @@ function personObservationLooksComplete(text) {
 async function generateIndependentPersonObservation(prompt, person, settings, { signal } = {}) {
     runtime.syncStatus.method = settings.apiMode === 'custom'
         ? '人物观测 · 世界背面独立接口'
-        : '人物观测 · 世界背面独立上下文';
+        : settings.apiMode === 'tavern-profile'
+            ? '人物观测 · 酒馆已保存方案'
+            : '人物观测 · 世界背面独立上下文';
 
     const requestedAttempts = [
         { maxTokens: 4096, temperature: 0.75 },
@@ -6253,7 +6814,7 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
         };
         runtime.ui?.render();
         try {
-            await runPublicImpactPropagation({ quiet: true, force: true });
+            await runPublicImpactPropagation({ quiet: true, force: true, scheduleOpinion: false });
         } catch (error) {
             if (!isAbortError(error)) {
                 console.warn('[世界背面] 刷新舆情前的公共影响传播失败，将沿用上一份已确认状态', error);
@@ -6290,7 +6851,7 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
             error: '',
         };
         runtime.ui?.render();
-        await runPublicImpactPropagation({ quiet: true, force: true });
+        await runPublicImpactPropagation({ quiet: true, force: true, scheduleOpinion: false });
         state = getState();
         candidates = eligiblePublicOpinionEvents(state);
     }
@@ -6896,7 +7457,11 @@ function buildLingqiButlerContext(userText = '') {
             source: String(connection.source || '').slice(0, 120),
             model: redactDiagnosticText(connection.model || ''),
             method: String(connection.method || '').slice(0, 100),
-            transport: settings.apiMode === 'custom' ? settings.customApiTransport : 'tavern',
+            transport: settings.apiMode === 'custom'
+                ? settings.customApiTransport
+                : settings.apiMode === 'tavern-profile'
+                    ? 'tavern-profile'
+                    : 'tavern',
             lastOperation: lastOperation ? {
                 phase: lastOperation.phase,
                 operation: lastOperation.operation,
@@ -8196,6 +8761,15 @@ async function handleUiAction(action, payload = {}) {
         const title = String(payload.title || '').trim();
         const relation = String(payload.relation || '').trim();
         const content = String(payload.content || '').trim();
+        const cluePeople = Array.isArray(payload.people)
+            ? payload.people.map(value => String(value || '').trim()).filter(Boolean).slice(0, 16)
+            : [];
+        const clueLocations = Array.isArray(payload.locations)
+            ? payload.locations.map(value => String(value || '').trim()).filter(Boolean).slice(0, 12)
+            : [];
+        const clueEvents = Array.isArray(payload.events)
+            ? payload.events.map(value => String(value || '').trim()).filter(Boolean).slice(0, 16)
+            : [];
         if (!title || !content) throw new Error('标题和内容不能为空');
 
         const next = clone(getState());
@@ -8237,6 +8811,11 @@ async function handleUiAction(action, payload = {}) {
                 title: title.slice(0, 120),
                 text: content.slice(0, 620),
                 status: existing?.status || 'open',
+                people: cluePeople,
+                locations: clueLocations,
+                events: clueEvents,
+                archived: Boolean(existing?.archived),
+                archivedAt: existing?.archivedAt ?? null,
                 importance: payload.important ? 3 : (existing?.importance || 1),
                 visibility: existing?.visibility || 'hidden',
                 updatedAt: next.clock.absoluteMinute,
@@ -8261,6 +8840,25 @@ async function handleUiAction(action, payload = {}) {
         else collection.unshift(updated);
         commitManualState(next, existing ? '记忆已经更新。' : '手动记忆已经加入。');
         return updated;
+    }
+
+    if (action === 'set-clue-archive-state') {
+        const next = clone(getState());
+        const clue = next.storyMemory?.clues?.find(entry => entry.id === String(payload.id || ''));
+        if (!clue) throw new Error('没有找到这条伏笔');
+        if (clue.locked) throw new Error('锁定的伏笔不能归档，请先解锁');
+        const archived = Boolean(payload.archived);
+        if (archived && !['resolved', 'discarded'].includes(clue.status)) {
+            throw new Error('还在发展的伏笔不能直接归档；先让它完成/放下，或直接删除');
+        }
+        clue.archived = archived;
+        clue.archivedAt = archived ? next.clock.absoluteMinute : null;
+        clue.updatedAt = next.clock.absoluteMinute;
+        commitManualState(
+            next,
+            archived ? `伏笔“${clue.title || '未命名伏笔'}”已经归档。` : `伏笔“${clue.title || '未命名伏笔'}”已经移回已回收列表。`,
+        );
+        return true;
     }
 
     if (action === 'toggle-memory-flag') {
@@ -8304,6 +8902,7 @@ async function handleUiAction(action, payload = {}) {
         const next = clone(store.currentState);
         next.storyMemory ||= { facts: [], clues: [], summaries: [] };
         const removedSummaryIds = new Set();
+        const removedItems = [];
         let removed = 0;
         let lockedSkipped = 0;
 
@@ -8320,6 +8919,7 @@ async function handleUiAction(action, payload = {}) {
                 continue;
             }
             if (kind === 'summary') removedSummaryIds.add(collection[index].id);
+            removedItems.push({ kind, item: clone(collection[index]) });
             collection.splice(index, 1);
             removed += 1;
         }
@@ -8352,6 +8952,13 @@ async function handleUiAction(action, payload = {}) {
             lockedSkipped
                 ? `已删除 ${removed} 条记忆，${lockedSkipped} 条锁定记忆乖乖留着～`
                 : `已删除 ${removed} 条记忆；删除前的恢复点已经存好啦～`,
+            {
+                mutateStore: targetStore => {
+                    for (const removedEntry of removedItems) {
+                        addMemoryDeletionTombstone(targetStore, removedEntry.kind, removedEntry.item);
+                    }
+                },
+            },
         );
         return true;
     }
@@ -8385,7 +8992,9 @@ async function handleUiAction(action, payload = {}) {
             );
             saveStore(store);
         }
-        commitManualState(next, '记忆已经删除。');
+        commitManualState(next, '记忆已经删除。', {
+            mutateStore: store => addMemoryDeletionTombstone(store, kind, removed),
+        });
         return;
     }
 
@@ -8838,6 +9447,7 @@ function initialize() {
         getState,
         getSettings,
         getSyncStatus,
+        getTavernProfiles: listTavernConnectionProfiles,
         onAction: handleUiAction,
         pluginVersion: PLUGIN_VERSION,
     });

@@ -438,6 +438,20 @@ function classifyUpstreamError(response, data, detail = '') {
     ) {
         return { errorType: 'rate-limit', upstreamStatus: 429 };
     }
+    if (
+        Number(response?.status) === 401
+        || Number(response?.status) === 403
+        || /unauthorized|forbidden|invalid[_\s-]*(?:api[_\s-]*)?key|authentication|authorization|鉴权|认证失败|密钥无效/.test(text)
+    ) {
+        const status = /forbidden/.test(text) || Number(response?.status) === 403 ? 403 : 401;
+        return { errorType: 'authorization', upstreamStatus: status };
+    }
+    if (
+        Number(response?.status) === 404
+        || /\bnot found\b|model[_\s-]*not[_\s-]*found|route[_\s-]*not[_\s-]*found|找不到(?:模型|路由|接口)|不存在的(?:模型|路由|接口)/.test(text)
+    ) {
+        return { errorType: 'not-found', upstreamStatus: 404 };
+    }
     return { errorType: 'other', upstreamStatus: null };
 }
 
@@ -453,6 +467,14 @@ function buildCustomApiResponseError(response, data, text, subject = '独立 API
         message = `${subject} 额度已耗尽：${detail || 'quota exhausted'}`;
         if (Number(response?.status) === 200) message += '（酒馆转发层 HTTP 200）';
         message += '。请检查该接口/模型的额度或余额。';
+    } else if (classified.errorType === 'authorization') {
+        message = `${subject} 鉴权失败：${detail || 'Unauthorized'}`;
+        if (Number(response?.status) === 200) message += '（酒馆转发层 HTTP 200）';
+        message += '。请检查该方案的密钥/权限，或确认接口要求的认证头。';
+    } else if (classified.errorType === 'not-found') {
+        message = `${subject} 没找到请求目标：${detail || 'Not Found'}`;
+        if (Number(response?.status) === 200) message += '（酒馆转发层 HTTP 200）';
+        message += '。请检查基础地址、模型名或上游路由。';
     } else {
         message = `${subject} 返回 HTTP ${response?.status}${detail ? `：${detail}` : ''}`;
     }
@@ -467,6 +489,13 @@ function buildCustomApiResponseError(response, data, text, subject = '独立 API
     if (classified.errorType === 'rate-limit') error.code = 'RATE_LIMIT';
     if (classified.errorType === 'quota-exhausted') error.code = 'QUOTA_EXHAUSTED';
     return error;
+}
+
+function customAuthorizationHeadersYaml(apiKey) {
+    // SillyTavern's Custom OpenAI-compatible route merges these headers after its
+    // default Authorization header. JSON quoted scalars are valid YAML and avoid
+    // breaking on punctuation inside keys.
+    return `Authorization: ${JSON.stringify(`Bearer ${cleanText(apiKey)}`)}`;
 }
 
 function headersFrom(getRequestHeaders) {
@@ -632,9 +661,9 @@ export async function requestCustomModels(settings, {
             cache: 'no-cache',
             headers: headersFrom(getRequestHeaders),
             body: JSON.stringify({
-                chat_completion_source: 'openai',
-                reverse_proxy: customProxyBase(settings.customApiUrl),
-                proxy_password: apiKey,
+                chat_completion_source: 'custom',
+                custom_url: customProxyBase(settings.customApiUrl),
+                custom_include_headers: customAuthorizationHeadersYaml(apiKey),
             }),
         };
     }
@@ -725,19 +754,26 @@ export async function requestCustomCompletion(settings, messages, {
     if (transport === 'proxy') {
         target = '/api/backends/chat-completions/generate';
         headers = headersFrom(getRequestHeaders);
-        payload = {
-            chat_completion_source: useDeepSeekV4Compatibility ? 'deepseek' : 'openai',
-            reverse_proxy: customProxyBase(settings.customApiUrl),
-            proxy_password: apiKey,
-            include_reasoning: false,
-            ...body,
-        };
         if (useDeepSeekV4Compatibility) {
-            // The tavern's DeepSeek dispatcher rebuilds the upstream body from a
-            // whitelist and only emits `thinking` when reasoning_effort is present,
-            // so body.thinking alone is dropped on this path and V4 keeps thinking
-            // on until it burns the whole completion budget before writing content.
-            payload.reasoning_effort = 'none';
+            payload = {
+                chat_completion_source: 'deepseek',
+                reverse_proxy: customProxyBase(settings.customApiUrl),
+                proxy_password: apiKey,
+                include_reasoning: false,
+                ...body,
+                reasoning_effort: 'none',
+            };
+        } else {
+            // This is an arbitrary OpenAI-compatible endpoint, not an OpenAI
+            // reverse proxy. Let SillyTavern's CUSTOM dispatcher handle its URL
+            // and custom headers so the same endpoint behaves like it does in ST.
+            payload = {
+                chat_completion_source: 'custom',
+                custom_url: customProxyBase(settings.customApiUrl),
+                custom_include_headers: customAuthorizationHeadersYaml(apiKey),
+                include_reasoning: false,
+                ...body,
+            };
         }
     }
 

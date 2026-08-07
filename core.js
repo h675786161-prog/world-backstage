@@ -3,7 +3,7 @@ const WB_STATE_RECONCILE_ORDER = Object.freeze([3, 1, 4, 2]);
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 export const MAX_CALENDAR_YEAR = 999999;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
@@ -1635,7 +1635,12 @@ function normalizeClue(raw, existing = null, worldMinute = 0, {
         ),
         people: uniqueStrings(raw?.people ?? existing?.people, 16),
         locations: uniqueStrings(raw?.locations ?? existing?.locations, 12),
+        events: uniqueStrings(raw?.events ?? existing?.events, 16),
         tags: uniqueStrings(raw?.tags ?? existing?.tags, 20),
+        archived: Boolean(raw?.archived ?? existing?.archived),
+        archivedAt: raw?.archived_at ?? raw?.archivedAt
+            ?? existing?.archivedAt
+            ?? null,
         locked: Boolean(raw?.locked ?? existing?.locked),
         important: Boolean(raw?.important ?? existing?.important),
         manual: Boolean(raw?.manual ?? existing?.manual),
@@ -2270,7 +2275,11 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
         : (oldDelivery.state || defaultDeliveryState);
 
     return {
-        id: normalizeId(raw?.id || existing?.id, 'event'),
+        // Event identity is immutable once the event already exists. Model output may
+        // accidentally return an events_create item with a fresh id for the same
+        // ongoing event; when we merge into an existing record, never let that new
+        // id replace the canonical one.
+        id: normalizeId(existing?.id || raw?.id, 'event'),
         title: asString(raw?.title, existing?.title || '未命名事件', 140),
         place: asString(raw?.place, existing?.place || '地点待确认', 140),
         summary: asString(raw?.summary, existing?.summary || '', 420),
@@ -2899,6 +2908,10 @@ function normalizeSimulationResult(payload) {
             payload?.consistency_conflicts ?? payload?.consistencyConflicts,
         ).slice(0, 24),
         memoryUpdates: {
+            turnSummaries: asArray(
+                payload?.memory_update?.turn_summaries
+                ?? payload?.memoryUpdate?.turnSummaries,
+            ).slice(0, 24),
             factsUpsert: asArray(
                 payload?.memory_update?.facts_upsert
                 ?? payload?.memoryUpdate?.factsUpsert,
@@ -3257,6 +3270,7 @@ export function applySimulationResult(baseState, rawPayload, {
     narrativeText = '',
     backgroundNpcBudget = LIMITS.peopleTaskBudget,
     lifeSettlementTargetIds = [],
+    memorySummaryMessageIds = [],
     preserveCommitAnchor = false,
 } = {}) {
     const payload = normalizeSimulationResult(rawPayload);
@@ -3870,6 +3884,47 @@ export function applySimulationResult(baseState, rawPayload, {
         });
     }
 
+    const allowedMemorySummaryIds = new Set(
+        asArray(memorySummaryMessageIds)
+            .map(value => asInteger(value, -1, -1))
+            .filter(value => value >= 0),
+    );
+    for (const rawTurn of asArray(payload.memoryUpdates?.turnSummaries).slice(0, 24)) {
+        const summaryMessageId = asInteger(
+            rawTurn?.source_message_id
+            ?? rawTurn?.sourceMessageId
+            ?? rawTurn?.message_id
+            ?? rawTurn?.messageId,
+            -1,
+            -1,
+        );
+        if (
+            summaryMessageId < 0
+            || !allowedMemorySummaryIds.has(summaryMessageId)
+            || !rawTurn?.summary
+        ) continue;
+        const preparedSummary = {
+            ...rawTurn,
+            id: rawTurn?.id || `summary_l0_${summaryMessageId}`,
+            start_message_id: summaryMessageId,
+            end_message_id: summaryMessageId,
+            level: MEMORY_SUMMARY_LEVELS.DETAIL,
+            hierarchy_managed: true,
+            source_summary_ids: [],
+        };
+        const normalizedSummary = normalizeStorySummary(preparedSummary);
+        const existingSummary = state.storyMemory.summaries.find(summary => (
+            summary.id === normalizedSummary.id
+            || (
+                Number(summary.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+                && Number(summary.startMessageId) === summaryMessageId
+                && Number(summary.endMessageId) === summaryMessageId
+            )
+        ));
+        if (existingSummary) Object.assign(existingSummary, normalizedSummary);
+        else state.storyMemory.summaries.push(normalizedSummary);
+    }
+
     applyMemoryFactUpdates(state, payload.memoryUpdates, {
         sourceMessageId: messageId,
         sourceSwipeId: swipeId,
@@ -4195,6 +4250,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     ));
     const knownClues = recalledMemory.clues.filter(clue => (
         ['known', 'direct'].includes(clue.visibility)
+        && !clue.archived
         && clue.status !== 'discarded'
     ));
     const sceneTiming = {
@@ -4525,6 +4581,7 @@ function memoryTerms(item) {
         item?.predicate || '',
         ...(item?.people || []),
         ...(item?.locations || []),
+        ...(item?.events || []),
         ...(item?.tags || []),
     ], 40).filter(term => term.length >= 2);
 }
@@ -4630,7 +4687,7 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
             recall_score: score,
         }));
     const clues = memory.clues
-        .filter(clue => !['resolved', 'discarded'].includes(clue.status))
+        .filter(clue => !clue.archived && !['resolved', 'discarded'].includes(clue.status))
         .map(clue => ({
             clue,
             score: memoryMatchScore(clue, narrativeText, { referenceMessageId }),
@@ -4646,6 +4703,7 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
             text: modelText(clue.text, 360),
             people: clue.people,
             locations: clue.locations,
+            events: clue.events,
             tags: clue.tags,
             status: clue.status,
             importance: clue.importance,
@@ -4833,6 +4891,10 @@ export function buildWorldBootstrapPrompt(state, {
                 text: '',
                 source_message_id: startMessageId,
                 source_excerpt: '',
+                people: [],
+                locations: [],
+                events: [],
+                tags: [],
                 status: 'open | developing | triggered',
             }],
             clues_resolve: [],
@@ -5576,18 +5638,33 @@ export function compactStateForModel(state, {
 
     const people = [...due, ...regular].map(item => item.person);
     const lifeById = new Map(candidates.map(item => [item.person.id, item.life]));
-    const events = state.events
+    const eventPriority = event => (
+        event.delivery?.state === 'pending' ? 4
+            : event.status === 'ready' ? 3
+                : ['active', 'waiting'].includes(event.status) ? 2
+                    : 1
+    );
+    const eventCandidates = state.events
         .filter(event => !['cancelled', 'missed'].includes(event.status) || event.delivery.state === 'pending')
-        .sort((a, b) => {
-            const priority = event => (
-                event.delivery?.state === 'pending' ? 4
-                    : event.status === 'ready' ? 3
-                        : ['active', 'waiting'].includes(event.status) ? 2
-                            : 1
-            );
-            return priority(b) - priority(a) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
-        })
-        .slice(0, 20);
+        .sort((a, b) => (
+            eventPriority(b) - eventPriority(a)
+            || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+        ));
+    const events = eventCandidates.slice(0, 20);
+
+    // Detailed event payload stays capped for token safety, but every other
+    // ongoing event still exposes a compact identity row. This prevents an old
+    // dark-current from becoming invisible after the first 20 entries and then
+    // being recreated under a new id/title on the next model call.
+    const detailedEventIds = new Set(events.map(event => event.id));
+    const eventIndex = state.events
+        .filter(event => !TERMINAL_EVENT_STATES.has(event.status))
+        .filter(event => !detailedEventIds.has(event.id))
+        .sort((a, b) => (
+            eventPriority(b) - eventPriority(a)
+            || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+        ))
+        .slice(0, LIMITS.events);
 
     return {
         world_now: state.clock?.anchored ? state.clock.absoluteMinute : null,
@@ -5716,9 +5793,18 @@ export function compactStateForModel(state, {
                 visibility: event.visibility,
                 delivery_state: event.delivery.state,
             })),
+        event_index: eventIndex.map(event => ({
+            id: event.id,
+            title: modelText(event.title, 120),
+            place: modelText(event.place, 100),
+            status: event.status,
+            actors: asArray(event.actors).slice(0, 8),
+            caused_by: asArray(event.causedBy).slice(0, 8),
+            updated_at: event.updatedAt,
+        })),
         omitted: {
             people: Math.max(0, state.people.length - people.length),
-            events: Math.max(0, state.events.length - events.length),
+            events: Math.max(0, state.events.length - events.length - eventIndex.length),
         },
     };
 }
@@ -6354,13 +6440,15 @@ const activeDirectorNotes = asArray(directorNotes)
         '12B. event.visibility 只表示前台/玩家显露边界，不代表 NPC 是否知道。actors 只表示参与/被波及，也不等于知情；event.known_by 只是兼容镜像，插件会从通过防火墙的人物认知账本反推，不要依赖它给角色开知识。',
         '12C. physical_state / emotional_state / resource_state 是人物当前状态。状态变化必须真实影响 action、intent 与执行能力；受伤、疲劳、缺资源、权限不足或情绪压力不能下一轮凭空消失。不得发明角色卡、身份锚点、既有记忆未支持的技能、装备、权限或知识。玩家的 emotional_state 只有正文/玩家明确表达时才能更新，不得替玩家猜内心。',
         '12D. 新事件必须写明 cause。cause 可以来自：已有事件的行动/结果/后果、人物既定目标与主动行动、势力/地点/环境压力、或当前世界条件下自然发生的合理环境事件。若由已有事件继续发酵，必须在 caused_by 填上游事件 ID；若没有上游事件，则在 cause 中明确写出人物目标或环境条件。actors 只列真实参与/经历该事件的人。一个事件解决后如果产生新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命。',
+        '12D-1. 暗流身份必须稳定。推演前权威状态的 events 是详细事件，event_index 是因调用体积被省略详情但仍在运行的既有暗流索引；两者中的 ID 都是真实且仍存在的事件身份。只要同一件未终结事件是在推进、受阻、等待、获得新线索、改变公开状态或接近结算，就必须用 events_update 更新原 ID，禁止换标题后再 events_create 一条近义事件。即使该事件只出现在 event_index、没有完整 summary，也不能因此复制新建；信息不足时宁可保守更新或保持不变。只有出现真正独立的新因果对象，或旧事件已经终结后产生新的未解决后果时，才允许 events_create。',
         '12D-LIFE. compact people 中 life_tick_due_minutes>0 的人物属于“生活结算到期”。优先让其中最多 backgroundNpcBudget 名从她自己的 location/action/intent/long_term_goal/physical/emotional/resource 状态继续生活，而不是围着最新正文找反应。即使这段时间没有戏剧性事件，也应通过 people_upsert 给出自然的当前行动/意图，从而完成生活结算；不要为了交作业硬造冲突。强化后台人物推演给出明确目标名单时，该名单为本轮必做项，不得省略。',
         '12D-1. 已解决事件本体不要为了“保留剧情”继续挂在暗流里；保留它已经造成的 world_facts / 人物状态 / 环境后果即可。真正需要继续发展的部分创建为新的事件。这样事件链会往前长，而不是反复复读旧事件。',
         '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
         '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',
-        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。',
+        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。伏笔若明确关联人物、地点或世界事件，可分别填写 people / locations / events；不要为了分类硬绑一个人物。',
         '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。长期事实必须更迭：同一稳定 key 出现新值时提交新值，让旧版本退出 active；明确失效/否定时写 facts_invalidate。不要让过期事实与新事实同时保持当前有效。',
         '14A. 事实层更新只代表世界真相/档案更新，绝不能因此自动把新值塞进所有 NPC 的 known_fact_keys；NPC 认知仍只按 12A 的知情证据单独变化。',
+        '14B. 为每个 new="true" 的 assistant_turn 顺手生成一条 L0 单轮摘要，写入 memory_update.turn_summaries。source_message_id 必须等于该 assistant_turn 的 message_id；summary 只总结这一轮真正发生的关键变化、关系/承诺/物品/未完问题，约 60—160 字。不要再让独立记忆任务为了同一轮正文重新请求一次模型。',
         '同一类事实使用稳定 key。正文给出新值时保留 key；插件会保留旧版本并标为 superseded。正文明确否定某条旧事实时写入 facts_invalidate；真假未定时用 status=disputed。',
         '人物 source 只有在本批 new="true" 正文真实描写到该人物时才填 foreground；镜头外人物必须填 background。present_in_scene 只有人物本人在当前场景中实际行动、说话或被直接感知时才为 true；仅被提及、回忆、谈论、作为目标或出现在内心想法里一律为 false。last_seen_message_id 必须填该人物最后实际出现的 assistant 消息 ID。',
         directorRule,
@@ -6516,6 +6604,11 @@ const activeDirectorNotes = asArray(directorNotes)
                 reason: '',
             }],
             memory_update: {
+                turn_summaries: [{
+                    source_message_id: 0,
+                    title: '',
+                    summary: '',
+                }],
                 facts_upsert: [{
                     id: '',
                     key: '',
@@ -6545,6 +6638,7 @@ const activeDirectorNotes = asArray(directorNotes)
                     source_excerpt: '',
                     people: [],
                     locations: [],
+                    events: [],
                     tags: [],
                     status: 'open | developing | triggered',
                     importance: 1,

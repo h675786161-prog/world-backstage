@@ -121,7 +121,7 @@ function pluginReleaseStage(version = '') {
 
 function pluginDisplayVersion(version = '') {
     const text = String(version || '');
-    if (/^2\.0\.0$/i.test(text)) return '小猫版 V2.0';
+    if (/^2\.2\.0$/i.test(text)) return '小猫版 V2.2';
     return `${pluginReleaseStage(text)} ${text || '1.1.0'}`;
 }
 
@@ -608,7 +608,7 @@ function renderSyncStrip(syncStatus) {
     `;
 }
 
-function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}, activeSection = 'common') {
+function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}, tavernProfiles = [], activeSection = 'common') {
     const clock = formatWorldCalendar(state);
     const clockLabel = worldClockLabel(state, clock);
     const connection = syncStatus?.connection || {};
@@ -649,22 +649,55 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
         profileId: apiDraft?.profileId ?? '',
     };
     const apiProfiles = Array.isArray(settings.apiProfiles) ? settings.apiProfiles : [];
+    const tavernApiProfiles = Array.isArray(tavernProfiles) ? tavernProfiles : [];
     const apiModuleRoutes = settings.apiModuleRoutes && typeof settings.apiModuleRoutes === 'object'
         ? settings.apiModuleRoutes
         : {};
-    const routeOptions = (current = 'default') => [
-        `<option value="default" ${current === 'default' ? 'selected' : ''}>跟随世界背面默认连接</option>`,
-        `<option value="tavern" ${current === 'tavern' ? 'selected' : ''}>跟随当前酒馆</option>`,
-        ...apiProfiles.map(profile => {
-            const value = `profile:${profile.id}`;
-            return `<option value="${escapeAttr(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(profile.name)} · ${escapeHtml(profile.model || '未选模型')}</option>`;
-        }),
-    ].join('');
+    const tavernProfileById = id => tavernApiProfiles.find(profile => String(profile.id) === String(id || '')) || null;
+    const tavernProfileSelectOptions = (currentId = '') => {
+        const current = String(currentId || '');
+        const currentExists = Boolean(tavernProfileById(current));
+        return [
+            `<option value="" ${current ? '' : 'selected'}>请选择酒馆已保存方案</option>`,
+            current && !currentExists
+                ? `<option value="${escapeAttr(current)}" selected disabled>原方案已不存在 · ${escapeHtml(current)}</option>`
+                : '',
+            ...tavernApiProfiles.map(profile => (
+                `<option value="${escapeAttr(profile.id)}" ${current === String(profile.id) ? 'selected' : ''}>${escapeHtml(profile.name)} · ${escapeHtml(profile.model || '未选模型')}</option>`
+            )),
+        ].join('');
+    };
+    const routeOptions = (current = 'default') => {
+        const missingTavernId = String(current).startsWith('tavern-profile:')
+            ? String(current).slice('tavern-profile:'.length)
+            : '';
+        const missingTavern = missingTavernId && !tavernProfileById(missingTavernId);
+        return [
+            `<option value="default" ${current === 'default' ? 'selected' : ''}>跟随世界背面默认连接</option>`,
+            `<option value="tavern" ${current === 'tavern' ? 'selected' : ''}>跟随当前酒馆</option>`,
+            missingTavern
+                ? `<option value="${escapeAttr(current)}" selected disabled>酒馆方案已不存在 · ${escapeHtml(missingTavernId)}</option>`
+                : '',
+            tavernApiProfiles.length
+                ? `<optgroup label="酒馆已保存方案">${tavernApiProfiles.map(profile => {
+                    const value = `tavern-profile:${profile.id}`;
+                    return `<option value="${escapeAttr(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(profile.name)} · ${escapeHtml(profile.model || '未选模型')}</option>`;
+                }).join('')}</optgroup>`
+                : '',
+            apiProfiles.length
+                ? `<optgroup label="世界背面独立方案">${apiProfiles.map(profile => {
+                    const value = `profile:${profile.id}`;
+                    return `<option value="${escapeAttr(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(profile.name)} · ${escapeHtml(profile.model || '未选模型')}</option>`;
+                }).join('')}</optgroup>`
+                : '',
+        ].join('');
+    };
     const settingExplanation = (setting, value) => {
         const key = String(value);
         const maps = {
             apiMode: {
                 tavern: '我跟着酒馆现在这条连接走～主聊天换模型，我这边也会跟着换。省得再填一遍 ฅ',
+                'tavern-profile': '我记住酒馆那份方案的牌牌～真正的 Key、地址和模型还是让酒馆自己保管，我每次用之前再去读。',
                 custom: '给我单独开条小路～我自己从这边钻出去，不踩主聊天那条路。',
             },
             theme: {
@@ -791,16 +824,18 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
     return `
         <div class="wb-settings-popover wb-settings-scope-global wb-settings-section-${sectionKey}" role="dialog" aria-modal="true"
             aria-label="全局设置">
-            <div class="wb-popover-heading">
-                <div><span>玲七的小窝</span><h3>全局设置</h3></div>
-                <button type="button" data-wb-action="toggle-settings" aria-label="关闭设置">×</button>
+            <div class="wb-settings-sticky-head">
+                <div class="wb-popover-heading">
+                    <div><span>玲七的小窝</span><h3>全局设置</h3></div>
+                    <button type="button" data-wb-action="toggle-settings" aria-label="关闭设置">×</button>
+                </div>
+                <nav class="wb-settings-tabs" aria-label="设置分类">
+                    ${sectionButton('common', '常用')}
+                    ${sectionButton('injection', '正文注入')}
+                    ${sectionButton('connection', '连接与模型')}
+                    ${sectionButton('advanced', '高级维护')}
+                </nav>
             </div>
-            <nav class="wb-settings-tabs" aria-label="设置分类">
-                ${sectionButton('common', '常用')}
-                ${sectionButton('injection', '正文注入')}
-                ${sectionButton('connection', '连接与模型')}
-                ${sectionButton('advanced', '高级维护')}
-            </nav>
 
             <section class="wb-settings-section-body wb-settings-common-section">
                 <div class="wb-global-flat-block">
@@ -838,6 +873,17 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         <label class="wb-switch">
                             <input type="checkbox" data-wb-setting="orbEnabled"
                                 ${settings.orbEnabled !== false ? 'checked' : ''}>
+                            <i></i>
+                        </label>
+                    </div>
+                    <div class="wb-setting-toggle">
+                        <div>
+                            <strong>悬浮球贴边收纳</strong>
+                            <span>不把门牌整个藏掉～吸到最近的屏幕边，正好藏一半、露一半；点它还是能直接打开。</span>
+                        </div>
+                        <label class="wb-switch">
+                            <input type="checkbox" data-wb-setting="orbEdgeHide"
+                                ${settings.orbEdgeHide ? 'checked' : ''}>
                             <i></i>
                         </label>
                     </div>
@@ -975,16 +1021,29 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 ${syncStatus?.error ? `<p>${escapeHtml(syncStatus.error)}</p>` : ''}
                 <small>${settings.apiMode === 'custom'
                     ? '我走自己的小路～主聊天那边不用给我让道。'
-                    : '我跟着酒馆这条路走～不用再给我画第二张地图。'}</small>
+                    : settings.apiMode === 'tavern-profile'
+                        ? '我只记方案牌牌，不抄走 Key。酒馆那边改了模型或地址，我下次用的时候会读到新的。'
+                        : '我跟着酒馆当前这条路走～不用再给我画第二张地图。'}</small>
             </div>
 
             <div class="wb-setting-block">
                 <label>世界推演连接</label>
                 <div class="wb-option-row">
-                    ${settingButton('apiMode', settings.apiMode, 'tavern', '跟随酒馆')}
+                    ${settingButton('apiMode', settings.apiMode, 'tavern', '跟随当前酒馆')}
+                    ${settingButton('apiMode', settings.apiMode, 'tavern-profile', '酒馆已存方案')}
                     ${settingButton('apiMode', settings.apiMode, 'custom', '独立接口')}
                 </div>
                 <p class="wb-setting-explanation">${escapeHtml(settingExplanation('apiMode', settings.apiMode))}</p>
+                ${settings.apiMode === 'tavern-profile' ? `
+                    <label class="wb-tavern-profile-picker">选择酒馆方案
+                        <select data-wb-tavern-profile-select>
+                            ${tavernProfileSelectOptions(settings.tavernApiProfileId)}
+                        </select>
+                    </label>
+                    <p>${tavernApiProfiles.length
+                        ? '这里只保存方案 ID～Key、接口地址、模型和 Secret 都继续由 SillyTavern 管。方案被改，我下次直接读新值；方案被删，我会停下来报错，不会偷偷换路。'
+                        : '我没读到可用的酒馆连接方案。先去 SillyTavern 的 Connection Manager 保存一份方案，再回来选它。'}</p>
+                ` : ''}
             </div>
                     </div>
                     <details class="wb-settings-subgroup" data-settings-subgroup="connection-custom" ${subgroupOpen('connection-custom')}>
@@ -1058,7 +1117,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </details>
 
                     <details class="wb-settings-subgroup" data-settings-subgroup="connection-profiles" ${subgroupOpen('connection-profiles')}>
-                        <summary><span>已保存 API 方案</span><small>${apiProfiles.length ? `${apiProfiles.length} 个方案` : '还没有保存方案'}</small></summary>
+                        <summary><span>世界背面自存方案</span><small>${apiProfiles.length ? `${apiProfiles.length} 个方案` : '还没有保存方案'}</small></summary>
                         <div class="wb-settings-subgroup-body">
                             ${apiProfiles.length ? `
                                 <div class="wb-api-profile-list">
@@ -1619,23 +1678,22 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                             <div class="wb-maintenance-card">
                                 <div>
                                     <strong>清理当前聊天缓存</strong>
-                                    <p>我只把能重新长出来的临时碎屑扫出去～人物、事件、回声、记忆、世界钟和 API 配置，我一爪都不碰。</p>
+                                    <p>我只扫掉临时碎屑～人物、记忆和世界状态，一爪都不碰。</p>
                                 </div>
                                 <button type="button" data-wb-action="clear-current-chat-cache">清理缓存</button>
                             </div>
                             <div class="wb-maintenance-card">
                                 <div>
                                     <strong>让玲七检查世界状态</strong>
-                                    <p>我会把最近正文、人物设定、手动事实摊在爪边一项项对。证据够清楚我才改后台；正文真发生过的？那个我不碰，不能把时间拨回去。</p>
-                                    <small>平时我会先拦住 AI 推断乱盖事实；这个按钮主要拿来收拾以前已经混进去的错误。</small>
+                                    <p>我拿正文和明确事实再对一遍。后台错了我改，已经发生的正文不碰。</p>
                                 </div>
                                 <button type="button" data-wb-action="check-correct-world-state">检查纠错</button>
                             </div>
                             <div class="wb-maintenance-card is-danger">
                                 <div>
                                     <strong>重置当前聊天数据</strong>
-                                    <p>这个是真的清空。按下去，我会把当前聊天这只箱子里的世界状态、人物、事件、暗流、回声、记忆、舆情、缓存、恢复点和分支记录全倒掉。聊天正文和 API / 模型配置，我不碰。</p>
-                                    <small>这是干净重测用的真重置。我不会偷偷把旧世界藏床底下，过会儿又拖出来诈尸。</small>
+                                    <p>这次是真的把这只箱子倒空。正文和 API / 模型配置我不碰。</p>
+                                    <small>不可撤回～要留着就先备份，旧世界也不会再从床底下诈尸。</small>
                                 </div>
                                 <button type="button" class="is-danger" data-wb-action="reset-current-chat-data">一键重置</button>
                             </div>
@@ -3057,6 +3115,7 @@ function memoryItemMatches(item, query) {
         item?.summary,
         ...(item?.people || []),
         ...(item?.locations || []),
+        ...(item?.events || []),
         ...(item?.tags || []),
     ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalized);
 }
@@ -3109,23 +3168,70 @@ function memoryFactGroupDescriptor(fact, state) {
     return { key: `fact:${label}`, label };
 }
 
-function memoryClueGroupDescriptor(clue, state) {
-    const linkedPerson = Array.isArray(clue?.people) && clue.people.length
-        ? resolvePersonEntity(state, clue.people[0])
-        : null;
-    if (linkedPerson) {
-        return {
-            key: `person:${linkedPerson.id || linkedPerson.name}`,
-            label: linkedPerson.name,
-        };
+function memoryClueGroupDescriptor(clue) {
+    if (clue?.archived) return { key: 'clue:archived', label: '已归档' };
+    if (['resolved', 'discarded'].includes(clue?.status)) {
+        return { key: 'clue:resolved', label: '已经回收 / 放下' };
     }
-    if (Array.isArray(clue?.locations) && clue.locations.length) {
-        const label = String(clue.locations[0] || '').trim() || '其他伏笔';
-        return { key: `location:${label}`, label };
-    }
-    const label = String(clue?.title || '').trim() || '其他伏笔';
-    return { key: `clue:${label}`, label };
+    if (clue?.status === 'triggered') return { key: 'clue:triggered', label: '已经触发' };
+    return { key: 'clue:active', label: '仍在发展' };
 }
+
+function memoryClueRelationMatches(clue, relationFilter = 'all', state = null) {
+    const filter = String(relationFilter || 'all');
+    if (filter === 'all') return true;
+    const separator = filter.indexOf(':');
+    if (separator < 0) return true;
+    const kind = filter.slice(0, separator);
+    const expected = filter.slice(separator + 1).trim().toLocaleLowerCase();
+    if (!expected) return true;
+    const values = kind === 'person'
+        ? (clue?.people || [])
+        : kind === 'location'
+            ? (clue?.locations || [])
+            : kind === 'event'
+                ? (clue?.events || [])
+                : [];
+    if (kind === 'person') {
+        return values.some(value => {
+            const raw = String(value || '').trim();
+            const person = resolvePersonEntity(state, raw);
+            return [raw, person?.id, person?.name]
+                .filter(Boolean)
+                .some(candidate => String(candidate).trim().toLocaleLowerCase() === expected);
+        });
+    }
+    if (kind === 'event') {
+        const events = [...(state?.events || []), ...(state?.archive || [])];
+        return values.some(value => {
+            const raw = String(value || '').trim();
+            const matched = events.find(event => (
+                String(event?.id || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
+                || String(event?.title || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
+            ));
+            return [raw, matched?.id, matched?.title]
+                .filter(Boolean)
+                .some(candidate => String(candidate).trim().toLocaleLowerCase() === expected);
+        });
+    }
+    return values.some(value => String(value || '').trim().toLocaleLowerCase() === expected);
+}
+
+function clueRelationMeta(clue, state) {
+    const events = [...(state?.events || []), ...(state?.archive || [])];
+    const people = [...new Set((clue?.people || []).map(value => resolvePersonDisplayName(state, value)).filter(Boolean))];
+    const locations = [...new Set((clue?.locations || []).map(value => String(value || '').trim()).filter(Boolean))];
+    const eventItems = [...new Set((clue?.events || []).map(value => {
+        const raw = String(value || '').trim();
+        const event = events.find(item => (
+            String(item?.id || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
+            || String(item?.title || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
+        ));
+        return event?.title || raw;
+    }).filter(Boolean))];
+    return { people, locations, events: eventItems };
+}
+
 
 function memorySummaryLevelMeta(summary) {
     if (!summary?.hierarchyManaged) {
@@ -3178,6 +3284,7 @@ function renderMemoryView(state, observerMode, {
     visibleCount = 12,
     openFolds = new Set(),
     selectedKeys = new Set(),
+    clueRelationFilter = 'all',
 } = {}) {
     const memory = state.storyMemory || {
         digest: null,
@@ -3196,7 +3303,8 @@ function renderMemoryView(state, observerMode, {
     const allClues = [...(memory.clues || [])]
         .filter(clue => observerMode === 'backstage' || clue.visibility !== 'hidden')
         .sort((a, b) => (
-            Number(['open', 'developing', 'echoed', 'triggered'].includes(b.status))
+            Number(Boolean(a.archived)) - Number(Boolean(b.archived))
+            || Number(['open', 'developing', 'echoed', 'triggered'].includes(b.status))
             - Number(['open', 'developing', 'echoed', 'triggered'].includes(a.status))
             || Number(b.importance || 0) - Number(a.importance || 0)
             || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
@@ -3208,7 +3316,7 @@ function renderMemoryView(state, observerMode, {
         : [];
     const summaryById = new Map(allSummaries.map(summary => [String(summary.id || ''), summary]));
     const digest = observerMode === 'backstage' ? memory.digest : null;
-    const normalizedFilter = ['active', 'facts', 'clues', 'episodes', 'all'].includes(filter)
+    const normalizedFilter = ['active', 'facts', 'clues', 'resolved-clues', 'archived-clues', 'episodes', 'all'].includes(filter)
         ? filter
         : 'active';
     const maximum = Math.max(6, Number(visibleCount) || 12);
@@ -3222,10 +3330,17 @@ function renderMemoryView(state, observerMode, {
     ));
     const clues = allClues.filter(clue => (
         memoryItemMatches(clue, query)
+        && memoryClueRelationMatches(clue, clueRelationFilter, state)
         && (
             normalizedFilter === 'all'
-            || normalizedFilter === 'clues'
-            || (normalizedFilter === 'active' && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status))
+            || (normalizedFilter === 'clues' && !clue.archived)
+            || (normalizedFilter === 'resolved-clues' && !clue.archived && ['resolved', 'discarded'].includes(clue.status))
+            || (normalizedFilter === 'archived-clues' && clue.archived)
+            || (
+                normalizedFilter === 'active'
+                && !clue.archived
+                && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)
+            )
         )
     ));
     const summaries = allSummaries.filter(summary => (
@@ -3236,7 +3351,7 @@ function renderMemoryView(state, observerMode, {
     const shownClues = clues.slice(0, maximum);
     const shownSummaries = summaries.slice(0, maximum);
     const factGroups = groupItems(shownFacts, fact => memoryFactGroupDescriptor(fact, state));
-    const clueGroups = groupItems(shownClues, clue => memoryClueGroupDescriptor(clue, state));
+    const clueGroups = groupItems(shownClues, clue => memoryClueGroupDescriptor(clue));
     const resultCount = facts.length + clues.length + summaries.length;
     const shownCount = shownFacts.length + shownClues.length + shownSummaries.length;
     const hasMore = shownFacts.length < facts.length
@@ -3246,6 +3361,47 @@ function renderMemoryView(state, observerMode, {
         <button type="button" data-wb-action="set-memory-filter" data-filter="${id}"
             aria-pressed="${normalizedFilter === id}"
             class="${normalizedFilter === id ? 'is-active' : ''}">${label}</button>
+    `;
+    const relationPeople = new Map();
+    const relationLocations = new Set();
+    const relationEvents = new Map();
+    const allWorldEvents = [...(state.events || []), ...(state.archive || [])];
+    for (const clue of allClues) {
+        for (const value of clue.people || []) {
+            const raw = String(value || '').trim();
+            if (!raw) continue;
+            const person = resolvePersonEntity(state, raw);
+            const key = String(person?.id || person?.name || raw);
+            relationPeople.set(key, person?.name || raw);
+        }
+        for (const value of clue.locations || []) {
+            const raw = String(value || '').trim();
+            if (raw) relationLocations.add(raw);
+        }
+        for (const value of clue.events || []) {
+            const raw = String(value || '').trim();
+            if (!raw) continue;
+            const event = allWorldEvents.find(item => (
+                String(item?.id || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
+                || String(item?.title || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
+            ));
+            const key = String(event?.id || event?.title || raw);
+            relationEvents.set(key, event?.title || raw);
+        }
+    }
+    const relationOption = (value, label) => (
+        `<option value="${escapeAttr(value)}" ${String(clueRelationFilter) === String(value) ? 'selected' : ''}>${escapeHtml(label)}</option>`
+    );
+    const clueRelationSelect = `
+        <label class="wb-clue-relation-filter">
+            <span>伏笔关联</span>
+            <select data-wb-clue-relation-filter>
+                ${relationOption('all', '全部关联')}
+                ${relationPeople.size ? `<optgroup label="人物">${[...relationPeople.entries()].map(([id, label]) => relationOption(`person:${id}`, label)).join('')}</optgroup>` : ''}
+                ${relationEvents.size ? `<optgroup label="事件">${[...relationEvents.entries()].map(([id, label]) => relationOption(`event:${id}`, label)).join('')}</optgroup>` : ''}
+                ${relationLocations.size ? `<optgroup label="地点">${[...relationLocations].map(label => relationOption(`location:${label}`, label)).join('')}</optgroup>` : ''}
+            </select>
+        </label>
     `;
     const renderFactCard = (fact, groupLabel = '') => {
         const subject = String(fact.subject || fact.key || '').trim();
@@ -3267,41 +3423,62 @@ function renderMemoryView(state, observerMode, {
         </article>
     `;
     };
-    const renderClueCard = clue => `
-        <article class="wb-clue-card is-${escapeAttr(clue.status)}">
+    const renderClueCard = clue => {
+        const relations = clueRelationMeta(clue, state);
+        return `
+        <article class="wb-clue-card is-${escapeAttr(clue.status)} ${clue.archived ? 'is-archived' : ''}">
             <div class="wb-clue-meta">
-                <span>${escapeHtml(clueStatusLabel(clue.status))}</span>
+                <span>${escapeHtml(clue.archived ? '已归档' : clueStatusLabel(clue.status))}</span>
+                ${!clue.archived && ['resolved', 'discarded'].includes(clue.status)
+                    ? `<button type="button" data-wb-action="set-clue-archive-state" data-clue-id="${escapeAttr(clue.id)}" data-archived="true" ${clue.locked ? 'disabled' : ''}>归档</button>`
+                    : ''}
+                ${clue.archived
+                    ? `<button type="button" data-wb-action="set-clue-archive-state" data-clue-id="${escapeAttr(clue.id)}" data-archived="false" ${clue.locked ? 'disabled' : ''}>移回已回收</button>`
+                    : ''}
             </div>
             <h4>${escapeHtml(clue.title)}</h4>
             <p>${escapeHtml(clue.text)}</p>
+            ${(relations.people.length || relations.events.length || relations.locations.length) ? `
+                <div class="wb-clue-relations">
+                    ${relations.people.map(value => `<span class="is-person">人物 · ${escapeHtml(value)}</span>`).join('')}
+                    ${relations.events.map(value => `<span class="is-event">事件 · ${escapeHtml(value)}</span>`).join('')}
+                    ${relations.locations.map(value => `<span class="is-location">地点 · ${escapeHtml(value)}</span>`).join('')}
+                </div>
+            ` : ''}
             ${clue.sourceExcerpt ? `<blockquote>${escapeHtml(clue.sourceExcerpt)}</blockquote>` : ''}
             ${clue.resolution ? `<div class="wb-clue-resolution">${escapeHtml(clue.resolution)}</div>` : ''}
             ${clue.lifecycleReason && clue.lifecycleReason !== clue.resolution ? `<div class="wb-memory-fact-note">为什么变更：${escapeHtml(clue.lifecycleReason)}</div>` : ''}
             ${renderMemoryActions('clue', clue, selectedKeys)}
         </article>
     `;
+    };
     return `
-        <div class="wb-view-intro wb-memory-intro">
-            <div class="wb-memory-intro-actions">
-                <span>${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条事实 · ${allClues.filter(clue => ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)).length} 条伏笔</span>
-                <button type="button" data-wb-action="open-memory-editor" data-memory-kind="fact">＋ 新增记忆</button>
-            </div>
-        </div>
         <div class="wb-memory-shell">
-            <div class="wb-memory-tools">
+            <div class="wb-memory-toolbar">
+                <div class="wb-memory-toolbar-top">
+                    <span class="wb-memory-toolbar-summary">${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} 条事实 · ${allClues.filter(clue => !clue.archived && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)).length} 条进行中伏笔 · ${allClues.filter(clue => clue.archived).length} 条归档</span>
+                    <span class="wb-memory-intro-buttons">
+                        <button type="button" data-wb-action="open-memory-editor" data-memory-kind="fact">＋ 新增记忆</button>
+                        <button type="button" data-wb-action="open-memory-editor" data-memory-kind="clue">＋ 新增伏笔</button>
+                    </span>
+                </div>
+                <div class="wb-memory-tools">
                 <div class="wb-memory-filters" aria-label="记忆筛选">
                     ${filterButton('active', '进行中')}
                     ${filterButton('facts', '事实')}
                     ${filterButton('clues', '伏笔')}
+                    ${filterButton('resolved-clues', '已回收')}
+                    ${filterButton('archived-clues', '已归档')}
                     ${filterButton('episodes', '经历')}
                     ${filterButton('all', '全部')}
                 </div>
+                ${clueRelationSelect}
                 <label class="wb-memory-search">
                     <span>搜索记忆</span>
                     <input type="search" data-wb-memory-search maxlength="80"
                         value="${escapeAttr(query)}" placeholder="人物、地点、物品或关键词">
                 </label>
-                <small>${query ? `找到 ${resultCount} 条` : `当前分类 ${resultCount} 条`}</small>
+                <small>${query ? `找到 ${resultCount} 条` : `${resultCount} 条`}</small>
                 ${observerMode === 'backstage' && resultCount ? `
                     <div class="wb-memory-bulk-tools">
                         <button type="button" data-wb-action="select-visible-memory"
@@ -3319,6 +3496,7 @@ function renderMemoryView(state, observerMode, {
                         </button>
                     </div>
                 ` : ''}
+                </div>
             </div>
             ${(memory.metabolismLog || []).length ? `
                 <details class="wb-fold wb-memory-digest" data-fold-key="memory:metabolism"
@@ -3472,6 +3650,9 @@ function renderMemoryEditorModal(state, editor) {
         : requestedKind === 'clue'
             ? item?.text
             : item?.summary;
+    const peopleText = requestedKind === 'clue' ? (item?.people || []).join('、') : '';
+    const locationsText = requestedKind === 'clue' ? (item?.locations || []).join('、') : '';
+    const eventsText = requestedKind === 'clue' ? (item?.events || []).join('、') : '';
     return `
         <div class="wb-drawer-scrim" data-wb-action="close-memory-editor">
             <form class="wb-event-form wb-memory-editor" data-wb-form="memory">
@@ -3494,6 +3675,17 @@ function renderMemoryEditorModal(state, editor) {
                     value="${escapeAttr(relation || '')}" placeholder="例如：答应、持有、真实身份"></label>
                 <label>内容<textarea name="content" required maxlength="1400" rows="5"
                     placeholder="写下需要长期保留的准确内容">${escapeHtml(content || '')}</textarea></label>
+                ${requestedKind === 'clue' ? `
+                    <div class="wb-memory-relation-editor">
+                        <label>关联人物<input name="people" maxlength="500"
+                            value="${escapeAttr(peopleText)}" placeholder="可多个，用、或逗号分开"></label>
+                        <label>关联事件<input name="events" maxlength="500"
+                            value="${escapeAttr(eventsText)}" placeholder="事件名或事件 ID，可多个"></label>
+                        <label>关联地点<input name="locations" maxlength="500"
+                            value="${escapeAttr(locationsText)}" placeholder="地点名，可多个"></label>
+                    </div>
+                    <div class="wb-form-note">关联只是方便找伏笔，不代表它“属于”某个人。跨人物、事件、地点的线索可以同时挂多个关联。</div>
+                ` : ''}
                 <div class="wb-memory-editor-flags">
                     <label><input name="important" type="checkbox" ${item?.important ? 'checked' : ''}> 标记为重要</label>
                     <label><input name="locked" type="checkbox" ${item?.locked ? 'checked' : ''}> 保存后锁定</label>
@@ -3671,10 +3863,39 @@ function orbInlineStyles(position) {
     };
 }
 
+function defaultVisibleOrbPosition(side = 'right') {
+    const viewport = visualViewportBounds();
+    const size = responsiveOrbSize(viewport.width, viewport.height);
+    const margin = 12;
+    return {
+        x: side === 'left'
+            ? viewport.left + margin
+            : viewport.right - size - margin,
+        y: Math.max(viewport.top + margin, viewport.bottom - size - 24),
+        size,
+    };
+}
+
+function halfDockOrbInlineStyle(position, side = 'right') {
+    const viewport = visualViewportBounds();
+    const placed = clampOrbPosition(position) || defaultVisibleOrbPosition(side);
+    const size = placed.size || responsiveOrbSize(viewport.width, viewport.height);
+    const y = Math.min(
+        Math.max(viewport.top + 8, placed.y),
+        Math.max(viewport.top + 8, viewport.bottom - size - 8),
+    );
+    // Put the orb centre exactly on the viewport edge: half visible, half outside.
+    const x = side === 'left'
+        ? viewport.left - size / 2
+        : viewport.right - size / 2;
+    return `left:${Math.round(x)}px;top:${Math.round(y)}px;right:auto;bottom:auto;`;
+}
+
 export function createWorldBackstageUI({
     getState,
     getSettings,
     getSyncStatus = () => ({ phase: 'idle', message: '尚未进行世界推演' }),
+    getTavernProfiles = () => [],
     onAction,
     pluginVersion = '',
 }) {
@@ -3710,6 +3931,8 @@ export function createWorldBackstageUI({
         } else if (orb) {
             render();
         }
+        const latestRevision = Math.max(0, Number(getState()?.revision) || 0);
+        if (latestRevision !== renderedRevision) render();
         return root.isConnected;
     }
 
@@ -3786,6 +4009,7 @@ export function createWorldBackstageUI({
     let publicOpinionSandboxActionBusy = false;
     let memorySearchTimer = null;
     let memoryFilter = 'active';
+    let memoryClueRelationFilter = 'all';
     let memoryQuery = '';
     let memoryVisibleCount = 12;
     let memorySelectedKeys = new Set();
@@ -3813,6 +4037,9 @@ export function createWorldBackstageUI({
     const viewScrollTop = new Map();
     let orbDrag = null;
     let suppressOrbClick = false;
+    let renderedRevision = Math.max(0, Number(getState()?.revision) || 0);
+    let lastSeenRevision = renderedRevision;
+    let freshOpenCheckFrame = 0;
 
     function notify(message, tone = 'normal') {
         toast = String(message || '');
@@ -3911,6 +4138,12 @@ export function createWorldBackstageUI({
         panelEntrancePending = !isOpen;
         isOpen = true;
         render();
+        window.cancelAnimationFrame?.(freshOpenCheckFrame);
+        freshOpenCheckFrame = window.requestAnimationFrame?.(() => {
+            freshOpenCheckFrame = 0;
+            const latestRevision = Math.max(0, Number(getState()?.revision) || 0);
+            if (latestRevision !== renderedRevision) render();
+        }) || 0;
     }
 
     function close() {
@@ -3952,6 +4185,7 @@ export function createWorldBackstageUI({
         memorySelectedKeys = new Set();
         memoryQuery = '';
         memoryFilter = 'active';
+        memoryClueRelationFilter = 'all';
         memoryVisibleCount = 12;
         worldEditorOpen = false;
         recordEditor = null;
@@ -4065,6 +4299,8 @@ export function createWorldBackstageUI({
         const state = getState();
         const settings = getSettings();
         const syncStatus = getSyncStatus();
+        const tavernProfilesRaw = settingsOpen ? getTavernProfiles?.() : [];
+        const tavernProfiles = Array.isArray(tavernProfilesRaw) ? tavernProfilesRaw : [];
         const canCancelSimulation = Boolean(syncStatus.canCancelSimulation);
         const manualSimulationQueued = Boolean(syncStatus.manualSimulationQueued);
         const canCancelBackgroundTask = Boolean(syncStatus.canCancelBackgroundTask);
@@ -4129,12 +4365,25 @@ export function createWorldBackstageUI({
             ['queued', 'running', 'cancelling'].includes(syncStatus.phase)
             || syncStatus.memory?.phase === 'running'
         );
-        const needsAttention = (
-            pendingDeliveries
+        const stateRevision = Math.max(0, Number(state.revision) || 0);
+        const unreadWorldRevision = stateRevision > lastSeenRevision;
+        const needsAttention = Boolean(
+            unreadWorldRevision
+            || pendingDeliveries
             || state.pendingSync
             || ['error', 'pending', 'queued'].includes(syncStatus.phase)
             || memoryPhase === 'error'
         );
+        const orbEdgeSide = (() => {
+            const placed = clampOrbPosition(settings.orbPosition);
+            if (!placed) return 'right';
+            const viewport = visualViewportBounds();
+            return placed.x + placed.size / 2 < viewport.left + viewport.width / 2 ? 'left' : 'right';
+        })();
+        const orbEdgeHidden = Boolean(settings.orbEdgeHide && !isOpen);
+        const renderedOrbStyle = orbEdgeHidden
+            ? halfDockOrbInlineStyle(settings.orbPosition, orbEdgeSide)
+            : orbStyles.orb;
 
         let content = '';
         if (activeView === 'now') content = renderNowView(state, observerMode, visiblePeople, activeEvents);
@@ -4163,14 +4412,15 @@ export function createWorldBackstageUI({
             visibleCount: memoryVisibleCount,
             openFolds: openContentFolds,
             selectedKeys: memorySelectedKeys,
+            clueRelationFilter: memoryClueRelationFilter,
         });
         if (activeView === 'archive') content = renderArchiveView(state, openContentFolds);
 
         root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'}`;
         root.innerHTML = `
             ${settings.orbEnabled !== false ? `
-            <button class="wb-world-orb ${isOpen ? 'is-open' : ''} ${orbProcessing ? 'is-processing' : ''} ${settings.orbPosition ? 'has-custom-position' : ''}" type="button"
-                style="${orbStyles.orb}" data-wb-action="toggle-panel"
+            <button class="wb-world-orb ${isOpen ? 'is-open' : ''} ${orbProcessing ? 'is-processing' : ''} ${settings.orbPosition ? 'has-custom-position' : ''} ${orbEdgeHidden ? `is-edge-hidden is-edge-${orbEdgeSide}` : ''}" type="button"
+                style="${renderedOrbStyle}" data-wb-action="toggle-panel"
                 aria-label="${isOpen ? '收起世界背面' : '打开世界背面'}">
                 <span class="wb-orb-halo"></span>
                 <span class="wb-orb-ring ring-one"></span>
@@ -4178,7 +4428,7 @@ export function createWorldBackstageUI({
                 <span class="wb-orb-core"></span>
                 ${needsAttention ? '<i class="wb-orb-notice"></i>' : ''}
             </button>
-            <div class="wb-orb-caption ${!isOpen && needsAttention ? 'is-visible' : ''}"
+            <div class="wb-orb-caption ${!isOpen && needsAttention && !orbEdgeHidden ? 'is-visible' : ''}"
                 style="${orbStyles.caption}">
                 <strong>世界背面</strong>
                 <span>${escapeHtml(
@@ -4366,6 +4616,7 @@ export function createWorldBackstageUI({
                                     onlyEnabled: worldbookOnlyEnabled,
                                     selectedIds: worldbookSelectedIds,
                                 },
+                                tavernProfiles,
                                 settingsSection,
                             )}
                         </div>
@@ -4496,6 +4747,8 @@ export function createWorldBackstageUI({
             }
         }
         renderedView = activeView;
+        renderedRevision = stateRevision;
+        if (isOpen) lastSeenRevision = Math.max(lastSeenRevision, stateRevision);
     }
 
     function positionOrbElements(x, y) {
@@ -4525,6 +4778,13 @@ export function createWorldBackstageUI({
     root.addEventListener('pointerdown', event => {
         const orb = event.target.closest('.wb-world-orb');
         if (!orb || event.button !== 0) return;
+        if (orb.classList.contains('is-edge-hidden')) {
+            const side = orb.classList.contains('is-edge-left') ? 'left' : 'right';
+            orb.classList.remove('is-edge-hidden', 'is-edge-left', 'is-edge-right');
+            const saved = getSettings().orbPosition;
+            const visible = saved || defaultVisibleOrbPosition(side);
+            positionOrbElements(visible.x, visible.y);
+        }
         const rect = orb.getBoundingClientRect();
         orb.style.setProperty('left', `${rect.left}px`, 'important');
         orb.style.setProperty('top', `${rect.top}px`, 'important');
@@ -4748,6 +5008,18 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'set-clue-archive-state') {
+            const archived = target.dataset.archived === 'true';
+            const completed = await invokeAction('set-clue-archive-state', {
+                id: target.dataset.clueId || '',
+                archived,
+            });
+            if (completed !== false && archived && memoryFilter === 'resolved-clues') {
+                memorySelectedKeys = new Set();
+            }
+            render();
+            return;
+        }
         if (action === 'toggle-memory-flag') {
             await invokeAction('toggle-memory-flag', {
                 kind: target.dataset.memoryKind || 'fact',
@@ -4796,7 +5068,7 @@ export function createWorldBackstageUI({
         if (action === 'clear-filtered-memory') {
             const state = getState();
             const memory = state.storyMemory || { facts: [], clues: [], summaries: [] };
-            const normalizedFilter = ['active', 'facts', 'clues', 'episodes', 'all'].includes(memoryFilter)
+            const normalizedFilter = ['active', 'facts', 'clues', 'resolved-clues', 'archived-clues', 'episodes', 'all'].includes(memoryFilter)
                 ? memoryFilter
                 : 'active';
             const visibleFact = fact => (
@@ -4813,10 +5085,17 @@ export function createWorldBackstageUI({
                 (observerMode === 'backstage' || clue.visibility !== 'hidden')
                 && !clue.locked
                 && memoryItemMatches(clue, memoryQuery)
+                && memoryClueRelationMatches(clue, memoryClueRelationFilter, state)
                 && (
                     normalizedFilter === 'all'
-                    || normalizedFilter === 'clues'
-                    || (normalizedFilter === 'active' && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status))
+                    || (normalizedFilter === 'clues' && !clue.archived)
+                    || (normalizedFilter === 'resolved-clues' && !clue.archived && ['resolved', 'discarded'].includes(clue.status))
+                    || (normalizedFilter === 'archived-clues' && clue.archived)
+                    || (
+                        normalizedFilter === 'active'
+                        && !clue.archived
+                        && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)
+                    )
                 )
             );
             const visibleSummary = summary => (
@@ -5123,6 +5402,14 @@ export function createWorldBackstageUI({
             render();
             // 选择“独立接口”后立即展开填写区，恢复一键进入配置的填写体验。
             // 用户之后仍可手动收起；普通重渲染不会强制再次展开。
+            if (setting === 'apiMode' && value === 'tavern-profile') {
+                settingsSection = 'connection';
+                openSettingsGroups.add('connection');
+                render();
+                window.setTimeout(() => {
+                    root.querySelector('[data-wb-tavern-profile-select]')?.focus();
+                }, 0);
+            }
             if (setting === 'apiMode' && value === 'custom') {
                 settingsSection = 'connection';
                 window.setTimeout(() => {
@@ -5510,6 +5797,14 @@ export function createWorldBackstageUI({
             return;
         }
 
+        if (event.target.matches?.('[data-wb-clue-relation-filter]')) {
+            memoryClueRelationFilter = String(event.target.value || 'all');
+            memoryVisibleCount = 12;
+            memorySelectedKeys = new Set();
+            render();
+            return;
+        }
+
         if (event.target.matches?.('[data-wb-memory-select]')) {
             const kind = String(event.target.dataset.memoryKind || 'fact');
             const id = String(event.target.dataset.memoryId || '');
@@ -5541,6 +5836,15 @@ export function createWorldBackstageUI({
         if (worldbookFilter === 'people' || worldbookFilter === 'enabled') {
             if (worldbookFilter === 'people') worldbookOnlyPeople = Boolean(event.target.checked);
             if (worldbookFilter === 'enabled') worldbookOnlyEnabled = Boolean(event.target.checked);
+            render();
+            return;
+        }
+
+        if (event.target.matches?.('[data-wb-tavern-profile-select]')) {
+            await invokeAction('update-settings', {
+                tavernApiProfileId: String(event.target.value || ''),
+            });
+            notify(event.target.value ? '酒馆方案牌牌记住啦～' : '先不绑酒馆方案了～', event.target.value ? 'success' : 'info');
             render();
             return;
         }
@@ -5714,12 +6018,21 @@ export function createWorldBackstageUI({
             }
         }
         if (form.dataset.wbForm === 'memory') {
+            const parseRelationList = value => [...new Set(
+                String(value || '')
+                    .split(/[、,，;；\n]+/)
+                    .map(item => item.trim())
+                    .filter(Boolean),
+            )];
             const completed = await invokeAction('save-memory-item', {
                 id: data.id || '',
                 kind: data.kind || 'fact',
                 title: data.title || '',
                 relation: data.relation || '',
                 content: data.content || '',
+                people: parseRelationList(data.people),
+                events: parseRelationList(data.events),
+                locations: parseRelationList(data.locations),
                 important: form.elements.important?.checked || false,
                 locked: form.elements.locked?.checked || false,
             });
@@ -5850,6 +6163,7 @@ export function createWorldBackstageUI({
             window.clearTimeout(memorySearchTimer);
             window.clearTimeout(closeTimer);
             window.clearTimeout(lingqiMascotTimer);
+            window.cancelAnimationFrame?.(freshOpenCheckFrame);
             window.clearInterval(selfHealTimer);
             document.removeEventListener('keydown', onKeydown);
             document.removeEventListener('visibilitychange', onPageVisible);

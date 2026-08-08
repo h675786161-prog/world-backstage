@@ -473,6 +473,7 @@ export function buildPublicOpinionPrompt(state, {
     allowNews = true,
     allowForums = true,
     reason = '',
+    customInstruction = '',
 } = {}) {
     const events = eligiblePublicOpinionEvents(state);
     const previous = normalizePublicOpinionCache(previousCache || {});
@@ -510,6 +511,7 @@ export function buildPublicOpinionPrompt(state, {
         update_reason: asText(reason, 80),
         allow_news: Boolean(allowNews),
         allow_forums: Boolean(allowForums),
+        user_world_focus: asText(customInstruction, 1000),
         previous_snapshot: compactPrevious,
         public_event_candidates: events,
     };
@@ -524,6 +526,8 @@ export function buildPublicOpinionPrompt(state, {
         '严格遵守 allow_news / allow_forums。为 false 的类别必须返回空数组。allow_news=true 也不代表一定要出新闻：没有新的公开事实时可以只做持续报道或什么都不写；allow_forums=true 也可以在讨论没有自然变化时返回空数组。',
         '新闻与论坛是“传播载体”，source_type 才表示消息来源层级：official = 官方/机构/权威渠道，unofficial = 目击、匿名爆料、民间媒体、论坛、小道消息。官方消息也可能措辞保守、选择性披露；非官方消息也可能碰巧为真。来源层级不等于世界真相。',
         '新闻偏事实传播：只报道有公共传播价值的内容；无法确认的原因不要擅自下结论。世界事件只提供公开事实候选，新闻不会绕过本轮时间门槛被系统强行补出来；你生成的新闻也不能改变或增加事件事实。同一 related_event_id 是同一条持续新闻线，有足够世界时间和公开进展时可以写后续报道，不要把同一事件拆成互相重复的平行新闻。论坛偏群众反应：允许猜测、误解、玩梗和传闻，但必须通过 claim_status 明确区分 fact / mixed / rumor，且不得把传闻写回成事实。',
+        'user_world_focus 是用户设置的世界推演侧重点。它可以决定候选里的选题优先级与报道角度，但不是事实来源：如果候选中没有对应公开事件，不能为了迎合它虚构新闻。',
+        '不要把 visibility=direct/known 或与眼前人物更近误当成更值得报道。publicity 才决定能否传播。候选覆盖多个地点、行业或事件线时，容量允许就分散选题，避免新闻和论坛全部挤在同一条当前剧情线上；但不得为了多样性捏造候选外事实。',
         '每条消息给出 audience_tags：只写“哪些类型的人可能更关注这条消息”，例如当地居民、行业从业者、某组织成员、记者、学生等。它只是受众标签，不代表任何具体 NPC 已经看到或相信该消息，也不需要读取完整世界书。',
         'scope 用一句很短的话概括传播范围，例如“本地居民圈”“行业内部”“全城公开”“小范围匿名流传”。',
         'related_event_id 必须来自 public_event_candidates 中已有的 id。不得虚构新的事件 ID。',

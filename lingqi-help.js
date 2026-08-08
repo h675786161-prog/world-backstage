@@ -12,6 +12,12 @@ const HELP_TOPICS = [
         text: '“推演世界”处理正文后的世界状态变化；“停止推演”只停当前正在运行的世界推演。“停止全部后台任务”会连记忆整理、历史回溯、舆情、观测、纠错和排队中的世界推演一起停止。若记忆整理等后台任务正在运行，“推演世界”仍可以点击，但会先安全排队，等当前任务结束后再开始，不会并发写世界状态。停止未完成任务不会回滚已经成功提交的数据。',
     },
     {
+        id: 'narrative-sync-status',
+        title: '最新正文是否已经推演',
+        keywords: ['最新正文', '黄点', '小黄点', '待推演', '推演完成', '排队', '气泡', '弹窗'],
+        text: '当前消息、滑动分支、正文内容指纹和提交快照都对得上，才算最新正文已经推演。主状态条、此刻页、悬浮球与玲七都读取同一份结果。黄色点表示正文待推演、失败或需要处理；主题色小点只表示世界有新变化还没看。',
+    },
+    {
         id: 'injection',
         title: '正文注入',
         keywords: ['注入', '正文注入', '人物注入', '事实注入', '回声注入', '记忆注入', '舆情注入', '时间锚点'],
@@ -45,7 +51,7 @@ const HELP_TOPICS = [
         id: 'public-opinion',
         title: '舆情与新闻',
         keywords: ['舆情', '新闻', '论坛', '为什么没新闻', '新闻不更新', '公共信息', 'public'],
-        text: '舆情由世界时间和真正公开/传播的事件驱动，不是每聊一轮就强制更新。论坛通常比正式新闻更快；私人事件没有传播链时不会凭空变成公开新闻。关闭舆情注入不等于舆情停止运行。',
+        text: '舆情由世界时间和真正公开/传播的事件驱动，不是每聊一轮就强制更新。V2.3 的“巡一圈并刷新”会在首次升级、世界时间走过至少三小时或自定义世界侧重点改变时，先轮转检查镜头外公共世界；同一世界时刻与同一侧重点不会反复巡查。新闻形成的天气、交通、公告等客观影响会接回人物认知和后续正文，但没有获知渠道的人不会自动全知。关闭舆情注入只是不往正文递，不等于舆情停止运行。',
     },
     {
         id: 'worldbook',
@@ -81,7 +87,7 @@ const HELP_TOPICS = [
         id: 'lingqi',
         title: '玲七',
         keywords: ['玲七', '小猫', '纸条', '导演', '小管家', '问猫'],
-        text: '玲七是插件内置的小猫管家：可以聊天、解释插件、查看当前世界/任务/设置、代办低风险设置，也可以把“下一段想怎么玩”翻成导演小纸条。玲七聊天本身不是世界事实，用户的猜测不会自动写进人物或世界状态。',
+        text: '玲七是插件内置的小猫管家：可以聊天、解释插件、查看当前世界/任务/设置、代办低风险设置，也可以把“下一段想怎么玩”翻成导演小纸条。玲七自己的聊天记录支持直接用自然语言管理，例如清空全部、删最近几条、删某一天、从某句话删到某句话或删掉某个明确主题的一段；真正删除前会先弹出范围预览并再次确认。删除玲七聊天默认不删除长期记忆。玲七聊天本身不是世界事实，用户的猜测不会自动写进人物或世界状态。',
     },
 ];
 
@@ -128,6 +134,11 @@ const ACTION_TYPES = new Set([
     'cancel_background_tasks',
     'check_world_state',
     'organize_memory',
+    'simulate_latest',
+    'refresh_public_world',
+    'prioritize_person',
+    'catch_up_person',
+    'delete_lingqi_chat',
 ]);
 
 export function normalizeLingqiButlerActions(value) {
@@ -153,6 +164,37 @@ export function normalizeLingqiButlerActions(value) {
                     enabled: Boolean(raw.enabled),
                 };
             }
+            if (['prioritize_person', 'catch_up_person'].includes(type)) {
+                return {
+                    type,
+                    personId: String(raw.person_id ?? raw.personId ?? '').trim().slice(0, 120),
+                    personName: String(raw.person_name ?? raw.personName ?? '').trim().slice(0, 100),
+                    enabled: type === 'prioritize_person' ? raw.enabled !== false : true,
+                };
+            }
+            if (type === 'delete_lingqi_chat') {
+                const requestedMode = String(raw.mode || '').trim().toLowerCase();
+                const mode = [
+                    'all',
+                    'recent',
+                    'between',
+                    'before',
+                    'after',
+                    'day',
+                    'topic',
+                ].includes(requestedMode) ? requestedMode : 'topic';
+                return {
+                    type,
+                    mode,
+                    count: Math.min(800, Math.max(1, Number.parseInt(raw.count, 10) || 1)),
+                    startQuery: String(raw.start_query ?? raw.startQuery ?? '').trim().slice(0, 240),
+                    endQuery: String(raw.end_query ?? raw.endQuery ?? '').trim().slice(0, 240),
+                    query: String(raw.query ?? raw.topic ?? '').trim().slice(0, 240),
+                    day: ['today', 'yesterday', 'day_before_yesterday'].includes(String(raw.day || '').trim().toLowerCase())
+                        ? String(raw.day || '').trim().toLowerCase()
+                        : '',
+                };
+            }
             return { type };
         })
         .filter(Boolean);
@@ -166,6 +208,11 @@ export const LINGQI_BUTLER_TOOL_HELP = [
     '4. cancel_background_tasks：停止全部尚未完成的后台任务。',
     '5. check_world_state：用户明确要求检查/修正事实错误时，调用现有事实纠错流程。',
     '6. organize_memory：用户明确要求“整理记忆/整理一下记忆”时，启动现有长期记忆整理；这不是“重建世界历史”，不要把两者混为一谈。',
+    '7. simulate_latest：只在用户明确要求推演最新正文时使用；已经追上时不得强制重跑。会调用世界推演，插件必须先向用户确认。',
+    '8. refresh_public_world：只在用户明确要求“巡一圈/刷新世界舆情”时使用；复用现有公共世界巡查、三小时规则和同刻去重。会调用后台模型，插件必须先向用户确认。',
+    '9. prioritize_person：让一个明确人物在下一轮后台结算中优先；不立即调用 API。必须给 person_id 或准确名字，找不到/重名时不要猜。',
+    '10. catch_up_person：为一个明确人物立即补一次近况，复用现有人物补推演。会调用后台模型，插件必须先向用户确认。',
+    '11. delete_lingqi_chat：只管理“玲七和用户自己的聊天记录”，不删除世界正文、不删除世界状态、不删除人物/事件，也默认不动玲七已经形成的长期记忆。用户明确要求删除玲七聊天时才可使用；支持 mode=all / recent / between / before / after / day / topic。between 用 start_query + end_query；before/after 用 query；topic 用 query；recent 用 count；day 用 today / yesterday / day_before_yesterday。插件会先在本地定位实际记录并弹出删除范围、条数和首尾预览，用户再次确认后才真正删除。找不到或存在明显歧义时不要猜。',
     '这些动作由插件本地执行。reply 不要提前声称“已经修改成功”；可以说“我来弄/我去看看”，真正成功结果会由插件补到回复后面。',
 ].join('\n');
 

@@ -3,7 +3,7 @@ const WB_STATE_RECONCILE_ORDER = Object.freeze([3, 1, 4, 2]);
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 export const MAX_CALENDAR_YEAR = 999999;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
@@ -57,6 +57,7 @@ const LIMITS = Object.freeze({
     foregroundFacts: 24,
     worldFacts: 160,
     worldPulseDomains: 18,
+    worldCoverageEntries: 48,
     publicImpactLedger: 96,
     consistencyConflicts: 32,
     audit: 40,
@@ -887,6 +888,179 @@ function normalizeWorldPulseDomain(raw, existing = null, worldMinute = 0) {
     };
 }
 
+function normalizeWorldCoverageEntry(raw, worldMinute = 0) {
+    const label = asString(raw?.label, '未命名范围', 120) || '未命名范围';
+    const kind = asString(raw?.kind, 'general', 40) || 'general';
+    const scope = asString(raw?.scope, '', 160);
+    return {
+        id: normalizeId(
+            raw?.id || `coverage_${hashText(`${kind}:${label}:${scope}`)}`,
+            'coverage',
+        ),
+        label,
+        kind,
+        scope,
+        source: asString(raw?.source, 'world', 40) || 'world',
+        lastCheckedAt: asInteger(
+            raw?.last_checked_at ?? raw?.lastCheckedAt,
+            -1,
+            -1,
+        ),
+        checks: asInteger(raw?.checks, 0, 0, 999999),
+    };
+}
+
+function normalizeWorldCoverage(raw, worldMinute = 0) {
+    const entries = [];
+    for (const candidate of asArray(raw?.entries).slice(0, LIMITS.worldCoverageEntries)) {
+        const normalized = normalizeWorldCoverageEntry(candidate, worldMinute);
+        const existing = entries.find(item => item.id === normalized.id);
+        if (existing) Object.assign(existing, normalized);
+        else entries.push(normalized);
+    }
+    return {
+        lastSweepAt: asInteger(raw?.last_sweep_at ?? raw?.lastSweepAt, -1, -1),
+        lastPublicSweepAt: asInteger(
+            raw?.last_public_sweep_at ?? raw?.lastPublicSweepAt,
+            -1,
+            -1,
+        ),
+        lastFocusSignature: asString(
+            raw?.last_focus_signature ?? raw?.lastFocusSignature,
+            '',
+            80,
+        ),
+        entries: entries
+            .sort((a, b) => Number(b.lastCheckedAt || -1) - Number(a.lastCheckedAt || -1))
+            .slice(0, LIMITS.worldCoverageEntries),
+    };
+}
+
+function worldCoverageTarget(raw = {}, sourceRank = 9) {
+    const label = asString(raw?.label, '', 120);
+    if (!label) return null;
+    const kind = asString(raw?.kind, 'general', 40) || 'general';
+    const scope = asString(raw?.scope, '', 160);
+    return {
+        id: `coverage_${hashText(`${kind}:${label}:${scope}`)}`,
+        label,
+        kind,
+        scope,
+        source: asString(raw?.source, 'world', 40) || 'world',
+        pressure: asInteger(raw?.pressure, 0, 0, 3),
+        sourceRank,
+    };
+}
+
+export function selectWorldCoverageTargets(state, {
+    customInstruction = '',
+    maximum = 2,
+} = {}) {
+    const candidates = new Map();
+    const add = (raw, sourceRank) => {
+        const candidate = worldCoverageTarget(raw, sourceRank);
+        if (candidate && !candidates.has(candidate.id)) candidates.set(candidate.id, candidate);
+    };
+    const customFocus = asString(customInstruction, '', 1000);
+    if (customFocus) {
+        add({
+            label: customFocus,
+            kind: 'custom-focus',
+            scope: '用户指定的镜头外世界侧重点',
+            source: 'custom',
+            pressure: 3,
+        }, 0);
+    }
+    for (const domain of asArray(state?.worldPulse?.domains)) {
+        add({
+            label: domain?.label,
+            kind: domain?.kind || 'other',
+            scope: domain?.scope,
+            source: 'world-pulse',
+            pressure: domain?.pressure,
+        }, 1);
+    }
+    add({
+        label: '世界背景中的普通公共生活',
+        kind: 'general',
+        scope: asString(state?.world?.name, '主世界', 80),
+        source: 'world-background',
+    }, 2);
+    const locationLabels = [
+        ...asArray(state?.worldFacts)
+            .filter(fact => String(fact?.subjectType || '') === 'location')
+            .map(fact => fact?.subject || fact?.subjectId),
+        ...asArray(state?.storyMemory?.digest?.locations),
+        ...asArray(state?.events).map(event => event?.place),
+        ...asArray(state?.people).map(person => person?.location),
+    ];
+    for (const location of [...new Set(locationLabels.map(item => asString(item, '', 120)).filter(Boolean))]) {
+        add({
+            label: location,
+            kind: 'location',
+            scope: location,
+            source: 'known-location',
+        }, 3);
+    }
+
+    const coverage = normalizeWorldCoverage(state?.worldPulse?.coverage, state?.clock?.absoluteMinute || 0);
+    const checkedById = new Map(coverage.entries.map(entry => [entry.id, entry]));
+    return [...candidates.values()]
+        .map(candidate => ({
+            ...candidate,
+            lastCheckedAt: checkedById.get(candidate.id)?.lastCheckedAt ?? -1,
+            checks: checkedById.get(candidate.id)?.checks ?? 0,
+        }))
+        .sort((a, b) => (
+            Number(a.lastCheckedAt) - Number(b.lastCheckedAt)
+            || Number(a.sourceRank) - Number(b.sourceRank)
+            || Number(b.pressure || 0) - Number(a.pressure || 0)
+            || a.label.localeCompare(b.label, 'zh-CN')
+        ))
+        .slice(0, asInteger(maximum, 2, 1, 4))
+        .map(({ sourceRank, pressure, ...target }) => target);
+}
+
+export function markWorldCoverageChecked(inputState, targets = [], {
+    publicCycle = false,
+    customInstruction = '',
+} = {}) {
+    const state = deepClone(inputState);
+    state.worldPulse = normalizeWorldPulse(state.worldPulse, state.clock?.absoluteMinute || 0);
+    const worldMinute = asInteger(state.clock?.absoluteMinute, 0, 0);
+    const coverage = normalizeWorldCoverage(state.worldPulse.coverage, worldMinute);
+    for (const rawTarget of asArray(targets)) {
+        const target = normalizeWorldCoverageEntry(rawTarget, worldMinute);
+        target.lastCheckedAt = worldMinute;
+        const existing = coverage.entries.find(item => item.id === target.id);
+        if (existing) Object.assign(existing, target, { checks: Number(existing.checks || 0) + 1 });
+        else coverage.entries.push({ ...target, checks: 1 });
+    }
+    coverage.lastSweepAt = worldMinute;
+    if (publicCycle) coverage.lastPublicSweepAt = worldMinute;
+    coverage.lastFocusSignature = hashText(asString(customInstruction, '', 1000));
+    coverage.entries = coverage.entries
+        .sort((a, b) => Number(b.lastCheckedAt || -1) - Number(a.lastCheckedAt || -1))
+        .slice(0, LIMITS.worldCoverageEntries);
+    state.worldPulse.coverage = coverage;
+    return state;
+}
+
+export function publicWorldCoverageDue(state, {
+    customInstruction = '',
+    minimumIntervalMinutes = 180,
+} = {}) {
+    const worldMinute = asInteger(state?.clock?.absoluteMinute, 0, 0);
+    const coverage = normalizeWorldCoverage(state?.worldPulse?.coverage, worldMinute);
+    const focusSignature = hashText(asString(customInstruction, '', 1000));
+    if (coverage.lastSweepAt < 0) return true;
+    if (focusSignature !== coverage.lastFocusSignature) return true;
+    return worldMinute - coverage.lastSweepAt >= Math.max(
+        1,
+        asInteger(minimumIntervalMinutes, 180, 1),
+    );
+}
+
 function normalizeWorldPulse(raw, worldMinute = 0) {
     const domains = [];
     for (const candidate of asArray(raw?.domains).slice(0, LIMITS.worldPulseDomains)) {
@@ -902,6 +1076,7 @@ function normalizeWorldPulse(raw, worldMinute = 0) {
     return {
         baselineEstablished: Boolean(raw?.baselineEstablished ?? raw?.baseline_established),
         lastSweepAt: asInteger(raw?.lastSweepAt ?? raw?.last_sweep_at, worldMinute, 0),
+        coverage: normalizeWorldCoverage(raw?.coverage, worldMinute),
         domains: domains.slice(0, LIMITS.worldPulseDomains),
     };
 }
@@ -1080,11 +1255,34 @@ export function buildPublicImpactPrompt(state, {
         .filter(eventHasPublicPropagation)
         .slice(0, Math.max(1, Number(maximumEvents) || 8));
 
+    const priorityPersonIds = uniqueStrings(
+        asArray(state?.people)
+            .filter(person => sourceEvents.some(event => {
+                const actors = asArray(event?.actors).map(item => normalizedReference(item));
+                const personId = normalizedReference(person?.id);
+                const personName = normalizedReference(person?.name);
+                const eventPlace = normalizedReference(event?.place);
+                const personPlace = normalizedReference(person?.location);
+                const actorMatched = actors.some(actor => (
+                    actor && (actor === personId || actor === personName)
+                ));
+                const placeMatched = Boolean(
+                    eventPlace
+                    && personPlace
+                    && (eventPlace.includes(personPlace) || personPlace.includes(eventPlace)),
+                );
+                return actorMatched || placeMatched;
+            }))
+            .map(person => person.id),
+        24,
+    );
+
     const compact = compactStateForModel(state, {
         includeUserInnerVoice: false,
         includeUserCharacter: recordPlayerCharacter,
         userName,
         maximumPeople: 24,
+        priorityPersonIds,
     });
     const publicSources = sourceEvents.map(event => ({
         id: event.id,
@@ -1095,6 +1293,7 @@ export function buildPublicImpactPrompt(state, {
         public_headline: modelText(event.publicHeadline, 180),
         public_summary: modelText(event.publicSummary, 520),
         public_result: modelText(event.publicResult, 520),
+        actors: asArray(event.actors).slice(0, 12),
     }));
 
     return [
@@ -1114,6 +1313,10 @@ export function buildPublicImpactPrompt(state, {
             : '6. 玩家角色当前设置为“不记录”。公共事件仍可客观影响玩家所在地点、资源、行程或关系，但禁止通过 people_upsert 建立/更新玩家人物卡；需要显露的影响用事件、世界事实或 delivery_route 进入前台，不替玩家决定反应。',
         '7. 如果公共事件已经在物理层面直接影响当前地点/行程，例如停电、封路、航班取消，可以把这些后果写成世界事实；“角色知道这件新闻”仍然是另一层认知。',
         '8. 影响传播不是每条新闻都必须撞主角。先判断世界范围，再判断当前人物与之有没有真实连接。娱乐圈、政商、战争、灾害等题材里，行业/组织级新闻往往会自然波及大量角色；日常地方新闻则可能只影响局部。',
+        '8A. compact people 已优先带入源事件参与者和当前位于受影响地点的人物。必须逐个检查她们是否会被客观环境直接影响，以及是否真的有新闻、公告、职业通知、社交传播或现场感知渠道；有渠道就更新认知/行动，没有渠道就只保留客观世界影响，不能全员自动知晓。',
+        '8B. 对每个拟更新人物明确校验至少一条接触链：physical=确实位于受影响地点/行程/设施；information=新闻、公告、职业通知、消息或可信转述实际送达；causal=组织、工作、合同、资源、关系或共同事件被上游变化真实牵动。链路断裂时不得更新该人物，也不得为了让新闻“有用”临时补造巧合。',
+        '8C. 同一公共变化影响多人时，先形成一份共享的地点/组织/行业/事件后果，再分别结算人物反应。需要共同行动时只创建或更新一条 actors 完整的事件，并让所有实际参与者的 people_upsert 与知识状态互相对得上；预算不足以安全更新全部参与者时，不得宣称互动已经完成。',
+        '8D. 社会评价只有在行为或后果通过目击、物证、公告、媒体或有效传闻进入相应圈层后才能变化。官方、民间、行业、组织内部可以关注不同侧面并形成不同判断；圈层舆论是社会状态，不是世界真相，不能反向证明传闻内容。',
         '9. 不推进主世界时间，elapsed_minutes 必须为 0；不写长期记忆 memory_update。这里只结算公共传播造成的世界后果。',
         '10. 只输出合法 JSON。',
         '',
@@ -1515,6 +1718,7 @@ export function createInitialState({
         worldPulse: {
             baselineEstablished: false,
             lastSweepAt: absoluteMinute,
+            coverage: normalizeWorldCoverage(null, absoluteMinute),
             domains: [],
         },
         publicImpactLedger: [],
@@ -2233,6 +2437,21 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
             worldMinute,
             0,
         ),
+        // 用户可以把某个后台人物明确排到“下一轮优先”。这是调度标记，
+        // 不是世界事实，也不会进入人物设定；成功完成该人物的生活结算后会自动清掉。
+        lifeTickPriority: Boolean(
+            raw?.life_tick_priority
+            ?? raw?.lifeTickPriority
+            ?? existing?.lifeTickPriority
+            ?? false,
+        ),
+        lifeTickPriorityAt: asInteger(
+            raw?.life_tick_priority_at
+            ?? raw?.lifeTickPriorityAt
+            ?? existing?.lifeTickPriorityAt,
+            0,
+            0,
+        ),
         updatedAt: asInteger(raw?.updated_at ?? raw?.updatedAt, worldMinute, 0),
     };
 }
@@ -2827,7 +3046,7 @@ function applyClueUpdates(state, {
     }
 }
 
-function normalizeSimulationResult(payload) {
+function normalizeSimulationResult(payload, { peopleUpsertLimit = LIMITS.peoplePayload } = {}) {
     const rawClockAnchor = payload?.clock_anchor ?? payload?.clockAnchor ?? {};
     const anchorMode = ['none', 'initialize', 'calibrate'].includes(rawClockAnchor?.mode)
         ? rawClockAnchor.mode
@@ -2889,7 +3108,7 @@ function normalizeSimulationResult(payload) {
             title: asString(payload?.world?.title, '', 180),
             detail: asString(payload?.world?.detail, '', 640),
         },
-        peopleUpsert: asArray(payload?.people_upsert ?? payload?.peopleUpsert).slice(0, LIMITS.peoplePayload),
+        peopleUpsert: asArray(payload?.people_upsert ?? payload?.peopleUpsert).slice(0, Math.max(1, asInteger(peopleUpsertLimit, LIMITS.peoplePayload, 1))),
         peopleRemove: uniqueStrings(payload?.people_remove ?? payload?.peopleRemove, LIMITS.peoplePayload),
         eventsCreate: asArray(payload?.events_create ?? payload?.eventsCreate).slice(0, 24),
         eventsUpdate: asArray(payload?.events_update ?? payload?.eventsUpdate).slice(0, 36),
@@ -3273,7 +3492,16 @@ export function applySimulationResult(baseState, rawPayload, {
     memorySummaryMessageIds = [],
     preserveCommitAnchor = false,
 } = {}) {
-    const payload = normalizeSimulationResult(rawPayload);
+    const requestedBackgroundNpcBudget = asInteger(
+        backgroundNpcBudget,
+        LIMITS.peopleTaskBudget,
+        0,
+    );
+    const payload = normalizeSimulationResult(rawPayload, {
+        // Keep a small foreground allowance while letting the user-selected background
+        // budget scale past the old fixed 36-person payload ceiling.
+        peopleUpsertLimit: Math.max(LIMITS.peoplePayload, requestedBackgroundNpcBudget + 24),
+    });
     const lifeSettlementTargets = new Set(
         asArray(lifeSettlementTargetIds).map(item => String(item || '')).filter(Boolean),
     );
@@ -3518,13 +3746,10 @@ export function applySimulationResult(baseState, rawPayload, {
 
     const generatedConsistencyConflicts = [];
     let backgroundNpcUpdates = 0;
-    const maximumBackgroundNpcUpdates = asInteger(
-        backgroundNpcBudget,
-        LIMITS.peopleTaskBudget,
-        0,
-        LIMITS.peopleTaskBudget,
-    );
-    const enforceForegroundEvidence = maximumBackgroundNpcUpdates < LIMITS.peopleTaskBudget;
+    const maximumBackgroundNpcUpdates = requestedBackgroundNpcBudget;
+    // Whether a person is foreground is an evidence question, not a budget-size question.
+    // A large user budget must never let model-labelled "foreground" bypass narrative evidence.
+    const enforceForegroundEvidence = true;
     const narrativeForPeople = asString(narrativeText, '', 60000).toLocaleLowerCase();
     for (const rawPerson of payload.peopleUpsert) {
         const personName = asString(rawPerson?.name, '', 80).toLocaleLowerCase();
@@ -3573,6 +3798,10 @@ export function applySimulationResult(baseState, rawPayload, {
         // 普通后台 upsert 可能只是事件后果/认知变化，不等于整段个人生活已经结算。
         if (!person.isUser && (foregroundPerson || targetedLifeSettlement)) {
             person.lastLifeTickAt = worldMinute;
+            if (targetedLifeSettlement) {
+                person.lifeTickPriority = false;
+                person.lifeTickPriorityAt = 0;
+            }
         }
         if (existing && foregroundPerson && !baseState?.needsReconciliation) {
             const authoritativeLocation = authoritativePersonFact(state, existing.id, 'location');
@@ -4312,6 +4541,33 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         for (const person of people) {
             const boundary = person.knowledge === 'known' ? '可知' : '幕后';
             authorityLines.push(`- ${person.name}｜${person.location}｜${person.action}｜${boundary}`);
+            const knownViews = [
+                ...asArray(person.knownEventViews).map(view => ({
+                    kind: '事件',
+                    text: modelText(view?.summary, 220),
+                    certainty: view?.certainty === 'suspected' ? '怀疑' : '确认',
+                    updatedAt: Number(view?.updatedAt || view?.learnedAtMessageId || 0),
+                })),
+                ...asArray(person.knownFactBeliefs).map(belief => ({
+                    kind: '事实',
+                    text: modelText(belief?.value, 220),
+                    certainty: belief?.certainty === 'suspected' ? '怀疑' : '确认',
+                    updatedAt: Number(belief?.updatedAt || belief?.learnedAtMessageId || 0),
+                })),
+            ]
+                .filter(item => item.text)
+                .sort((a, b) => b.updatedAt - a.updatedAt)
+                .slice(0, 3);
+            if (knownViews.length) {
+                authorityLines.push(
+                    `  · ${person.name}本人已知/相信：${knownViews.map(item => `[${item.certainty}${item.kind}] ${item.text}`).join('；')}`,
+                );
+            }
+        }
+        if (people.some(person => (
+            asArray(person.knownEventViews).length || asArray(person.knownFactBeliefs).length
+        ))) {
+            authorityLines.push('人物认知行是该人物已经获得的冻结版本：只允许对应人物据此判断和行动；“怀疑”不能写成确认，且不得用后台事件后来变化偷偷更新她尚未重新获知的版本。');
         }
     }
 
@@ -5080,16 +5336,20 @@ export function buildWorldPulsePrompt(state, {
     reason = 'world-clock-advanced',
     backgroundNpcBudget = 4,
     publicCycle = false,
+    customInstruction = '',
     enhancedBackgroundSimulation = false,
     backgroundPersonTargets = [],
+    worldCoverageTargets = [],
     recordPlayerCharacter = true,
 } = {}) {
     const compact = compactStateForModel(state, {
         includeUserInnerVoice: false,
         includeUserCharacter: recordPlayerCharacter,
+        allowExpandedPeopleContext: true,
+        priorityPersonIds: asArray(backgroundPersonTargets).map(item => String(item?.id || '')).filter(Boolean),
         maximumPeople: enhancedBackgroundSimulation
-            ? Math.min(LIMITS.peopleModelContext, Math.max(12, Number(backgroundNpcBudget) * 2 + 4))
-            : Math.min(20, Math.max(10, Number(backgroundNpcBudget) + 8)),
+            ? Math.max(12, Number(backgroundNpcBudget) * 2 + 4)
+            : Math.max(10, Number(backgroundNpcBudget) + 8),
     });
     const activityRule = {
         quiet: '安静：主要推进已存在的压力和到期事件，新公共事件极少。',
@@ -5098,23 +5358,83 @@ export function buildWorldPulsePrompt(state, {
     }[activity] || '自然：合理维护镜头外世界。';
 
     const publicCycleRule = publicCycle
-        ? '本次同时是“公共世界循环”：用户正在刷新真实世界新闻。若当前没有足够的新公共事件，不要跳去虚构闲逛内容；请从既有世界脉搏、地区/行业/组织状态和时代常态中，形成 1—3 条合理的当下公共变化。优先天气、交通、商业、活动、行业、政策执行、设施、治安、文化娱乐等普通新闻；不要求与主角有关，也绝不能为了填新闻硬造灾难。创建可报道事件时 publicity=public，并填写只含公众可知信息的 public_headline/public_summary。'
+        ? '本次同时是“公共世界循环”：用户正在刷新真实世界新闻。请巡查指定的镜头外范围，并从既有世界脉搏、地区/行业/组织状态和时代常态判断这段世界时间是否自然形成 0—3 条公共变化。没有变化可以保持安静；有变化时优先天气、交通、商业、活动、行业、政策执行、设施、治安、文化娱乐等普通新闻。不要求与主角有关，也绝不能为了填新闻硬造灾难。创建可报道事件时 publicity=public，并填写只含公众可知信息的 public_headline/public_summary。'
         : '按正常世界脉搏运行；没有自然变化时可以不新建事件。';
+    const customRule = modelText(customInstruction, 1000);
+    const coverageTargets = asArray(worldCoverageTargets)
+        .filter(item => item?.id && item?.label)
+        .slice(0, 4)
+        .map(item => ({
+            id: asString(item.id, '', 120),
+            label: asString(item.label, '', 120),
+            kind: asString(item.kind, 'general', 40),
+            scope: asString(item.scope, '', 160),
+            source: asString(item.source, 'world', 40),
+            last_checked_at: asInteger(item.lastCheckedAt, -1, -1),
+        }));
+    const coverageRule = coverageTargets.length
+        ? `本轮镜头外覆盖检查：${JSON.stringify(coverageTargets)}。这些是“必须检查是否变化”的世界范围，不是“必须制造事件”的配额。逐项查看世界背景、world_pulse、已有事实、时间与因果；有自然变化才更新状态或创建事件，没有就保持原样。不能用当前剧情中的相近事件冒充已经检查。`
+        : '本轮没有额外覆盖范围；按既有世界脉搏正常检查。';
+    const pendingPublicImpactSources = publicCycle
+        ? pendingPublicImpactEvents(state, { maximum: 8 }).map(event => ({
+            id: event.id,
+            place: modelText(event.place, 120),
+            publicity: event.publicity,
+            public_trace: modelText(event.publicTrace, 260),
+            public_headline: modelText(event.publicHeadline, 180),
+            public_summary: modelText(event.publicSummary, 520),
+            public_result: modelText(event.publicResult, 520),
+            actors: asArray(event.actors).slice(0, 12),
+        }))
+        : [];
+    const integratedPublicImpactRule = publicCycle
+        ? [
+            `本轮还必须在同一次请求里结算这些尚未传播完成的公开事件：${JSON.stringify(pendingPublicImpactSources)}。`,
+            '对已有待传播事件和本轮新建/更新的 public/trace 事件，同时检查地点、交通、设施、行业、组织、资源和人物是否受到直接客观影响。客观后果写 world_facts_upsert / world_pulse_upsert / events_create/update，人物实际状态变化写 people_upsert。',
+            '公共影响必须先过“接触链”校验：物理链=人物确实处在受影响地点/行程/设施；信息链=她实际接触新闻、公告、职业通知、消息或可信社交转述；因果链=她的组织、工作、合同、资源、关系或共同事件确实被上游变化牵动。至少一条链成立才更新该人物；链路断裂就让她继续自己的生活。',
+            '人物只有通过现场感知、新闻、公告、职业通知或真实社交传播接触到信息时，才可通过 knowledge_updates 增加认知，并写清 public_channel、evidence 与 source_event_id。公开不等于全员自动知道。',
+            '同一公共变化若同时波及多人，先结算一份共享世界后果，再让每个实际受影响者按自己的位置、职责、关系和已知信息分别反应；共同行动只用一条 actors 完整的事件承接，不能复制成互相矛盾的个人小剧场。',
+            '声誉与圈层反应也受可见性限制：只有目击、物证、公告、媒体或有效传闻真正进入对应圈层时才产生社会评价；官方、民间、行业、组织内部可以形成不同判断，任何圈层意见都不能反向改写客观事实。',
+            '这是公共巡查与直接影响的一体结算，不要只创建新闻事件而把已经确定的直接世界后果留给另一轮 API。没有直接影响可以不写。',
+        ].join('\n')
+        : '本轮不是公共世界循环，不额外承担公共传播影响批处理。';
     const targetList = asArray(backgroundPersonTargets)
         .filter(item => item?.id)
-        .slice(0, asInteger(backgroundNpcBudget, 4, 0, LIMITS.peopleTaskBudget))
+        .slice(0, asInteger(backgroundNpcBudget, 4, 0))
         .map(item => ({
             id: asString(item.id, '', 100),
             name: asString(item.name, '', 80),
             overdue_minutes: asInteger(item.overdueMinutes, 0, 0),
+            priority_reason: ['manual-next', 'starvation-guard', 'manual-now', 'due'].includes(item?.priorityReason)
+                ? item.priorityReason
+                : 'due',
         }));
-    const enhancedBackgroundRule = enhancedBackgroundSimulation && targetList.length
+    const manualCatchUp = targetList.some(item => item.priority_reason === 'manual-now');
+    const enhancedBackgroundRule = targetList.length
         ? [
-            `强化后台人物推演已开启。本轮必须结算 ${targetList.length} 名最逾期人物：${JSON.stringify(targetList)}。`,
+            manualCatchUp
+                ? `用户正在手动补推演指定人物。本轮必须且只需完成人物生活结算名单：${JSON.stringify(targetList)}。`
+                : enhancedBackgroundSimulation
+                    ? `强化后台人物推演已开启。本轮必须结算 ${targetList.length} 名优先人物：${JSON.stringify(targetList)}。`
+                    : `后台人物保底调度触发。本轮必须结算 ${targetList.length} 名优先人物：${JSON.stringify(targetList)}。manual-next=用户要求下一轮优先；starvation-guard=已经连续超过三个生活周期未结算。`,
             '这些人物不是可选参考。逐个检查她们经过这段世界时间后现在在哪里、在做什么、短期意图如何，必要时同步身体/情绪/资源状态；即使没有戏剧性事件，也必须在 people_upsert 中返回每个人的自然当前状态。不得只顾当前与玩家同场的人。',
-            '先完成这些人物的生活结算，再处理其他世界脉搏变化；不要为了交作业额外制造与她们无关的随机事故或新闻。',
+            manualCatchUp
+                ? '这是单人物补结算：people_upsert 只允许写指定人物。可以更新与她直接相关、且截至当前世界时间确实已经发生变化的既有事件/世界事实；不得顺手推进无关人物、无关地区或制造随机公共新闻。elapsed_minutes 必须为 0。'
+                : '先完成这些人物的生活结算，再处理其他世界脉搏变化；不要为了交作业额外制造与她们无关的随机事故或新闻。',
         ].join('\n')
-        : '未开启强化后台人物补齐；仍按普通生活到期规则处理镜头外人物。';
+        : '本轮没有必须优先结算的后台人物；仍按普通生活到期规则处理镜头外人物。';
+    const groupLifeRule = manualCatchUp
+        ? [
+            '群体生活边界：指定人物仍然活在关系和社会环境里。先检查她与同地人物、共同事件、组织/工作、既有关系和日程是否存在自然交集；可以让这些交集影响指定人物的行动、意图、状态及相关事件。',
+            '但这是单人物补结算，不能越权改写其他人物卡。若发生交流，事件 actors 要列出真实参与者，指定人物的 knowledge_updates 要写清 told/message/witnessed 的来源；不得因为别人知道就让她自动知道。',
+        ].join('\n')
+        : [
+            '群体生活协调：人物不是彼此隔离的状态卡。结算必做人物前，先按“精确地点与时间是否重合、共同事件、同一组织/工作、既有关系与约定”识别本轮自然形成的小群体；先结算共同经历，再结算个人余下日常。',
+            '交互必须存在可说明的接触链：物理链（确实同地同时间或行程相遇）、信息链（消息/通知/转述实际送达）、因果链（共同事件、组织职责、合同资源或既有关系真正牵连）。只写“同城、同组织、认识彼此”不算链路已经成立。',
+            '不能只因同属一座城市或同一组织就强行见面，也不能为了热闹把人瞬移到一起。没有自然交集的人完全可以继续各自的普通生活；人物不应默认围着 user 转。',
+            '一旦本轮确实发生多人互动，必须留下对称结果：所有实际参与者都计入 backgroundNpcBudget 并出现在 people_upsert；共同行动用同一条既有事件更新或一条 actors 完整的新事件承接，不能只改一方。若预算容不下所有参与者，就不要把互动写成已经完成，可只保留尚未发生的联系意图/等待条件。',
+            '交流不会自动共享全部知识。每个接收者只为实际听见、看见、收到或合理推断的内容分别提交 knowledge_updates，并保留 route、evidence、source_event_id；同地、亲密或同组织都不等于全知。',
+        ].join('\n');
 
     return [
         '你是“世界背面”的世界脉搏引擎。本次没有新的小说正文；主世界时钟已经由用户或系统推进或正在进行一次明确的公共世界刷新。你只根据当前权威世界状态，结算到期变化并让镜头外世界按因果继续。',
@@ -5124,16 +5444,24 @@ export function buildWorldPulsePrompt(state, {
         '所有自主变化都必须发生在这份背景允许的世界里。背景里的规则/时代/地理/势力/时间线是生成边界；世界可以发展，但不能为了制造事件绕开底层规则。',
         `本次触发原因：${modelText(reason, 120)}。世界脉搏活跃度：${activityRule}`,
         `公共世界循环：${publicCycleRule}`,
+        customRule
+            ? `用户自定义世界侧重点：${customRule}\n这条要求也适用于镜头外公共世界。若它指定了新闻地区、行业、组织、主题或日常世界动向，必须从世界背景、world_pulse 与既有因果中单独检查，不能拿一条恰好与当前剧情有关的公开事件敷衍替代。它只调整关注与采样方向，不能覆盖既有事实、时间、知识边界或强行制造无因果事件。`
+            : '用户没有追加自定义世界侧重点。',
+        coverageRule,
+        integratedPublicImpactRule,
         enhancedBackgroundRule,
+        groupLifeRule,
         '规则：',
         '1. elapsed_minutes 必须返回 0；时间已经在调用前推进完毕，不得再次加时。',
         '2. 先检查 existing events 是否到期、条件是否满足、持续过程是否应该结算；需要时用 events_update。同一场持续中的公共事件（例如同一地区暴雨、同一案件、同一行业风波）有新进展时优先更新原 event 的 public_headline/public_summary/status，而不是另建一条近义重复新闻；只有真正独立的新事件才 events_create。事件在本轮终结且终局已经公开时必须填写 public_result；若终局尚未公开则留空，不能拿旧 public_summary 假装最终结果。',
         '3. 再检查 world_pulse、人物长期目标、势力/地区/环境压力是否自然产生下一步。可以 events_create，但不得因为“没有正文”就硬造事件。',
         '3A. compact people 中 life_tick_due_minutes>0 的人物已经有一段世界时间没有进行个人生活结算。优先处理最逾期的后台人物：从她原本的位置、工作/日程、长期目标、关系、身体情绪和资源继续；没有大事时就写普通生活推进，不要为了让她“有发展”强制造戏。若上方给出了“本轮必须结算人物”，这些人物必须逐个出现在 people_upsert，不能只处理当前场景人物。',
+        '3B. 多人共同经历不能被拆成互相矛盾的独立小剧场。共同地点、动作、事件状态与信息传递必须互相对得上；一个人已经离开、拒绝或不知情时，另一人的状态不能假装她仍在场、已同意或已知晓。',
         '4. world_pulse_upsert 只写真正变化的持续宏观状态；不要机械复读原值。',
         '5. 公开世界事件可以与主角完全无关，但必须用 publicity 表示社会公开度，而不是拿 visibility 代替。publicity=trace 只能形成未证实讨论；publicity=public 才能进入新闻，并填写 public_headline/public_summary。',
         '6. visibility 仍只控制事件怎样靠近当前正文。某件私密事件即使 visibility=direct，也可以且通常应该 publicity=private。',
         '7. 普通天气、交通、商业、地方政策、设施、行业、社区与网络热点远多于战争/灾难/巨型阴谋。重大事件必须罕见且有强因果。',
+        '7A. 世界背景若明确写了持续运转的地区、行业、组织、公共日程或新闻主题，必须检查它们在当前世界时间是否有自然变化；最近正文不是公共世界的选题表，不能只维护镜头内人物附近的新闻。',
         recordPlayerCharacter
             ? '7. 可以更新镜头外 NPC 的位置、行动、意图和状态，但不得删除 author_managed / locked 人物，不得替玩家补行动或内心。'
             : '7. 可以更新镜头外 NPC，但玩家角色当前设置为“不记录”：禁止在 people_upsert / people_remove 中创建、更新或删除玩家。玩家只通过已发生的正文事实影响世界。',
@@ -5463,22 +5791,17 @@ export function buildPersonObservationPrompt(state, person, {
         knownClueIds.has(normalizedReference(clue.id))
     ));
 
-    const eventById = new Map(
-        asArray(state?.events).map(event => [normalizedReference(event?.id), event]),
-    );
     const relevantEvents = normalizeKnownEventViews(person?.knownEventViews)
-        .map(view => {
-            const event = eventById.get(normalizedReference(view.eventId));
-            return {
-                event_id: view.eventId,
-                place: event?.place || '',
-                status: event?.status || 'unknown',
-                what_this_character_knows: view.summary,
-                certainty: view.certainty,
-                route: view.route,
-                evidence: view.evidence,
-            };
-        })
+        .map(view => ({
+            // Deliberately do not attach the live event place/status here. Those
+            // are omniscient world fields and may have changed since the person
+            // acquired this frozen, character-known view.
+            event_id: view.eventId,
+            what_this_character_knows: view.summary,
+            certainty: view.certainty,
+            route: view.route,
+            evidence: view.evidence,
+        }))
         .slice(0, 8);
 
     const observedIdentityAnchor = modelText(person?.identityAnchor, LIMITS.identityAnchor);
@@ -5488,14 +5811,18 @@ export function buildPersonObservationPrompt(state, person, {
     return [
         '你是“世界背面”的人物即时观测器。',
         `本次唯一叙述主体是“${modelText(person?.name, 80)}”。请以该角色本人的第一人称，描写此刻正在做什么。`,
+        '你不是在介绍、分析或“扮演一个像该角色的人”；输出中的“我”就是该角色本人。',
         '这是幕后即时观测，不是主聊天正文，也不是新的世界推演。',
         '人物观测不会收到完整“世界背景设定”：其中可能包含角色本人不知道的幕后世界真相。世界规则由已结算人物状态和认知账本间接约束。',
         '本任务拥有独立 POV 与输出协议。你没有收到完整最近正文或 GM 世界档案，这是刻意的认知防火墙；绝不能根据“世界可能知道什么”自行补全角色没获得的信息。',
+        '执行优先级：已结算的明确事实 > 该人物的已知/已怀疑信息 > 当前位置、行动、目标与身心状态 > 人格、经历、说话习惯与行为边界 > 人物惯性与合理日常 > 戏剧性和可读性。',
         '要求：',
-        '1. 只描写几分钟内的动作、感官、注意力与符合既有信息的即时念头；使用“我”。',
+        '1. 只描写几分钟内的动作、感官、注意力与符合既有信息的即时念头；使用“我”。先在内部对齐该人物的认知方式和表达能力，不要输出分析过程。',
+        '1A. 把 location / action / intent / long_term_goal 与身心、资源状态当作此刻的连续性锚点。如果没有足够强且该人物确实知道的新刺激，就让生活从上一状态自然延续，不得突然换目标、换地点、开新剧情或得出重大结论。',
+        '1B. inner_voice 只是上一次已结算状态留下的连续线索，不是必须复读的台词。没有状态变化时保持同一人的脑回路；已有明确变化时不要被旧独白拖回去。',
         '2. 不推进主世界时间，不制造重大新事件，不替其他角色行动，不改变任何既有事实。',
         '3. 严守该角色的知识边界。唯一可当作该角色知识的内容，是下方 known_event_views / known_fact_beliefs / known_clue_ids 明确允许的版本。',
-        '3A. known_event_views 中的 what_this_character_knows 才是角色所知版本；绝不能从 event_id、世界背景或常识反推出该事件的幕后真相。',
+        '3A. known_event_views 中的 what_this_character_knows 才是角色所知版本；绝不能从 event_id、世界背景或常识反推出该事件的幕后真相。没有提供事件的实时地点/状态是刻意的；角色不会自动知道它后来是否转移、结束或变化。',
         '3B. certainty=suspected 只是怀疑/推测，写作时必须保持不确定，不能当成确认事实。',
         '3C. physical_state / emotional_state / resource_state 是当前状态约束。行动、注意力和即时判断必须受伤势、疲劳、情绪与资源限制影响；不得凭空获得能力、装备、权限或知识。',
         observedIdentityAnchor
@@ -5510,8 +5837,13 @@ export function buildPersonObservationPrompt(state, person, {
         modelText(playerIdentityAnchor, 400)
             ? `若片段提及玩家“${modelText(userName, 80) || 'user'}”，必须逐项遵守身份锚点：${modelText(playerIdentityAnchor, 400)}。`
             : '若片段提及玩家且没有明确身份或称谓，使用中性表述。',
-        '4. 文风自然沉浸，不写标题、说明、项目符号或“第一视角”等标签。',
-        '5. 输出约 250—450 字的中文片段，只返回片段本身。必须完整结束最后一句；宁可提前收束，也不要在句中停止。',
+        '4. 人格锁：关注什么、忽略什么、如何取舍和误判、句子长短与用词，都必须源于该人物的 personality_anchor / background_profile / speaking_style / behavior_boundaries，不得套用通用“第一人称文学旁白”。',
+        '4A. 不要复述性格标签，不要让角色自我解说“我向来很冷淡/谨慎/不善表达”。用真实的注意、选择、反应和用词自然体现。',
+        '4B. 不得为了好看而提高角色的自省能力、情绪敏锐度、逻辑复杂度或语言组织能力。脑回路直接的人就直接地想，寡言的人不会在脑内突然变成散文家。',
+        '4C. 不要默认围着玩家转。只有当前目标、已知事件、已结算关系或近期状态确实会自然触发时，才允许想到或提及玩家；否则继续自己的生活、工作、休息、社交、兴趣和问题。',
+        '4D. 允许平淡、重复、停滞、发呆、吃饭、工作、休息或什么也没发生。不需要为了让观测“值得看”而制造小动作、新决定、暗示、巧合、悬念或戏剧冲突。',
+        '5. 保持角色第一人称，可以有符合本人的内心活动；文风自然沉浸，不写标题、说明、项目符号或“第一视角”等标签。',
+        '6. 通常输出 180—350 字的中文片段；若人物此刻本来就很平淡或念头很短，可在 100—220 字自然收束，不得为凑字数加戏。只返回片段本身；必须完整结束最后一句。',
         '',
         `主世界时间：${formatWorldCalendar(state).stamp}`,
         '人物状态：',
@@ -5575,26 +5907,47 @@ function personLifeTickInfo(state, person) {
 
 export function listDueBackgroundPeople(state, {
     maximum = LIMITS.peopleTaskBudget,
+    requiredOnly = false,
 } = {}) {
-    const limit = asInteger(maximum, LIMITS.peopleTaskBudget, 0, LIMITS.peopleTaskBudget);
+    const limit = asInteger(maximum, LIMITS.peopleTaskBudget, 0);
     if (limit <= 0) return [];
     return asArray(state?.people)
         .filter(person => !person?.isUser && person?.simulationEnabled !== false)
-        .map(person => ({ person, life: personLifeTickInfo(state, person) }))
-        .filter(item => item.life.due)
+        .map(person => {
+            const life = personLifeTickInfo(state, person);
+            const manualPriority = Boolean(person?.lifeTickPriority);
+            // 三个完整生活周期仍未结算时进入保底队列。它只是强制“轮到她”，
+            // 不代表人物凭空发生大事，也不会额外推进世界时间。
+            const starvationGuard = life.elapsed >= life.interval * 3;
+            return { person, life, manualPriority, starvationGuard };
+        })
+        .filter(item => (
+            requiredOnly
+                ? (item.manualPriority || item.starvationGuard)
+                : (item.manualPriority || item.life.due)
+        ))
         .sort((a, b) => (
-            Number(b.life.overdue) - Number(a.life.overdue)
+            Number(b.manualPriority) - Number(a.manualPriority)
+            || Number(b.starvationGuard) - Number(a.starvationGuard)
+            || Number(a.person?.lifeTickPriorityAt || Number.MAX_SAFE_INTEGER)
+                - Number(b.person?.lifeTickPriorityAt || Number.MAX_SAFE_INTEGER)
+            || Number(b.life.overdue) - Number(a.life.overdue)
             || Number(b.person?.relevance || 0) - Number(a.person?.relevance || 0)
             || Number(a.life.last) - Number(b.life.last)
         ))
         .slice(0, limit)
-        .map(({ person, life }) => ({
+        .map(({ person, life, manualPriority, starvationGuard }) => ({
             id: String(person.id || ''),
             name: String(person.name || ''),
             overdueMinutes: life.overdue,
             elapsedMinutes: life.elapsed,
             intervalMinutes: life.interval,
             lastLifeTickAt: life.last,
+            priorityReason: manualPriority
+                ? 'manual-next'
+                : starvationGuard
+                    ? 'starvation-guard'
+                    : 'due',
         }));
 }
 
@@ -5603,8 +5956,15 @@ export function compactStateForModel(state, {
     includeUserCharacter = true,
     userName = '',
     maximumPeople = 14,
+    allowExpandedPeopleContext = false,
+    priorityPersonIds = [],
 } = {}) {
-    const maximum = asInteger(maximumPeople, 14, 1, LIMITS.peopleModelContext);
+    const maximum = asInteger(
+        maximumPeople,
+        14,
+        1,
+        allowExpandedPeopleContext ? Number.MAX_SAFE_INTEGER : LIMITS.peopleModelContext,
+    );
     const candidates = [...state.people]
         .filter(person => includeUserCharacter || !isUserPersonLike(person, userName))
         .filter(person => person?.simulationEnabled !== false || isUserPersonLike(person, userName))
@@ -5613,20 +5973,37 @@ export function compactStateForModel(state, {
             life: personLifeTickInfo(state, person),
         }));
 
+    // Explicit scheduler targets must always be present with their full current
+    // state. A target list containing only id/name is not enough to continue a
+    // person's life safely, especially for manual catch-up before the normal due time.
+    const priorityOrder = uniqueStrings(priorityPersonIds, maximum);
+    const priorityRank = new Map(priorityOrder.map((id, index) => [id, index]));
+    const priority = candidates
+        .filter(item => priorityRank.has(String(item.person?.id || '')))
+        .sort((a, b) => (
+            Number(priorityRank.get(String(a.person?.id || '')) ?? Number.MAX_SAFE_INTEGER)
+            - Number(priorityRank.get(String(b.person?.id || '')) ?? Number.MAX_SAFE_INTEGER)
+        ))
+        .slice(0, maximum);
+
     // Reserve part of every world call for people whose own lives are overdue,
     // so a long-absent NPC cannot fall out forever just because the foreground
-    // stopped mentioning them.
-    const dueQuota = Math.max(1, Math.floor(maximum / 2));
+    // stopped mentioning them. Manual next-round priority also counts as due for
+    // context selection, even when its normal interval has not elapsed yet.
+    const priorityIds = new Set(priority.map(item => item.person.id));
+    const dueQuota = Math.max(0, Math.max(1, Math.floor(maximum / 2)) - priority.length);
     const due = candidates
-        .filter(item => !item.person?.isUser && item.life.due)
+        .filter(item => !priorityIds.has(item.person.id))
+        .filter(item => !item.person?.isUser && (item.person?.lifeTickPriority || item.life.due))
         .sort((a, b) => (
-            Number(b.life.overdue) - Number(a.life.overdue)
+            Number(Boolean(b.person?.lifeTickPriority)) - Number(Boolean(a.person?.lifeTickPriority))
+            || Number(b.life.overdue) - Number(a.life.overdue)
             || Number(b.person.relevance || 0) - Number(a.person.relevance || 0)
             || Number(a.life.last) - Number(b.life.last)
         ))
         .slice(0, dueQuota);
 
-    const selectedIds = new Set(due.map(item => item.person.id));
+    const selectedIds = new Set([...priority, ...due].map(item => item.person.id));
     const regular = candidates
         .filter(item => !selectedIds.has(item.person.id))
         .sort((a, b) => (
@@ -5636,7 +6013,7 @@ export function compactStateForModel(state, {
         ))
         .slice(0, Math.max(0, maximum - due.length));
 
-    const people = [...due, ...regular].map(item => item.person);
+    const people = [...priority, ...due, ...regular].slice(0, maximum).map(item => item.person);
     const lifeById = new Map(candidates.map(item => [item.person.id, item.life]));
     const eventPriority = event => (
         event.delivery?.state === 'pending' ? 4
@@ -5682,6 +6059,20 @@ export function compactStateForModel(state, {
         world_pulse: {
             baseline_established: Boolean(state.worldPulse?.baselineEstablished),
             last_sweep_at: Number(state.worldPulse?.lastSweepAt || 0),
+            coverage: {
+                last_sweep_at: Number(state.worldPulse?.coverage?.lastSweepAt ?? -1),
+                last_public_sweep_at: Number(state.worldPulse?.coverage?.lastPublicSweepAt ?? -1),
+                recent_checks: asArray(state.worldPulse?.coverage?.entries)
+                    .slice(0, 12)
+                    .map(entry => ({
+                        id: entry.id,
+                        label: modelText(entry.label, 120),
+                        kind: entry.kind,
+                        scope: modelText(entry.scope, 140),
+                        last_checked_at: Number(entry.lastCheckedAt ?? -1),
+                        checks: Number(entry.checks || 0),
+                    })),
+            },
             domains: asArray(state.worldPulse?.domains)
                 .sort((a, b) => (
                     Number(b.pressure || 0) - Number(a.pressure || 0)
@@ -5764,6 +6155,7 @@ export function compactStateForModel(state, {
                 last_life_tick_at: lifeById.get(person.id)?.last ?? person.lastLifeTickAt ?? person.updatedAt,
                 life_tick_interval_minutes: lifeById.get(person.id)?.interval ?? personLifeTickInterval(person),
                 life_tick_due_minutes: lifeById.get(person.id)?.overdue ?? 0,
+                life_tick_priority: Boolean(person.lifeTickPriority),
             };
         }),
         events: events.map(event => ({
@@ -6279,15 +6671,18 @@ export function buildSimulationPrompt(state, {
     worldPulseActivity = 'natural',
     enhancedBackgroundSimulation = false,
     backgroundPersonTargets = [],
+    worldCoverageTargets = [],
     directorNotes = [],
 } = {}) {
     const compact = compactStateForModel(state, {
         includeUserInnerVoice,
         includeUserCharacter: recordPlayerCharacter,
         userName,
+        allowExpandedPeopleContext: true,
+        priorityPersonIds: asArray(backgroundPersonTargets).map(item => String(item?.id || '')).filter(Boolean),
         maximumPeople: enhancedBackgroundSimulation
-            ? Math.min(LIMITS.peopleModelContext, Math.max(14, Number(backgroundNpcBudget) * 2 + 6))
-            : Math.min(24, Math.max(10, Number(backgroundNpcBudget) + 10)),
+            ? Math.max(14, Number(backgroundNpcBudget) * 2 + 6)
+            : Math.max(10, Number(backgroundNpcBudget) + 10),
     });
     const queued = uniqueStrings(queuedEventIds, 24);
     const latestUser = modelText(latestTurn?.user, 6000);
@@ -6347,21 +6742,46 @@ export function buildSimulationPrompt(state, {
         natural: '世界脉搏自然：每次主世界时间真正推进后，都检查环境、城市/地区、组织/势力、经济/资源、公共设施与社会生活是否有自然变化。大多数是普通或地方变化，重大新闻必须稀少且有因果。',
         busy: '世界脉搏偏活跃：在合理因果足够时，可以让更多地区/行业/组织同时出现变化，但仍以日常、地方和行业事件为主；重大事故、战争、灾害与极端巧合仍然必须有强依据。',
     }[worldPulseActivity] || '世界脉搏自然：让镜头外社会按时间与因果正常变化。';
+    const coverageTargets = asArray(worldCoverageTargets)
+        .filter(item => item?.id && item?.label)
+        .slice(0, 4)
+        .map(item => ({
+            id: asString(item.id, '', 120),
+            label: asString(item.label, '', 120),
+            kind: asString(item.kind, 'general', 40),
+            scope: asString(item.scope, '', 160),
+            source: asString(item.source, 'world', 40),
+            last_checked_at: asInteger(item.lastCheckedAt, -1, -1),
+        }));
+    const coverageRule = coverageTargets.length
+        ? `本轮必须独立检查这些长期未照看的世界范围：${JSON.stringify(coverageTargets)}。它们不是事件配额；只有当世界时间、既有压力或因果足以产生变化时才更新 world_pulse / world_facts / events。没有变化就保持安静，但不能拿当前剧情中的相近内容冒充已经检查。`
+        : '本轮没有额外的镜头外覆盖目标；按现有因果正常运行。';
     const backgroundTargetList = asArray(backgroundPersonTargets)
         .filter(item => item?.id)
-        .slice(0, asInteger(backgroundNpcBudget, 4, 0, LIMITS.peopleTaskBudget))
+        .slice(0, asInteger(backgroundNpcBudget, 4, 0))
         .map(item => ({
             id: asString(item.id, '', 100),
             name: asString(item.name, '', 80),
             overdue_minutes: asInteger(item.overdueMinutes, 0, 0),
+            priority_reason: ['manual-next', 'starvation-guard', 'manual-now', 'due'].includes(item?.priorityReason)
+                ? item.priorityReason
+                : 'due',
         }));
-    const enhancedBackgroundRule = enhancedBackgroundSimulation && backgroundTargetList.length
+    const enhancedBackgroundRule = backgroundTargetList.length
         ? [
-            `强化后台人物推演已开启。本批除了前台事实协调，还必须结算 ${backgroundTargetList.length} 名最逾期后台人物：${JSON.stringify(backgroundTargetList)}。`,
+            enhancedBackgroundSimulation
+                ? `强化后台人物推演已开启。本批除了前台事实协调，还必须结算 ${backgroundTargetList.length} 名优先后台人物：${JSON.stringify(backgroundTargetList)}。`
+                : `后台人物保底调度触发。本批除了前台事实协调，还必须结算 ${backgroundTargetList.length} 名优先后台人物：${JSON.stringify(backgroundTargetList)}。manual-next=用户要求下一轮优先；starvation-guard=已经连续超过三个生活周期未结算。`,
             '她们必须逐个出现在 people_upsert。按照各自既有位置、行动、长期目标、日程、关系和身体/情绪/资源状态自然推进到当前世界时间；没有大事也要更新成合理的“现在正在做什么/接下来准备做什么”，不要为了交作业制造冲突。',
-            '不得因为最新正文只与某一人物同场，就把其他到期人物继续冻结。',
+            '不得因为最新正文只与某一人物同场，就把这些必做人物继续冻结。',
         ].join('\n')
-        : '强化后台人物推演未要求额外指定人物。';
+        : '本轮没有必须优先结算的后台人物。';
+    const groupLifeRule = [
+        '人物群体生活协调：镜头外人物不是逐张独立抽取的小剧场。先用精确地点/时间重合、共同事件、组织与工作、既有关系、约定和日程判断本轮是否有自然交集；有交集时先结算共同经历，再补各自余下日常。',
+        '不要只因同城、同组织或关系亲近就强行碰面，不得瞬移，也不要让所有人的生活自动围着 user 转。没有自然交集时，各过各的普通日子就是正确结果。',
+        '若本轮形成真实多人互动，所有实际参与的后台人物都要计入 backgroundNpcBudget 并在 people_upsert 留下彼此一致的位置、行动、意图或状态；持续/有后果的共同经历应更新同一事件，或只创建一条 actors 完整的新事件，不能为每个人复制近义事件。预算不足以更新全部参与者时，不得把互动写成已经完成。',
+        '信息传播按人结算：交谈、消息、目击或共同工作只把实际传递的内容写入各接收者自己的 knowledge_updates，并写明 route/evidence/source_event_id；同地、亲密、同事或同组织都不等于共享后台全知。',
+    ].join('\n');
 
 const activeDirectorNotes = asArray(directorNotes)
         .filter(note => note?.id && note?.directive)
@@ -6384,7 +6804,7 @@ const activeDirectorNotes = asArray(directorNotes)
             '对每张本轮提供的纸条，在 director_note_updates 中判断本批 new 正文实际结果：completed=已经真正兑现；continue=尚未完成但仍适合继续寻找机会；blocked=本轮客观条件不适合。memo 用一句简短说明，不要假装未发生的内容已经发生。',
         ].join('\n')
         : '本轮没有玲七导演纸条。';
-    const npcBudget = asInteger(backgroundNpcBudget, 4, 0, 12);
+    const npcBudget = asInteger(backgroundNpcBudget, 4, 0);
     const newAssistantRule = newAssistantIndexSet.size === 1
         ? '11. 较早轮次只用于理解因果，不得重复计算；本次只推演最后一个 assistant_turn（new="true"）。'
         : `11. 只处理标记 new="true" 的最后 ${newAssistantIndexSet.size} 个 assistant_turn，并按消息顺序合并变化；new="false" 的轮次只用于理解因果，不得重复计算。`;
@@ -6412,7 +6832,9 @@ const activeDirectorNotes = asArray(directorNotes)
         '3E. “随机事件”只能从当前世界设定、地点环境、社会背景与已有压力中合理采样：可以是日常事故、天气、交通、组织动作、工作变化、资源波动等；不得无缘无故制造重大灾难、巧合强转折或专门围着玩家发生。随机只决定合理候选里哪件先发生，不负责凭空创造因果。',
         '3F. 世界自主运转不是每轮硬凑事件。若主世界时间没有实际推进、已有条件没有变化、人物目标也没有自然下一步，就可以 events_create=[]。但不能因为“正文没提到”就跳过本来已经应该发生的世界变化。',
         `3G. ${pulseActivityRule}`,
+        `3G-COVERAGE. ${coverageRule}`,
         `3G-LIFE. ${enhancedBackgroundRule}`,
+        `3G-GROUP. ${groupLifeRule}`,
         '3H. world_pulse 是镜头外宏观状态账本，不是新闻列表。它记录持续一段时间的环境、地区、组织/势力、经济资源、基础设施、治安、文化/媒体或社区压力。状态真正变化时才写 world_pulse_upsert；不要每轮重复同一句。pressure=0 表示平稳，1=轻微，2=明显，3=高压；trend 只描述该压力在上升、下降、波动或稳定。',
         '3I. visibility 和 publicity 是两条完全不同的轴。visibility=hidden/trace/known/direct 只表示这个事件怎样进入当前正文/角色视野；它绝不等于社会公开。卧室、私聊、秘密行动即使 visibility=direct，也通常必须 publicity=private。',
         '3J. publicity=private 表示社会不知道；publicity=trace 表示外界只有未证实迹象，可形成论坛传闻但不能成为新闻；publicity=public 表示已有公告、媒体报道、公众可见现象或广泛传播渠道，可以进入新闻。',
@@ -6441,7 +6863,8 @@ const activeDirectorNotes = asArray(directorNotes)
         '12C. physical_state / emotional_state / resource_state 是人物当前状态。状态变化必须真实影响 action、intent 与执行能力；受伤、疲劳、缺资源、权限不足或情绪压力不能下一轮凭空消失。不得发明角色卡、身份锚点、既有记忆未支持的技能、装备、权限或知识。玩家的 emotional_state 只有正文/玩家明确表达时才能更新，不得替玩家猜内心。',
         '12D. 新事件必须写明 cause。cause 可以来自：已有事件的行动/结果/后果、人物既定目标与主动行动、势力/地点/环境压力、或当前世界条件下自然发生的合理环境事件。若由已有事件继续发酵，必须在 caused_by 填上游事件 ID；若没有上游事件，则在 cause 中明确写出人物目标或环境条件。actors 只列真实参与/经历该事件的人。一个事件解决后如果产生新的未解决局面，应创建新的后续事件并用 caused_by 串起来，而不是把已经解决的旧事件无限续命。',
         '12D-1. 暗流身份必须稳定。推演前权威状态的 events 是详细事件，event_index 是因调用体积被省略详情但仍在运行的既有暗流索引；两者中的 ID 都是真实且仍存在的事件身份。只要同一件未终结事件是在推进、受阻、等待、获得新线索、改变公开状态或接近结算，就必须用 events_update 更新原 ID，禁止换标题后再 events_create 一条近义事件。即使该事件只出现在 event_index、没有完整 summary，也不能因此复制新建；信息不足时宁可保守更新或保持不变。只有出现真正独立的新因果对象，或旧事件已经终结后产生新的未解决后果时，才允许 events_create。',
-        '12D-LIFE. compact people 中 life_tick_due_minutes>0 的人物属于“生活结算到期”。优先让其中最多 backgroundNpcBudget 名从她自己的 location/action/intent/long_term_goal/physical/emotional/resource 状态继续生活，而不是围着最新正文找反应。即使这段时间没有戏剧性事件，也应通过 people_upsert 给出自然的当前行动/意图，从而完成生活结算；不要为了交作业硬造冲突。强化后台人物推演给出明确目标名单时，该名单为本轮必做项，不得省略。',
+        '12D-LIFE. compact people 中 life_tick_due_minutes>0 的人物属于“生活结算到期”。优先让其中最多 backgroundNpcBudget 名从她自己的 location/action/intent/long_term_goal/physical/emotional/resource 状态继续生活，而不是围着最新正文找反应。即使这段时间没有戏剧性事件，也应通过 people_upsert 给出自然的当前行动/意图，从而完成生活结算；不要为了交作业硬造冲突。只要 3G-LIFE 给出明确目标名单，无论是否开启强化后台人物推演，该名单都是本轮必做项，不得省略；其中 manual-next 是用户点了“下一轮优先”，starvation-guard 是系统防止人物长期饿死。',
+        '12D-GROUP. 多人共同经历必须是同一份世界事实，不能拆成互相矛盾的个人小剧场。参与者的位置、动作、事件状态和获知内容要彼此对账；一方已离开、拒绝或尚不知情时，另一方不能假装她仍在场、已同意或已经知道。',
         '12D-1. 已解决事件本体不要为了“保留剧情”继续挂在暗流里；保留它已经造成的 world_facts / 人物状态 / 环境后果即可。真正需要继续发展的部分创建为新的事件。这样事件链会往前长，而不是反复复读旧事件。',
         '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
         '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',
@@ -6453,7 +6876,7 @@ const activeDirectorNotes = asArray(directorNotes)
         '人物 source 只有在本批 new="true" 正文真实描写到该人物时才填 foreground；镜头外人物必须填 background。present_in_scene 只有人物本人在当前场景中实际行动、说话或被直接感知时才为 true；仅被提及、回忆、谈论、作为目标或出现在内心想法里一律为 false。last_seen_message_id 必须填该人物最后实际出现的 assistant 消息 ID。',
         directorRule,
         customRule
-            ? `用户自定义侧重点：${customRule}（它只能调整侧重点，不能覆盖时间证据、知识边界、玩家意志或 JSON 格式规则。）`
+            ? `用户自定义侧重点：${customRule}（它只能调整侧重点，不能覆盖时间证据、知识边界、玩家意志或 JSON 格式规则。若要求关注世界新闻、特定地区/行业/组织或镜头外动向，必须在完成正文事实协调后另行检查对应世界来源；不能拿最新剧情里一条相近事件当作已经满足。）`
             : '用户没有追加自定义推演要求。',
         '15. 只返回一个合法 JSON 对象，不要代码围栏，不要解释。',
         '16. 权威状态为了控制调用体积只列出最相关的人物与事件；未列出的旧条目会由插件原样保留，绝不能据此推断其消失。',
@@ -7375,6 +7798,19 @@ export function trimState(inputState) {
             type: 'cognition_schema_20_reset',
             text: '已清洗旧版 NPC 认知账本，等待按获知路径重新建立',
             reason: '旧版 actors/known_by/visibility 可能把世界全知泄漏给人物',
+        });
+    }
+    if (previousSchemaVersion < 24) {
+        // 首次升级不假装旧世界已经被完整巡查。coverage 保持“尚未检查”，
+        // 让下一次正常世界推演或手动舆情刷新安全建立真实覆盖基线。
+        state.worldPulse.coverage = normalizeWorldCoverage(
+            state.worldPulse.coverage,
+            state.clock.absoluteMinute,
+        );
+        appendAudit(state, {
+            type: 'world_coverage_schema_24_ready',
+            text: '镜头外公共世界轮转账本已就绪',
+            reason: '首次巡查将在下一次到期世界推演中建立，不反向改写旧世界',
         });
     }
 

@@ -1397,6 +1397,66 @@
     transform: translateY(0) scale(0.98) !important;
 }
 
+#world-backstage-root .wb-person-life-actions {
+    display: inline-flex;
+    align-self: flex-start;
+    gap: 6px;
+    margin: 7px 0 4px;
+    padding: 3px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 84%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-panel-faint) 86%, transparent);
+}
+
+#world-backstage-root .wb-person-life-actions button {
+    appearance: none;
+    min-height: 27px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    font-family: var(--wb-font) !important;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+#world-backstage-root .wb-person-life-actions button:hover,
+#world-backstage-root .wb-person-life-actions button:focus-visible {
+    background: var(--wb-panel);
+    color: var(--wb-text);
+}
+
+#world-backstage-root .wb-person-life-actions .is-catchup {
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-person-life-actions .is-priority.is-active {
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-person-life-actions button:active {
+    transform: scale(0.98);
+}
+
+#world-backstage-root .wb-person-life-actions button:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+    transform: none;
+}
+
+#world-backstage-root .wb-person-life-note {
+    margin: 0 0 6px;
+    color: var(--wb-text-faint);
+    font-family: var(--wb-font);
+    font-size: 8px;
+}
+
 .wb-person-editor-actions {
     display: flex;
     align-items: center;
@@ -2435,12 +2495,14 @@
     transform: none;
 }
 
-.wb-world-orb.is-edge-hidden.is-edge-right .wb-orb-notice {
+.wb-world-orb.is-edge-hidden.is-edge-right .wb-orb-notice,
+.wb-world-orb.is-edge-hidden.is-edge-right .wb-orb-update {
     right: auto;
     left: 3px;
 }
 
-.wb-world-orb.is-edge-hidden.is-edge-left .wb-orb-notice {
+.wb-world-orb.is-edge-hidden.is-edge-left .wb-orb-notice,
+.wb-world-orb.is-edge-hidden.is-edge-left .wb-orb-update {
     right: 3px;
     left: auto;
 }
@@ -2515,6 +2577,18 @@
     box-shadow: 0 0 8px var(--wb-amber);
 }
 
+.wb-orb-update {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 7px;
+    height: 7px;
+    border: 1px solid var(--wb-bg);
+    border-radius: 50%;
+    background: var(--wb-accent);
+    box-shadow: 0 0 8px var(--wb-accent);
+}
+
 .wb-world-orb.is-open {
     opacity: 0;
     pointer-events: none;
@@ -2526,8 +2600,10 @@
     right: 82px;
     bottom: 28px;
     display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     gap: 2px;
-    width: 210px;
+    width: 238px;
     max-width: calc(100vw - 86px);
     padding: 8px 11px;
     border: 1px solid var(--wb-line);
@@ -2538,6 +2614,27 @@
     pointer-events: none;
     transform: translateX(6px);
     transition: 180ms ease;
+}
+
+.wb-orb-caption.has-action {
+    column-gap: 9px;
+    pointer-events: auto;
+}
+
+.wb-orb-caption-copy {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.wb-orb-caption-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.wb-orb-caption-later {
+    display: none;
 }
 
 .wb-orb-caption.is-visible {
@@ -2554,6 +2651,40 @@
 .wb-orb-caption span {
     color: var(--wb-text-faint);
     font-size: 8px;
+}
+
+.wb-orb-caption-sync {
+    min-width: 54px;
+    padding: 6px 9px;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--wb-accent) 12%, var(--wb-panel-strong));
+    color: var(--wb-text);
+    font: inherit;
+    font-size: 10px;
+    line-height: 1.2;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: 150ms ease;
+}
+
+.wb-orb-caption-sync:hover,
+.wb-orb-caption-sync:focus-visible {
+    border-color: var(--wb-accent);
+    background: color-mix(in srgb, var(--wb-accent) 20%, var(--wb-panel-strong));
+    outline: none;
+    transform: translateY(-1px);
+}
+
+@keyframes wb-mobile-caption-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
 }
 
 .wb-drawer-scrim {
@@ -3743,6 +3874,50 @@
 
     .wb-orb-caption {
         display: none;
+    }
+
+    #world-backstage-root .wb-orb-caption.has-action {
+        position: fixed !important;
+        top: auto !important;
+        right: max(14px, env(safe-area-inset-right, 0px), calc((100dvw - 360px) / 2)) !important;
+        bottom: max(78px, calc(env(safe-area-inset-bottom, 0px) + 66px)) !important;
+        left: max(14px, env(safe-area-inset-left, 0px), calc((100dvw - 360px) / 2)) !important;
+        z-index: 64 !important;
+        display: grid;
+        grid-template-columns: 1fr;
+        box-sizing: border-box;
+        width: auto !important;
+        max-width: none;
+        padding: 13px 14px 12px;
+        gap: 11px;
+        border-radius: 14px;
+        opacity: 1;
+        box-shadow: 0 18px 44px rgba(18, 17, 31, 0.3);
+        transform: none;
+        animation: wb-mobile-caption-in 180ms ease-out both;
+    }
+
+    #world-backstage-root .wb-orb-caption-actions {
+        justify-content: flex-end;
+    }
+
+    #world-backstage-root .wb-orb-caption-later,
+    #world-backstage-root .wb-orb-caption-sync {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 68px;
+        min-height: 34px;
+        padding: 7px 12px;
+        border-radius: 9px;
+        font-size: 12px;
+    }
+
+    #world-backstage-root .wb-orb-caption-later {
+        border: 1px solid var(--wb-line);
+        background: transparent;
+        color: var(--wb-text-faint);
+        font: inherit;
     }
 
     .wb-drawer-scrim {
@@ -7567,6 +7742,17 @@
     gap: 3px;
     min-width: 0;
 }
+#world-backstage-root .wb-injection-source-board {
+    justify-self: start;
+    padding: 2px 7px;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 22%, var(--wb-line));
+    border-radius: 999px;
+    color: color-mix(in srgb, var(--wb-accent) 72%, var(--wb-text));
+    background: color-mix(in srgb, var(--wb-accent) 7%, transparent);
+    font-size: .64em;
+    line-height: 1.35;
+    letter-spacing: .02em;
+}
 #world-backstage-root .wb-injection-source-copy strong {
     color: var(--wb-text);
     font-size: .86em;
@@ -7667,6 +7853,29 @@
 }
 #world-backstage-root .wb-module-visibility-card.is-off strong {
     color: var(--wb-text-soft);
+}
+#world-backstage-root .wb-person-group-life-note {
+    display: grid;
+    gap: 4px;
+    padding: 11px 13px;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line));
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--wb-accent) 6%, var(--wb-panel));
+}
+#world-backstage-root .wb-person-group-life-note span {
+    color: color-mix(in srgb, var(--wb-accent) 72%, var(--wb-text));
+    font-size: .68em;
+    letter-spacing: .08em;
+}
+#world-backstage-root .wb-person-group-life-note strong {
+    color: var(--wb-text);
+    font-size: .84em;
+    line-height: 1.45;
+}
+#world-backstage-root .wb-person-group-life-note small {
+    color: var(--wb-text-faint);
+    font-size: .7em;
+    line-height: 1.5;
 }
 #world-backstage-root .wb-module-visibility-card button,
 #world-backstage-root .wb-module-runtime-summary button {
@@ -7785,6 +7994,16 @@
     color: var(--wb-text-faint);
     font-size: .78em;
     line-height: 1.6;
+}
+
+/* 板块设置里的短说明只做辅助，不再每条都套一块常驻底色。 */
+#world-backstage-root .wb-module-settings-popover .wb-setting-explanation {
+    min-height: 0;
+    margin: 4px 2px 0 !important;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    line-height: 1.5;
 }
 
 /* 真正低频的东西才折叠成“高级”，而且只保留一层。 */
@@ -8457,6 +8676,18 @@
     justify-content: flex-start;
 }
 
+.wb-lingqi-history-fold-note {
+    align-self: center;
+    max-width: min(88%, 620px);
+    padding: 4px 9px;
+    border: 1px dashed rgba(159, 154, 231, 0.18);
+    border-radius: 999px;
+    color: var(--wb-text-faint);
+    font-size: calc(9px + var(--wb-reading-bump));
+    line-height: 1.4;
+    text-align: center;
+}
+
 .wb-lingqi-message {
     max-width: min(82%, 620px);
     box-sizing: border-box;
@@ -8597,6 +8828,146 @@
 
 .wb-lingqi-proposal-actions button:last-child {
     color: var(--wb-text-faint);
+}
+
+.wb-lingqi-action-confirm {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 5px 9px;
+    width: calc(100% - 24px);
+    max-width: calc(100% - 24px);
+    min-width: 0;
+    box-sizing: border-box;
+    margin: 2px 12px 10px;
+    padding: 11px 12px;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line));
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--wb-accent) 7%, var(--wb-panel-strong));
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.07);
+}
+
+.wb-lingqi-action-kaomoji {
+    align-self: start;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 22px;
+    margin-top: 1px;
+    padding: 2px 7px;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 20%, var(--wb-line));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-accent) 6%, var(--wb-panel));
+    color: var(--wb-text-faint);
+    font-family: var(--wb-font) !important;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+}
+
+.wb-lingqi-action-confirm,
+.wb-lingqi-action-confirm button {
+    font-family: var(--wb-font) !important;
+}
+
+.wb-lingqi-action-confirm strong,
+.wb-lingqi-action-confirm small {
+    display: block;
+    margin: 0;
+}
+
+.wb-lingqi-action-confirm strong {
+    color: var(--wb-text);
+    font-size: clamp(13px, calc(13px + var(--wb-reading-bump)), 16px);
+    font-weight: 650;
+    line-height: 1.35;
+    letter-spacing: 0;
+}
+
+.wb-lingqi-action-confirm p {
+    margin: 4px 0 0;
+    color: var(--wb-text-soft);
+    font-size: clamp(12px, calc(12px + var(--wb-reading-bump)), 15px);
+    font-weight: 400;
+    line-height: 1.55;
+    letter-spacing: 0;
+}
+
+.wb-lingqi-action-confirm small {
+    margin-top: 4px;
+    color: var(--wb-text-faint);
+    font-size: clamp(10px, calc(10px + var(--wb-reading-bump)), 13px);
+    font-weight: 400;
+    line-height: 1.45;
+    letter-spacing: 0;
+}
+
+.wb-lingqi-action-preview {
+    display: grid;
+    gap: 4px;
+    margin-top: 8px;
+    padding: 7px 8px;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 16%, var(--wb-line));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--wb-accent) 4%, transparent);
+}
+
+.wb-lingqi-action-preview span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--wb-text-soft);
+    font-size: calc(9px + var(--wb-reading-bump));
+    line-height: 1.45;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wb-lingqi-action-confirm-buttons {
+    grid-column: 2;
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    gap: 7px;
+    min-width: 0;
+}
+
+.wb-lingqi-action-confirm-buttons button {
+    flex: 0 0 auto;
+    min-width: 72px;
+    min-height: 30px;
+    padding: 5px 10px;
+    border: 1px solid var(--wb-line);
+    border-radius: 9px;
+    background: transparent;
+    color: var(--wb-text-faint);
+    cursor: pointer;
+    font-size: clamp(11px, calc(11px + var(--wb-reading-bump)), 14px);
+    font-weight: 500;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.wb-lingqi-action-confirm-buttons button.is-confirm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-color: color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-accent) 14%, transparent);
+    color: var(--wb-text);
+}
+
+@media (max-width: 680px) {
+    .wb-lingqi-action-confirm-buttons {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+    }
+
+    .wb-lingqi-action-confirm-buttons button {
+        width: 100%;
+    }
 }
 
 .wb-lingqi-input {
@@ -8873,20 +9244,71 @@
 
 .wb-lingqi-note-box {
     margin: 0 14px 14px;
-    padding: 10px 11px;
     border: 1px dashed var(--wb-line);
     border-radius: 12px;
     background: var(--wb-panel-faint);
+    overflow: hidden;
 }
 
-.wb-lingqi-note-box > strong {
-    display: block;
-    margin-bottom: 7px;
+.wb-lingqi-note-box > summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto 14px;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    width: 100%;
+    height: auto;
+    min-height: 38px;
+    margin: 0;
+    padding: 7px 10px;
+    color: inherit;
+    cursor: pointer;
+    font-size: inherit;
+    line-height: 1.3;
+    list-style: none;
+    opacity: 1;
+    transform: none;
+    user-select: none;
+}
+
+.wb-lingqi-note-box > summary::-webkit-details-marker {
+    display: none;
+}
+
+.wb-lingqi-note-box > summary strong {
     color: var(--wb-text-soft);
     font-size: calc(10px + var(--wb-reading-bump));
 }
 
-.wb-lingqi-note-box > div {
+.wb-lingqi-note-box > summary span {
+    color: var(--wb-text-faint);
+    font-size: calc(9px + var(--wb-reading-bump));
+}
+
+.wb-lingqi-note-box > summary i {
+    width: 7px;
+    height: 7px;
+    border-right: 1.5px solid var(--wb-text-faint);
+    border-bottom: 1.5px solid var(--wb-text-faint);
+    transform: rotate(45deg) translateY(-2px);
+    transition: transform 160ms ease;
+}
+
+.wb-lingqi-note-box[open] > summary i {
+    transform: rotate(225deg) translate(-1px, -1px);
+}
+
+.wb-lingqi-note-box[open] > summary {
+    transform: none;
+}
+
+.wb-lingqi-note-box-body {
+    margin-top: 0;
+    padding: 0 10px 6px;
+    border-top: 1px solid rgba(151, 160, 220, 0.08);
+}
+
+.wb-lingqi-note-box-body > div {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     gap: 7px;
@@ -8894,16 +9316,16 @@
     border-top: 1px solid rgba(151, 160, 220, 0.08);
 }
 
-.wb-lingqi-note-box > div:first-of-type {
+.wb-lingqi-note-box-body > div:first-child {
     border-top: 0;
 }
 
-.wb-lingqi-note-box span {
+.wb-lingqi-note-box-body span {
     color: var(--wb-text-faint);
     font-size: calc(10px + var(--wb-reading-bump));
 }
 
-.wb-lingqi-note-box p {
+.wb-lingqi-note-box-body p {
     margin: 0;
     color: var(--wb-text-soft);
     font-size: calc(10px + var(--wb-reading-bump));

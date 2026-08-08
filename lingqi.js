@@ -3,7 +3,7 @@ import {
     normalizeLingqiButlerActions,
 } from './lingqi-help.js';
 
-const MAX_MESSAGES = 36;
+const MAX_MESSAGES = 800;
 const MAX_NOTES = 80;
 const LINGQI_MASCOT_STATES = new Set(['idle', 'watch', 'note', 'confused', 'happy', 'hold']);
 
@@ -98,20 +98,32 @@ export function emptyLingqiState() {
 
 export function normalizeLingqiState(value) {
     const source = value && typeof value === 'object' ? value : {};
+    const usedMessageIds = new Set();
     const messages = (Array.isArray(source.messages) ? source.messages : [])
-        .map(item => ({
-            id: cleanText(item?.id, 100) || makeId('msg'),
-            role: item?.role === 'user' ? 'user' : 'assistant',
-            text: cleanText(item?.text, 5000),
-            planText: cleanText(item?.planText ?? item?.plan_text, 1600),
-            needsAuthorHelp: Boolean(item?.needsAuthorHelp ?? item?.needs_author_help),
-            supportReason: cleanText(item?.supportReason ?? item?.support_reason, 360),
-            supportTriage: normalizeLingqiTriage(item?.supportTriage ?? item?.support_triage, {
-                legacyNeedsHelp: Boolean(item?.needsAuthorHelp ?? item?.needs_author_help),
-                legacyReason: item?.supportReason ?? item?.support_reason,
-            }),
-            at: cleanText(item?.at, 80) || nowIso(),
-        }))
+        .map(item => {
+            const baseId = cleanText(item?.id, 100) || makeId('msg');
+            let id = baseId;
+            let duplicateIndex = 2;
+            while (usedMessageIds.has(id)) {
+                const suffix = `_${duplicateIndex}`;
+                id = `${baseId.slice(0, Math.max(1, 100 - suffix.length))}${suffix}`;
+                duplicateIndex += 1;
+            }
+            usedMessageIds.add(id);
+            return {
+                id,
+                role: item?.role === 'user' ? 'user' : 'assistant',
+                text: cleanText(item?.text, 5000),
+                planText: cleanText(item?.planText ?? item?.plan_text, 1600),
+                needsAuthorHelp: Boolean(item?.needsAuthorHelp ?? item?.needs_author_help),
+                supportReason: cleanText(item?.supportReason ?? item?.support_reason, 360),
+                supportTriage: normalizeLingqiTriage(item?.supportTriage ?? item?.support_triage, {
+                    legacyNeedsHelp: Boolean(item?.needsAuthorHelp ?? item?.needs_author_help),
+                    legacyReason: item?.supportReason ?? item?.support_reason,
+                }),
+                at: cleanText(item?.at, 80) || nowIso(),
+            };
+        })
         .filter(item => item.text)
         .slice(-MAX_MESSAGES);
 
@@ -240,7 +252,7 @@ export function buildLingqiChatPrompt({ world = {}, messages = [], userText = ''
         '如果当前证据不足但用户仍有明确可尝试的步骤，优先 triage.route=self_service 并把步骤写进 triage.next_step；只有查过仍无路可走时才 route=mama，再去问妈妈。',
         '判断证据不足时宁可说不确定，不能为了显得全能而编原因，也不能把未知硬判成插件 bug。',
         '保留 needs_author_help 只是兼容旧版本；新回复以 triage.route 为准。',
-        '涉及可逆的低风险设置/停止任务时，可以返回 actions 让插件本地执行。涉及删除人物、删除记忆、重置聊天、改 API、改世界事实、改人物核心设定等高风险操作，本阶段不要返回动作；解释应该去哪里操作，或让用户明确使用现有安全入口。',
+        '涉及可逆的低风险设置/停止任务时，可以返回 actions 让插件本地执行。推演最新正文、巡查公共世界、立即补人物近况会消耗后台模型请求：只有用户明确要求时才返回对应 action，而且插件会再给确认卡片；不要在 reply 里提前声称已经完成。涉及删除人物、删除长期记忆、重置世界数据、改 API、改世界事实、改人物核心设定等高风险操作，本阶段不要返回动作。唯一例外是“删除玲七自己的聊天记录”：只有用户明确要求删除时才可返回 delete_lingqi_chat；插件会先本地定位范围并弹确认卡片，用户再次确认前绝不能执行，也不能声称已经删掉。删除玲七聊天默认不影响长期记忆。',
         LINGQI_BUTLER_TOOL_HELP,
         '当用户明确表达“下一轮/接下来想怎么玩、想让某人怎样、想要某种气氛/节奏/冲突”等创作愿望时，可以生成 proposal。proposal 只是玲七叼回来、准备压在桌上的小纸条，仍要由插件决定是否确认。普通吐槽、猜测、闲聊不要自动生成 proposal。',
         'paper_text 是给用户偷看到的玲七小纸条。它必须像小猫写给自己看的碎念，不是汇报，不是任务单。尽量 1~3 个短句；可以困惑一下，再用很朴素的猫逻辑得出“大概这样做吧”的结论。',
@@ -259,12 +271,18 @@ export function buildLingqiChatPrompt({ world = {}, messages = [], userText = ''
             mascot_state: 'idle | watch | note | confused | happy | hold',
             actions: [
                 {
-                    type: 'update_setting | set_person_simulation | cancel_simulation | cancel_background_tasks | check_world_state | organize_memory',
+                    type: 'update_setting | set_person_simulation | cancel_simulation | cancel_background_tasks | check_world_state | organize_memory | simulate_latest | refresh_public_world | prioritize_person | catch_up_person | delete_lingqi_chat',
                     setting: '仅 update_setting 使用',
                     value: '仅 update_setting 使用',
                     person_id: '仅 set_person_simulation 使用',
                     person_name: '仅 set_person_simulation 使用',
                     enabled: true,
+                    mode: 'delete_lingqi_chat 可用：all | recent | between | before | after | day | topic',
+                    count: '仅 recent 使用',
+                    start_query: '仅 between 使用：用户描述的起始聊天内容',
+                    end_query: '仅 between 使用：用户描述的结束聊天内容',
+                    query: 'before / after / topic 使用：需要在玲七历史记录里定位的内容或主题',
+                    day: '仅 day 使用：today | yesterday | day_before_yesterday',
                 },
             ],
             triage: {
@@ -470,4 +488,3 @@ export function applyLingqiDirectorResult(value, updates = [], {
     state.updatedAt = at;
     return state;
 }
-

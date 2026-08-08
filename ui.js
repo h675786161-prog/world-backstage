@@ -121,7 +121,8 @@ function pluginReleaseStage(version = '') {
 
 function pluginDisplayVersion(version = '') {
     const text = String(version || '');
-    if (/^2\.2\.0$/i.test(text)) return '小猫版 V2.2';
+    if (/^2\.3\.0-alpha\.\d+$/i.test(text)) return '小猫版 V2.3 · 体验版';
+    if (/^2\.2\.\d+$/i.test(text)) return '小猫版 V2.2';
     return `${pluginReleaseStage(text)} ${text || '1.1.0'}`;
 }
 
@@ -919,7 +920,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             <section class="wb-settings-section-body wb-settings-injection-section">
                 <div class="wb-injection-intro">
                     <div>
-                        <span>玲七往镜头边叼什么</span>
+                        <span>玲七往镜头边叼什么 · 不注入 ≠ 不运行</span>
                         <strong>它们都还在背后活着。你只要告诉我：哪些叼到镜头边，哪些先压爪爪下面。</strong>
                     </div>
                     <label class="wb-switch wb-injection-master">
@@ -932,6 +933,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 <div class="wb-injection-source-list ${settings.worldPromptInjection ? '' : 'is-master-off'}">
                     <article class="wb-injection-source is-time">
                         <div class="wb-injection-source-copy">
+                            <small class="wb-injection-source-board">来自侧栏「此刻」</small>
                             <strong>世界时间</strong>
                             <span>钟我还是抱着，不会丢。这里只决定要不要把时间递给正文。</span>
                         </div>
@@ -951,31 +953,31 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         </div>
                     </article>
                     <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><strong>世界背景</strong><span>这是地基。这个不能拿爪子乱刨</span></div>
+                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「此刻」</small><strong>世界背景</strong><span>这是世界的地基，我会压稳，不让谁拿爪子乱刨。</span></div>
                         <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionWorldBackground" ${settings.injectionWorldBackground !== false ? 'checked' : ''}><i></i></label>
                     </article>
                     <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><strong>人物状态</strong><span>${settings.worldSimulationEnabled ? '人还是会在背后过日子，我会盯着' : '世界引擎歇着，人物先停在当前状态'}</span></div>
+                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「人物」</small><strong>当前状态</strong><span>${settings.worldSimulationEnabled ? '他们还会在背后过日子，我蹲着替你看。' : '世界引擎歇着，他们先停在当前状态。'}</span></div>
                         <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPeople" ${settings.injectionPeople !== false ? 'checked' : ''}><i></i></label>
                     </article>
                     <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><strong>暗流 / 世界环境</strong><span>${settings.worldSimulationEnabled ? '暗流还是会往前走，我蹲旁边看着' : '世界引擎歇着，暗流先停在这里'}</span></div>
+                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「暗流」</small><strong>进行中事件与世界环境</strong><span>${settings.worldSimulationEnabled ? '镜头外的事还会往前走，我蹲在旁边看着。' : '世界引擎歇着，暗流先停在这里。'}</span></div>
                         <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEvents" ${settings.injectionEvents !== false ? 'checked' : ''}><i></i></label>
                     </article>
                     <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><strong>回声 / 已结算后果</strong><span>已经发生的后果，我压住不让它滚走</span></div>
+                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「回声」</small><strong>已结算后果</strong><span>已经发生的后果，我会压住，不让它悄悄滚走。</span></div>
                         <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEchoes" ${settings.injectionEchoes !== false ? 'checked' : ''}><i></i></label>
                     </article>
                     <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><strong>世界事实</strong><span>这些是事实。我得拿来对账，不能让谁用爪子拨乱</span></div>
+                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「此刻」</small><strong>世界事实</strong><span>这些是已经成立的事实，我得拿来对账，不能随手拨乱。</span></div>
                         <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionFacts" ${settings.injectionFacts !== false ? 'checked' : ''}><i></i></label>
                     </article>
                     <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><strong>长期记忆</strong><span>${settings.memorySystemEnabled ? '记忆我继续一张张收好，塞进该放的盒子' : '记忆系统歇着，旧记忆还在'}</span></div>
+                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「记忆」</small><strong>长期记忆</strong><span>${settings.memorySystemEnabled ? '记忆我会一张张收好，塞进该放的盒子。' : '记忆系统歇着，旧记忆还在，我没弄丢。'}</span></div>
                         <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionMemory" ${settings.injectionMemory !== false ? 'checked' : ''}><i></i></label>
                     </article>
                     <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><strong>舆情</strong><span>${settings.publicOpinionAutoEnabled ? '外面的声音我还是会竖耳朵听着' : '我先不自动听风声了，想看还能手动刷新'}</span></div>
+                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「舆情」</small><strong>新闻与论坛</strong><span>${settings.publicOpinionAutoEnabled ? '外面的声音我还会竖着耳朵听。' : '我先不自动听风声啦，想看时还能手动叫我去。'}</span></div>
                         <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPublicOpinion" ${settings.injectionPublicOpinion !== false ? 'checked' : ''}><i></i></label>
                     </article>
                 </div>
@@ -1228,7 +1230,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             </div>
 
             <div class="wb-setting-toggle">
-                <div><strong>正文注入总开关</strong><span>关掉只是不把世界背面递交给正文；人物、事件、记忆和舆情仍会在后台继续运行与保存。</span></div>
+                <div><strong>正文注入总开关</strong><span>关掉只是先不叼给正文看～人物、事件、记忆和舆情仍会在背后继续生活。</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="worldPromptInjection"
                         ${settings.worldPromptInjection ? 'checked' : ''}>
@@ -1238,23 +1240,23 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
 
             <div class="wb-injection-grid ${settings.worldPromptInjection ? '' : 'is-disabled'}">
                 <div class="wb-setting-block wb-injection-time">
-                    <label>世界时间注入</label>
+                    <label>「此刻」· 世界时间</label>
                     <div class="wb-option-row">
                         ${settingButton('injectionTimeMode', settings.injectionTimeMode, 'full', '完整')}
                         ${settingButton('injectionTimeMode', settings.injectionTimeMode, 'anchor', '最小锚点')}
                         ${settingButton('injectionTimeMode', settings.injectionTimeMode, 'off', '关闭')}
                     </div>
-                    <p class="wb-setting-explanation">「最小锚点」只防时间倒退/乱跳，不要求正文主动显示时间。</p>
+                    <p class="wb-setting-explanation">「最小锚点」只让我守住时间连续性～不会逼正文把钟摆到镜头正中间。</p>
                 </div>
-                <div class="wb-setting-toggle"><div><strong>世界背景</strong><span>底层世界规则与当前整体状态</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionWorldBackground" ${settings.injectionWorldBackground !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>人物状态</strong><span>相关人物当前位置与当前行动</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPeople" ${settings.injectionPeople !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>进行中事件 / 世界环境</strong><span>暗流、公开事件和会直接影响当前行动的环境</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEvents" ${settings.injectionEvents !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>回声 / 已结算后果</strong><span>只控制是否递进正文，不影响后台事件本身</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEchoes" ${settings.injectionEchoes !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>世界事实</strong><span>已经成立的客观状态与一致性约束</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionFacts" ${settings.injectionFacts !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>长期记忆</strong><span>关闭后记忆仍整理和保存，只是不参与正文</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionMemory" ${settings.injectionMemory !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>舆情</strong><span>还会继续生成与演化，只决定是否有机会靠近正文</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPublicOpinion" ${settings.injectionPublicOpinion !== false ? 'checked' : ''}><i></i></label></div>
+                <div class="wb-setting-toggle"><div><strong>「此刻」· 世界背景</strong><span>世界的地基我会压稳～这里只管递不递给正文。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionWorldBackground" ${settings.injectionWorldBackground !== false ? 'checked' : ''}><i></i></label></div>
+                <div class="wb-setting-toggle"><div><strong>「人物」· 当前状态</strong><span>他们的位置和行动我照常记着～这里只管递不递。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPeople" ${settings.injectionPeople !== false ? 'checked' : ''}><i></i></label></div>
+                <div class="wb-setting-toggle"><div><strong>「暗流」· 进行中事件与世界环境</strong><span>镜头外的事照常往前走，我会蹲在旁边看。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEvents" ${settings.injectionEvents !== false ? 'checked' : ''}><i></i></label></div>
+                <div class="wb-setting-toggle"><div><strong>「回声」· 已结算后果</strong><span>只管要不要叼进正文，不会抹掉已经发生的后果。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEchoes" ${settings.injectionEchoes !== false ? 'checked' : ''}><i></i></label></div>
+                <div class="wb-setting-toggle"><div><strong>「此刻」· 世界事实</strong><span>已经成立的事实我会拿来对账，不让世界自己打架。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionFacts" ${settings.injectionFacts !== false ? 'checked' : ''}><i></i></label></div>
+                <div class="wb-setting-toggle"><div><strong>「记忆」· 长期记忆</strong><span>关掉后我还会收拾记忆盒子～只是不往正文里叼。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionMemory" ${settings.injectionMemory !== false ? 'checked' : ''}><i></i></label></div>
+                <div class="wb-setting-toggle"><div><strong>「舆情」· 新闻与论坛</strong><span>外面的声音还会继续变化～这里只决定离镜头多近。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPublicOpinion" ${settings.injectionPublicOpinion !== false ? 'checked' : ''}><i></i></label></div>
             </div>
-            <p class="wb-setting-explanation">这里所有开关都只管「给不给正文看」。关闭某一项不会让对应人物、事件、记忆或舆情停止存在。</p>
+            <p class="wb-setting-explanation">这里的开关都只管「给不给正文看」～压在爪爪下面，不等于它就不存在啦。</p>
 
             <div class="wb-setting-block">
                 <label>要不要让我把风声递近一点</label>
@@ -1353,15 +1355,16 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 8, '最多 8 人')}
                 </div>
                 <label class="wb-number-setting">
-                    自定义人数上限
-                    <input type="number" min="0" max="12" step="1"
+                    自定义单轮人数
+                    <input type="number" min="0" step="1"
                         data-wb-setting="backgroundNpcBudget"
                         value="${escapeAttr(settings.backgroundNpcBudget)}">
                 </label>
+                <p class="wb-setting-explanation">想盯多少人都可以自己填～推荐 2～8 人，单轮尽量别超过 12 人；越大越吃 Token，也会更慢。</p>
             </div>
 
             <div class="wb-setting-toggle">
-                <div><strong>强化后台人物推演</strong><span>把逾期人物塞进现有世界推演一起结算，不额外单开请求；避免角色只在镜头前才活着。</span></div>
+                <div><strong>强化后台人物推演</strong><span>该结算的人我会顺爪带进现有世界推演～不额外单开请求，也不让他们只在镜头前才活着。</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="enhancedBackgroundSimulation"
                         ${settings.enhancedBackgroundSimulation ? 'checked' : ''}>
@@ -1370,7 +1373,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
             </div>
 
             <div class="wb-setting-toggle">
-                <div><strong>记录玩家角色</strong><span>开启时记录 user 已在正文明确发生的位置、行动与客观状态；关闭后不把 user 建进人物板块，但正文事实仍会正常影响世界。</span></div>
+                <div><strong>记录玩家角色</strong><span>开着时，我只记 user 在正文里明确发生的位置、行动和客观状态；关掉就不把 user 建进「人物」，但已经发生的正文事实照样算数。</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="recordPlayerCharacter"
                         ${settings.recordPlayerCharacter !== false ? 'checked' : ''}>
@@ -1506,14 +1509,14 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         <summary><span>记忆开关</span><small>整理与正文注入</small></summary>
                         <div class="wb-settings-subgroup-body">
             <div class="wb-setting-toggle">
-                <div><strong>启用记忆系统</strong><span>关闭后停止整理与写入，但保留已有记忆</span></div>
+                <div><strong>启用记忆系统</strong><span>关掉我就不再塞新纸片～已经收好的记忆，我会原样压住。</span></div>
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="memorySystemEnabled"
                         ${settings.memorySystemEnabled ? 'checked' : ''}>
                     <i></i>
                 </label>
             </div>
-            <p class="wb-setting-explanation">记忆是否递交正文现在统一在「界面与显露 → 正文注入」里控制；这里仅决定记忆系统本身是否运行。</p>
+            <p class="wb-setting-explanation">要不要把记忆叼给正文看，请去「正文注入」告诉我～这里仅管记忆盒子本身还收不收新东西。</p>
                         </div>
                     </details>
 
@@ -1623,7 +1626,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                         data-wb-setting="maxOutputTokens"
                                         value="${escapeAttr(settings.maxOutputTokens)}">
                                 </label>
-                                <p class="wb-setting-explanation">0 就让我自己算。世界推演留 0，我会直接拿全局上限当屋顶，不先拿旧的 4.6K / 6.4K 小盒子硬塞。模型写完自己会停；人物观测、历史、记忆、舆情这些小活，我各自看着装。服务端屋顶更低？那我也钻不过去。</p>
+                                <p class="wb-setting-explanation">0 就让我自己算～世界推演用全局预算，小任务会各自收口；服务端上限更低时以服务端为准。</p>
                             </div>
 
                             <div class="wb-setting-block">
@@ -1640,7 +1643,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                         data-wb-setting-seconds="generationTimeoutMs"
                                         value="${escapeAttr(settings.generationTimeoutMs ? Math.round(settings.generationTimeoutMs / 1000) : 0)}">
                                 </label>
-                                <p class="wb-setting-explanation">0 就让我自己看着办。这里只数模型真的在干活多久～切后台、429 蹲冷却、重试排队的时候，我不拿小爪子偷掐表。</p>
+                                <p class="wb-setting-explanation">0 就让我自己看着办～只数模型真正生成的时间，切后台、限流冷却和排队都不算。</p>
                             </div>
 
                             <details class="wb-generation-module-overrides">
@@ -1754,7 +1757,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         </div>
                         <div class="wb-tag-auto-tools">
                             <div class="wb-tag-auto-head">
-                                <div><strong>自动提取候选</strong><span>只扫描，不会自动加入规则</span></div>
+                                <div><strong>自动提取候选</strong><span>我只把可疑标签扒出来给你看～不会擅自塞进规则。</span></div>
                                 <div class="wb-tag-auto-actions">
                                     <button type="button" data-wb-action="scan-tag-candidates" data-count="1">扫描最新正文</button>
                                     <button type="button" data-wb-action="scan-tag-candidates" data-count="5">扫描最近 5 条</button>
@@ -1928,7 +1931,7 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
 
     const nowHtml = `
         ${injectionStatusCard(
-            '世界时间 / 背景',
+            '此刻 · 世界时间 / 背景',
             settings.worldPromptInjection && settings.injectionTimeMode !== 'off' && settings.injectionWorldBackground !== false,
             `时间：${settings.injectionTimeMode === 'full' ? '完整' : settings.injectionTimeMode === 'anchor' ? '最小锚点' : '关闭'} · 背景：${settings.injectionWorldBackground !== false ? '开' : '关'}`,
         )}
@@ -1967,7 +1970,6 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                     <button class="wb-world-background-action" type="button" data-wb-action="open-world-editor">
                         ${worldBackground ? '编辑世界背景' : '开始设定世界背景'}
                     </button>
-                    <p class="wb-setting-explanation">这是世界的地基～我平时只会拿来参考，不会偷偷改它。</p>
                 </div>
             </details>
             <div class="wb-setting-block">
@@ -2007,10 +2009,15 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
 
     const peopleHtml = `
         ${injectionStatusCard(
-            '人物状态',
+            '人物 · 当前状态',
             settings.worldPromptInjection && settings.injectionPeople !== false,
             '不叼给正文看也没关系～他们还是会在背后生活，我会记着。',
         )}
+        <div class="wb-person-group-life-note">
+            <span>群体生活 · 默认生效</span>
+            <strong>同地、同行、同组织和共同事件，我会放在同一轮里对账～</strong>
+            <small>真有互动就给双方都留下结果；没碰面就各过各的。它复用现有人物合批推演，不会为“群体感”多开一轮 API。</small>
+        </div>
         <div class="wb-flat-setting-list">
             <div class="wb-setting-block">
                 <label>后台 NPC 预算</label>
@@ -2020,10 +2027,10 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                     ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 4, '最多 4 人')}
                     ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 8, '最多 8 人')}
                 </div>
-                <label class="wb-number-setting">自定义人数上限
-                    <input type="number" min="0" max="12" step="1" data-wb-setting="backgroundNpcBudget" value="${escapeAttr(settings.backgroundNpcBudget)}">
+                <label class="wb-number-setting">自定义单轮人数
+                    <input type="number" min="0" step="1" data-wb-setting="backgroundNpcBudget" value="${escapeAttr(settings.backgroundNpcBudget)}">
                 </label>
-                <p class="wb-setting-explanation">这是我一轮最多顺手盯几个人～不是世界里只能活这么多人。别挤，排队。</p>
+                <p class="wb-setting-explanation">想盯多少人都可以自己填～推荐 2～8 人，单轮尽量别超过 12 人；越大越吃 Token，也会更慢。</p>
             </div>
             <div class="wb-setting-toggle">
                 <div><strong>强化后台人物推演</strong><span>开着的话，该结算的人我就顺爪捞进这轮世界推演一起看～不单独再跑一趟。</span></div>
@@ -2100,7 +2107,7 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
 
     const currentsHtml = `
         ${injectionStatusCard(
-            '暗流 / 世界环境',
+            '暗流 · 进行中事件 / 世界环境',
             settings.worldPromptInjection && settings.injectionEvents !== false,
             `回声：${settings.worldPromptInjection && settings.injectionEchoes !== false ? '我会递' : '我先留着'} · 世界事实：${settings.worldPromptInjection && settings.injectionFacts !== false ? '我会递' : '我先留着'}`,
         )}
@@ -2153,10 +2160,6 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                     </div>
                     <label class="wb-number-setting">最多再试几次<input type="number" min="0" max="5" step="1" data-wb-setting="autoRetryCount" value="${escapeAttr(settings.autoRetryCount)}"></label>
                 </div>
-                <div class="wb-setting-block wb-generation-relocated-note">
-                    <label>生成限制</label>
-                    <p class="wb-setting-explanation">Token 和最长等待我都收进「全局设置 → 高级维护 → 生成限制」啦～要单独照顾某个模块，也在那里调。</p>
-                </div>
                 <label class="wb-custom-instruction">自定义推演要求<textarea data-wb-setting="customSimulationInstruction" maxlength="1000" rows="3" placeholder="例如：少制造新事件；多看看商会和港口。玲七会按这个方向留意。">${escapeHtml(settings.customSimulationInstruction)}</textarea></label>
             </div>
         </details>
@@ -2164,7 +2167,7 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
 
     const opinionHtml = `
         ${injectionStatusCard(
-            '舆情',
+            '舆情 · 新闻 / 论坛',
             settings.worldPromptInjection && settings.injectionPublicOpinion !== false,
             '外面的风声我还是会继续听～这里只告诉你，我要不要把它递给正文。',
         )}
@@ -2190,12 +2193,12 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
             </div>
             ${routeSetting('opinion', '我听风声时使用的连接', '告诉我从哪条路出去听风声就好～接口本体我不在这里乱搬。')}
         </div>
-        <p class="wb-flat-footnote">这里是我蹲着听墙角的小角落。听见别人都在说，不代表事情就是真的～风声就是风声，我不会拿它当事实。</p>
+        <p class="wb-flat-footnote">公开新闻会把真实影响接回人物和环境，不过要先对上世界事件，再顺着地点、工作、组织和消息渠道影响该碰到的人；论坛传闻仍只是风声，我不会让全世界突然一起知道～</p>
     `;
 
     const memoryHtml = `
         ${injectionStatusCard(
-            '长期记忆',
+            '记忆 · 长期记忆',
             settings.worldPromptInjection && settings.injectionMemory !== false,
             '记忆盒子归记忆盒子，正文归正文。我要不要收拾，和要不要叼出去，是两回事。',
         )}
@@ -2204,7 +2207,6 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                 <div><strong>启用记忆系统</strong><span>关掉我就先不往记忆盒子里塞新纸片～已经放好的我压着，不丢。</span></div>
                 <label class="wb-switch"><input type="checkbox" data-wb-setting="memorySystemEnabled" ${settings.memorySystemEnabled ? 'checked' : ''}><i></i></label>
             </div>
-            <p class="wb-flat-footnote">想不想把记忆叼给正文看，去「正文注入」告诉我。先压着，也不等于我不收拾。</p>
             ${routeSetting('history', '我整理记忆时使用的连接', '这里只告诉我整理记忆时走哪条路～Key 和地址不用再填一遍。')}
         </div>
         ${sectionHeading('中途接入', '我来晚了？没事。我可以从前面的聊天一路闻回来～')}
@@ -2331,6 +2333,25 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                 <p class="wb-drawer-place">${escapeHtml(person.location)}</p>
                 <button class="wb-person-edit-button" type="button" data-wb-action="open-person-editor"
                     data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}">编辑人物卡</button>
+                ${!person.isUser ? `
+                    <div class="wb-person-life-actions">
+                        <button type="button" class="is-catchup" data-wb-action="catch-up-person"
+                            data-person-id="${escapeAttr(person.id)}"
+                            ${busy || person.simulationEnabled === false ? 'disabled' : ''}
+                            title="不推进世界时间，只补齐这个人物截至现在的后台生活状态">
+                            ${busy ? '正在结算…' : '补一下近况'}
+                        </button>
+                        <button type="button" class="is-priority ${person.lifeTickPriority ? 'is-active' : ''}"
+                            data-wb-action="prioritize-person" data-person-id="${escapeAttr(person.id)}"
+                            data-enabled="${person.lifeTickPriority ? 'false' : 'true'}"
+                            aria-pressed="${person.lifeTickPriority ? 'true' : 'false'}"
+                            ${busy || person.simulationEnabled === false ? 'disabled' : ''}
+                            title="不立刻调用 API，把她排到下一轮后台人物结算前面">
+                            ${person.lifeTickPriority ? '已排到前面' : '下一轮优先'}
+                        </button>
+                    </div>
+                    ${person.simulationEnabled === false ? '<p class="wb-person-life-note">镜头外推演已关闭</p>' : ''}
+                ` : ''}
                 <div class="wb-drawer-section"><span>正在做</span><strong>${escapeHtml(person.action)}</strong></div>
                 <div class="wb-drawer-section"><span>短期意图</span><strong>${escapeHtml(person.intent)}</strong></div>
                 ${person.longTermGoal ? `
@@ -2511,14 +2532,21 @@ function lingqiSupportCategoryLabel(category = 'unknown') {
 }
 
 function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openReadableKeys = new Set()) {
-    const messages = Array.isArray(lingqi.messages) ? lingqi.messages : [];
+    const storedMessages = Array.isArray(lingqi.messages) ? lingqi.messages : [];
+    const messages = storedMessages.slice(-120);
+    const hiddenMessageCount = Math.max(0, storedMessages.length - messages.length);
     const notes = Array.isArray(lingqi.notes) ? lingqi.notes : [];
     const pending = lingqi.pendingProposal && typeof lingqi.pendingProposal === 'object'
         ? lingqi.pendingProposal
         : null;
+    const pendingAction = lingqi.pendingAction && typeof lingqi.pendingAction === 'object'
+        ? lingqi.pendingAction
+        : null;
     const activeNotes = notes.filter(note => ['active', 'paused'].includes(note.status));
     const archivedNotes = notes.filter(note => ['completed', 'expired'].includes(note.status)).slice(-4).reverse();
-    const notesEmpty = activeNotes.length === 0 && archivedNotes.length === 0;
+    // Archived notes now live behind a collapsed box, so they should not keep
+    // the whole notes column stretched when there is no active paper on the board.
+    const notesEmpty = activeNotes.length === 0;
     const lingqiBusy = lingqi.phase === 'running';
     const mascotState = lingqiMascotState(lingqi, activeNotes, pending, mascotOverride);
     const mascotAssetState = lingqiMascotAssetState(mascotState);
@@ -2545,6 +2573,11 @@ function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openRead
 
                 <section class="wb-lingqi-chat-card">
                     <div class="wb-lingqi-chat-log ${messages.length ? '' : 'is-empty'}" aria-live="polite">
+                        ${hiddenMessageCount ? `
+                            <div class="wb-lingqi-history-fold-note">
+                                更早的 ${hiddenMessageCount} 条还收着。直接跟玲七说要找哪段、删哪段就行。
+                            </div>
+                        ` : ''}
                         ${messages.length ? messages.map(message => `
                             <div class="wb-lingqi-message is-${message.role === 'user' ? 'user' : 'assistant'}">
                                 <p>${escapeHtml(message.text).replaceAll('\n', '<br>')}</p>
@@ -2599,6 +2632,28 @@ function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openRead
                             </div>
                         </div>
                     ` : ''}
+                    ${pendingAction ? `
+                        <div class="wb-lingqi-action-confirm" role="alertdialog"
+                            aria-label="${escapeAttr(pendingAction.title || '确认玲七代办')}">
+                            <span class="wb-lingqi-action-kaomoji" aria-hidden="true">(^. .^)</span>
+                            <div>
+                                <strong>${escapeHtml(pendingAction.title || '要让我去弄吗？')}</strong>
+                                <p>${escapeHtml(pendingAction.detail || '这个动作会调用后台模型。')}</p>
+                                ${Array.isArray(pendingAction.previewLines) && pendingAction.previewLines.length ? `
+                                    <div class="wb-lingqi-action-preview">
+                                        ${pendingAction.previewLines.map(line => `<span>${escapeHtml(line)}</span>`).join('')}
+                                    </div>
+                                ` : ''}
+                                ${pendingAction.caution ? `<small>${escapeHtml(pendingAction.caution)}</small>` : ''}
+                            </div>
+                            <div class="wb-lingqi-action-confirm-buttons">
+                                <button type="button" data-wb-action="lingqi-dismiss-action">先不要</button>
+                                <button type="button" class="is-confirm" data-wb-action="lingqi-confirm-action">
+                                    ${escapeHtml(pendingAction.confirmLabel || '点头')}
+                                </button>
+                            </div>
+                        </div>
+                    ` : ''}
                     <form class="wb-lingqi-input" data-wb-form="lingqi-chat">
                         <textarea name="text" rows="1" maxlength="3000" ${lingqiBusy ? 'disabled' : ''}
                             placeholder="……">${escapeHtml(draft)}</textarea>
@@ -2644,12 +2699,19 @@ function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openRead
                     `}
                 </div>
                 ${archivedNotes.length ? `
-                    <div class="wb-lingqi-note-box">
-                        <strong>小盒子里</strong>
-                        ${archivedNotes.map(note => `
-                            <div><span>${escapeHtml(noteStatus(note))}</span><p>${escapeHtml(note.paperText)}</p></div>
-                        `).join('')}
-                    </div>
+                    <details class="wb-lingqi-note-box"
+                        data-lingqi-readable-key="archive"${readableOpenAttr('archive')}>
+                        <summary>
+                            <strong>小盒子里</strong>
+                            <span>${archivedNotes.length} 张收好的纸条</span>
+                            <i aria-hidden="true"></i>
+                        </summary>
+                        <div class="wb-lingqi-note-box-body">
+                            ${archivedNotes.map(note => `
+                                <div><span>${escapeHtml(noteStatus(note))}</span><p>${escapeHtml(note.paperText)}</p></div>
+                            `).join('')}
+                        </div>
+                    </details>
                 ` : ''}
                 </div>
                 </section>
@@ -2658,7 +2720,7 @@ function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openRead
     `;
 }
 
-function renderNowView(state, observerMode, people, activeEvents) {
+function renderNowView(state, observerMode, people, activeEvents, narrativeSync = {}) {
     const clock = formatWorldCalendar(state);
     const clockLabel = worldClockLabel(state, clock);
     return `
@@ -2678,7 +2740,7 @@ function renderNowView(state, observerMode, people, activeEvents) {
                 </div>
                 <div class="wb-world-pulse" aria-hidden="true">
                     <i></i><i></i><span></span>
-                    <strong>${state.needsReconciliation ? '待校准' : state.pendingSync ? '待推演' : '持续中'}</strong>
+                    <strong>${state.needsReconciliation ? '待校准' : narrativeSync.needsSimulation ? '待推演' : '持续中'}</strong>
                 </div>
             </section>
 
@@ -2918,6 +2980,16 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
     );
     const running = canonRunning || sandboxRunning;
     const stale = Boolean(opinion.stale && opinion.generatedAt);
+    const lastWorldSweepMinute = Number(state?.worldPulse?.coverage?.lastSweepAt ?? -1);
+    const lastWorldSweepLabel = lastWorldSweepMinute >= 0
+        ? (formatWorldCalendar(state, lastWorldSweepMinute)?.stamp || formatWorldMinute(lastWorldSweepMinute).stamp)
+        : '尚未巡查';
+    const recentWorldCoverageLabels = (Array.isArray(state?.worldPulse?.coverage?.entries)
+        ? state.worldPulse.coverage.entries
+        : [])
+        .slice(0, 3)
+        .map(item => String(item?.label || '').trim())
+        .filter(Boolean);
     const relatedEvents = new Map((state.events || []).map(event => [event.id, event]));
     const sandbox = opinion.sandbox && typeof opinion.sandbox === 'object' ? opinion.sandbox : { news: [], forums: [], generatedAt: '' };
     const sandboxItems = [...(sandbox.news || []), ...(sandbox.forums || [])];
@@ -2960,6 +3032,10 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
             <div class="wb-opinion-summary">
                 <div class="wb-opinion-meta">
                     <span>更新至 · ${escapeHtml(publicOpinionGeneratedLabel(opinion.generatedAt))}</span>
+                    <span>镜头外巡查 · ${escapeHtml(lastWorldSweepLabel)}</span>
+                    ${recentWorldCoverageLabels.length
+                        ? `<span title="最近被世界推演实际检查过的范围">巡过 · ${recentWorldCoverageLabels.map(escapeHtml).join(' / ')}</span>`
+                        : ''}
                     ${stale
                         ? '<span class="is-stale">世界往前走啦 · 刷新一下更准</span>'
                         : `<span>${settings.publicOpinionRevealMode === 'relevant' ? '相关时可显露' : '安心吃瓜模式'}</span>`}
@@ -2969,8 +3045,8 @@ function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = 
                 ${opinion.generatedAt ? `<button type="button" data-wb-action="clear-public-opinion" title="只清空舆情列表，不删除世界事实或已经发生的影响" ${canonRunning ? 'disabled' : ''}>清空列表</button>` : ''}
                 <button type="button" data-wb-action="generate-public-opinion-sandbox" ${sandboxRunning ? 'disabled' : ''}>${sandboxRunning ? '正在闲逛…' : '随便逛逛～'}</button>
                 <button class="wb-inline-add" type="button" data-wb-action="generate-public-opinion" ${canonRunning ? 'disabled' : ''}
-                    title="手动立即检查一次，会绕过自动时间门槛；仍不会强迫生成不存在的舆情变化">
-                    ${canonRunning ? '正在刷新…' : (opinion.generatedAt ? '立即检查舆情' : '生成当前舆情')}
+                    title="世界时间走够三小时、首次升级或侧重点改变时，我会先巡一小圈镜头外公共世界；没有真实变化时不会只为换措辞重复请求">
+                    ${canonRunning ? '正在刷新…' : (opinion.generatedAt ? '巡一圈' : '生成当前舆情')}
                 </button>
             </div>
         </div>
@@ -3876,7 +3952,14 @@ function defaultVisibleOrbPosition(side = 'right') {
     };
 }
 
-function halfDockOrbInlineStyle(position, side = 'right') {
+function nearestOrbEdgeSide(position) {
+    const placed = clampOrbPosition(position);
+    if (!placed) return 'right';
+    const viewport = visualViewportBounds();
+    return placed.x + placed.size / 2 < viewport.left + viewport.width / 2 ? 'left' : 'right';
+}
+
+function halfDockOrbPosition(position, side = 'right') {
     const viewport = visualViewportBounds();
     const placed = clampOrbPosition(position) || defaultVisibleOrbPosition(side);
     const size = placed.size || responsiveOrbSize(viewport.width, viewport.height);
@@ -3888,7 +3971,12 @@ function halfDockOrbInlineStyle(position, side = 'right') {
     const x = side === 'left'
         ? viewport.left - size / 2
         : viewport.right - size / 2;
-    return `left:${Math.round(x)}px;top:${Math.round(y)}px;right:auto;bottom:auto;`;
+    return { x, y, size };
+}
+
+function halfDockOrbInlineStyle(position, side = 'right') {
+    const placed = halfDockOrbPosition(position, side);
+    return `left:${Math.round(placed.x)}px;top:${Math.round(placed.y)}px;right:auto;bottom:auto;`;
 }
 
 export function createWorldBackstageUI({
@@ -3925,7 +4013,7 @@ export function createWorldBackstageUI({
         const orb = root.querySelector('.wb-world-orb');
         if (settings.orbEnabled !== false) {
             if (settings.orbPosition && orb) {
-                positionOrbElements(settings.orbPosition.x, settings.orbPosition.y);
+                positionOrbFromSettings(settings);
             }
             if (!orb) render();
         } else if (orb) {
@@ -4039,6 +4127,7 @@ export function createWorldBackstageUI({
     let suppressOrbClick = false;
     let renderedRevision = Math.max(0, Number(getState()?.revision) || 0);
     let lastSeenRevision = renderedRevision;
+    let dismissedNarrativePromptKey = '';
     let freshOpenCheckFrame = 0;
 
     function notify(message, tone = 'normal') {
@@ -4210,7 +4299,7 @@ export function createWorldBackstageUI({
         // Full UI renders can still happen for real data/status changes. Preserve every
         // user-controlled Lingqi <details> fold across those legitimate rebuilds.
         const previousLingqiReadables = root.querySelectorAll(
-            '.wb-lingqi-readable[data-lingqi-readable-key]',
+            'details[data-lingqi-readable-key]',
         );
         for (const detail of previousLingqiReadables) {
             const key = String(detail.dataset.lingqiReadableKey || '');
@@ -4361,32 +4450,59 @@ export function createWorldBackstageUI({
             && !person.isUser
         );
         const pendingDeliveries = state.events.filter(event => event.delivery?.state === 'pending').length;
+        const narrativeSync = syncStatus.narrative || {};
+        const narrativeNeedsSimulation = Boolean(narrativeSync.needsSimulation);
         const orbProcessing = (
             ['queued', 'running', 'cancelling'].includes(syncStatus.phase)
             || syncStatus.memory?.phase === 'running'
         );
         const stateRevision = Math.max(0, Number(state.revision) || 0);
-        const unreadWorldRevision = stateRevision > lastSeenRevision;
-        const needsAttention = Boolean(
-            unreadWorldRevision
-            || pendingDeliveries
-            || state.pendingSync
-            || ['error', 'pending', 'queued'].includes(syncStatus.phase)
+        const unreadWorldRevision = !isOpen && stateRevision > lastSeenRevision;
+        const narrativeNeedsAttention = Boolean(
+            narrativeNeedsSimulation
+            || syncStatus.editDecision?.available
+            || syncStatus.phase === 'error'
             || memoryPhase === 'error'
         );
-        const orbEdgeSide = (() => {
-            const placed = clampOrbPosition(settings.orbPosition);
-            if (!placed) return 'right';
-            const viewport = visualViewportBounds();
-            return placed.x + placed.size / 2 < viewport.left + viewport.width / 2 ? 'left' : 'right';
-        })();
+        const worldHasUnreadUpdate = Boolean(
+            !narrativeNeedsAttention
+            && (unreadWorldRevision || pendingDeliveries)
+        );
+        const needsAttention = narrativeNeedsAttention || worldHasUnreadUpdate;
+        const narrativePromptKey = narrativeNeedsSimulation
+            ? `${String(narrativeSync.sourceKey || narrativeSync.latestMessageId || 'latest')}:${syncStatus.phase === 'error' ? 'error' : 'pending'}`
+            : '';
+        const captionCanSimulate = Boolean(
+            narrativeNeedsSimulation
+            && !isOpen
+            && !orbProcessing
+            && settings.enabled
+            && settings.worldSimulationEnabled
+            && narrativePromptKey !== dismissedNarrativePromptKey
+        );
+        const captionText = memoryPhase === 'error'
+            ? syncStatus.memory?.message || '记忆整理刚刚绊了一下 QAQ，点开看看原因～'
+            : memoryPhase === 'running'
+                ? syncStatus.memory.message || '记忆正在悄悄收拾中～ (｡•̀ᴗ-)✧'
+                : orbProcessing
+                    ? syncStatus.message || '镜头外的世界正在悄悄运转中… ( •̀ ω •́ )✧'
+                    : syncStatus.phase === 'error'
+                        ? '唔，这轮正文还没推演成功 QAQ，可以在这里重试～'
+                        : narrativeNeedsSimulation
+                            ? `${Math.max(1, Number(narrativeSync.pendingTurns) || 1)} 轮新正文还没推演，要现在追上吗？`
+                            : pendingDeliveries > 0
+                                ? `${pendingDeliveries} 条变化正慢慢靠近镜头～`
+                                : unreadWorldRevision
+                                    ? '世界刚刚有了新变化，点开看看吧～ (｡•̀ᴗ-)✧'
+                                    : '镜头之外暂时安安静静的～ (˘ω˘)';
+        const orbEdgeSide = nearestOrbEdgeSide(settings.orbPosition);
         const orbEdgeHidden = Boolean(settings.orbEdgeHide && !isOpen);
         const renderedOrbStyle = orbEdgeHidden
             ? halfDockOrbInlineStyle(settings.orbPosition, orbEdgeSide)
             : orbStyles.orb;
 
         let content = '';
-        if (activeView === 'now') content = renderNowView(state, observerMode, visiblePeople, activeEvents);
+        if (activeView === 'now') content = renderNowView(state, observerMode, visiblePeople, activeEvents, narrativeSync);
         if (activeView === 'lingqi') content = renderLingqiView(
             syncStatus.lingqi || {},
             lingqiDraft,
@@ -4426,26 +4542,28 @@ export function createWorldBackstageUI({
                 <span class="wb-orb-ring ring-one"></span>
                 <span class="wb-orb-ring ring-two"></span>
                 <span class="wb-orb-core"></span>
-                ${needsAttention ? '<i class="wb-orb-notice"></i>' : ''}
+                ${narrativeNeedsAttention
+                    ? '<i class="wb-orb-notice" aria-hidden="true"></i>'
+                    : worldHasUnreadUpdate
+                        ? '<i class="wb-orb-update" aria-hidden="true"></i>'
+                        : ''}
             </button>
-            <div class="wb-orb-caption ${!isOpen && needsAttention && !orbEdgeHidden ? 'is-visible' : ''}"
-                style="${orbStyles.caption}">
-                <strong>世界背面</strong>
-                <span>${escapeHtml(
-                    memoryPhase === 'error'
-                        ? syncStatus.memory?.message || '记忆整理刚刚绊了一下 QAQ，点开看看原因～'
-                        : memoryPhase === 'running'
-                        ? syncStatus.memory.message || '记忆正在悄悄收拾中～ (｡•̀ᴗ-)✧'
-                        : orbProcessing
-                            ? syncStatus.message || '镜头外的世界正在悄悄运转中… ( •̀ ω •́ )✧'
-                            : syncStatus.phase === 'error'
-                                ? '唔，世界这次没转起来 QAQ，点开看看原因～'
-                                : state.pendingSync
-                                    ? '新正文正在乖乖排队等推演～ (｡•̀ᴗ-)✧'
-                                    : pendingDeliveries > 0
-                                        ? `${pendingDeliveries} 条变化正慢慢靠近镜头～`
-                                        : '镜头之外暂时安安静静的～ (˘ω˘)',
-                )}</span>
+            <div class="wb-orb-caption ${!isOpen && needsAttention && !orbEdgeHidden ? 'is-visible' : ''} ${captionCanSimulate ? 'has-action' : ''}"
+                style="${orbStyles.caption}" role="${captionCanSimulate ? 'dialog' : 'status'}" aria-live="polite"
+                ${captionCanSimulate ? 'aria-label="发现未推演正文"' : ''}>
+                <div class="wb-orb-caption-copy">
+                    <strong>世界背面</strong>
+                    <span>${escapeHtml(captionText)}</span>
+                </div>
+                ${captionCanSimulate ? `
+                    <div class="wb-orb-caption-actions">
+                        <button type="button" class="wb-orb-caption-later" data-wb-action="dismiss-narrative-prompt"
+                            data-prompt-key="${escapeAttr(narrativePromptKey)}">稍后</button>
+                        <button type="button" class="wb-orb-caption-sync" data-wb-action="manual-sync">
+                            ${syncStatus.phase === 'error' ? '重新推演' : '推演'}
+                        </button>
+                    </div>
+                ` : ''}
             </div>
             ` : ''}
 
@@ -4763,7 +4881,7 @@ export function createWorldBackstageUI({
             orb.style.bottom = 'auto';
         }
         if (caption) {
-            const captionWidth = 210;
+            const captionWidth = 238;
             const captionX = placed.x > captionWidth + 28
                 ? placed.x - captionWidth - 10
                 : placed.x + placed.size + 10;
@@ -4773,6 +4891,22 @@ export function createWorldBackstageUI({
             caption.style.bottom = 'auto';
         }
         return placed;
+    }
+
+    function positionOrbFromSettings(settings = getSettings()) {
+        const position = settings?.orbPosition;
+        if (!position) return null;
+        if (settings.orbEdgeHide && !isOpen) {
+            const orb = root.querySelector('.wb-world-orb');
+            if (!orb) return null;
+            const placed = halfDockOrbPosition(position, nearestOrbEdgeSide(position));
+            orb.style.left = `${placed.x}px`;
+            orb.style.top = `${placed.y}px`;
+            orb.style.right = 'auto';
+            orb.style.bottom = 'auto';
+            return placed;
+        }
+        return positionOrbElements(position.x, position.y);
     }
 
     root.addEventListener('pointerdown', event => {
@@ -4870,6 +5004,11 @@ export function createWorldBackstageUI({
                 return;
             }
             isOpen ? close() : open();
+            return;
+        }
+        if (action === 'dismiss-narrative-prompt') {
+            dismissedNarrativePromptKey = String(target.dataset.promptKey || '');
+            render();
             return;
         }
         if (action === 'set-view') {
@@ -5521,6 +5660,21 @@ export function createWorldBackstageUI({
             root.querySelector('.wb-import-input')?.click();
             return;
         }
+        if (action === 'catch-up-person') {
+            await invokeAction('catch-up-person', {
+                personId: target.dataset.personId || '',
+            });
+            render();
+            return;
+        }
+        if (action === 'prioritize-person') {
+            await invokeAction('prioritize-person', {
+                personId: target.dataset.personId || '',
+                enabled: target.dataset.enabled !== 'false',
+            });
+            render();
+            return;
+        }
         if (action === 'observe-person') {
             const result = await invokeAction('observe-person', {
                 personId: target.dataset.personId || '',
@@ -6136,8 +6290,7 @@ export function createWorldBackstageUI({
     };
     const onResize = () => {
         syncVisualViewportInsets();
-        const position = getSettings().orbPosition;
-        if (position) positionOrbElements(position.x, position.y);
+        positionOrbFromSettings();
     };
     const selfHealTimer = window.setInterval(ensureMounted, 1800);
     const onPageVisible = () => ensureMounted();

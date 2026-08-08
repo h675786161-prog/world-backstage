@@ -36,7 +36,10 @@ import {
     listDueBackgroundPeople,
     listRecoveryPointHeaders,
     markPendingSync,
+    markCurrentPublicImpactsProcessed,
+    markWorldCoverageChecked,
     pendingPublicImpactEvents,
+    publicWorldCoverageDue,
     normalizeTagFilterRules,
     planMemoryRollup,
     recordDeliveryOffers,
@@ -44,6 +47,7 @@ import {
     restoreRecoveryPoint,
     setWorldCalendar,
     settlePersonWorldState,
+    selectWorldCoverageTargets,
     trimState,
 } from './core.js';
 import {
@@ -99,10 +103,15 @@ import {
     LINGQI_SAFE_SETTING_KEYS,
     buildLingqiHelpContext,
 } from './lingqi-help.js';
+import {
+    lingqiChatSnapshotSignature,
+    parseLingqiLocalChatDeleteRequest,
+    resolveLingqiChatDeletionPlan as buildLingqiChatDeletionPlan,
+} from './lingqi-chat.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.2.0';
+const PLUGIN_VERSION = '2.3.0-alpha.4';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 28,
     enabled: true,
@@ -197,6 +206,7 @@ const runtime = {
     activeObservation: null,
     activeLingqi: null,
     lingqiStatus: { phase: 'idle', message: '', error: '' },
+    pendingLingqiAction: null,
     inBackgroundGeneration: false,
     consistencyBarrierRunning: false,
     activeChatToken: '',
@@ -868,9 +878,9 @@ function getSettings() {
         50,
         Math.max(0, Number.parseInt(settings.memoryAutoIndexInterval, 10) || 0),
     );
-    settings.backgroundNpcBudget = Math.min(
-        12,
-        Math.max(0, Number.parseInt(settings.backgroundNpcBudget, 10) || 0),
+    settings.backgroundNpcBudget = Math.max(
+        0,
+        Number.parseInt(settings.backgroundNpcBudget, 10) || 0,
     );
     settings.enhancedBackgroundSimulation = Boolean(settings.enhancedBackgroundSimulation);
     settings.customSimulationInstruction = String(
@@ -1874,15 +1884,95 @@ function activeBackgroundTaskLabels() {
     return [...new Set(labels)];
 }
 
+function latestNarrativeSyncSnapshot() {
+    const latest = latestAssistantEntry();
+    if (!latest) {
+        return {
+            hasLatest: false,
+            latestMessageId: null,
+            pendingTurns: 0,
+            committed: true,
+            needsSimulation: false,
+            active: false,
+            queued: false,
+            status: 'empty',
+        };
+    }
+
+    const swipeId = Number(latest.message?.swipe_id ?? 0);
+    const sourceKey = branchSourceKey(latest.index, latest.message, swipeId);
+    const branch = branchDataFromMessage(latest.message, swipeId);
+    const branchMatchesSource = Boolean(branch?.sourceKey === sourceKey);
+    const branchCommitted = Boolean(
+        branchMatchesSource
+        && branch.status === 'committed'
+        && branch.result
+        && !branch.stale
+    );
+    const stateCommit = getState()?.lastCommit;
+    // 历史回溯可能只建立当前状态锚点而没有逐楼层快照；只有不存在当前
+    // source 的分支记录时，才允许精确匹配的状态锚点作为完成证据。
+    const stateCommitted = Boolean(
+        !branchMatchesSource
+        && stateCommit?.sourceKey === sourceKey
+        && Number(stateCommit?.messageId) === Number(latest.index)
+        && Number(stateCommit?.swipeId ?? 0) === swipeId
+    );
+    const committed = branchCommitted || stateCommitted;
+    const chatToken = currentChatToken();
+    const active = Boolean(
+        runtime.activeSimulation?.chatToken === chatToken
+        && runtime.activeSimulation?.sourceKey === sourceKey
+        && !runtime.activeSimulation?.controller?.signal?.aborted
+    );
+    const queued = Boolean(
+        runtime.queuedSimulations.has(`${chatToken}:${sourceKey}`)
+        || (
+            runtime.pendingManualSimulation
+            && runtime.pendingManualSimulation.chatToken === chatToken
+        )
+    );
+    const pendingTurns = committed ? 0 : Math.max(
+        pendingAssistantEntriesThrough(latest.index).length,
+        1,
+    );
+    const branchError = branchMatchesSource && branch?.status === 'error'
+        ? String(branch.error || '')
+        : '';
+    const status = active
+        ? 'running'
+        : queued
+            ? 'queued'
+            : committed
+                ? 'committed'
+                : branchError
+                    ? 'error'
+                    : 'pending';
+
+    return {
+        hasLatest: true,
+        latestMessageId: latest.index,
+        latestSwipeId: swipeId,
+        sourceKey,
+        pendingTurns,
+        committed,
+        needsSimulation: !committed,
+        active,
+        queued,
+        status,
+        error: branchError,
+    };
+}
+
 function getSyncStatus() {
     const latest = latestAssistantEntry();
-    const branch = latest ? branchDataFromMessage(latest.message) : null;
     const store = getStore();
     const state = store.currentState;
     const recoveryPoints = listRecoveryPointHeaders(store);
     const latestRecovery = recoveryPoints.at(-1) || null;
     const chatToken = currentChatToken();
-    const pendingTurns = latest ? pendingAssistantEntriesThrough(latest.index).length : 0;
+    const narrative = latestNarrativeSyncSnapshot();
+    const pendingTurns = narrative.pendingTurns;
     const activeForCurrentChat = runtime.activeSimulation?.chatToken === chatToken
         ? runtime.activeSimulation
         : null;
@@ -1891,25 +1981,31 @@ function getSyncStatus() {
         : 0;
     let derived = {};
 
-    if (runtime.syncStatus.phase === 'idle' && branch) {
-        if (branch.status === 'error') {
+    const liveSimulationPhase = narrative.active
+        || narrative.queued
+        || ['running', 'queued', 'cancelling'].includes(runtime.syncStatus.phase);
+    if (!liveSimulationPhase && narrative.hasLatest) {
+        if (
+            narrative.status === 'error'
+            || (narrative.needsSimulation && runtime.syncStatus.phase === 'error')
+        ) {
             derived = {
                 phase: 'error',
                 message: '上一次世界推演失败',
-                error: branch.error || '推演接口没有提供具体错误',
+                error: narrative.error || runtime.syncStatus.error || '推演接口没有提供具体错误',
             };
-        } else if (branch.status === 'pending') {
+        } else if (narrative.needsSimulation) {
             derived = {
                 phase: 'pending',
                 message: '最新正文仍在等待推演',
                 error: '',
             };
-        } else if (branch.status === 'committed') {
+        } else if (narrative.committed) {
             derived = {
                 phase: 'success',
                 message: '最新正文已经完成推演',
                 error: '',
-                summary: branch.summary || null,
+                summary: branchDataFromMessage(latest.message)?.summary || runtime.syncStatus.summary || null,
             };
         }
     }
@@ -1987,6 +2083,10 @@ function getSyncStatus() {
         lingqi: {
             ...normalizeLingqiState(store.lingqi || emptyLingqiState()),
             ...runtime.lingqiStatus,
+            pendingAction: (
+                runtime.pendingLingqiAction?.chatToken === chatToken
+                && runtime.pendingLingqiAction?.contextEpoch === runtime.contextEpoch
+            ) ? { ...runtime.pendingLingqiAction } : null,
             running: Boolean(runtime.activeLingqi && runtime.activeLingqi.chatToken === chatToken && !runtime.activeLingqi.controller?.signal?.aborted),
         },
         worldbook: {
@@ -2009,6 +2109,7 @@ function getSyncStatus() {
             waitingTurns: Math.max(0, pendingTurns - activeTurns),
             activeMessageId: activeForCurrentChat?.messageId ?? null,
         },
+        narrative,
         canCancelSimulation: Boolean(
             activeForCurrentChat
             && !activeForCurrentChat.controller.signal.aborted
@@ -2566,23 +2667,11 @@ function publicOpinionEventSignature(state) {
     return publicOpinionSourceSignature(state);
 }
 
-function publicWorldNeedsRefresh(state, candidates = eligiblePublicOpinionEvents(state)) {
-    if (!candidates.length) return true;
-    if (!state?.clock?.anchored) return false;
-
-    const worldMinute = Number(state.clock.absoluteMinute || 0);
-    const eventById = new Map((state.events || []).map(event => [String(event.id || ''), event]));
-    const latestPublicMinute = candidates.reduce((latest, item) => {
-        const event = eventById.get(String(item.id || ''));
-        const updated = Number(event?.updatedAt ?? event?.resolvedAt ?? event?.createdAt ?? -1);
-        return Math.max(latest, updated);
-    }, -1);
-
-    if (latestPublicMinute < 0) return true;
-    // News is a rolling view of a moving world. If the world's clock moved several
-    // hours beyond the latest public update, refresh the public-world layer even
-    // when an older headline still exists.
-    return worldMinute - latestPublicMinute >= 180;
+function publicWorldNeedsRefresh(state, _candidates = eligiblePublicOpinionEvents(state)) {
+    return publicWorldCoverageDue(state, {
+        customInstruction: getSettings().customSimulationInstruction,
+        minimumIntervalMinutes: 180,
+    });
 }
 
 function scheduleAutoPublicOpinion(state = getState(), delay = 260) {
@@ -2841,6 +2930,7 @@ function preemptLowPriorityTasksForCore({
 
 function invalidateAsyncWorldContext() {
     runtime.contextEpoch += 1;
+    runtime.pendingLingqiAction = null;
     runtime.activeSimulation?.controller?.abort?.();
     runtime.queuedSimulations.clear();
     clearDeferredManualSimulation();
@@ -3599,9 +3689,14 @@ async function runSimulationForMessage(messageId, {
             return resultState;
         }
 
-        const backgroundPersonTargets = settings.enhancedBackgroundSimulation
-            ? listDueBackgroundPeople(baseState, { maximum: settings.backgroundNpcBudget })
-            : [];
+        const backgroundPersonTargets = listDueBackgroundPeople(baseState, {
+            maximum: settings.backgroundNpcBudget,
+            requiredOnly: !settings.enhancedBackgroundSimulation,
+        });
+        const worldCoverageTargets = selectWorldCoverageTargets(baseState, {
+            customInstruction: settings.customSimulationInstruction,
+            maximum: settings.worldPulseActivity === 'busy' ? 3 : 2,
+        });
         const prompt = buildSimulationPrompt(baseState, {
             queuedEventIds: offeredEventIds,
             trigger,
@@ -3620,6 +3715,7 @@ async function runSimulationForMessage(messageId, {
             worldPulseActivity: settings.worldPulseActivity,
             enhancedBackgroundSimulation: settings.enhancedBackgroundSimulation,
             backgroundPersonTargets,
+            worldCoverageTargets,
 directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).notes
                 .filter(note => offeredDirectorNoteIds.includes(note.id) && note.status !== 'cancelled')
                 .map(note => ({
@@ -3750,6 +3846,10 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             backgroundNpcBudget: settings.backgroundNpcBudget,
             lifeSettlementTargetIds: backgroundPersonTargets.map(person => person.id),
             memorySummaryMessageIds: memoryEnabledAtCommit ? pendingMessageIds : [],
+        });
+        resultState = markWorldCoverageChecked(resultState, worldCoverageTargets, {
+            publicCycle: false,
+            customInstruction: settings.customSimulationInstruction,
         });
         if (memoryEnabledAtCommit) {
             resultState = advanceMemoryCursorThroughSummaries(resultState, messageId);
@@ -5738,13 +5838,82 @@ async function runPublicImpactPropagation({
     }
 }
 
+function setPersonLifePriority(personId, enabled = true) {
+    const id = String(personId || '').trim();
+    if (!id) throw new Error('没有找到这个人物');
+    const next = clone(getState());
+    const person = next.people.find(item => item.id === id);
+    if (!person) throw new Error('没有找到这个人物');
+    if (person.isUser) throw new Error('玩家角色不使用后台人物生活结算');
+    if (person.simulationEnabled === false) {
+        throw new Error('这个人物的镜头外推演已经关闭；先在人物卡里开启“参与镜头外推演”');
+    }
+    person.lifeTickPriority = Boolean(enabled);
+    person.lifeTickPriorityAt = enabled ? Number(next.clock?.absoluteMinute || 0) : 0;
+    commitManualState(
+        next,
+        enabled
+            ? `${person.name} 已经排到下一轮后台人物结算前面啦～`
+            : `${person.name} 已取消下一轮优先。`,
+    );
+    return {
+        personId: person.id,
+        enabled: person.lifeTickPriority,
+    };
+}
+
+async function runPersonLifeCatchUp(personId) {
+    const id = String(personId || '').trim();
+    if (!id) throw new Error('没有找到这个人物');
+    const settings = getSettings();
+    if (!settings.enabled || !settings.worldSimulationEnabled) {
+        throw new Error('世界推演现在关着，先打开后才能补人物近况');
+    }
+    if (coreSimulationBusy()) {
+        throw new Error('现在还有世界推演或后台结算在跑，等这一轮结束再补她的近况');
+    }
+    const person = getState().people.find(item => item.id === id);
+    if (!person) throw new Error('没有找到这个人物');
+    if (person.isUser) throw new Error('玩家角色不使用后台人物生活结算');
+    if (person.simulationEnabled === false) {
+        throw new Error('这个人物的镜头外推演已经关闭；先在人物卡里开启“参与镜头外推演”');
+    }
+    setBusy(true);
+    try {
+        const completed = await runWorldPulseTick({
+            reason: `手动补推演人物：${person.name}`,
+            quiet: false,
+            force: true,
+            publicCycle: false,
+            personTargetId: person.id,
+        });
+        if (!completed) throw new Error('这次人物补推演没有完成，旧状态保持不变');
+        return true;
+    } finally {
+        setBusy(false);
+    }
+}
+
 async function runWorldPulseTick({
     reason = '主世界时间已推进',
     quiet = false,
     force = false,
     publicCycle = false,
+    personTargetId = '',
 } = {}) {
     const settings = getSettings();
+    const requestedPersonTargetId = String(personTargetId || '').trim();
+    const requestedPersonTarget = requestedPersonTargetId
+        ? getState().people.find(item => item.id === requestedPersonTargetId) || null
+        : null;
+    const manualPersonCatchUp = Boolean(requestedPersonTargetId);
+    if (manualPersonCatchUp) {
+        if (!requestedPersonTarget) throw new Error('没有找到这个人物');
+        if (requestedPersonTarget.isUser) throw new Error('玩家角色不使用后台人物生活结算');
+        if (requestedPersonTarget.simulationEnabled === false) {
+            throw new Error('这个人物的镜头外推演已经关闭');
+        }
+    }
     if (
         !settings.enabled
         || !settings.worldSimulationEnabled
@@ -5763,30 +5932,51 @@ async function runWorldPulseTick({
     if (!quiet) {
         setSyncStatus({
             phase: 'running',
-            message: '世界脉搏正在检查镜头外的变化～',
+            message: manualPersonCatchUp
+                ? `我去补一下 ${requestedPersonTarget.name} 这段时间的近况～`
+                : '世界脉搏正在检查镜头外的变化～',
             error: '',
         });
     }
     try {
         const state = getState();
         const baseRevision = Math.max(0, Number(state?.revision) || 0);
-        const backgroundPersonTargets = settings.enhancedBackgroundSimulation
-            ? listDueBackgroundPeople(state, { maximum: settings.backgroundNpcBudget })
-            : [];
+        const effectiveBackgroundNpcBudget = manualPersonCatchUp ? 1 : settings.backgroundNpcBudget;
+        const backgroundPersonTargets = manualPersonCatchUp
+            ? [{
+                id: requestedPersonTarget.id,
+                name: requestedPersonTarget.name,
+                overdueMinutes: Math.max(0, Number(state.clock?.absoluteMinute || 0) - Number(requestedPersonTarget.lastLifeTickAt ?? requestedPersonTarget.updatedAt ?? state.clock?.absoluteMinute ?? 0)),
+                priorityReason: 'manual-now',
+            }]
+            : listDueBackgroundPeople(state, {
+                maximum: settings.backgroundNpcBudget,
+                requiredOnly: !settings.enhancedBackgroundSimulation,
+            });
+        const worldCoverageTargets = manualPersonCatchUp
+            ? []
+            : selectWorldCoverageTargets(state, {
+                customInstruction: settings.customSimulationInstruction,
+                maximum: settings.worldPulseActivity === 'busy' ? 3 : 2,
+            });
         const prompt = buildWorldPulsePrompt(state, {
-            activity: settings.worldPulseActivity,
+            activity: manualPersonCatchUp ? 'quiet' : settings.worldPulseActivity,
             reason,
-            backgroundNpcBudget: settings.backgroundNpcBudget,
-            publicCycle,
-            enhancedBackgroundSimulation: settings.enhancedBackgroundSimulation,
+            backgroundNpcBudget: effectiveBackgroundNpcBudget,
+            publicCycle: manualPersonCatchUp ? false : publicCycle,
+            customInstruction: manualPersonCatchUp ? '' : settings.customSimulationInstruction,
+            enhancedBackgroundSimulation: manualPersonCatchUp ? false : settings.enhancedBackgroundSimulation,
             backgroundPersonTargets,
+            worldCoverageTargets,
             recordPlayerCharacter: settings.recordPlayerCharacter,
         });
-        const baseMaxTokens = settings.worldPulseActivity === 'busy'
-            ? 3800
-            : settings.worldPulseActivity === 'quiet'
-                ? 2200
-                : 3000;
+        const baseMaxTokens = manualPersonCatchUp
+            ? 2400
+            : settings.worldPulseActivity === 'busy'
+                ? 3800
+                : settings.worldPulseActivity === 'quiet'
+                    ? 2200
+                    : 3000;
         const payload = await runWithRetries(async attempt => {
             const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                 maxTokens: retryTokenBudget(baseMaxTokens, attempt),
@@ -5814,7 +6004,7 @@ async function runWorldPulseTick({
             },
             ...retryTaskOptions(
                 'simulation',
-                `world-pulse:${chatToken}:${getState().clock?.absoluteMinute ?? -1}:${publicCycle ? 'public' : 'normal'}:${reason}`,
+                `world-pulse:${chatToken}:${getState().clock?.absoluteMinute ?? -1}:${manualPersonCatchUp ? `person:${requestedPersonTargetId}` : publicCycle ? 'public' : 'normal'}:${reason}`,
             ),
             signal: controller.signal,
         });
@@ -5834,8 +6024,93 @@ async function runWorldPulseTick({
             return false;
         }
 
+        let payloadForCommit = payload;
+        if (manualPersonCatchUp) {
+            const returnedPeople = Array.isArray(payload?.people_upsert)
+                ? payload.people_upsert
+                : Array.isArray(payload?.peopleUpsert)
+                    ? payload.peopleUpsert
+                    : [];
+            const targetPeople = returnedPeople.filter(item => (
+                String(item?.id || '') === requestedPersonTargetId
+            ));
+            if (!targetPeople.length) {
+                throw new Error(`人物补推演没有返回 ${requestedPersonTarget.name} 的状态，本轮已丢弃，旧数据不会被改动`);
+            }
+
+            // 单人物补推演不是一次缩小版“全世界推演”。模型即使越界返回了
+            // 其他人物或宏观脉搏，提交前也会被本地防火墙挡掉。与指定人物
+            // 直接关联的既有/新事件仍允许更新，保证她不是被从世界里单独拎出来。
+            const targetRefs = new Set([requestedPersonTargetId, String(requestedPersonTarget.name || '')].filter(Boolean));
+            const eventTouchesTarget = event => {
+                const actors = Array.isArray(event?.actors) ? event.actors.map(String) : [];
+                if (actors.some(actor => targetRefs.has(actor))) return true;
+                const causedBy = String(event?.caused_by ?? event?.causedBy ?? '');
+                return Boolean(causedBy && relatedEventIds.has(causedBy));
+            };
+            const relatedEventIds = new Set(
+                (Array.isArray(state.events) ? state.events : [])
+                    .filter(event => {
+                        const actors = Array.isArray(event?.actors) ? event.actors.map(String) : [];
+                        return actors.some(actor => targetRefs.has(actor));
+                    })
+                    .map(event => String(event.id || ''))
+                    .filter(Boolean),
+            );
+            const rawCreates = Array.isArray(payload?.events_create)
+                ? payload.events_create
+                : Array.isArray(payload?.eventsCreate)
+                    ? payload.eventsCreate
+                    : [];
+            const rawUpdates = Array.isArray(payload?.events_update)
+                ? payload.events_update
+                : Array.isArray(payload?.eventsUpdate)
+                    ? payload.eventsUpdate
+                    : [];
+            const eventCreates = rawCreates.filter(eventTouchesTarget);
+            const eventUpdates = rawUpdates.filter(event => (
+                relatedEventIds.has(String(event?.id || ''))
+                || eventTouchesTarget(event)
+            ));
+            const allowedEventIds = new Set([
+                ...relatedEventIds,
+                ...eventCreates.map(event => String(event?.id || '')).filter(Boolean),
+                ...eventUpdates.map(event => String(event?.id || '')).filter(Boolean),
+            ]);
+            const rawFacts = Array.isArray(payload?.world_facts_upsert)
+                ? payload.world_facts_upsert
+                : Array.isArray(payload?.worldFactsUpsert)
+                    ? payload.worldFactsUpsert
+                    : [];
+            const worldFacts = rawFacts.filter(fact => (
+                String(fact?.subject_id ?? fact?.subjectId ?? '') === requestedPersonTargetId
+                || String(fact?.subject ?? '') === String(requestedPersonTarget.name || '')
+                || allowedEventIds.has(String(fact?.event_id ?? fact?.eventId ?? ''))
+            ));
+
+            payloadForCommit = {
+                ...payload,
+                people_upsert: targetPeople,
+                peopleUpsert: targetPeople,
+                people_remove: [],
+                peopleRemove: [],
+                events_create: eventCreates,
+                eventsCreate: eventCreates,
+                events_update: eventUpdates,
+                eventsUpdate: eventUpdates,
+                world_facts_upsert: worldFacts,
+                worldFactsUpsert: worldFacts,
+                world_pulse_upsert: [],
+                worldPulseUpsert: [],
+                deliveries_confirmed: [],
+                deliveriesConfirmed: [],
+                consistency_conflicts: [],
+                consistencyConflicts: [],
+            };
+        }
+
         let next = applySimulationResult(state, {
-            ...payload,
+            ...payloadForCommit,
             elapsed_minutes: 0,
             memory_update: {
                 facts_upsert: [],
@@ -5846,16 +6121,32 @@ async function runWorldPulseTick({
         }, {
             messageId: null,
             swipeId: null,
-            sourceKey: `world-pulse:${Date.now()}`,
+            sourceKey: manualPersonCatchUp
+                ? `person-catchup:${requestedPersonTargetId}:${Date.now()}`
+                : `world-pulse:${Date.now()}`,
             userName: getContext()?.name1 || '',
             allowUserInnerVoice: false,
             recordPlayerCharacter: settings.recordPlayerCharacter,
             timePolicy: settings.timePolicy,
             narrativeText: '',
-            backgroundNpcBudget: settings.backgroundNpcBudget,
+            backgroundNpcBudget: effectiveBackgroundNpcBudget,
             lifeSettlementTargetIds: backgroundPersonTargets.map(person => person.id),
             preserveCommitAnchor: true,
         });
+        if (!manualPersonCatchUp) {
+            next = markWorldCoverageChecked(next, worldCoverageTargets, {
+                publicCycle,
+                customInstruction: settings.customSimulationInstruction,
+            });
+            if (publicCycle) {
+                // 公共世界巡查已经在同一份模型结果里结算直接客观后果与真实
+                // 获知渠道；为本轮公开表面建立传播指纹，避免紧接着再打一份
+                // 公共影响 API。之后公开信息真正变化时仍会产生新的指纹。
+                next = markCurrentPublicImpactsProcessed(next, {
+                    reason: 'public-cycle-integrated-impact',
+                });
+            }
+        }
 
         const store = getStore();
         const anchorKey = state.lastCommit?.sourceKey || 'root';
@@ -5863,7 +6154,7 @@ async function runWorldPulseTick({
         next = store.currentState;
         store.branchOverrides[anchorKey] = createBranchSnapshot(next, {
             sourceKey: anchorKey,
-            kind: 'world-pulse',
+            kind: manualPersonCatchUp ? 'person-catchup' : 'world-pulse',
         });
         saveStore(store, { immediate: true });
         refreshInjection();
@@ -5875,7 +6166,9 @@ async function runWorldPulseTick({
         if (!quiet) {
             setSyncStatus({
                 phase: 'success',
-                message: '世界脉搏检查完成～镜头外也继续过自己的日子',
+                message: manualPersonCatchUp
+                    ? `${requestedPersonTarget.name} 的近况补齐啦～没有额外推进世界时间`
+                    : '世界脉搏检查完成～镜头外也继续过自己的日子',
                 error: '',
                 succeededAt: new Date().toISOString(),
             });
@@ -5886,10 +6179,13 @@ async function runWorldPulseTick({
         if (!quiet) {
             setSyncStatus({
                 phase: 'error',
-                message: '世界时间已经推进，但这次世界脉搏没接上～下次推演会继续追',
+                message: manualPersonCatchUp
+                    ? `${requestedPersonTarget?.name || '这个人物'} 的近况这次没补上～旧状态没动`
+                    : '世界时间已经推进，但这次世界脉搏没接上～下次推演会继续追',
                 error: describeError(error),
             });
         }
+        if (manualPersonCatchUp) throw error;
         return false;
     } finally {
         if (runtime.activeWorldPulse?.controller === controller) runtime.activeWorldPulse = null;
@@ -6456,6 +6752,22 @@ function personObservationCacheKey(state, person) {
             action: person.action,
             intent: person.intent,
             goal: person.longTermGoal,
+            identityAnchor: person.identityAnchor,
+            personalityAnchor: person.personalityAnchor,
+            appearanceProfile: person.appearanceProfile,
+            backgroundProfile: person.backgroundProfile,
+            speakingStyle: person.speakingStyle,
+            behaviorBoundaries: person.behaviorBoundaries,
+            innerVoice: person.innerVoice,
+            innerVoiceAt: person.innerVoiceAt,
+            knowledge: person.knowledge,
+            cognitionReady: person.cognitionReady,
+            knownEventViews: person.knownEventViews,
+            knownFactBeliefs: person.knownFactBeliefs,
+            knownClueIds: person.knownClueIds,
+            physicalState: person.physicalState,
+            emotionalState: person.emotionalState,
+            resourceState: person.resourceState,
             updatedAt: person.updatedAt,
         },
     }));
@@ -6726,6 +7038,10 @@ async function observePerson(personId, { force = false } = {}) {
             cacheKey,
         };
         const store = getStore();
+        // Re-inserting an existing key does not refresh its insertion order.
+        // A forced refresh could therefore be immediately discarded by the
+        // 30-entry cap if this was one of the oldest keys.
+        delete store.personObservations[cacheKey];
         store.personObservations[cacheKey] = result;
         const cacheEntries = Object.entries(store.personObservations);
         if (cacheEntries.length > 30) {
@@ -6804,9 +7120,22 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
     };
     runtime.ui?.render();
 
+    let state = getState();
+    let candidates = eligiblePublicOpinionEvents(state);
+    const publicWorldSweepPlanned = Boolean(
+        ensurePublicWorld
+        && getSettings().worldSimulationEnabled
+        && publicWorldNeedsRefresh(state, candidates)
+    );
+
     // 先把已经公开的世界事件对人物/行业/地点造成的真实后果接进后台。
-    // 新闻是公共传播节点，不是孤立的 UI 卡片。
-    if (settlePublicImpact && pendingPublicImpactEvents(getState(), { maximum: 8 }).length) {
+    // 到期的公共世界巡查会在同一次世界请求里一并承担这项工作，避免
+    // “旧影响 + 世界巡查 + 舆情整理”连续打三份 API。
+    if (
+        settlePublicImpact
+        && !publicWorldSweepPlanned
+        && pendingPublicImpactEvents(state, { maximum: 8 }).length
+    ) {
         runtime.publicOpinionStatus = {
             phase: 'running',
             message: '正在结算公开事件带来的世界影响～',
@@ -6815,6 +7144,8 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
         runtime.ui?.render();
         try {
             await runPublicImpactPropagation({ quiet: true, force: true, scheduleOpinion: false });
+            state = getState();
+            candidates = eligiblePublicOpinionEvents(state);
         } catch (error) {
             if (!isAbortError(error)) {
                 console.warn('[世界背面] 刷新舆情前的公共影响传播失败，将沿用上一份已确认状态', error);
@@ -6822,14 +7153,7 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
         }
     }
 
-    let state = getState();
-    let candidates = eligiblePublicOpinionEvents(state);
-
-    if (
-        ensurePublicWorld
-        && getSettings().worldSimulationEnabled
-        && publicWorldNeedsRefresh(state, candidates)
-    ) {
+    if (publicWorldSweepPlanned) {
         runtime.publicOpinionStatus = {
             phase: 'running',
             message: '让公共世界巡一圈～看看这一时段又发生了什么',
@@ -6837,21 +7161,21 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
         };
         runtime.ui?.render();
 
-        await runWorldPulseTick({
+        const completed = await runWorldPulseTick({
             reason: '用户手动刷新真实世界舆情',
             quiet: true,
             force: true,
             publicCycle: true,
         });
 
-        // 公共世界循环可能产生会波及人物/组织的新事件，新闻出现前先把后果结算。
         runtime.publicOpinionStatus = {
             phase: 'running',
-            message: '正在把新的公共变化接回人物和世界状态～',
+            message: completed
+                ? '公共变化和直接世界后果已经一起接好～正在整理新闻'
+                : '公共世界这次没有提交新状态～沿用确认内容整理新闻',
             error: '',
         };
         runtime.ui?.render();
-        await runPublicImpactPropagation({ quiet: true, force: true, scheduleOpinion: false });
         state = getState();
         candidates = eligiblePublicOpinionEvents(state);
     }
@@ -6910,6 +7234,7 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
     };
     runtime.ui?.render();
 
+    const settings = getSettings();
     const prompt = buildPublicOpinionPrompt(state, {
         clockLabel: formatWorldCalendar(state)?.stamp || '',
         previousCache,
@@ -6918,8 +7243,8 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
         allowNews: plan.allowNews,
         allowForums: plan.allowForums,
         reason: plan.reason,
+        customInstruction: settings.customSimulationInstruction,
     });
-    const settings = getSettings();
     const baseTokens = 3600;
 
     try {
@@ -7405,8 +7730,24 @@ function buildLingqiButlerContext(userText = '') {
             time: clock.stamp,
             anchored: Boolean(state.clock?.anchored),
             revision: state.revision,
-            pendingSync: Boolean(state.pendingSync),
+            pendingSync: Boolean(sync.narrative?.needsSimulation),
+            narrativeSync: {
+                status: sync.narrative?.status || 'empty',
+                committed: Boolean(sync.narrative?.committed),
+                needsSimulation: Boolean(sync.narrative?.needsSimulation),
+                pendingTurns: Number(sync.narrative?.pendingTurns || 0),
+            },
             needsReconciliation: Boolean(state.needsReconciliation),
+            publicCoverage: {
+                lastSweepAt: Number(state.worldPulse?.coverage?.lastSweepAt ?? -1),
+                lastPublicSweepAt: Number(state.worldPulse?.coverage?.lastPublicSweepAt ?? -1),
+                recentScopes: (state.worldPulse?.coverage?.entries || []).slice(0, 6).map(entry => ({
+                    label: String(entry?.label || '').slice(0, 120),
+                    kind: String(entry?.kind || '').slice(0, 40),
+                    lastCheckedAt: Number(entry?.lastCheckedAt ?? -1),
+                })),
+                customFocus: String(settings.customSimulationInstruction || '').slice(0, 500),
+            },
         },
         settings: {
             worldSimulationEnabled: settings.worldSimulationEnabled,
@@ -7688,10 +8029,147 @@ function findLingqiPersonTarget(action) {
     return exact.length === 1 ? exact[0] : null;
 }
 
-async function executeLingqiButlerActions(actions = []) {
+function lingqiDeletionSourceMessages() {
+    const state = normalizeLingqiState(getStore().lingqi || emptyLingqiState());
+    const messages = [...state.messages];
+    // 删除请求本身刚刚才写入玲七聊天；定位“最近/全部/范围”时不要把这句请求
+    // 当成用户想删的历史记录。真正执行 all 时仍会把整个聊天清空。
+    if (messages.at(-1)?.role === 'user') messages.pop();
+    return messages;
+}
+
+function resolveLingqiChatDeletionPlan(action = {}) {
+    const state = normalizeLingqiState(getStore().lingqi || emptyLingqiState());
+    return buildLingqiChatDeletionPlan(lingqiDeletionSourceMessages(), action, state.messages.length);
+}
+
+const LINGQI_CONFIRM_ACTION_TYPES = new Set([
+    'simulate_latest',
+    'refresh_public_world',
+    'catch_up_person',
+    'delete_lingqi_chat',
+]);
+
+function lingqiActionConfirmation(action) {
+    if (action.type === 'delete_lingqi_chat') {
+        const plan = resolveLingqiChatDeletionPlan(action);
+        return plan.ok ? plan : { error: plan.message };
+    }
+    if (action.type === 'simulate_latest') {
+        return {
+            title: '推演最新正文？',
+            detail: '会走一次世界推演；如果已经追上，我就不重复戳接口。',
+            confirmLabel: '推演',
+        };
+    }
+    if (action.type === 'refresh_public_world') {
+        return {
+            title: '出去巡一圈？',
+            detail: '会检查公共世界并刷新舆情；同一世界时刻和侧重点会自动去重。',
+            confirmLabel: '去巡',
+        };
+    }
+    if (action.type === 'catch_up_person') {
+        const person = findLingqiPersonTarget(action);
+        return {
+            title: person ? `补一下${person.name}的近况？` : '补一下人物近况？',
+            detail: '会单独调用一次人物生活结算，不推进世界时间。',
+            confirmLabel: '去看看',
+        };
+    }
+    return null;
+}
+
+function queueLingqiActionConfirmation(action) {
+    const confirmation = lingqiActionConfirmation(action);
+    if (!confirmation) return { queued: false, message: '这个动作现在没有可用的确认方式。' };
+    if (confirmation.error) return { queued: false, message: confirmation.error };
+    const { action: preparedAction, ...confirmationMeta } = confirmation;
+    const queuedAction = clone(preparedAction || action);
+    if (queuedAction.type === 'delete_lingqi_chat') {
+        const state = normalizeLingqiState(getStore().lingqi || emptyLingqiState());
+        queuedAction.chatSnapshotSignature = lingqiChatSnapshotSignature(state.messages);
+    }
+    runtime.pendingLingqiAction = {
+        id: `lingqi_action_${Date.now().toString(36)}`,
+        chatToken: currentChatToken(),
+        contextEpoch: runtime.contextEpoch,
+        action: queuedAction,
+        ...confirmationMeta,
+    };
+    return { queued: true };
+}
+
+function sealPendingLingqiChatDeletionSnapshot() {
+    const pending = runtime.pendingLingqiAction;
+    if (
+        pending?.action?.type !== 'delete_lingqi_chat'
+        || pending.chatToken !== currentChatToken()
+        || pending.contextEpoch !== runtime.contextEpoch
+    ) return false;
+    const state = normalizeLingqiState(getStore().lingqi || emptyLingqiState());
+    pending.action.chatSnapshotSignature = lingqiChatSnapshotSignature(state.messages);
+    if (pending.action.deleteAll) {
+        pending.action.resolvedCount = state.messages.length;
+        pending.title = `清空玲七的 ${state.messages.length} 条聊天记录？`;
+    }
+    return true;
+}
+
+async function executeLingqiButlerActions(actions = [], { confirmed = false } = {}) {
     const results = [];
     for (const action of Array.isArray(actions) ? actions.slice(0, 8) : []) {
         try {
+            if (LINGQI_CONFIRM_ACTION_TYPES.has(action.type) && !confirmed) {
+                if (action.type === 'simulate_latest' && !latestNarrativeSyncSnapshot().needsSimulation) {
+                    results.push('最新正文已经跟上了，不用再戳一次接口。');
+                    continue;
+                }
+                if (action.type === 'catch_up_person' && !findLingqiPersonTarget(action)) {
+                    results.push('那个人我没认准……名字重了或者没找到，先不乱跑。');
+                    continue;
+                }
+                if (runtime.pendingLingqiAction) {
+                    results.push('爪子下面已经压着一个等你点头的动作啦～先处理那个。');
+                    break;
+                }
+                const queued = queueLingqiActionConfirmation(action);
+                if (!queued.queued) {
+                    results.push(queued.message || '这个范围我没认准，先不乱碰。');
+                    continue;
+                }
+                results.push(action.type === 'delete_lingqi_chat'
+                    ? '我把要删的范围圈出来啦。先看一眼，点头以后才真的删。'
+                    : '这个会叫一次后台模型。我先把爪子停在按钮上，等你点头～');
+                break;
+            }
+            if (action.type === 'delete_lingqi_chat') {
+                if (!confirmed) continue;
+                const currentStore = getStore();
+                const state = normalizeLingqiState(currentStore.lingqi || emptyLingqiState());
+                if (
+                    !action.chatSnapshotSignature
+                    || action.chatSnapshotSignature !== lingqiChatSnapshotSignature(state.messages)
+                ) {
+                    results.push('确认期间聊天内容发生了变化，我没有删除。请重新说一次要删的范围。');
+                    continue;
+                }
+                const ids = new Set(Array.isArray(action.resolvedMessageIds) ? action.resolvedMessageIds : []);
+                const before = state.messages.length;
+                if (action.deleteAll) {
+                    state.messages = [];
+                } else {
+                    state.messages = state.messages.filter(message => !ids.has(message.id));
+                }
+                const removed = Math.max(0, before - state.messages.length);
+                state.updatedAt = new Date().toISOString();
+                currentStore.lingqi = state;
+                saveStore(currentStore, { immediate: true });
+                results.push(removed
+                    ? `删掉了 ${removed} 条玲七聊天。长期记忆没动。`
+                    : '那段记录已经不在这里了，我没有再乱删别的。');
+                continue;
+            }
             if (action.type === 'update_setting') {
                 const key = String(action.setting || '');
                 const checked = validateLingqiSettingValue(key, action.value);
@@ -7723,6 +8201,54 @@ async function executeLingqiButlerActions(actions = []) {
                 target.updatedAt = next.clock.absoluteMinute;
                 commitManualState(next, `${target.name} 的后台人物推演已${action.enabled ? '开启' : '关闭'}。`);
                 results.push(`${target.name} 的后台推演已经${action.enabled ? '打开' : '关掉'}。`);
+                continue;
+            }
+            if (action.type === 'prioritize_person') {
+                const person = findLingqiPersonTarget(action);
+                if (!person || person.isUser) {
+                    results.push('那个人我没认准，或者她是玩家角色……这个先不乱排。');
+                    continue;
+                }
+                setPersonLifePriority(person.id, action.enabled !== false);
+                results.push(action.enabled === false
+                    ? `${person.name}不再占下一轮优先位。`
+                    : `${person.name}已经排到下一轮前面啦～不额外调用接口。`);
+                continue;
+            }
+            if (action.type === 'catch_up_person') {
+                const person = findLingqiPersonTarget(action);
+                if (!person || person.isUser) {
+                    results.push('那个人我没认准，先不乱补。');
+                    continue;
+                }
+                await runPersonLifeCatchUp(person.id);
+                results.push(`${person.name}的近况已经补好啦～世界时间没往前拨。`);
+                continue;
+            }
+            if (action.type === 'simulate_latest') {
+                const narrative = latestNarrativeSyncSnapshot();
+                if (!narrative.needsSimulation) {
+                    results.push('最新正文已经跟上了，不重复推演。');
+                    continue;
+                }
+                const result = await requestManualWorldSimulation();
+                results.push(result?.queued
+                    ? '最新正文已经安全排队，前面的任务结束后就会接着推演。'
+                    : result?.started
+                        ? '最新正文已经推演好啦～'
+                        : '这次没有启动新的世界推演。');
+                continue;
+            }
+            if (action.type === 'refresh_public_world') {
+                await generatePublicOpinionSnapshot({
+                    allowDefer: true,
+                    ensurePublicWorld: true,
+                    settlePublicImpact: true,
+                    force: false,
+                });
+                results.push(['queued', 'pending'].includes(runtime.publicOpinionStatus?.phase)
+                    ? '外面这轮先安全排队啦～前面的世界任务结束后，我会接着巡，不会重复开一份。'
+                    : '外面巡过啦～该结算的公共变化和舆情已经接好；没新东西时我没有硬编。');
                 continue;
             }
             if (action.type === 'cancel_simulation') {
@@ -7807,6 +8333,53 @@ async function executeLingqiButlerActions(actions = []) {
     return results;
 }
 
+async function confirmLingqiPendingAction() {
+    const pending = runtime.pendingLingqiAction;
+    if (
+        !pending
+        || pending.chatToken !== currentChatToken()
+        || pending.contextEpoch !== runtime.contextEpoch
+    ) {
+        runtime.pendingLingqiAction = null;
+        throw new Error('刚才那个动作已经不属于当前聊天啦～');
+    }
+    runtime.pendingLingqiAction = null;
+    runtime.lingqiStatus = { phase: 'running', message: '玲七正伸爪子去弄……', error: '' };
+    runtime.ui?.render();
+    const results = await executeLingqiButlerActions([pending.action], { confirmed: true });
+    if (
+        pending.chatToken !== currentChatToken()
+        || pending.contextEpoch !== runtime.contextEpoch
+    ) return results;
+    const text = results.join('\n') || '弄好啦～';
+    const store = getStore();
+    const isChatDelete = pending.action?.type === 'delete_lingqi_chat';
+    const chatDeleteFailed = isChatDelete && results.some(item => /没有删除|没有再乱删|失败/u.test(String(item || '')));
+    if (!(isChatDelete && pending.action?.deleteAll && !chatDeleteFailed)) {
+        store.lingqi = addLingqiMessage(store.lingqi || emptyLingqiState(), 'assistant', text);
+    } else {
+        store.lingqi = normalizeLingqiState(store.lingqi || emptyLingqiState());
+    }
+    store.lingqi.mascotState = chatDeleteFailed || results.some(item => /没|失败|不敢|不能/u.test(item)) ? 'hold' : 'happy';
+    saveStore(store, { immediate: true });
+    runtime.lingqiStatus = {
+        phase: chatDeleteFailed ? 'error' : 'success',
+        message: isChatDelete ? (results[0] || '聊天记录收拾好啦～') : '玲七顺手弄好啦～',
+        error: '',
+    };
+    if (isChatDelete) toast(results[0] || '玲七聊天记录已经收拾好啦～', chatDeleteFailed ? 'error' : 'success');
+    runtime.ui?.render();
+    return results;
+}
+
+function dismissLingqiPendingAction() {
+    if (!runtime.pendingLingqiAction) return false;
+    runtime.pendingLingqiAction = null;
+    runtime.lingqiStatus = { phase: 'idle', message: '先不碰，爪子收回来啦～', error: '' };
+    runtime.ui?.render();
+    return true;
+}
+
 
 
 function resolveCompletedLingqiMascotState(preferred = 'watch', {
@@ -7848,6 +8421,15 @@ function resolveLingqiLocalButlerRequest(userText = '') {
     const state = getState();
     const sync = getSyncStatus();
     const clock = formatWorldCalendar(state);
+
+    const chatDeleteAction = parseLingqiLocalChatDeleteRequest(raw);
+    if (chatDeleteAction) {
+        return {
+            reply: '嗯。我先把你说的那段圈出来，不会直接删。',
+            mascotState: 'watch',
+            actions: [chatDeleteAction],
+        };
+    }
 
     // Pure local questions: no reason to spend an extra model request.
     if (/(?:当前|现在|插件).{0,4}(?:版本|version)|(?:版本号)/iu.test(raw)) {
@@ -7900,6 +8482,44 @@ function resolveLingqiLocalButlerRequest(userText = '') {
             reply: `世界时间注入现在是“${lingqiSettingDisplayValue('injectionTimeMode', settings.injectionTimeMode)}”。`,
             mascotState: 'watch',
             actions: [],
+        };
+    }
+
+    if (/^(?:帮我|请|让玲七|玲七)?\s*(?:推演|同步)\s*(?:一下|下)?\s*(?:最新|新的)?\s*(?:正文|剧情)\s*[吧。！!]*$/iu.test(raw)) {
+        return {
+            reply: '我先看看有没有落下。真没跟上，我再伸爪子～',
+            mascotState: 'watch',
+            actions: [{ type: 'simulate_latest' }],
+        };
+    }
+
+    if (/^(?:帮我|请|让玲七|玲七)?\s*(?:出去)?\s*(?:巡一圈|看看外面|刷新世界舆情|刷新舆情)\s*[吧。！!]*$/iu.test(raw)) {
+        return {
+            reply: '外面？唔……我可以出去转一圈。先等你点头。',
+            mascotState: 'watch',
+            actions: [{ type: 'refresh_public_world' }],
+        };
+    }
+
+    const priorityPersonMatch = raw.match(
+        /^(?:帮我|请|让玲七|玲七)?\s*(?:让|把)?\s*([^，。！？!]{1,40}?)\s*(?:下一轮优先|排到下一轮前面|下一轮先看)\s*[吧。！!]*$/iu,
+    );
+    if (priorityPersonMatch) {
+        return {
+            reply: `${priorityPersonMatch[1].trim()}下一轮先看。好，我把她往前挪一点。`,
+            mascotState: 'note',
+            actions: [{ type: 'prioritize_person', personName: priorityPersonMatch[1].trim(), enabled: true }],
+        };
+    }
+
+    const catchUpPersonMatch = raw.match(
+        /^(?:帮我|请|让玲七|玲七)?\s*(?:补一下|补下|看看)\s*([^，。！？!]{1,40}?)(?:的)?\s*(?:近况|最近怎么样)\s*[吧。！!]*$/iu,
+    );
+    if (catchUpPersonMatch) {
+        return {
+            reply: `我去看看${catchUpPersonMatch[1].trim()}最近在做什么～不过这会叫一次后台模型，先等你点头。`,
+            mascotState: 'watch',
+            actions: [{ type: 'catch_up_person', personName: catchUpPersonMatch[1].trim() }],
         };
     }
 
@@ -7996,10 +8616,11 @@ async function sendLingqiMessage(text) {
         );
         localStore.lingqi.mascotState = completedMascotState;
         saveStore(localStore, { immediate: true });
+        sealPendingLingqiChatDeletionSnapshot();
         refreshInjection();
         runtime.lingqiStatus = {
             phase: 'success',
-            message: localRequest.actions?.length ? '玲七顺手弄好啦～' : '玲七知道这个～',
+            message: runtime.pendingLingqiAction ? '范围圈好啦～等你点头。' : localRequest.actions?.length ? '玲七顺手弄好啦～' : '玲七知道这个～',
             error: '',
         };
         runtime.ui?.render();
@@ -8109,6 +8730,7 @@ async function sendLingqiMessage(text) {
                 store.lingqi = confirmLingqiProposal(store.lingqi);
             }
             saveStore(store, { immediate: true });
+            sealPendingLingqiChatDeletionSnapshot();
             refreshInjection();
             runtime.lingqiStatus = {
                 phase: 'success',
@@ -8118,9 +8740,11 @@ async function sendLingqiMessage(text) {
                         ? '玲七写好了一张小纸条，等你点头～'
                         : triage.route === 'mama'
                             ? '这个玲七也没查明白，给妈妈的小纸条写好啦～'
-                            : actionResults.length
-                                ? '玲七已经把能代办的事情处理啦～'
-                                : '玲七想好啦～',
+                            : runtime.pendingLingqiAction
+                                ? '玲七把要做的动作压住啦～等你点头。'
+                                : actionResults.length
+                                    ? '玲七已经把能代办的事情处理啦～'
+                                    : '玲七想好啦～',
                 error: '',
             };
             runtime.ui?.render();
@@ -8237,6 +8861,7 @@ function resetRuntimeMaintenanceState({
     runtime.activeObservation = null;
     runtime.activeLingqi = null;
     runtime.lingqiStatus = { phase: 'idle', message: '', error: '' };
+    runtime.pendingLingqiAction = null;
     runtime.pendingPublicImpact = false;
     runtime.pendingPublicOpinion = false;
     runtime.inBackgroundGeneration = false;
@@ -8584,6 +9209,14 @@ async function handleUiAction(action, payload = {}) {
         return confirmLingqiNoteProposal();
     }
 
+    if (action === 'lingqi-confirm-action') {
+        return await confirmLingqiPendingAction();
+    }
+
+    if (action === 'lingqi-dismiss-action') {
+        return dismissLingqiPendingAction();
+    }
+
     if (action === 'lingqi-dismiss-note') {
         return dismissLingqiNoteProposal();
     }
@@ -8650,6 +9283,17 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'clear-public-opinion-sandbox') {
         return clearPublicOpinionSandbox();
+    }
+
+    if (action === 'catch-up-person') {
+        return await runPersonLifeCatchUp(String(payload.personId || ''));
+    }
+
+    if (action === 'prioritize-person') {
+        return setPersonLifePriority(
+            String(payload.personId || ''),
+            payload.enabled !== false,
+        );
     }
 
     if (action === 'observe-person') {
@@ -9264,10 +9908,13 @@ async function handleUiAction(action, payload = {}) {
     if (action === 'generate-public-opinion') {
         return await generatePublicOpinionSnapshot({
             allowDefer: true,
-            // “立即检查舆情”只检查传播层，不借按钮强制推进公共世界或结算世界状态。
-            ensurePublicWorld: false,
-            settlePublicImpact: false,
-            force: true,
+            // 不借按钮凭空推进公共世界，但既有公开事件的传播后果必须先进入世界状态；
+            // 否则新闻只会成为与人物认知和正文脱节的 UI 卡片。
+            ensurePublicWorld: true,
+            settlePublicImpact: true,
+            // 没有新的公开表面、世界时间节点或覆盖巡查结果时，不为了换措辞
+            // 再打一份舆情 API；按钮仍会先完成所有真正到期的世界工作。
+            force: false,
         });
     }
 

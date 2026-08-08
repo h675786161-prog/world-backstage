@@ -29,6 +29,21 @@ function messageMatches(message, query = '') {
     return matched.length >= Math.min(2, chunks.length) && matched.join('').length >= Math.min(6, needle.length);
 }
 
+export function findLingqiChatMatches(messagesValue = [], query = '', maximum = 8) {
+    const messages = Array.isArray(messagesValue) ? messagesValue : [];
+    const limit = Math.min(20, Math.max(1, Number.parseInt(maximum, 10) || 8));
+    const matches = messages
+        .map((message, index) => messageMatches(message, query) ? { message, index } : null)
+        .filter(Boolean);
+    return matches.slice(-limit).map(({ message, index }) => ({
+        id: String(message?.id || ''),
+        index,
+        role: message?.role === 'user' ? 'user' : 'assistant',
+        text: String(message?.text || '').trim(),
+        at: String(message?.at || ''),
+    }));
+}
+
 function preview(message) {
     const role = message?.role === 'user' ? '你' : '玲七';
     const text = String(message?.text || '').replace(/\s+/gu, ' ').trim();

@@ -1,3 +1,5 @@
+import { LINGQI_ACTION_TYPES } from './lingqi-skills.js';
+
 const HELP_TOPICS = [
     {
         id: 'world-backstage-concept',
@@ -87,7 +89,7 @@ const HELP_TOPICS = [
         id: 'lingqi',
         title: '玲七',
         keywords: ['玲七', '小猫', '纸条', '导演', '小管家', '问猫'],
-        text: '玲七是插件内置的小猫管家：可以聊天、解释插件、查看当前世界/任务/设置、代办低风险设置，也可以把“下一段想怎么玩”翻成导演小纸条。玲七自己的聊天记录支持直接用自然语言管理，例如清空全部、删最近几条、删某一天、从某句话删到某句话或删掉某个明确主题的一段；真正删除前会先弹出范围预览并再次确认。删除玲七聊天默认不删除长期记忆。玲七聊天本身不是世界事实，用户的猜测不会自动写进人物或世界状态。',
+        text: '玲七是插件内置的小猫管家：可以聊天、解释插件、汇报世界总览，查询人物/暗流/记忆/设置，诊断推演与人物停滞，搜索或管理自己的聊天记录，代办安全设置与后台任务，也可以把“下一段想怎么玩”翻成导演小纸条。真正删除聊天前会先弹出范围预览并再次确认；删除玲七聊天默认不删除长期记忆。玲七聊天本身不是世界事实，用户的猜测不会自动写进人物或世界状态。',
     },
 ];
 
@@ -127,20 +129,6 @@ export function buildLingqiHelpContext(query, pluginVersion = '') {
     return lines.join('\n');
 }
 
-const ACTION_TYPES = new Set([
-    'update_setting',
-    'set_person_simulation',
-    'cancel_simulation',
-    'cancel_background_tasks',
-    'check_world_state',
-    'organize_memory',
-    'simulate_latest',
-    'refresh_public_world',
-    'prioritize_person',
-    'catch_up_person',
-    'delete_lingqi_chat',
-]);
-
 export function normalizeLingqiButlerActions(value) {
     const source = Array.isArray(value) ? value : [];
     return source
@@ -148,7 +136,7 @@ export function normalizeLingqiButlerActions(value) {
         .map(raw => {
             if (!raw || typeof raw !== 'object') return null;
             const type = String(raw.type || '').trim();
-            if (!ACTION_TYPES.has(type)) return null;
+            if (!LINGQI_ACTION_TYPES.has(type)) return null;
             if (type === 'update_setting') {
                 return {
                     type,

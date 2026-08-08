@@ -2416,10 +2416,10 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                         </div>
                     ` : `
                         <p>${person.isUser
-                            ? '玩家角色不使用镜头外人物观测。'
+                            ? '玩家角色不使用人物即时观测。'
                             : observerMode !== 'backstage'
-                                ? '切回幕后视角后可以观测镜头外人物。'
-                                : '这个人物正在本轮镜头中，无需另行观测。'}</p>
+                                ? '切回幕后视角后可以观测人物。'
+                                : '这个人物当前无法观测。'}</p>
                     `}
                 </div>
                 <div class="wb-knowledge-boundary wb-observation-boundary ${observation?.queued ? 'is-enabled' : ''} ${observation?.revealState === 'delivered' ? 'is-delivered' : ''}">
@@ -4446,7 +4446,6 @@ export function createWorldBackstageUI({
         const canObservePerson = Boolean(
             person
             && observerMode === 'backstage'
-            && !presentPersonIds.has(person.id)
             && !person.isUser
         );
         const pendingDeliveries = state.events.filter(event => event.delivery?.state === 'pending').length;

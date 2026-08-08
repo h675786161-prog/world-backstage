@@ -29,6 +29,7 @@ import {
     extractNarrativeTimeAnchor,
     filterNarrativeText,
     formatWorldCalendar,
+    isPersonObservationEligible,
     countSurvivingNewAssistantTurns,
     hashText,
     selectPendingAssistantMessageIds,
@@ -104,14 +105,20 @@ import {
     buildLingqiHelpContext,
 } from './lingqi-help.js';
 import {
+    findLingqiChatMatches,
     lingqiChatSnapshotSignature,
     parseLingqiLocalChatDeleteRequest,
     resolveLingqiChatDeletionPlan as buildLingqiChatDeletionPlan,
 } from './lingqi-chat.js';
+import {
+    LINGQI_SETTING_GUIDES,
+    buildLingqiSkillMenuText,
+    parseLingqiLocalQueryRequest,
+} from './lingqi-skills.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.3.0-alpha.4';
+const PLUGIN_VERSION = '2.3.0-alpha.6';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 28,
     enabled: true,
@@ -6977,9 +6984,8 @@ async function observePerson(personId, { force = false } = {}) {
     const baselineAssistantStamp = latestAssistantSourceStamp();
     const person = state.people.find(item => item.id === personId);
     if (!person) throw new Error('没有找到这个人物');
-    if (person.isUser) throw new Error('玩家角色不使用镜头外人物观测');
-    if (currentTurnPresentPersonIds().includes(person.id)) {
-        throw new Error('这个人物已经在本轮镜头中，不需要另行观测');
+    if (!isPersonObservationEligible(person, getContext()?.name1 || '')) {
+        throw new Error('玩家角色不使用人物即时观测');
     }
     const cacheKey = personObservationCacheKey(state, person);
     const cached = getStore().personObservations?.[cacheKey];
@@ -8414,6 +8420,201 @@ function resolveCompletedLingqiMascotState(preferred = 'watch', {
     return normalized;
 }
 
+function lingqiLocalPersonSummary(person) {
+    if (!person) return '这个人我没认准……名字可能重了，或者人物板块里还没有她。';
+    const parts = [
+        `${person.name}${person.isUser ? '（玩家角色）' : ''}`,
+        `位置：${String(person.location || '还没记清').trim()}`,
+        `正在做：${String(person.action || '没有明确动作').trim()}`,
+        `意图：${String(person.intent || '没有明确记录').trim()}`,
+        person.isUser
+            ? '记录方式：只保存正文已经明确发生的客观状态'
+            : `后台推演：${person.simulationEnabled === false ? '已关闭' : '开启'}${person.lifeTickPriority ? '，下一轮优先' : ''}`,
+        person.locked ? '状态：已锁定，后台不会随便改核心状态' : '',
+    ].filter(Boolean);
+    return parts.join('\n');
+}
+
+const LINGQI_GUIDE_SETTING_LABELS = Object.freeze({
+    memoryAutoIndexInterval: '记忆整理间隔',
+    maxOutputTokens: '全局 Token 上限',
+    generationTimeoutMs: '全局最长等待',
+    uiScale: '界面字号',
+    orbEnabled: '显示悬浮球',
+    orbEdgeHide: '悬浮球贴边收纳',
+    theme: '界面明暗',
+});
+
+function lingqiGuideSettingValue(key, value) {
+    if (key === 'injectionTimeMode') return lingqiSettingDisplayValue(key, value);
+    if (key === 'memoryAutoIndexInterval') return Number(value) > 0 ? `每 ${Number(value)} 轮` : '手动';
+    if (key === 'maxOutputTokens') return Number(value) > 0 ? String(Number(value)) : '自动';
+    if (key === 'generationTimeoutMs') return Number(value) > 0 ? `${Math.round(Number(value) / 1000)} 秒` : '自动';
+    if (key === 'uiScale') return ({ compact: '紧凑', comfortable: '标准', large: '大字' }[value] || String(value));
+    if (key === 'theme') return ({ auto: '自动', day: '日间', night: '夜间' }[value] || String(value));
+    if (typeof value === 'boolean') return value ? '开启' : '关闭';
+    return String(value ?? '未设置');
+}
+
+function lingqiLocalWorldDiagnosis() {
+    const settings = getSettings();
+    const sync = getSyncStatus();
+    const narrative = latestNarrativeSyncSnapshot();
+    const connection = getConnectionInfo();
+    const lastOperation = getLastCustomApiOperation();
+
+    if (!settings.worldSimulationEnabled) {
+        return '原因找到了：世界推演总开关现在是关闭的。自动推演和手动推演都不会正常跑。';
+    }
+    if (!connection.configured) {
+        return '原因找到了：当前没有可用的后台模型连接。先把世界背面的 API / 酒馆连接配好。';
+    }
+    if (sync.phase === 'running') {
+        return `没有卡住，世界推演正在跑。${sync.message ? `\n现在：${String(sync.message).slice(0, 220)}` : ''}`;
+    }
+    if ((sync.queue?.pendingTurns || 0) > 0) {
+        return `没有丢，队列里还有 ${sync.queue.pendingTurns} 轮待处理。前面的后台任务结束后会继续。`;
+    }
+    if (sync.error) {
+        return `最近一次世界任务失败了：${String(sync.error).slice(0, 360)}\n我只报实际留下的错误，不替接口猜原因。`;
+    }
+    if (lastOperation && lastOperation.phase === 'error') {
+        const status = Number(lastOperation.upstreamStatus || lastOperation.transportStatus) || '';
+        const detail = redactDiagnosticText(lastOperation.errorSummary || lastOperation.errorType || '上游没有留下可读原因');
+        return `最近一次后台请求失败${status ? `（${status}）` : ''}：${detail}`;
+    }
+    if (narrative.needsSimulation && !settings.worldAutoEnabled) {
+        return `最新正文还没推演，但自动世界推演是关闭的。现在有 ${narrative.pendingTurns || 1} 轮在等手动推演。`;
+    }
+    if (narrative.needsSimulation) {
+        return `最新正文还没跟上，目前有 ${narrative.pendingTurns || 1} 轮待推演。自动推演开着；如果一直不启动，再检查是否有别的后台任务占着队列。`;
+    }
+    return '我核对了开关、连接、任务、队列和最新正文快照：现在已经跟上，没有发现卡住或失败。';
+}
+
+function resolveLingqiLocalQuery(request, { state, settings, sync, clock }) {
+    if (!request) return null;
+    if (request.type === 'list_skills') {
+        return { reply: buildLingqiSkillMenuText(), mascotState: 'happy', actions: [] };
+    }
+    if (request.type === 'setting_guide') {
+        const guide = LINGQI_SETTING_GUIDES.find(item => item.id === request.guideId);
+        if (!guide) return null;
+        const current = guide.keys
+            .map(key => `· ${LINGQI_SETTING_LABELS[key] || LINGQI_GUIDE_SETTING_LABELS[key] || key}：${lingqiGuideSettingValue(key, settings[key])}`)
+            .join('\n');
+        const reply = [
+            `${guide.title}这样找：${guide.path}`,
+            current ? `\n你现在的设置：\n${current}` : '',
+            `\n它控制什么：${guide.meaning}`,
+            `\n怎么选：\n${guide.choices.map(item => `· ${item}`).join('\n')}`,
+            `\n我的建议：${guide.recommendation}`,
+            guide.delegable ? '\n这里面的安全开关，你也可以直接告诉我“打开 / 关闭 / 改成哪一档”，我会先核对再代办。' : '',
+        ].filter(Boolean).join('');
+        return { reply, mascotState: 'watch', actions: [] };
+    }
+    if (request.type === 'status_overview') {
+        const narrative = latestNarrativeSyncSnapshot();
+        const activeTasks = (sync.activeBackgroundTasks || []).filter(label => label !== '玲七');
+        const disabledPeople = (state.people || []).filter(person => !person.isUser && person.simulationEnabled === false).length;
+        const lines = [
+            `世界时间：${state.clock?.anchored ? clock.stamp : '还没钉稳'}`,
+            `最新正文：${narrative.needsSimulation ? `待推演 ${narrative.pendingTurns || 1} 轮` : '已经跟上'}`,
+            `后台任务：${activeTasks.length ? activeTasks.join('、') : '空闲'}${sync.queue?.pendingTurns ? `；队列 ${sync.queue.pendingTurns} 轮` : ''}`,
+            `人物：${state.people?.length || 0} 个${disabledPeople ? `，其中 ${disabledPeople} 个关闭后台推演` : ''}`,
+            `暗流：${(state.events || []).filter(event => ['active', 'waiting', 'ready'].includes(event.status)).length} 条活跃；回声 ${state.echoes?.length || 0} 条`,
+            `记忆：事实 ${state.storyMemory?.facts?.length || 0}，摘要 ${state.storyMemory?.summaries?.length || 0}，线索 ${state.storyMemory?.clues?.length || 0}`,
+            sync.error ? `最近错误：${String(sync.error).slice(0, 260)}` : '',
+        ].filter(Boolean);
+        return { reply: `我巡了一圈。\n${lines.join('\n')}`, mascotState: sync.error ? 'hold' : 'watch', actions: [] };
+    }
+    if (request.type === 'list_people') {
+        const people = (state.people || [])
+            .slice()
+            .sort((a, b) => Number(b.relevance || 0) - Number(a.relevance || 0));
+        if (!people.length) return { reply: '人物板块现在还是空的。', mascotState: 'idle', actions: [] };
+        const shown = people.slice(0, 18).map(person => (
+            `· ${person.name}${person.isUser ? '（玩家）' : person.simulationEnabled === false ? '（推演关闭）' : ''}｜${person.location || '位置未记'}｜${person.action || '暂无动作'}`
+        ));
+        if (people.length > shown.length) shown.push(`· 还有 ${people.length - shown.length} 个，点名问我会更准。`);
+        return { reply: `这里有 ${people.length} 个人物：\n${shown.join('\n')}`, mascotState: 'watch', actions: [] };
+    }
+    if (request.type === 'person_status') {
+        const person = findLingqiPersonTarget(request);
+        return { reply: lingqiLocalPersonSummary(person), mascotState: person ? 'watch' : 'confused', actions: [] };
+    }
+    if (request.type === 'diagnose_person') {
+        const person = findLingqiPersonTarget(request);
+        if (!person) return { reply: lingqiLocalPersonSummary(null), mascotState: 'confused', actions: [] };
+        const reasons = [];
+        if (person.isUser) reasons.push('她是玩家角色，不走普通 NPC 后台人物推演');
+        if (!settings.worldSimulationEnabled) reasons.push('世界推演总开关关闭');
+        if (person.simulationEnabled === false) reasons.push('她自己的后台推演开关关闭');
+        if (!person.isUser && !settings.enhancedBackgroundSimulation) reasons.push('强化后台人物推演关闭，镜头外人物只按普通到期与相关性结算');
+        if ((sync.activeBackgroundTasks || []).length) reasons.push(`后台当前正在处理：${sync.activeBackgroundTasks.join('、')}`);
+        const diagnosis = reasons.length
+            ? `我找到这些可能直接影响她更新的条件：\n${reasons.map(item => `· ${item}`).join('\n')}`
+            : '开关和任务状态里没有找到能直接证明的原因。我不会硬猜；她也可能只是没有到期，或者这段时间确实没有状态变化。';
+        return {
+            reply: `${diagnosis}\n\n${lingqiLocalPersonSummary(person)}`,
+            mascotState: reasons.length ? 'watch' : 'confused',
+            actions: [],
+        };
+    }
+    if (request.type === 'recent_events') {
+        const events = (state.events || [])
+            .filter(event => ['active', 'waiting', 'ready'].includes(event.status))
+            .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+        if (!events.length) return { reply: '现在没有活跃暗流。安静也算正常，不硬编一条。', mascotState: 'idle', actions: [] };
+        const shown = events.slice(0, 8).map(event => (
+            `· ${event.title || '未命名事件'}｜${event.status || 'active'}｜${event.place || '地点未定'}\n  ${String(event.summary || event.cause || event.expectedResult || '暂无摘要').slice(0, 180)}`
+        ));
+        return { reply: `现在有 ${events.length} 条活跃暗流：\n${shown.join('\n')}`, mascotState: 'watch', actions: [] };
+    }
+    if (request.type === 'memory_status') {
+        const memory = state.storyMemory || {};
+        const pending = Number(sync.memory?.pendingAssistantResponses || 0);
+        const lines = [
+            `长期事实：${memory.facts?.length || 0}`,
+            `分层摘要：${memory.summaries?.length || 0}`,
+            `活跃线索：${(memory.clues || []).filter(item => !['resolved', 'discarded'].includes(item.status)).length}`,
+            `待整理正文：${pending}`,
+            `记忆任务：${sync.memory?.phase || 'idle'}${sync.memory?.message ? `｜${String(sync.memory.message).slice(0, 180)}` : ''}`,
+            `记忆系统：${settings.memorySystemEnabled ? '开启' : '关闭'}；正文注入：${settings.injectionMemory ? '开启' : '关闭'}`,
+        ];
+        return { reply: `记忆盒子现在是这样：\n${lines.join('\n')}`, mascotState: 'note', actions: [] };
+    }
+    if (request.type === 'settings_overview') {
+        const keys = [
+            'worldSimulationEnabled', 'worldAutoEnabled', 'enhancedBackgroundSimulation',
+            'recordPlayerCharacter', 'worldPromptInjection', 'injectionTimeMode',
+            'injectionPeople', 'injectionEvents', 'injectionMemory', 'injectionPublicOpinion',
+            'memorySystemEnabled', 'publicOpinionAutoEnabled',
+        ];
+        const lines = keys.map(key => `· ${LINGQI_SETTING_LABELS[key]}：${lingqiSettingDisplayValue(key, settings[key])}`);
+        return { reply: `常用开关：\n${lines.join('\n')}`, mascotState: 'watch', actions: [] };
+    }
+    if (request.type === 'diagnose_world') {
+        const reply = lingqiLocalWorldDiagnosis();
+        return { reply, mascotState: /失败|错误|关闭|没有可用|卡住/u.test(reply) ? 'hold' : 'watch', actions: [] };
+    }
+    if (request.type === 'search_lingqi_chat') {
+        const lingqi = normalizeLingqiState(getStore().lingqi || emptyLingqiState());
+        const matches = findLingqiChatMatches(lingqi.messages, request.query, 8);
+        if (!matches.length) {
+            return { reply: `我翻了翻，没找到提到“${request.query}”的玲七聊天。换个更接近原话的词？`, mascotState: 'confused', actions: [] };
+        }
+        const lines = matches.map(item => {
+            const date = item.at ? new Date(item.at) : null;
+            const stamp = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : `第 ${item.index + 1} 条`;
+            const preview = item.text.replace(/\s+/gu, ' ').slice(0, 120);
+            return `· ${stamp}｜${item.role === 'user' ? '你' : '玲七'}：${preview}${item.text.length > 120 ? '…' : ''}`;
+        });
+        return { reply: `找到 ${matches.length} 处提到“${request.query}”：\n${lines.join('\n')}`, mascotState: 'watch', actions: [] };
+    }
+    return null;
+}
+
 function resolveLingqiLocalButlerRequest(userText = '') {
     const raw = String(userText || '').trim();
     const text = raw.toLocaleLowerCase();
@@ -8430,6 +8631,10 @@ function resolveLingqiLocalButlerRequest(userText = '') {
             actions: [chatDeleteAction],
         };
     }
+
+    const localQuery = parseLingqiLocalQueryRequest(raw, state.people || []);
+    const localQueryResponse = resolveLingqiLocalQuery(localQuery, { state, settings, sync, clock });
+    if (localQueryResponse) return localQueryResponse;
 
     // Pure local questions: no reason to spend an extra model request.
     if (/(?:当前|现在|插件).{0,4}(?:版本|version)|(?:版本号)/iu.test(raw)) {

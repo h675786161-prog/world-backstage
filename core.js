@@ -5717,21 +5717,22 @@ export function applyHistoryIndexResult(inputState, rawPayload, {
     return trimState(state);
 }
 
+export function isPersonObservationEligible(person, userName = '') {
+    if (!person) return false;
+    if (person.isUser || person.is_user) return false;
+    const normalizedUserName = String(userName || '').trim().toLocaleLowerCase();
+    const normalizedPersonName = String(person.name || '').trim().toLocaleLowerCase();
+    return !(normalizedUserName && normalizedPersonName === normalizedUserName);
+}
+
 export function buildPersonObservationPrompt(state, person, {
     narrativeTurns = [],
     userName = '',
     includeUserInnerVoice = false,
     playerIdentityAnchor = '',
 } = {}) {
-    const isUser = Boolean(
-        person?.isUser
-        || (
-            userName
-            && person?.name?.toLocaleLowerCase() === String(userName).toLocaleLowerCase()
-        )
-    );
-    if (isUser) {
-        throw new Error('玩家角色不使用镜头外人物观测');
+    if (!isPersonObservationEligible(person, userName)) {
+        throw new Error('玩家角色不使用人物即时观测');
     }
 
     // IMPORTANT: raw recent narrative is intentionally NOT passed to the person POV.

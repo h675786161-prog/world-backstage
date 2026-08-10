@@ -130,6 +130,7 @@ export function extractWorldbookCharacterProfile(content, fallbackName = '') {
 export function detectWorldbookCharacter(entry, profile = extractWorldbookCharacterProfile(entry?.content, entry?.name)) {
     const title = `${entry?.name || ''} ${(entry?.keys || []).join(' ')}`.toLocaleLowerCase();
     const content = String(entry?.content || '');
+    const readable = readableText(content);
     let score = 0;
     const signals = [];
 
@@ -155,11 +156,41 @@ export function detectWorldbookCharacter(entry, profile = extractWorldbookCharac
     }
     if (profile.matchedFields.length >= 4) score += 2;
 
+    // 很多世界书会直接用人物姓名作为条目名，正文则是自然语言描述，
+    // 并不会写成“姓名：/性格：”字段表。旧判断几乎只认字段表，因而会漏掉这类常见人物卡。
+    const standaloneName = cleanCandidateName(profile.name || entry?.name || '');
+    const looksLikeSettingTitle = /(?:世界观|世界设定|规则|系统|教程|说明|模板|格式|地点|地区|区域|城市|国家|组织|势力|地图|商店|物品|道具|技能|魔法|时间线|词典|百科|剧情|章节|变量|状态栏)/iu.test(title);
+    const looksLikeStandaloneName = Boolean(
+        standaloneName
+        && standaloneName.length <= 40
+        && !looksLikeSettingTitle
+    );
+    const personalCues = readable.match(/(?:她|他|少女|少年|女性|男性|女孩|男孩|性格|口癖|说话|喜欢|讨厌|擅长|害怕|穿着|发色|瞳色|身高|年龄|\d{1,3}\s*岁|职业|身份|出身|过去|经历|关系)/giu) || [];
+    const nameMentions = standaloneName
+        ? (readable.match(new RegExp(escapeRegExp(standaloneName), 'giu')) || []).length
+        : 0;
+    if (looksLikeStandaloneName && personalCues.length >= 2) {
+        score += 4;
+        signals.push('姓名条目含人物描述');
+    }
+    if (looksLikeStandaloneName && nameMentions > 0 && personalCues.length > 0) {
+        score += 2;
+        signals.push('正文围绕该人物');
+    }
+
     return {
         likelyPerson: score >= 5,
         characterScore: score,
         characterSignals: signals.slice(0, 4),
     };
+}
+
+export function isWorldbookEntryManuallySelectable(entry) {
+    return Boolean(
+        entry
+        && String(entry.content || '').trim()
+        && !entry.mixedSource
+    );
 }
 
 

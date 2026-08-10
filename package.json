@@ -1,7 +1,7 @@
 {
   "name": "world-backstage",
   "private": true,
-  "version": "2.3.0-alpha.6",
+  "version": "2.3.0-alpha.7",
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",

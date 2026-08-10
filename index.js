@@ -69,6 +69,7 @@ import {
     detectWorldbookTechnicalEntry,
     extractWorldbookCharacterCandidates,
     extractWorldbookCharacterProfile,
+    isWorldbookEntryManuallySelectable,
     planSmartWorldbookImport,
 } from './worldbook.js';
 import {
@@ -115,12 +116,13 @@ import {
     buildLingqiSkillMenuText,
     parseLingqiLocalQueryRequest,
 } from './lingqi-skills.js';
+import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.3.0-alpha.6';
+const PLUGIN_VERSION = '2.3.0-alpha.7';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 28,
+    settingsVersion: 29,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -140,6 +142,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     autoSimulationMode: 'balanced',
     worldPulseActivity: 'natural',
     autoSimulationInterval: 1,
+    pendingSimulationPromptEnabled: false,
     autoRetryCount: 1,
     memoryAutoIndexInterval: 10,
     backgroundNpcBudget: 4,
@@ -371,9 +374,9 @@ async function scanWorldbook(bookName) {
 
         const entries = [];
         for (const source of sourceEntries) {
-            const strongEmbedded = source.embedded.filter(item => item.confidence !== 'low' && !item.technicalEntry);
-            const shouldSplitEmbedded = strongEmbedded.length >= 2
-                || (strongEmbedded.length === 1 && (!source.likelyPerson || source.technicalEntry));
+            const embeddedPeople = source.embedded.filter(item => !item.technicalEntry);
+            const shouldSplitEmbedded = embeddedPeople.length >= 2
+                || (embeddedPeople.length === 1 && (!source.likelyPerson || source.technicalEntry));
 
             if (!shouldSplitEmbedded) {
                 const importablePerson = Boolean(
@@ -385,6 +388,7 @@ async function scanWorldbook(bookName) {
                     ...source,
                     embedded: undefined,
                     importablePerson,
+                    manualSelectablePerson: true,
                     smartAuto: importablePerson,
                     sourceUid: source.uid,
                     sourceEntryName: source.name,
@@ -398,17 +402,18 @@ async function scanWorldbook(bookName) {
                 embedded: undefined,
                 likelyPerson: false,
                 importablePerson: false,
+                manualSelectablePerson: false,
                 smartAuto: false,
                 mixedSource: true,
                 sourceUid: source.uid,
                 sourceEntryName: source.name,
                 characterSignals: [
-                    `内含 ${strongEmbedded.length} 个人物`,
+                    `内含 ${embeddedPeople.length} 个人物`,
                     ...(source.characterSignals || []),
                 ].slice(0, 4),
             });
 
-            strongEmbedded.forEach((candidate, index) => {
+            embeddedPeople.forEach((candidate, index) => {
                 const stableNameKey = hashText(candidate.name.toLocaleLowerCase());
                 entries.push({
                     uid: `${source.uid}::person::${stableNameKey}`,
@@ -425,6 +430,7 @@ async function scanWorldbook(bookName) {
                     profile: candidate.profile,
                     likelyPerson: true,
                     importablePerson: true,
+                    manualSelectablePerson: true,
                     smartAuto: candidate.confidence === 'high',
                     embeddedPerson: true,
                     characterScore: candidate.characterScore,
@@ -491,8 +497,7 @@ function importWorldbookPeople(bookName, entryIds = []) {
     const wanted = new Set((Array.isArray(entryIds) ? entryIds : [entryIds]).map(String));
     const selected = runtime.worldbookScan.entries.filter(entry => (
         wanted.has(String(entry.uid))
-        && (entry.importablePerson ?? entry.likelyPerson)
-        && !entry.technicalEntry
+        && isWorldbookEntryManuallySelectable(entry)
     ));
     if (!selected.length) throw new Error('请至少勾选一个人物条目');
 
@@ -877,6 +882,7 @@ function getSettings() {
         20,
         Math.max(1, Number.parseInt(settings.autoSimulationInterval, 10) || 1),
     );
+    settings.pendingSimulationPromptEnabled = Boolean(settings.pendingSimulationPromptEnabled);
     settings.autoRetryCount = Math.min(
         5,
         Math.max(0, Number.parseInt(settings.autoRetryCount, 10) || 0),
@@ -913,7 +919,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 28;
+    settings.settingsVersion = 29;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -944,7 +950,7 @@ function getSettings() {
         : settings.orbEnabled !== false;
     settings.orbEdgeHide = Boolean(settings.orbEdgeHide);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 28) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 29) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -10303,6 +10309,47 @@ function initialize() {
         onAction: handleUiAction,
         pluginVersion: PLUGIN_VERSION,
     });
+
+    // Additive bridge for the companion phone. The world engine and its UI stay
+    // identical to the GitHub baseline; this surface only exposes existing state
+    // and actions so the phone does not need a second copy of the world.
+    globalThis.worldBackstageHost = {
+        version: PLUGIN_VERSION,
+        integratedLauncher: true,
+        open: options => runtime.ui?.open?.(options),
+        openEvent: eventId => runtime.ui?.openEvent?.(eventId),
+        close: () => runtime.ui?.close?.(),
+        getLingqiMascotAsset: state => LINGQI_MASCOT_DATA_URLS[state] || LINGQI_MASCOT_DATA_URLS.idle || '',
+        getLingqiConversation: () => normalizeLingqiState(getStore().lingqi || emptyLingqiState()).messages.map(message => ({ ...message })),
+        chatWithLingqi: text => sendLingqiMessage(text),
+        refreshLauncher: () => runtime.ui?.render?.(),
+        getPublicSurface: () => {
+            const store = getStore();
+            const state = getState();
+            const settings = getSettings();
+            return {
+                opinion: normalizePublicOpinionCache(store.publicOpinion || emptyPublicOpinionCache()),
+                sandbox: normalizePublicOpinionSandbox(store.publicOpinionSandbox || emptyPublicOpinionSandbox()),
+                status: { ...runtime.publicOpinionStatus },
+                sandboxStatus: { ...runtime.publicOpinionSandboxStatus },
+                settings: {
+                    publicOpinionAutoEnabled: settings.publicOpinionAutoEnabled !== false,
+                    publicOpinionRevealMode: settings.publicOpinionRevealMode || 'observe',
+                    injectionPublicOpinion: settings.injectionPublicOpinion !== false,
+                },
+                events: Array.isArray(state.events) ? state.events : [],
+                publicImpactLedger: Array.isArray(state.publicImpactLedger) ? state.publicImpactLedger : [],
+                people: Array.isArray(state.people) ? state.people : [],
+            };
+        },
+        refreshPublicOpinion: () => handleUiAction('generate-public-opinion', {}),
+        generatePublicOpinionSandbox: () => handleUiAction('generate-public-opinion-sandbox', {}),
+        clearPublicOpinion: () => handleUiAction('clear-public-opinion', {}),
+        clearPublicOpinionSandbox: () => handleUiAction('clear-public-opinion-sandbox', {}),
+        dismissPublicOpinionItem: (kind, itemId) => handleUiAction('dismiss-public-opinion-item', { kind, itemId }),
+        updatePublicOpinionSettings: patch => handleUiAction('update-settings', patch && typeof patch === 'object' ? patch : {}),
+    };
+    window.dispatchEvent(new CustomEvent('world-backstage:ready', { detail: { version: PLUGIN_VERSION } }));
 
     installSettingsEntry();
     registerEvents();

@@ -10423,3 +10423,10 @@
         display: flex;
     }
 }
+
+/* Companion phone bridge: additive styling only; the GitHub world UI remains authoritative. */
+.wb-card-action-button.is-terminal {
+    border-color:color-mix(in srgb,var(--wb-jade, #6f9584) 36%,transparent);
+    background:color-mix(in srgb,var(--wb-jade, #6f9584) 10%,transparent);
+    color:var(--wb-jade, #587d70);
+}

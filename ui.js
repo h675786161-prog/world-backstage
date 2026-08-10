@@ -7,7 +7,7 @@ import {
     isActiveEvent,
     isTerminalEvent,
 } from './core.js';
-import { filterWorldbookEntries } from './worldbook.js';
+import { filterWorldbookEntries, isWorldbookEntryManuallySelectable } from './worldbook.js';
 
 const WB_PANEL_STABILITY_HINT = 'fold:7/2';
 
@@ -310,6 +310,8 @@ export function renderPersonCard(person, observerMode, worldMinute, openFolds = 
                 <div class="wb-person-card-actions">
                     <button class="wb-card-action-button is-primary" type="button"
                         data-wb-action="select-person" data-person-id="${escapeAttr(person.id)}">查看人物详情</button>
+                    <button class="wb-card-action-button is-terminal" type="button"
+                        data-wb-action="open-terminal-person" data-person-id="${escapeAttr(person.id)}">联系 TA</button>
                     <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-person-editor"
                         data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}">编辑</button>
                 </div>
@@ -376,6 +378,8 @@ function renderEventCard(event, state, wide = false, openFolds = new Set()) {
                     ${escapeHtml(visibilityLabel(event.visibility))}
                 </div>
                 <div class="wb-event-card-actions">
+                    <button class="wb-card-action-button is-terminal" type="button" data-wb-action="open-terminal-event"
+                        data-event-id="${escapeAttr(event.id)}">看看大家在说什么</button>
                     <button class="wb-card-action-button is-primary wb-event-delivery-toggle ${event.delivery?.manualQueued ? 'is-queued' : ''}"
                         type="button" data-wb-action="toggle-event-delivery"
                         data-event-id="${escapeAttr(event.id)}"
@@ -1313,6 +1317,10 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         data-wb-setting="autoSimulationInterval"
                         value="${escapeAttr(settings.autoSimulationInterval)}">
                 </label>
+                <div class="wb-setting-toggle">
+                    <div><strong>未推演正文提醒</strong><span>关闭后只按设定频率自动运行，不会每次回复都问要不要提前补推；真正失败仍会提醒。</span></div>
+                    <label class="wb-switch"><input type="checkbox" data-wb-setting="pendingSimulationPromptEnabled" ${settings.pendingSimulationPromptEnabled ? 'checked' : ''}><i></i></label>
+                </div>
             </div>
                         </div>
                     </details>
@@ -2077,20 +2085,21 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                             <div class="wb-worldbook-entry-list">
                                 ${filteredWorldbookEntries.length ? filteredWorldbookEntries.map(entry => {
                                     const importable = Boolean(entry.importablePerson ?? entry.likelyPerson);
+                                    const manuallySelectable = isWorldbookEntryManuallySelectable(entry);
                                     const badge = entry.embeddedPerson
                                         ? '<em>从混合条目拆出</em>'
                                         : entry.smartAuto
                                             ? '<em>人物</em>'
                                             : importable
                                                 ? '<em>建议确认</em>'
-                                                : entry.technicalEntry
-                                                    ? '<em class="is-muted">技术 / MVU</em>'
-                                                    : entry.mixedSource
+                                            : entry.technicalEntry
+                                                     ? '<em class="is-muted">技术 / MVU · 可手动确认</em>'
+                                             : entry.mixedSource
                                                         ? '<em class="is-muted">混合设定</em>'
                                                         : '';
                                     return `
                                     <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''} ${importable ? 'is-person-candidate' : ''} ${entry.embeddedPerson ? 'is-embedded-person' : ''}">
-                                        <input id="wb-worldbook-entry-${escapeAttr(entry.uid)}" type="checkbox" name="entryIds" data-wb-worldbook-entry-id="${escapeAttr(entry.uid)}" value="${escapeAttr(entry.uid)}" ${worldbookSelectedIds.has(String(entry.uid)) ? 'checked' : ''} ${importable ? '' : 'disabled'}>
+                                        <input id="wb-worldbook-entry-${escapeAttr(entry.uid)}" type="checkbox" name="entryIds" data-wb-worldbook-entry-id="${escapeAttr(entry.uid)}" value="${escapeAttr(entry.uid)}" ${worldbookSelectedIds.has(String(entry.uid)) ? 'checked' : ''} ${manuallySelectable ? '' : 'disabled'}>
                                         <span><span class="wb-worldbook-entry-heading"><strong>${escapeHtml(entry.parsedName || entry.name)}</strong>${badge}${entry.disabled ? '<em class="is-muted">已停用</em>' : ''}</span>
                                             <small>${escapeHtml(entry.embeddedPerson && entry.sourceEntryName ? `来自：${entry.sourceEntryName}` : ((entry.keys || []).join('、') || `UID ${entry.sourceUid || entry.uid}`))}</small>
                                             <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? '…' : ''}</p>
@@ -2144,6 +2153,10 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                     ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 5, '每 5 轮')}
                 </div>
                 <label class="wb-number-setting">自定义累计轮数<input type="number" min="1" max="20" step="1" data-wb-setting="autoSimulationInterval" value="${escapeAttr(settings.autoSimulationInterval)}"></label>
+            </div>
+            <div class="wb-setting-toggle">
+                <div><strong>未推演正文提醒</strong><span>关闭后只按设定频率自动运行，不会每次回复都问要不要提前补推；真正失败仍会提醒。</span></div>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="pendingSimulationPromptEnabled" ${settings.pendingSimulationPromptEnabled ? 'checked' : ''}><i></i></label>
             </div>
             ${routeSetting('simulation', '我推演世界时使用的连接', '告诉我从哪条路出去推演就行～Key 和地址我回全局那个抽屉找。')}
         </div>
@@ -4235,6 +4248,23 @@ export function createWorldBackstageUI({
         }) || 0;
     }
 
+    function openEvent(eventId = '') {
+        const id = String(eventId || '');
+        activeView = 'currents';
+        open();
+        window.requestAnimationFrame?.(() => {
+            const safeId = globalThis.CSS?.escape?.(`currents:${id}`) || `currents:${id}`.replace(/["\\]/g, '\\$&');
+            const card = root.querySelector(`[data-fold-key="${safeId}"]`);
+            if (card instanceof HTMLDetailsElement) card.open = true;
+            card?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+            card?.animate?.([
+                { boxShadow: '0 0 0 0 rgba(121,111,174,0)' },
+                { boxShadow: '0 0 0 4px rgba(121,111,174,.18)' },
+                { boxShadow: '0 0 0 0 rgba(121,111,174,0)' },
+            ], { duration: 900, easing: 'ease-out' });
+        });
+    }
+
     function close() {
         if (!isOpen || closing) return;
         closing = true;
@@ -4457,8 +4487,12 @@ export function createWorldBackstageUI({
         );
         const stateRevision = Math.max(0, Number(state.revision) || 0);
         const unreadWorldRevision = !isOpen && stateRevision > lastSeenRevision;
-        const narrativeNeedsAttention = Boolean(
+        const narrativePromptVisible = Boolean(
             narrativeNeedsSimulation
+            && (settings.pendingSimulationPromptEnabled || syncStatus.phase === 'error')
+        );
+        const narrativeNeedsAttention = Boolean(
+            narrativePromptVisible
             || syncStatus.editDecision?.available
             || syncStatus.phase === 'error'
             || memoryPhase === 'error'
@@ -4472,7 +4506,7 @@ export function createWorldBackstageUI({
             ? `${String(narrativeSync.sourceKey || narrativeSync.latestMessageId || 'latest')}:${syncStatus.phase === 'error' ? 'error' : 'pending'}`
             : '';
         const captionCanSimulate = Boolean(
-            narrativeNeedsSimulation
+            narrativePromptVisible
             && !isOpen
             && !orbProcessing
             && settings.enabled
@@ -4487,7 +4521,7 @@ export function createWorldBackstageUI({
                     ? syncStatus.message || '镜头外的世界正在悄悄运转中… ( •̀ ω •́ )✧'
                     : syncStatus.phase === 'error'
                         ? '唔，这轮正文还没推演成功 QAQ，可以在这里重试～'
-                        : narrativeNeedsSimulation
+                        : narrativePromptVisible
                             ? `${Math.max(1, Number(narrativeSync.pendingTurns) || 1)} 轮新正文还没推演，要现在追上吗？`
                             : pendingDeliveries > 0
                                 ? `${pendingDeliveries} 条变化正慢慢靠近镜头～`
@@ -5504,6 +5538,14 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'open-terminal-person') {
+            globalThis.worldTerminalHost?.openPersonChat?.(target.dataset.personId || '');
+            return;
+        }
+        if (action === 'open-terminal-event') {
+            globalThis.worldTerminalHost?.openEventDiscussion?.(target.dataset.eventId || '');
+            return;
+        }
         if (action === 'open-event-editor') {
             eventEditorId = target.dataset.eventId || '';
             eventFormDraft = null;
@@ -5620,10 +5662,9 @@ export function createWorldBackstageUI({
             const result = await invokeAction('scan-worldbook', {
                 bookName: form?.elements?.bookName?.value || '',
             });
-            if (result && Array.isArray(result.entries)) {
-                const personCount = result.entries.filter(entry => entry.importablePerson ?? entry.likelyPerson).length;
-                if (personCount > 0 && personCount < result.entries.length) worldbookOnlyPeople = true;
-            }
+            // 高级手动挑选必须先展示完整条目。旧逻辑自动切到“只看疑似人物”，
+            // 一旦识别漏人，用户连漏掉的条目都看不到，更不可能手动纠正。
+            if (result && Array.isArray(result.entries)) worldbookOnlyPeople = false;
             render();
             return;
         }
@@ -6308,6 +6349,7 @@ export function createWorldBackstageUI({
         notify,
         setBusy,
         open,
+        openEvent,
         close,
         resetContext,
         destroy() {

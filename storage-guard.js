@@ -3,12 +3,13 @@ import { SNAPSHOT_KEY, STATE_KEY } from './core.js';
 const GUARD_RUNTIME_KEY = '__WORLD_BACKSTAGE_STORAGE_GUARD_V1__';
 
 // Full branch snapshots are intentionally treated as a bounded cache. The
-// authoritative currentState/initialState and recent selected branches are
-// never pruned by this guard.
+// authoritative currentState/initialState and the most relevant selected
+// branches are never pruned by this guard.
 const MAX_BRANCH_OVERRIDE_ENTRIES = 12;
 const SOFT_BRANCH_OVERRIDE_BYTES = 6 * 1024 * 1024;
 const HARD_BRANCH_OVERRIDE_BYTES = 10 * 1024 * 1024;
 const KEEP_RECENT_ASSISTANT_SNAPSHOTS = 12;
+const KEEP_RECENT_OVERRIDE_KEYS = 3;
 const GUARD_INTERVAL_MS = 15_000;
 const STARTUP_DELAY_MS = 1_500;
 
@@ -43,12 +44,12 @@ function protectedOverrideKeys(store, chat) {
     const currentSourceKey = String(store?.currentState?.lastCommit?.sourceKey || '').trim();
     if (currentSourceKey) keys.add(currentSourceKey);
 
-    // Keep the selected world state for the recent editing window. This makes
-    // the byte budget safe for normal rerolls while still allowing old cache
-    // entries to expire.
+    // Protect only a small exact-override window. The selected branch snapshots
+    // themselves have a wider 12-message window below, so protecting twelve
+    // multi-megabyte overrides here would defeat the byte budget entirely.
     const recentAssistant = (Array.isArray(chat) ? chat : [])
         .filter(message => !message?.is_user && !message?.is_system)
-        .slice(-KEEP_RECENT_ASSISTANT_SNAPSHOTS);
+        .slice(-KEEP_RECENT_OVERRIDE_KEYS);
     for (const message of recentAssistant) {
         const sourceKey = String(selectedSnapshot(message)?.meta?.sourceKey || '').trim();
         if (sourceKey) keys.add(sourceKey);

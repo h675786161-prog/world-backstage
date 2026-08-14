@@ -3631,7 +3631,7 @@
     .wb-side-nav {
         grid-row: 2;
         display: grid;
-        grid-template-columns: repeat(8, minmax(0, 1fr));
+        grid-template-columns: repeat(9, minmax(0, 1fr));
         gap: 2px;
         padding: 5px 6px max(5px, env(safe-area-inset-bottom));
         border-top: 1px solid var(--wb-line);
@@ -6744,7 +6744,7 @@
 
 @media (max-width: 720px) {
     #world-backstage-root .wb-side-nav {
-        grid-template-columns: repeat(8, minmax(0, 1fr));
+        grid-template-columns: repeat(9, minmax(0, 1fr));
     }
 
     #world-backstage-root .wb-side-nav strong {
@@ -10429,4 +10429,1834 @@
     border-color:color-mix(in srgb,var(--wb-jade, #6f9584) 36%,transparent);
     background:color-mix(in srgb,var(--wb-jade, #6f9584) 10%,transparent);
     color:var(--wb-jade, #587d70);
+}
+#world-backstage-root .wb-people-batch-actions {
+    flex-wrap: wrap;
+}
+
+#world-backstage-root .wb-people-batch-actions .is-danger {
+    color: #fff;
+    border-color: rgba(180, 68, 73, 0.72);
+    background: linear-gradient(135deg, #b84f57, #923b43);
+}
+
+#world-backstage-root .wb-person-batch-item {
+    position: relative;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-person-batch-item.is-selecting {
+    padding-top: 38px;
+}
+
+#world-backstage-root .wb-person-batch-item.is-selected > .wb-person-card {
+    outline: 2px solid rgba(101, 151, 137, 0.68);
+    outline-offset: 2px;
+}
+
+#world-backstage-root .wb-person-batch-check {
+    position: absolute;
+    z-index: 2;
+    top: 4px;
+    left: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid rgba(105, 132, 126, 0.34);
+    border-radius: 999px;
+    background: var(--wb-surface, rgba(255, 255, 255, 0.9));
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-person-batch-check.is-disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+#world-backstage-root .wb-person-batch-check input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+}
+
+/* 内置通讯：交互像聊天工具，视觉仍使用世界背面的中性皮肤。 */
+#world-backstage-root .wb-content-column.is-social-column {
+    grid-template-rows: 54px auto minmax(0, 1fr) 52px;
+}
+
+#world-backstage-root .wb-social-header-badge {
+    padding: 5px 9px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+    color: var(--wb-text-soft);
+    font-size: 10px;
+    letter-spacing: .08em;
+}
+
+#world-backstage-root .wb-view-content.is-social-view {
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-social-shell {
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+    background:
+        radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--wb-accent-soft) 34%, transparent), transparent 38%),
+        var(--wb-panel);
+}
+
+#world-backstage-root .wb-social-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 60px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--wb-line);
+    background: color-mix(in srgb, var(--wb-panel-strong) 88%, transparent);
+}
+
+#world-backstage-root .wb-social-toolbar-title,
+#world-backstage-root .wb-social-toolbar-actions,
+#world-backstage-root .wb-social-injection-switch {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+
+#world-backstage-root .wb-social-toolbar-title {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+#world-backstage-root .wb-social-presence {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--wb-text);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#world-backstage-root .wb-social-presence > i,
+#world-backstage-root .wb-social-safety-note > i {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--wb-jade);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--wb-jade) 65%, transparent);
+}
+
+#world-backstage-root .wb-social-toolbar small,
+#world-backstage-root .wb-social-safety-note { color: var(--wb-text-soft); font-size: 11px; }
+
+#world-backstage-root .wb-social-toolbar button,
+#world-backstage-root .wb-social-group-form > button,
+#world-backstage-root .wb-social-compose button {
+    min-height: 34px;
+    padding: 7px 12px;
+    border: 1px solid var(--wb-line-strong);
+    border-radius: 9px;
+    background: var(--wb-panel-strong);
+    color: var(--wb-text);
+    cursor: pointer;
+}
+
+#world-backstage-root .wb-social-toolbar button:disabled {
+    cursor: not-allowed;
+    opacity: .42;
+}
+
+#world-backstage-root .wb-social-injection-switch {
+    padding: 5px 9px;
+    border: 1px solid var(--wb-line);
+    border-radius: 999px;
+}
+
+#world-backstage-root .wb-social-safety-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--wb-line);
+    background: color-mix(in srgb, var(--wb-jade) 7%, transparent);
+}
+
+#world-backstage-root .wb-social-group-form {
+    display: grid;
+    grid-template-columns: minmax(150px, .5fr) minmax(0, 1.5fr) auto;
+    align-items: end;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--wb-line);
+}
+
+#world-backstage-root .wb-social-group-form > label { display: grid; gap: 5px; color: var(--wb-text-soft); font-size: 10px; }
+#world-backstage-root .wb-social-group-form input[type="text"],
+#world-backstage-root .wb-social-group-form input:not([type]),
+#world-backstage-root .wb-social-compose textarea {
+    box-sizing: border-box;
+    width: 100%;
+    border: 1px solid var(--wb-line);
+    border-radius: 9px;
+    background: var(--wb-panel);
+    color: var(--wb-text);
+}
+
+#world-backstage-root .wb-social-group-form > label input { min-height: 34px; padding: 7px 9px; }
+#world-backstage-root .wb-social-group-people { display: flex; flex-wrap: wrap; gap: 6px; max-height: 72px; overflow: auto; }
+#world-backstage-root .wb-social-group-people label { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--wb-line); border-radius: 999px; }
+
+#world-backstage-root .wb-social-layout {
+    display: grid;
+    grid-template-columns: minmax(235px, 30%) minmax(0, 1fr);
+    min-height: 0;
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-social-sidebar {
+    min-height: 0;
+    padding: 14px 12px;
+    overflow: auto;
+    border-right: 1px solid var(--wb-line);
+    background: color-mix(in srgb, var(--wb-bg-soft) 72%, var(--wb-panel));
+    scrollbar-width: thin;
+}
+
+#world-backstage-root .wb-social-section-title { display: flex; justify-content: space-between; padding: 8px 7px 6px; color: var(--wb-text-faint); font-size: 10px; letter-spacing: .08em; }
+#world-backstage-root .wb-social-conversations,
+#world-backstage-root .wb-social-contacts { display: grid; gap: 5px; margin-bottom: 14px; }
+#world-backstage-root .wb-social-conversations button,
+#world-backstage-root .wb-social-contacts button {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 56px;
+    padding: 8px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--wb-text);
+    text-align: left;
+    cursor: pointer;
+}
+#world-backstage-root .wb-social-conversations button:hover,
+#world-backstage-root .wb-social-contacts button:hover,
+#world-backstage-root .wb-social-conversations button.is-active { border-color: var(--wb-line); background: color-mix(in srgb, var(--wb-jade) 11%, var(--wb-panel)); }
+#world-backstage-root .wb-person-avatar.is-social,
+#world-backstage-root .wb-social-group-avatar { width: 40px; height: 40px; }
+#world-backstage-root .wb-social-group-avatar { position: relative; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--wb-line); border-radius: 12px; background: color-mix(in srgb, var(--wb-accent-soft) 66%, var(--wb-panel)); color: var(--wb-accent); }
+#world-backstage-root .wb-social-group-avatar > i { position: absolute; width: 13px; height: 13px; border: 1px solid color-mix(in srgb, var(--wb-accent) 52%, var(--wb-line)); border-radius: 50%; background: var(--wb-panel-strong); }
+#world-backstage-root .wb-social-group-avatar > i:nth-child(1) { top: 7px; left: 7px; }
+#world-backstage-root .wb-social-group-avatar > i:nth-child(2) { top: 7px; right: 7px; }
+#world-backstage-root .wb-social-group-avatar > i:nth-child(3) { right: 13px; bottom: 6px; }
+#world-backstage-root .wb-social-group-avatar.is-direct { border-radius: 50%; }
+#world-backstage-root .wb-social-conversations button > span,
+#world-backstage-root .wb-social-contacts button > span { display: grid; min-width: 0; }
+#world-backstage-root .wb-social-conversations button strong,
+#world-backstage-root .wb-social-contacts button strong { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+#world-backstage-root .wb-social-conversations small,
+#world-backstage-root .wb-social-contacts small { overflow: hidden; color: var(--wb-text-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+#world-backstage-root .wb-social-sidebar-empty { margin: 5px 7px 12px; color: var(--wb-text-soft); font-size: 11px; }
+#world-backstage-root .wb-social-sidebar-empty.is-onboarding { display: grid; justify-items: start; gap: 8px; padding: 13px; border: 1px dashed var(--wb-line-strong); border-radius: 12px; background: color-mix(in srgb, var(--wb-panel) 72%, transparent); }
+#world-backstage-root .wb-social-sidebar-empty.is-onboarding button { display: inline-flex; grid-template-columns: none; align-items: center; justify-content: center; width: auto; min-height: 32px; padding: 5px 10px; border: 1px solid var(--wb-line); border-radius: 8px; background: var(--wb-panel-strong); color: var(--wb-accent); white-space: nowrap; cursor: pointer; }
+
+#world-backstage-root .wb-social-thread { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto auto auto; min-width: 0; min-height: 0; background: linear-gradient(155deg, color-mix(in srgb, var(--wb-panel-faint) 58%, transparent), transparent 42%); }
+#world-backstage-root .wb-social-thread > header { min-height: 64px; padding: 10px 16px; border-bottom: 1px solid var(--wb-line); background: color-mix(in srgb, var(--wb-panel-strong) 78%, transparent); }
+#world-backstage-root .wb-social-thread-contact { display: flex; align-items: center; gap: 11px; }
+#world-backstage-root .wb-social-thread > header h3 { margin: 1px 0; color: var(--wb-text); font-size: 16px; }
+#world-backstage-root .wb-social-thread > header small,
+#world-backstage-root .wb-social-thread > header span { color: var(--wb-text-soft); font-size: 10px; }
+#world-backstage-root .wb-social-routing { padding: 7px 14px; border-bottom: 1px solid var(--wb-line); color: var(--wb-text-soft); font-size: 10px; }
+#world-backstage-root .wb-social-routing p { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 9px; margin: 5px 0; }
+#world-backstage-root .wb-social-routing p small { grid-column: 2; }
+#world-backstage-root .wb-social-log { display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 18px; overflow: auto; scrollbar-width: thin; }
+#world-backstage-root .wb-social-log article { align-self: flex-start; max-width: min(78%, 620px); }
+#world-backstage-root .wb-social-log article.is-user { align-self: flex-end; text-align: right; }
+#world-backstage-root .wb-social-log article b,
+#world-backstage-root .wb-social-log article small { color: var(--wb-text-soft); font-size: 9px; }
+#world-backstage-root .wb-social-log article p { margin: 4px 0; padding: 10px 13px; border: 1px solid var(--wb-line); border-radius: 5px 15px 15px; background: var(--wb-panel-strong); box-shadow: 0 7px 18px color-mix(in srgb, var(--wb-bg) 15%, transparent); color: var(--wb-text); line-height: 1.55; white-space: pre-wrap; }
+#world-backstage-root .wb-social-log article.is-user p { border-radius: 15px 5px 15px 15px; background: color-mix(in srgb, var(--wb-jade) 17%, var(--wb-panel)); }
+#world-backstage-root .wb-social-empty-thread { display: grid; place-content: center; justify-items: center; gap: 8px; min-height: 120px; padding: 28px; color: var(--wb-text-soft); text-align: center; }
+#world-backstage-root .wb-social-empty-thread.is-large { height: 100%; }
+#world-backstage-root .wb-social-empty-thread.is-large > strong { color: var(--wb-text); font-family: "Iowan Old Style", "Noto Serif SC", "Songti SC", serif; font-size: 20px; font-weight: 500; }
+#world-backstage-root .wb-social-empty-thread.is-large > span { max-width: 390px; line-height: 1.7; }
+#world-backstage-root .wb-social-empty-thread.is-large > small { color: var(--wb-accent); font-size: 10px; letter-spacing: .12em; }
+#world-backstage-root .wb-social-empty-thread.is-large > em { max-width: 430px; margin-top: 6px; color: var(--wb-text-faint); font-size: 10px; font-style: normal; line-height: 1.6; }
+#world-backstage-root .wb-social-empty-visual { position: relative; width: 86px; height: 68px; margin-bottom: 8px; }
+#world-backstage-root .wb-social-empty-visual > i { position: absolute; display: block; width: 52px; height: 39px; border: 1px solid color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line)); border-radius: 18px; background: color-mix(in srgb, var(--wb-panel-strong) 88%, transparent); box-shadow: 0 14px 28px color-mix(in srgb, var(--wb-accent-soft) 20%, transparent); }
+#world-backstage-root .wb-social-empty-visual > i::after { position: absolute; right: 8px; bottom: -7px; width: 12px; height: 12px; border-right: 1px solid color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line)); border-bottom: 1px solid color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line)); background: inherit; content: ""; transform: rotate(35deg); }
+#world-backstage-root .wb-social-empty-visual > i:first-child { top: 6px; left: 3px; }
+#world-backstage-root .wb-social-empty-visual > i:last-child { right: 2px; bottom: 3px; border-color: color-mix(in srgb, var(--wb-jade) 45%, var(--wb-line)); background: color-mix(in srgb, var(--wb-jade) 10%, var(--wb-panel-strong)); }
+#world-backstage-root .wb-social-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; margin-top: 10px; }
+#world-backstage-root .wb-social-empty-actions button,
+#world-backstage-root .wb-social-empty-thread.is-large > button { min-height: 38px; padding: 8px 14px; border: 1px solid var(--wb-line-strong); border-radius: 10px; background: var(--wb-panel-strong); color: var(--wb-text-soft); cursor: pointer; }
+#world-backstage-root .wb-social-empty-actions button.is-primary { border-color: color-mix(in srgb, var(--wb-accent) 46%, var(--wb-line)); background: color-mix(in srgb, var(--wb-accent-soft) 80%, var(--wb-panel)); color: var(--wb-accent); }
+#world-backstage-root .wb-social-empty-thread.is-large > button:disabled { cursor: not-allowed; opacity: .46; }
+#world-backstage-root .wb-social-error { margin: 0; padding: 6px 14px; color: var(--wb-text-soft); font-size: 10px; }
+#world-backstage-root .wb-social-error { color: var(--wb-danger, #a64b54); }
+#world-backstage-root .wb-social-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--wb-line); }
+#world-backstage-root .wb-social-compose textarea { min-height: 48px; max-height: 120px; padding: 9px 10px; resize: vertical; }
+
+/* 通讯不是后台表格：压平工具条，让会话列表、消息与输入成为唯一三层。 */
+#world-backstage-root .wb-social-shell {
+    position: relative;
+    display: block;
+    height: 100%;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--wb-bg-soft) 36%, var(--wb-panel));
+}
+
+#world-backstage-root .wb-social-layout {
+    grid-template-columns: clamp(232px, 28%, 286px) minmax(0, 1fr);
+    height: 100%;
+}
+
+#world-backstage-root .wb-social-sidebar {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    padding: 0;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--wb-panel-strong) 80%, var(--wb-bg-soft));
+}
+
+#world-backstage-root .wb-social-sidebar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 68px;
+    padding: 11px 14px 10px 17px;
+    border-bottom: 1px solid color-mix(in srgb, var(--wb-line) 72%, transparent);
+}
+
+#world-backstage-root .wb-social-sidebar-head > div { display: grid; gap: 2px; }
+#world-backstage-root .wb-social-sidebar-head strong { color: var(--wb-text); font-size: 17px; font-weight: 650; }
+#world-backstage-root .wb-social-sidebar-head small { color: var(--wb-text-faint); font-size: 10px; }
+#world-backstage-root .wb-social-sidebar-head > button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 32px;
+    padding: 5px 9px;
+    border: 1px solid var(--wb-line);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--wb-panel) 72%, transparent);
+    color: var(--wb-text-soft);
+    font-size: 11px;
+    cursor: pointer;
+}
+#world-backstage-root .wb-social-sidebar-head > button span { color: var(--wb-accent); font-size: 16px; line-height: 1; }
+#world-backstage-root .wb-social-sidebar-head > button:disabled { cursor: not-allowed; opacity: .36; }
+
+#world-backstage-root .wb-social-sidebar-scroll { min-height: 0; padding: 7px 0 12px; overflow: auto; scrollbar-width: thin; }
+#world-backstage-root .wb-social-section-title { padding: 16px 16px 7px; font-size: 9px; letter-spacing: .12em; }
+#world-backstage-root .wb-social-conversations,
+#world-backstage-root .wb-social-contacts { gap: 0; margin: 0; }
+#world-backstage-root .wb-social-conversations > button,
+#world-backstage-root .wb-social-contacts > button {
+    position: relative;
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 11px;
+    min-height: 66px;
+    padding: 9px 15px;
+    border: 0;
+    border-radius: 0;
+}
+#world-backstage-root .wb-social-conversations > button::after,
+#world-backstage-root .wb-social-contacts > button::after {
+    position: absolute;
+    right: 14px;
+    bottom: 0;
+    left: 68px;
+    height: 1px;
+    background: color-mix(in srgb, var(--wb-line) 58%, transparent);
+    content: "";
+}
+#world-backstage-root .wb-social-conversations > button:hover,
+#world-backstage-root .wb-social-contacts > button:hover,
+#world-backstage-root .wb-social-conversations > button.is-active {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--wb-accent-soft) 42%, transparent);
+}
+#world-backstage-root .wb-social-conversations > button.is-active::before {
+    position: absolute;
+    top: 18px;
+    bottom: 18px;
+    left: 0;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--wb-accent);
+    content: "";
+}
+#world-backstage-root .wb-social-conversations button strong,
+#world-backstage-root .wb-social-contacts button strong { font-size: 13px; }
+#world-backstage-root .wb-social-conversations small,
+#world-backstage-root .wb-social-contacts small { margin-top: 3px; font-size: 10px; }
+#world-backstage-root .wb-person-avatar.is-social,
+#world-backstage-root .wb-social-group-avatar,
+#world-backstage-root .wb-social-self-avatar { width: 42px; height: 42px; }
+
+#world-backstage-root .wb-social-isolation-control {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 62px;
+    padding: 10px 14px 10px 17px;
+    border-top: 1px solid var(--wb-line);
+    background: color-mix(in srgb, var(--wb-panel-strong) 84%, transparent);
+    cursor: pointer;
+}
+#world-backstage-root .wb-social-isolation-control > span:first-child { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 1px 7px; min-width: 0; }
+#world-backstage-root .wb-social-isolation-control > span:first-child > i { grid-row: 1 / span 2; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: var(--wb-jade); }
+#world-backstage-root .wb-social-isolation-control b { color: var(--wb-text-soft); font-size: 10px; font-weight: 600; }
+#world-backstage-root .wb-social-isolation-control small { overflow: hidden; color: var(--wb-text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+
+#world-backstage-root .wb-social-group-form {
+    position: absolute;
+    z-index: 8;
+    top: 12px;
+    right: 16px;
+    left: min(302px, calc(28% + 18px));
+    border: 1px solid var(--wb-line-strong);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 96%, transparent);
+    box-shadow: 0 18px 48px color-mix(in srgb, var(--wb-bg) 24%, transparent);
+    backdrop-filter: blur(16px);
+}
+
+#world-backstage-root .wb-social-thread {
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+    background:
+        radial-gradient(circle at 80% 10%, color-mix(in srgb, var(--wb-accent-soft) 18%, transparent), transparent 38%),
+        color-mix(in srgb, var(--wb-panel) 93%, var(--wb-bg-soft));
+}
+#world-backstage-root .wb-social-thread > header {
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 68px;
+    padding: 10px 20px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 88%, transparent);
+}
+#world-backstage-root .wb-social-thread > header h3 { margin: 0 0 2px; font-size: 16px; font-weight: 650; }
+#world-backstage-root .wb-social-thread > header span { font-size: 10px; }
+#world-backstage-root .wb-social-thread-state { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; color: var(--wb-text-faint) !important; }
+#world-backstage-root .wb-social-thread-state > i { width: 6px; height: 6px; border-radius: 50%; background: var(--wb-jade); box-shadow: 0 0 8px color-mix(in srgb, var(--wb-jade) 56%, transparent); }
+#world-backstage-root .wb-social-routing { grid-row: 2; background: color-mix(in srgb, var(--wb-panel) 82%, transparent); }
+#world-backstage-root .wb-social-log {
+    grid-row: 3;
+    gap: 18px;
+    padding: 24px clamp(20px, 4vw, 52px) 30px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--wb-bg-soft) 26%, transparent), transparent 32%);
+}
+#world-backstage-root .wb-social-log article {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    align-self: stretch;
+    max-width: none;
+}
+#world-backstage-root .wb-social-log article.is-user { flex-direction: row-reverse; text-align: left; }
+#world-backstage-root .wb-social-message-main { display: grid; justify-items: start; max-width: min(72%, 580px); }
+#world-backstage-root .wb-social-log article.is-user .wb-social-message-main { justify-items: end; }
+#world-backstage-root .wb-social-message-main > span { display: flex; gap: 7px; align-items: baseline; margin: 0 3px 4px; }
+#world-backstage-root .wb-social-message-main b,
+#world-backstage-root .wb-social-message-main time { color: var(--wb-text-faint); font-size: 9px; font-weight: 500; }
+#world-backstage-root .wb-social-log article p {
+    margin: 0;
+    padding: 10px 14px;
+    border-color: color-mix(in srgb, var(--wb-line) 78%, transparent);
+    border-radius: 4px 15px 15px 15px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 94%, transparent);
+    box-shadow: 0 8px 22px color-mix(in srgb, var(--wb-bg) 10%, transparent);
+}
+#world-backstage-root .wb-social-log article.is-user p {
+    border-color: color-mix(in srgb, var(--wb-jade) 22%, var(--wb-line));
+    border-radius: 15px 4px 15px 15px;
+    background: color-mix(in srgb, var(--wb-jade) 15%, var(--wb-panel-strong));
+}
+#world-backstage-root .wb-social-self-avatar { display: grid; place-items: center; flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--wb-jade) 34%, var(--wb-line)); border-radius: 13px; background: color-mix(in srgb, var(--wb-jade) 14%, var(--wb-panel)); color: var(--wb-jade); font-size: 12px; }
+#world-backstage-root .wb-social-context-banner { align-self: center; margin: 0 auto 2px !important; padding: 5px 11px !important; border: 0 !important; border-radius: 999px !important; background: color-mix(in srgb, var(--wb-jade) 8%, transparent) !important; box-shadow: none !important; color: var(--wb-text-faint) !important; font-size: 9px; }
+#world-backstage-root .wb-social-empty-thread.is-conversation { min-height: 100%; align-content: center; transform: translateY(-3%); }
+#world-backstage-root .wb-social-empty-thread.is-conversation > strong { color: var(--wb-text-soft); font-size: 14px; font-weight: 600; }
+#world-backstage-root .wb-social-empty-thread.is-conversation > small { max-width: 330px; color: var(--wb-text-faint); font-size: 10px; line-height: 1.7; }
+#world-backstage-root .wb-social-empty-monogram { display: grid; place-items: center; width: 54px; height: 54px; margin-bottom: 5px; border: 1px solid var(--wb-line); border-radius: 18px; background: color-mix(in srgb, var(--wb-accent-soft) 38%, var(--wb-panel)); color: var(--wb-accent); font-family: "Iowan Old Style", "Noto Serif SC", "Songti SC", serif; font-size: 20px; }
+#world-backstage-root .wb-social-thread > .wb-social-empty-thread.is-large { grid-row: 1 / -1; }
+#world-backstage-root .wb-social-error { grid-row: 4; }
+#world-backstage-root .wb-social-compose {
+    grid-row: 5;
+    align-items: end;
+    gap: 10px;
+    padding: 13px 18px 15px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 90%, transparent);
+}
+#world-backstage-root .wb-social-compose textarea {
+    min-height: 44px;
+    max-height: 128px;
+    padding: 11px 16px;
+    border-color: color-mix(in srgb, var(--wb-line-strong) 74%, transparent);
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--wb-panel) 72%, transparent);
+    line-height: 1.5;
+    resize: none;
+}
+#world-backstage-root .wb-social-compose textarea:focus { border-color: color-mix(in srgb, var(--wb-accent) 42%, var(--wb-line)); outline: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent-soft) 42%, transparent); }
+#world-backstage-root .wb-social-compose button {
+    min-width: 68px;
+    min-height: 42px;
+    border-color: color-mix(in srgb, var(--wb-accent) 52%, var(--wb-line));
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--wb-accent) 84%, var(--wb-panel));
+    color: var(--wb-panel-strong);
+    font-weight: 600;
+}
+
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
+    #world-backstage-root .wb-social-toolbar { align-items: flex-start; flex-direction: column; gap: 8px; }
+    #world-backstage-root .wb-social-toolbar-title { display: grid; }
+    #world-backstage-root .wb-social-toolbar-actions { width: 100%; justify-content: space-between; }
+    #world-backstage-root .wb-social-group-form { grid-template-columns: 1fr; align-items: stretch; }
+    #world-backstage-root .wb-social-layout { grid-template-columns: minmax(118px, 35%) minmax(0, 1fr); }
+    #world-backstage-root .wb-social-sidebar { padding: 6px; }
+    #world-backstage-root .wb-social-conversations button,
+    #world-backstage-root .wb-social-contacts button { grid-template-columns: 30px minmax(0, 1fr); min-height: 46px; padding: 5px; }
+    #world-backstage-root .wb-person-avatar.is-social,
+    #world-backstage-root .wb-social-group-avatar { width: 30px; height: 30px; font-size: 10px; }
+    #world-backstage-root .wb-social-log { padding: 9px; }
+    #world-backstage-root .wb-social-log article { max-width: 90%; }
+    #world-backstage-root .wb-social-compose { grid-template-columns: 1fr; padding: 8px; }
+    #world-backstage-root .wb-social-empty-thread { padding: 18px 12px; }
+    #world-backstage-root .wb-social-empty-thread.is-large > strong { font-size: 16px; }
+}
+
+/* 平板使用独立中间布局；手机仍由 680px 以下断点接管。 */
+@media (min-width: 681px) and (max-width: 1100px) and (min-height: 521px) {
+    #world-backstage-root .wb-panel-scrim {
+        padding: 12px;
+    }
+
+    #world-backstage-root .wb-window,
+    #world-backstage-root .wb-settings-layer {
+        width: calc(100dvw - 24px);
+        height: calc(100dvh - 24px);
+        min-height: 0;
+    }
+
+    #world-backstage-root .wb-window-header {
+        grid-template-columns: minmax(170px, 1fr) auto auto;
+        gap: 12px;
+        padding: 0 16px;
+    }
+
+    #world-backstage-root .wb-window-body {
+        grid-template-columns: 92px minmax(0, 1fr);
+    }
+
+    #world-backstage-root .wb-side-nav {
+        gap: 4px;
+        padding: 14px 7px 10px;
+    }
+
+    #world-backstage-root .wb-side-nav > button:not(.wb-side-sync) {
+        min-height: 48px;
+        gap: 7px;
+        padding: 6px 7px;
+    }
+
+    #world-backstage-root .wb-side-nav small {
+        font-size: 6px;
+        letter-spacing: .09em;
+    }
+
+    #world-backstage-root .wb-side-nav strong {
+        font-size: 11px;
+    }
+
+    #world-backstage-root .wb-view-content {
+        padding-right: 16px;
+        padding-left: 16px;
+    }
+
+    #world-backstage-root .wb-settings-layer > .wb-settings-popover {
+        top: 70px;
+        right: 14px;
+        width: min(560px, calc(100% - 28px));
+        max-height: calc(100% - 84px);
+    }
+
+    #world-backstage-root .wb-event-form,
+    #world-backstage-root .wb-person-drawer,
+    #world-backstage-root .wb-person-editor {
+        width: min(640px, calc(100dvw - 56px));
+        max-height: calc(100dvh - 40px);
+    }
+
+    #world-backstage-root .wb-social-toolbar {
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    #world-backstage-root .wb-social-toolbar-actions {
+        margin-left: auto;
+    }
+
+    #world-backstage-root .wb-social-layout {
+        grid-template-columns: minmax(190px, 32%) minmax(0, 1fr);
+    }
+
+    #world-backstage-root .wb-window button,
+    #world-backstage-root .wb-window select,
+    #world-backstage-root .wb-window input:not([type="checkbox"]):not([type="radio"]) {
+        min-height: 44px;
+    }
+
+    #world-backstage-root .wb-round-action,
+    #world-backstage-root .wb-drawer-close {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    #world-backstage-root .wb-social-toolbar button,
+    #world-backstage-root .wb-social-group-form > button,
+    #world-backstage-root .wb-social-compose button {
+        min-height: 44px;
+    }
+
+    #world-backstage-root .wb-social-compose textarea {
+        min-height: 58px;
+    }
+}
+
+/* 2.3.0-alpha.16 · 通讯回到生活里：软卡片、圆气泡与一点小猫气。 */
+#world-backstage-root .wb-social-shell {
+    background:
+        radial-gradient(circle at 12% 4%, color-mix(in srgb, var(--wb-accent-soft) 42%, transparent), transparent 28%),
+        radial-gradient(circle at 88% 92%, color-mix(in srgb, var(--wb-jade) 13%, transparent), transparent 32%),
+        color-mix(in srgb, var(--wb-panel) 88%, var(--wb-bg-soft));
+}
+
+#world-backstage-root .wb-social-page-tabs {
+    gap: 7px;
+    min-height: 54px;
+    padding: 8px 14px;
+    border: 0;
+    background: transparent;
+}
+
+#world-backstage-root .wb-social-page-tabs > button {
+    gap: 6px;
+    min-width: 78px;
+    min-height: 36px;
+    padding: 7px 14px;
+    border: 0;
+    border-radius: 999px;
+    color: var(--wb-text-soft);
+    font-size: 13px;
+}
+
+#world-backstage-root .wb-social-page-tabs > button:hover {
+    background: color-mix(in srgb, var(--wb-panel-strong) 72%, transparent);
+}
+
+#world-backstage-root .wb-social-page-tabs > button.is-active {
+    border: 0;
+    background: color-mix(in srgb, var(--wb-accent-soft) 72%, var(--wb-panel));
+    box-shadow: 0 6px 18px color-mix(in srgb, var(--wb-accent) 10%, transparent);
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-social-page-tabs > button i {
+    display: inline-grid;
+    width: 15px;
+    height: 15px;
+    place-items: center;
+    background: none;
+    color: currentColor;
+    font-style: normal;
+}
+
+#world-backstage-root .wb-social-page-tabs > button i::before { font-size: 13px; line-height: 1; }
+#world-backstage-root .wb-social-page-tabs > button[data-page="messages"] i::before { content: "ฅ"; }
+#world-backstage-root .wb-social-page-tabs > button[data-page="contacts"] i::before { content: "♡"; }
+#world-backstage-root .wb-social-page-tabs > button[data-page="moments"] i::before { content: "✿"; }
+#world-backstage-root .wb-social-page-tabs em { top: 5px; right: 7px; }
+
+#world-backstage-root .wb-social-page-body {
+    min-height: 0;
+    padding: 0 12px 12px;
+}
+
+#world-backstage-root .wb-social-layout,
+#world-backstage-root .wb-social-directory {
+    gap: 10px;
+    height: 100%;
+    background: transparent;
+}
+
+#world-backstage-root .wb-social-sidebar,
+#world-backstage-root .wb-social-thread,
+#world-backstage-root .wb-social-friend-list,
+#world-backstage-root .wb-social-add-friend,
+#world-backstage-root .wb-social-moments {
+    border: 1px solid color-mix(in srgb, var(--wb-line) 68%, transparent);
+    border-radius: 20px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 78%, transparent);
+    box-shadow: 0 14px 36px color-mix(in srgb, var(--wb-bg) 10%, transparent);
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-social-sidebar-head,
+#world-backstage-root .wb-social-friend-list > header {
+    min-height: 58px;
+    padding: 12px 14px 8px;
+    border: 0;
+}
+
+#world-backstage-root .wb-social-sidebar-head strong,
+#world-backstage-root .wb-social-friend-list > header strong {
+    font-size: 15px;
+    font-weight: 650;
+}
+
+#world-backstage-root .wb-social-sidebar-head > button {
+    min-height: 34px;
+    border: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-accent-soft) 52%, var(--wb-panel));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-social-sidebar-scroll { padding: 5px 7px; }
+#world-backstage-root .wb-social-conversations,
+#world-backstage-root .wb-social-contacts { gap: 5px; }
+
+#world-backstage-root .wb-social-conversations > button,
+#world-backstage-root .wb-social-contacts > button {
+    min-height: 62px;
+    padding: 8px 10px;
+    border-radius: 15px;
+}
+
+#world-backstage-root .wb-social-conversations > button::after,
+#world-backstage-root .wb-social-contacts > button::after,
+#world-backstage-root .wb-social-conversations > button.is-active::before { display: none; }
+
+#world-backstage-root .wb-social-conversations > button.is-active {
+    background: color-mix(in srgb, var(--wb-accent-soft) 70%, var(--wb-panel));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wb-accent) 14%, transparent);
+}
+
+#world-backstage-root .wb-social-section-title {
+    padding: 14px 10px 6px;
+    letter-spacing: 0;
+}
+
+#world-backstage-root .wb-social-isolation-control {
+    min-height: 44px;
+    margin: 7px;
+    padding: 7px 10px 7px 12px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 62%, transparent);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--wb-panel) 72%, transparent);
+}
+
+#world-backstage-root .wb-social-isolation-control > span:first-child {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+#world-backstage-root .wb-social-isolation-control > span:first-child > i {
+    width: 12px;
+    height: 12px;
+    background: none;
+}
+
+#world-backstage-root .wb-social-isolation-control > span:first-child > i::before {
+    color: var(--wb-accent);
+    content: "ฅ";
+    font-size: 12px;
+}
+
+#world-backstage-root .wb-social-isolation-control b { font-size: 11px; }
+
+#world-backstage-root .wb-social-thread {
+    background:
+        radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--wb-accent-soft) 34%, transparent), transparent 33%),
+        color-mix(in srgb, var(--wb-panel) 88%, var(--wb-bg-soft));
+}
+
+#world-backstage-root .wb-social-thread > header {
+    min-height: 62px;
+    padding: 9px 17px;
+    border: 0;
+    background: color-mix(in srgb, var(--wb-panel-strong) 70%, transparent);
+}
+
+#world-backstage-root .wb-social-thread-state {
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-jade) 9%, transparent);
+}
+
+#world-backstage-root .wb-social-log {
+    gap: 16px;
+    padding: 24px clamp(18px, 4vw, 48px) 30px;
+    background: transparent;
+}
+
+#world-backstage-root .wb-social-log article p,
+#world-backstage-root .wb-social-log article.is-user p {
+    border: 0;
+    border-radius: 18px;
+    box-shadow: 0 7px 20px color-mix(in srgb, var(--wb-bg) 9%, transparent);
+}
+
+#world-backstage-root .wb-social-log article p { border-top-left-radius: 6px; }
+#world-backstage-root .wb-social-log article.is-user p { border-top-right-radius: 6px; }
+
+#world-backstage-root .wb-social-compose {
+    margin: 0 10px 10px;
+    padding: 9px;
+    border: 0;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 82%, transparent);
+    box-shadow: 0 8px 26px color-mix(in srgb, var(--wb-bg) 8%, transparent);
+}
+
+#world-backstage-root .wb-social-compose textarea {
+    border: 0;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--wb-panel) 82%, transparent);
+}
+
+#world-backstage-root .wb-social-compose button {
+    border: 0;
+    border-radius: 14px;
+}
+
+#world-backstage-root .wb-social-empty-thread.is-large > strong,
+#world-backstage-root .wb-social-empty-thread.is-conversation > strong {
+    font-family: inherit;
+    font-size: 17px;
+    font-weight: 650;
+}
+
+#world-backstage-root .wb-social-empty-visual {
+    width: 104px;
+    height: 76px;
+    margin-bottom: 5px;
+}
+
+#world-backstage-root .wb-social-empty-visual > i { opacity: .56; }
+#world-backstage-root .wb-social-empty-visual > b {
+    position: absolute;
+    z-index: 2;
+    top: 21px;
+    left: 50%;
+    color: var(--wb-accent);
+    font-size: 20px;
+    font-weight: 500;
+    transform: translateX(-50%) rotate(-2deg);
+}
+
+#world-backstage-root .wb-social-empty-actions button,
+#world-backstage-root .wb-social-empty-thread.is-large > button {
+    border: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 88%, transparent);
+    box-shadow: 0 6px 18px color-mix(in srgb, var(--wb-bg) 8%, transparent);
+}
+
+#world-backstage-root .wb-social-empty-monogram {
+    border: 0;
+    border-radius: 20px;
+    box-shadow: 0 9px 24px color-mix(in srgb, var(--wb-accent) 10%, transparent);
+}
+
+#world-backstage-root .wb-social-friend-list {
+    border-right: 1px solid color-mix(in srgb, var(--wb-line) 68%, transparent);
+}
+
+#world-backstage-root .wb-social-friend-list article {
+    margin: 4px 7px;
+    padding: 8px;
+    border: 0;
+    border-radius: 14px;
+}
+
+#world-backstage-root .wb-social-friend-list article:hover {
+    background: color-mix(in srgb, var(--wb-accent-soft) 48%, transparent);
+}
+
+#world-backstage-root .wb-social-add-friend {
+    padding: clamp(20px, 4vw, 42px);
+    background:
+        radial-gradient(circle at 85% 12%, color-mix(in srgb, var(--wb-accent-soft) 35%, transparent), transparent 34%),
+        color-mix(in srgb, var(--wb-panel-strong) 75%, transparent);
+}
+
+#world-backstage-root .wb-social-add-friend > header {
+    margin-bottom: 14px;
+}
+
+#world-backstage-root .wb-social-add-friend > header > strong {
+    font-family: inherit;
+    font-size: 20px;
+    font-weight: 650;
+}
+
+#world-backstage-root .wb-social-auto-control,
+#world-backstage-root .wb-social-search,
+#world-backstage-root .wb-social-friend-card {
+    border-color: color-mix(in srgb, var(--wb-line) 56%, transparent);
+    background: color-mix(in srgb, var(--wb-panel-strong) 82%, transparent);
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--wb-bg) 7%, transparent);
+}
+
+#world-backstage-root .wb-social-auto-control { min-height: 50px; border-radius: 16px; }
+#world-backstage-root .wb-social-search { border-radius: 18px; }
+#world-backstage-root .wb-social-friend-card { border-radius: 18px; }
+#world-backstage-root .wb-social-friend-card button { border-radius: 999px; }
+#world-backstage-root .wb-social-directory-empty { padding: 42px 20px; }
+
+#world-backstage-root .wb-social-moments {
+    background:
+        radial-gradient(circle at 82% 0%, color-mix(in srgb, var(--wb-accent-soft) 38%, transparent), transparent 35%),
+        color-mix(in srgb, var(--wb-panel-strong) 72%, transparent);
+}
+
+#world-backstage-root .wb-social-moments > header {
+    padding: 22px 26px 12px;
+}
+
+#world-backstage-root .wb-social-moments > header h3 {
+    font-family: inherit;
+    font-size: 21px;
+    font-weight: 650;
+}
+
+#world-backstage-root .wb-social-moments > header button {
+    border: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-accent-soft) 62%, var(--wb-panel));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-social-moment-card {
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 82%, transparent);
+    box-shadow: 0 10px 28px color-mix(in srgb, var(--wb-bg) 8%, transparent);
+}
+
+#world-backstage-root .wb-social-moments-empty b {
+    color: var(--wb-accent);
+    font-size: 22px;
+    font-weight: 500;
+}
+
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
+    #world-backstage-root .wb-social-page-tabs { min-height: 48px; padding: 6px 7px; }
+    #world-backstage-root .wb-social-page-tabs > button { min-width: 0; min-height: 34px; padding: 6px 9px; }
+    #world-backstage-root .wb-social-page-body { padding: 0 6px 6px; }
+    #world-backstage-root .wb-social-layout,
+    #world-backstage-root .wb-social-directory { gap: 6px; }
+    #world-backstage-root .wb-social-sidebar,
+    #world-backstage-root .wb-social-thread,
+    #world-backstage-root .wb-social-friend-list,
+    #world-backstage-root .wb-social-add-friend,
+    #world-backstage-root .wb-social-moments { border-radius: 15px; }
+    #world-backstage-root .wb-social-sidebar { padding: 0; }
+    #world-backstage-root .wb-social-sidebar-head { padding: 8px; }
+    #world-backstage-root .wb-social-compose { margin: 0 5px 5px; padding: 6px; }
+}
+
+@media (min-width: 681px) and (max-width: 1100px) and (min-height: 521px) {
+    #world-backstage-root .wb-social-page-body { padding: 0 8px 8px; }
+    #world-backstage-root .wb-social-layout,
+    #world-backstage-root .wb-social-directory { gap: 8px; }
+    #world-backstage-root .wb-social-sidebar,
+    #world-backstage-root .wb-social-thread,
+    #world-backstage-root .wb-social-friend-list,
+    #world-backstage-root .wb-social-add-friend,
+    #world-backstage-root .wb-social-moments { border-radius: 17px; }
+}
+
+/* alpha.16 · 递话栏只占一张小纸条的高度。 */
+#world-backstage-root .wb-social-compose {
+    gap: 7px;
+    margin: 0 8px 8px;
+    padding: 6px 7px;
+    border-radius: 15px;
+}
+
+#world-backstage-root .wb-social-compose textarea {
+    min-height: 36px;
+    max-height: 88px;
+    padding: 8px 11px;
+    border-radius: 11px;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+#world-backstage-root .wb-social-compose button {
+    min-width: 56px;
+    min-height: 36px;
+    padding: 6px 11px;
+    border-radius: 11px;
+    font-size: 13px;
+}
+
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
+    #world-backstage-root .wb-social-compose { margin: 0 4px 4px; padding: 4px 5px; }
+    #world-backstage-root .wb-social-compose textarea { min-height: 34px; padding: 7px 9px; }
+    #world-backstage-root .wb-social-compose button { min-height: 34px; }
+}
+
+/* alpha.16 · 空状态直接请玲七出镜；搜索框只保留一个完整外壳。 */
+#world-backstage-root .wb-social-empty-visual > b { display: none; }
+#world-backstage-root .wb-social-empty-visual > img {
+    position: absolute;
+    z-index: 2;
+    right: 4px;
+    bottom: 0;
+    width: 66px;
+    height: 56px;
+    object-fit: contain;
+    filter: drop-shadow(0 7px 10px color-mix(in srgb, var(--wb-accent) 14%, transparent));
+}
+
+#world-backstage-root .wb-social-moments-empty .wb-social-empty-visual { margin-bottom: 2px; }
+
+#world-backstage-root .wb-social-search {
+    grid-template-columns: 34px minmax(0, 1fr);
+    align-items: center;
+    min-height: 44px;
+    padding: 0 10px 0 4px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--wb-line-strong) 76%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-panel) 84%, var(--wb-accent-soft));
+}
+
+#world-backstage-root .wb-social-search > span {
+    display: grid;
+    width: 34px;
+    height: 100%;
+    place-items: center;
+}
+
+#world-backstage-root .wb-social-search input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 42px;
+    margin: 0;
+    padding: 0 4px;
+    border: 0 !important;
+    border-radius: 0;
+    outline: 0;
+    background: transparent !important;
+    box-shadow: none !important;
+    color: var(--wb-text);
+}
+
+#world-backstage-root .wb-social-search:focus-within {
+    border-color: color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent-soft) 58%, transparent);
+}
+
+/* alpha.16 · 空白页只留一枚小猫表情，不再挂空对话框。 */
+#world-backstage-root .wb-social-empty-sticker {
+    display: inline-grid;
+    min-width: 58px;
+    height: 26px;
+    margin-bottom: 5px;
+    padding: 0 9px;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-accent-soft) 48%, var(--wb-panel));
+    box-shadow: 0 5px 14px color-mix(in srgb, var(--wb-accent) 9%, transparent);
+    color: var(--wb-text-soft);
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 13px;
+    line-height: 1;
+    letter-spacing: .02em;
+    transform: rotate(-2deg);
+}
+
+@media (min-width: 681px) and (max-width: 820px) and (min-height: 521px) and (orientation: portrait) {
+    #world-backstage-root .wb-window-body {
+        grid-template-columns: 82px minmax(0, 1fr);
+    }
+
+    #world-backstage-root .wb-side-nav {
+        padding-right: 5px;
+        padding-left: 5px;
+    }
+
+    #world-backstage-root .wb-side-nav > button:not(.wb-side-sync) {
+        justify-content: center;
+        padding-right: 4px;
+        padding-left: 4px;
+        text-align: center;
+    }
+
+    #world-backstage-root .wb-side-nav > button:not(.wb-side-sync) > i,
+    #world-backstage-root .wb-side-nav small {
+        display: none;
+    }
+
+    #world-backstage-root .wb-social-layout {
+        grid-template-columns: minmax(170px, 34%) minmax(0, 1fr);
+    }
+
+    #world-backstage-root .wb-social-toolbar-title small,
+    #world-backstage-root .wb-social-header-badge {
+        display: none;
+    }
+}
+
+/* alpha.12 · 通讯生活层：消息、通讯录与朋友圈共用同一套轻量外壳。 */
+#world-backstage-root .wb-social-shell {
+    display: grid;
+    grid-template-rows: 48px minmax(0, 1fr);
+}
+#world-backstage-root .wb-social-page-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--wb-line);
+    background: color-mix(in srgb, var(--wb-panel-strong) 88%, transparent);
+}
+#world-backstage-root .wb-social-page-tabs > button {
+    position: relative;
+    min-width: 86px;
+    padding: 0 14px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--wb-text-faint);
+    font-size: 12px;
+    cursor: pointer;
+}
+#world-backstage-root .wb-social-page-tabs > button:hover { color: var(--wb-text); }
+#world-backstage-root .wb-social-page-tabs > button.is-active { border-bottom-color: var(--wb-accent); color: var(--wb-text); font-weight: 650; }
+#world-backstage-root .wb-social-page-tabs em { position: absolute; top: 10px; right: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--wb-danger, #b64f5b); box-shadow: 0 0 0 2px var(--wb-panel-strong); }
+#world-backstage-root .wb-social-page-body { min-height: 0; overflow: hidden; }
+#world-backstage-root .wb-social-page-body > .wb-social-layout,
+#world-backstage-root .wb-social-page-body > .wb-social-directory,
+#world-backstage-root .wb-social-page-body > .wb-social-moments { height: 100%; }
+
+#world-backstage-root .wb-social-directory {
+    display: grid;
+    grid-template-columns: minmax(220px, 30%) minmax(0, 1fr);
+    min-height: 0;
+    background: color-mix(in srgb, var(--wb-panel) 94%, var(--wb-bg-soft));
+}
+#world-backstage-root .wb-social-friend-list { min-height: 0; overflow: hidden; border-right: 1px solid var(--wb-line); background: color-mix(in srgb, var(--wb-panel-strong) 80%, var(--wb-bg-soft)); }
+#world-backstage-root .wb-social-friend-list > header { display: flex; align-items: baseline; justify-content: space-between; min-height: 62px; padding: 18px 17px 10px; border-bottom: 1px solid var(--wb-line); }
+#world-backstage-root .wb-social-friend-list > header strong { color: var(--wb-text); font-size: 16px; }
+#world-backstage-root .wb-social-friend-list > header small { color: var(--wb-text-faint); font-size: 10px; }
+#world-backstage-root .wb-social-friend-list > div { height: calc(100% - 62px); overflow: auto; }
+#world-backstage-root .wb-social-friend-list article { display: grid; grid-template-columns: 42px minmax(0, 1fr) 30px; align-items: center; gap: 10px; min-height: 66px; padding: 8px 9px 8px 15px; border-bottom: 1px solid color-mix(in srgb, var(--wb-line) 55%, transparent); }
+#world-backstage-root .wb-social-friend-list article > button { min-width: 0; border: 0; background: transparent; color: var(--wb-text); text-align: left; cursor: pointer; }
+#world-backstage-root .wb-social-friend-list article > button > span { display: grid; gap: 3px; }
+#world-backstage-root .wb-social-friend-list article small { overflow: hidden; color: var(--wb-text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+#world-backstage-root .wb-social-friend-list .wb-social-friend-remove { width: 30px; min-height: 30px; border-radius: 9px; color: var(--wb-text-faint); text-align: center; }
+#world-backstage-root .wb-social-friend-list .wb-social-friend-remove:hover { background: color-mix(in srgb, var(--wb-danger, #b64f5b) 10%, transparent); color: var(--wb-danger, #b64f5b); }
+#world-backstage-root .wb-social-friend-list > div > p { padding: 28px 17px; color: var(--wb-text-faint); text-align: center; }
+
+#world-backstage-root .wb-social-add-friend { min-width: 0; padding: clamp(22px, 4vw, 48px); overflow: auto; }
+#world-backstage-root .wb-social-add-friend > header { display: grid; gap: 5px; max-width: 720px; margin: 0 auto 20px; }
+#world-backstage-root .wb-social-add-friend > header > span { color: var(--wb-accent); font-size: 9px; letter-spacing: .16em; }
+#world-backstage-root .wb-social-add-friend > header > strong { color: var(--wb-text); font-family: "Iowan Old Style", "Noto Serif SC", "Songti SC", serif; font-size: clamp(19px, 2.4vw, 27px); font-weight: 500; }
+#world-backstage-root .wb-social-add-friend > header > small { color: var(--wb-text-faint); line-height: 1.7; }
+#world-backstage-root .wb-social-auto-control { display: flex; align-items: center; justify-content: space-between; gap: 18px; max-width: 720px; margin: 0 auto 14px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--wb-line) 72%, transparent); border-radius: 13px; background: color-mix(in srgb, var(--wb-panel-strong) 72%, transparent); cursor: pointer; }
+#world-backstage-root .wb-social-auto-control > span:first-child { display: grid; gap: 3px; }
+#world-backstage-root .wb-social-auto-control strong { color: var(--wb-text-soft); font-size: 11px; }
+#world-backstage-root .wb-social-auto-control small { color: var(--wb-text-faint); font-size: 9px; line-height: 1.55; }
+#world-backstage-root .wb-social-search { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; max-width: 720px; margin: 0 auto 18px; border: 1px solid var(--wb-line-strong); border-radius: 14px; background: var(--wb-panel-strong); }
+#world-backstage-root .wb-social-search > span { color: var(--wb-accent); text-align: center; }
+#world-backstage-root .wb-social-search input { min-width: 0; min-height: 44px; border: 0; background: transparent; box-shadow: none; }
+#world-backstage-root .wb-social-search-results { display: grid; gap: 10px; max-width: 720px; margin: 0 auto; }
+#world-backstage-root .wb-social-suggestion-title { display: flex; align-items: baseline; justify-content: space-between; padding: 7px 2px; color: var(--wb-text-soft); }
+#world-backstage-root .wb-social-suggestion-title span { color: var(--wb-text-faint); font-size: 9px; }
+#world-backstage-root .wb-social-friend-card { display: grid; grid-template-columns: 42px minmax(0, 1fr) minmax(110px, auto); align-items: center; gap: 12px; padding: 13px; border: 1px solid color-mix(in srgb, var(--wb-line) 76%, transparent); border-radius: 15px; background: color-mix(in srgb, var(--wb-panel-strong) 86%, transparent); }
+#world-backstage-root .wb-social-friend-card > div:nth-child(2) { display: grid; gap: 3px; min-width: 0; }
+#world-backstage-root .wb-social-friend-card strong { color: var(--wb-text); }
+#world-backstage-root .wb-social-friend-card span,
+#world-backstage-root .wb-social-friend-card small { overflow: hidden; color: var(--wb-text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+#world-backstage-root .wb-social-friend-card form { display: grid; grid-template-columns: minmax(96px, 1fr) auto; gap: 7px; }
+#world-backstage-root .wb-social-friend-card input { min-width: 0; }
+#world-backstage-root .wb-social-friend-card button { min-height: 36px; padding: 6px 11px; border: 1px solid var(--wb-line); border-radius: 10px; background: var(--wb-panel); color: var(--wb-text-soft); cursor: pointer; }
+#world-backstage-root .wb-social-friend-card button.is-primary { border-color: color-mix(in srgb, var(--wb-accent) 45%, var(--wb-line)); color: var(--wb-accent); }
+#world-backstage-root .wb-social-friend-card button.is-danger { color: var(--wb-danger, #b64f5b); }
+#world-backstage-root .wb-social-friend-actions { display: flex; justify-content: flex-end; gap: 6px; }
+#world-backstage-root .wb-social-directory-empty { padding: 52px 20px; color: var(--wb-text-faint); text-align: center; line-height: 1.7; }
+#world-backstage-root .wb-social-request-error { max-width: 720px; margin: 0 auto 12px; color: var(--wb-danger, #b64f5b); }
+
+#world-backstage-root .wb-social-moments { min-height: 0; overflow: auto; background: linear-gradient(165deg, color-mix(in srgb, var(--wb-accent-soft) 18%, transparent), transparent 34%), var(--wb-panel); }
+#world-backstage-root .wb-social-moments > header { display: flex; align-items: center; justify-content: space-between; gap: 20px; max-width: 720px; margin: 0 auto; padding: 28px 28px 18px; }
+#world-backstage-root .wb-social-moments > header span { color: var(--wb-accent); font-size: 8px; letter-spacing: .2em; }
+#world-backstage-root .wb-social-moments > header h3 { margin: 3px 0; color: var(--wb-text); font-family: "Iowan Old Style", "Noto Serif SC", "Songti SC", serif; font-size: 25px; font-weight: 500; }
+#world-backstage-root .wb-social-moments > header p { margin: 0; color: var(--wb-text-faint); font-size: 10px; }
+#world-backstage-root .wb-social-moments > header button { min-height: 38px; padding: 7px 13px; border: 1px solid var(--wb-line-strong); border-radius: 11px; background: var(--wb-panel-strong); color: var(--wb-text-soft); cursor: pointer; }
+#world-backstage-root .wb-social-moment-feed { display: grid; gap: 12px; max-width: 720px; margin: 0 auto; padding: 0 28px 40px; }
+#world-backstage-root .wb-social-moment-card { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 12px; padding: 17px; border: 1px solid color-mix(in srgb, var(--wb-line) 76%, transparent); border-radius: 16px; background: color-mix(in srgb, var(--wb-panel-strong) 90%, transparent); box-shadow: 0 12px 32px color-mix(in srgb, var(--wb-bg) 8%, transparent); }
+#world-backstage-root .wb-social-moment-body { display: grid; gap: 9px; min-width: 0; }
+#world-backstage-root .wb-social-moment-body > header { display: flex; align-items: baseline; justify-content: space-between; }
+#world-backstage-root .wb-social-moment-body > header strong { color: var(--wb-text); }
+#world-backstage-root .wb-social-moment-body time { color: var(--wb-text-faint); font-size: 9px; }
+#world-backstage-root .wb-social-moment-body > p { margin: 0; color: var(--wb-text-soft); line-height: 1.75; white-space: pre-wrap; }
+#world-backstage-root .wb-social-moment-body > img { display: block; width: min(100%, 520px); max-height: 520px; border-radius: 12px; object-fit: cover; }
+#world-backstage-root .wb-social-moment-body > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 4px; color: var(--wb-text-faint); font-size: 9px; }
+#world-backstage-root .wb-social-moment-body > footer button { min-height: 30px; padding: 4px 9px; border: 0; border-radius: 9px; background: color-mix(in srgb, var(--wb-accent-soft) 26%, transparent); color: var(--wb-text-faint); cursor: pointer; }
+#world-backstage-root .wb-social-moment-body > footer button.is-active { color: var(--wb-accent); }
+#world-backstage-root .wb-social-moments-empty { display: grid; justify-items: center; gap: 7px; padding: 70px 20px; color: var(--wb-text-faint); text-align: center; }
+#world-backstage-root .wb-social-moments-empty strong { color: var(--wb-text-soft); font-size: 16px; }
+
+#world-backstage-root .wb-social-notice { position: fixed; z-index: 10008; right: max(20px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: minmax(0, 1fr) 30px; width: min(360px, calc(100dvw - 32px)); border: 1px solid color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line)); border-radius: 16px; background: var(--wb-panel-strong); box-shadow: 0 20px 58px color-mix(in srgb, var(--wb-bg) 46%, transparent), 0 0 0 1px color-mix(in srgb, var(--wb-panel) 74%, transparent) inset; backdrop-filter: blur(18px); animation: wb-toast-in .22s ease-out both; }
+#world-backstage-root .wb-social-notice-main { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 11px; min-width: 0; padding: 12px 6px 12px 13px; border: 0; background: transparent; color: var(--wb-text); text-align: left; cursor: pointer; }
+#world-backstage-root .wb-social-notice-main > span:last-child { display: grid; gap: 2px; min-width: 0; }
+#world-backstage-root .wb-social-notice-main small { color: var(--wb-accent); font-size: 8px; letter-spacing: .08em; }
+#world-backstage-root .wb-social-notice-main strong { font-size: 12px; }
+#world-backstage-root .wb-social-notice-main em { overflow: hidden; color: var(--wb-text-faint); font-size: 10px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+#world-backstage-root .wb-social-notice-avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; background: var(--wb-accent-soft); color: var(--wb-accent); }
+#world-backstage-root .wb-social-notice-close { align-self: start; width: 26px; height: 26px; margin: 7px 4px 0 0; border: 0; border-radius: 8px; background: transparent; color: var(--wb-text-faint); cursor: pointer; }
+
+@media (max-width: 820px) {
+    #world-backstage-root .wb-social-page-tabs { justify-content: space-around; padding: 0 6px; }
+    #world-backstage-root .wb-social-page-tabs > button { min-width: 76px; padding: 0 8px; }
+    #world-backstage-root .wb-social-directory { grid-template-columns: minmax(170px, 34%) minmax(0, 1fr); }
+    #world-backstage-root .wb-social-add-friend { padding: 22px 16px; }
+    #world-backstage-root .wb-social-friend-card { grid-template-columns: 38px minmax(0, 1fr); }
+    #world-backstage-root .wb-social-friend-card > form,
+    #world-backstage-root .wb-social-friend-card > .wb-social-friend-actions,
+    #world-backstage-root .wb-social-friend-card > button { grid-column: 2; justify-self: stretch; }
+    #world-backstage-root .wb-social-friend-card > button { width: 100%; }
+}
+
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
+    #world-backstage-root .wb-social-shell { grid-template-rows: 44px minmax(0, 1fr); }
+    #world-backstage-root .wb-social-directory { display: block; overflow: auto; }
+    #world-backstage-root .wb-social-friend-list { max-height: 230px; border-right: 0; border-bottom: 1px solid var(--wb-line); }
+    #world-backstage-root .wb-social-friend-list > div { max-height: 168px; }
+    #world-backstage-root .wb-social-add-friend { overflow: visible; }
+    #world-backstage-root .wb-social-moment-feed { padding: 0 12px 28px; }
+    #world-backstage-root .wb-social-moments > header { padding: 18px 13px 12px; }
+    #world-backstage-root .wb-social-moment-card { grid-template-columns: 34px minmax(0, 1fr); padding: 12px; }
+    #world-backstage-root .wb-social-notice { right: 10px; bottom: max(12px, env(safe-area-inset-bottom)); width: calc(100dvw - 20px); }
+}
+
+/* 2.3.0-alpha.13 · 通讯成品化：去掉后台层级，修正群聊与窄栏溢出。 */
+#world-backstage-root .wb-social-notice {
+    top: max(86px, env(safe-area-inset-top));
+    bottom: auto;
+    pointer-events: auto;
+}
+
+#world-backstage-root .wb-content-column.is-social-column {
+    grid-template-rows: auto minmax(0, 1fr) 52px;
+}
+
+#world-backstage-root .wb-content-column.is-social-column > .wb-view-header {
+    display: none;
+}
+
+#world-backstage-root .wb-content-column.is-social-column > .wb-sync-strip {
+    min-height: 34px;
+    padding: 5px 18px;
+}
+
+#world-backstage-root .wb-social-shell {
+    grid-template-rows: 44px minmax(0, 1fr);
+    background: color-mix(in srgb, var(--wb-panel) 96%, var(--wb-bg-soft));
+}
+
+#world-backstage-root .wb-social-page-tabs {
+    gap: 18px;
+    padding: 0 20px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 96%, transparent);
+}
+
+#world-backstage-root .wb-social-page-tabs > button {
+    min-width: 68px;
+    padding: 0 6px;
+    border-bottom-width: 2px;
+    font-size: 12px;
+}
+
+#world-backstage-root .wb-social-layout {
+    grid-template-columns: clamp(226px, 26%, 270px) minmax(0, 1fr);
+}
+
+#world-backstage-root .wb-social-sidebar {
+    background: color-mix(in srgb, var(--wb-panel-strong) 94%, var(--wb-bg-soft));
+}
+
+#world-backstage-root .wb-social-sidebar-head {
+    min-height: 60px;
+    padding: 10px 12px 9px 16px;
+}
+
+#world-backstage-root .wb-social-sidebar-head strong {
+    font-size: 15px;
+}
+
+#world-backstage-root .wb-social-sidebar-scroll {
+    max-width: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+#world-backstage-root .wb-social-conversations,
+#world-backstage-root .wb-social-contacts {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-social-conversations > button,
+#world-backstage-root .wb-social-contacts > button {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 62px;
+    padding: 8px 13px;
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-social-conversations > button > span:last-child,
+#world-backstage-root .wb-social-contacts > button > span:last-child {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-social-conversations button strong,
+#world-backstage-root .wb-social-contacts button strong,
+#world-backstage-root .wb-social-conversations button small,
+#world-backstage-root .wb-social-contacts button small {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#world-backstage-root .wb-social-conversations > button:hover,
+#world-backstage-root .wb-social-contacts > button:hover {
+    background: color-mix(in srgb, var(--wb-accent-soft) 22%, transparent);
+}
+
+#world-backstage-root .wb-social-conversations > button.is-active {
+    background: color-mix(in srgb, var(--wb-accent-soft) 50%, var(--wb-panel));
+}
+
+#world-backstage-root .wb-social-group-avatar.is-members {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 2px;
+    padding: 4px;
+    overflow: hidden;
+    border-color: color-mix(in srgb, var(--wb-accent) 20%, var(--wb-line));
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--wb-accent-soft) 38%, var(--wb-panel));
+}
+
+#world-backstage-root .wb-social-group-avatar.is-members > b {
+    display: grid;
+    place-items: center;
+    min-width: 0;
+    min-height: 0;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 92%, var(--wb-accent-soft));
+    color: var(--wb-text-soft);
+    font-size: 8px;
+    font-weight: 650;
+    line-height: 1;
+}
+
+#world-backstage-root .wb-social-group-avatar.is-members > b:nth-child(3) {
+    grid-column: 1 / -1;
+}
+
+#world-backstage-root .wb-social-group-avatar.is-members > b:first-child:nth-last-child(2),
+#world-backstage-root .wb-social-group-avatar.is-members > b:first-child:nth-last-child(2) ~ b {
+    grid-row: 1 / -1;
+}
+
+#world-backstage-root .wb-social-thread {
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    background: color-mix(in srgb, var(--wb-panel) 97%, var(--wb-bg-soft));
+}
+
+#world-backstage-root .wb-social-thread > header {
+    min-height: 60px;
+    padding: 8px 18px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 96%, transparent);
+}
+
+#world-backstage-root .wb-social-thread > header h3 {
+    color: var(--wb-text);
+    font-size: 15px;
+}
+
+#world-backstage-root .wb-social-thread-state {
+    gap: 5px;
+    font-size: 9px !important;
+}
+
+#world-backstage-root .wb-social-routing {
+    display: none;
+}
+
+#world-backstage-root .wb-social-log {
+    grid-row: 2;
+    gap: 16px;
+    padding: 22px clamp(18px, 3.4vw, 44px) 28px;
+    background: transparent;
+}
+
+#world-backstage-root .wb-social-message-main {
+    max-width: min(70%, 560px);
+}
+
+#world-backstage-root .wb-social-message-main > span {
+    margin-bottom: 5px;
+}
+
+#world-backstage-root .wb-social-message-main b,
+#world-backstage-root .wb-social-message-main time {
+    font-size: 10px;
+}
+
+#world-backstage-root .wb-social-log article p {
+    padding: 10px 13px;
+    border-radius: 6px 14px 14px 14px;
+    background: var(--wb-panel-strong);
+    box-shadow: 0 5px 16px color-mix(in srgb, var(--wb-bg) 7%, transparent);
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+#world-backstage-root .wb-social-log article.is-user p {
+    border-color: color-mix(in srgb, var(--wb-accent) 18%, var(--wb-line));
+    border-radius: 14px 6px 14px 14px;
+    background: color-mix(in srgb, var(--wb-accent-soft) 62%, var(--wb-panel-strong));
+}
+
+#world-backstage-root .wb-social-self-avatar {
+    border-color: color-mix(in srgb, var(--wb-accent) 24%, var(--wb-line));
+    background: color-mix(in srgb, var(--wb-accent-soft) 54%, var(--wb-panel));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-social-context-banner {
+    margin-bottom: 8px !important;
+    background: color-mix(in srgb, var(--wb-accent-soft) 24%, transparent) !important;
+}
+
+#world-backstage-root .wb-social-error {
+    grid-row: 3;
+}
+
+#world-backstage-root .wb-social-compose {
+    grid-row: 4;
+    gap: 9px;
+    padding: 11px 16px 13px;
+    background: var(--wb-panel-strong);
+}
+
+#world-backstage-root .wb-social-compose textarea {
+    min-height: 42px;
+    padding: 10px 14px;
+    border-color: color-mix(in srgb, var(--wb-line-strong) 68%, transparent);
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--wb-bg-soft) 34%, var(--wb-panel));
+}
+
+#world-backstage-root .wb-social-compose button {
+    min-width: 62px;
+    min-height: 42px;
+    padding: 8px 14px;
+    border-color: color-mix(in srgb, var(--wb-accent) 38%, var(--wb-line));
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--wb-accent) 74%, var(--wb-panel));
+}
+
+@media (min-width: 681px) and (max-width: 1100px) and (min-height: 521px) {
+    #world-backstage-root .wb-content-column.is-social-column {
+        grid-template-rows: auto minmax(0, 1fr) 48px;
+    }
+
+    #world-backstage-root .wb-social-layout {
+        grid-template-columns: clamp(210px, 32%, 250px) minmax(0, 1fr);
+    }
+
+    #world-backstage-root .wb-social-message-main {
+        max-width: min(78%, 520px);
+    }
+
+    #world-backstage-root .wb-social-notice {
+        top: max(82px, env(safe-area-inset-top));
+        right: max(16px, env(safe-area-inset-right));
+        bottom: auto;
+        width: min(320px, calc(100dvw - 32px));
+    }
+}
+
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
+    #world-backstage-root .wb-content-column.is-social-column {
+        grid-template-rows: auto minmax(0, 1fr) 43px;
+    }
+
+    #world-backstage-root .wb-social-page-tabs {
+        gap: 0;
+        padding: 0 4px;
+    }
+
+    #world-backstage-root .wb-social-group-avatar.is-members {
+        padding: 3px;
+    }
+
+    #world-backstage-root .wb-social-compose {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+
+    #world-backstage-root .wb-social-notice {
+        top: max(66px, env(safe-area-inset-top));
+        right: 10px;
+        bottom: auto;
+    }
+}
+
+/* 2.3.0-alpha.14 · 通讯字号重新分层：信息可读，标题不再喧宾夺主。 */
+#world-backstage-root .wb-social-page-tabs > button {
+    font-size: 13px;
+}
+
+#world-backstage-root .wb-social-friend-list > header strong {
+    font-size: 17px;
+}
+
+#world-backstage-root .wb-social-friend-list > header small {
+    font-size: 11px;
+}
+
+#world-backstage-root .wb-social-friend-list article strong {
+    font-size: 13px;
+}
+
+#world-backstage-root .wb-social-friend-list article small,
+#world-backstage-root .wb-social-friend-list > div > p {
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+#world-backstage-root .wb-social-add-friend > header {
+    gap: 7px;
+}
+
+#world-backstage-root .wb-social-add-friend > header > span {
+    font-size: 11px;
+    letter-spacing: .12em;
+}
+
+#world-backstage-root .wb-social-add-friend > header > strong {
+    font-size: clamp(19px, 2vw, 22px);
+    line-height: 1.4;
+}
+
+#world-backstage-root .wb-social-add-friend > header > small {
+    font-size: 12px;
+    line-height: 1.65;
+}
+
+#world-backstage-root .wb-social-auto-control strong {
+    font-size: 13px;
+}
+
+#world-backstage-root .wb-social-auto-control small {
+    font-size: 11px;
+    line-height: 1.55;
+}
+
+#world-backstage-root .wb-social-search input {
+    font-size: 14px;
+}
+
+#world-backstage-root .wb-social-suggestion-title strong {
+    font-size: 14px;
+}
+
+#world-backstage-root .wb-social-suggestion-title span {
+    font-size: 11px;
+}
+
+#world-backstage-root .wb-social-friend-card strong {
+    font-size: 14px;
+}
+
+#world-backstage-root .wb-social-friend-card span {
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+#world-backstage-root .wb-social-friend-card small {
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+#world-backstage-root .wb-social-friend-card input,
+#world-backstage-root .wb-social-friend-card button {
+    font-size: 12px;
+}
+
+@media (min-width: 681px) and (max-width: 1100px) and (min-height: 521px) {
+    #world-backstage-root .wb-social-add-friend > header > strong {
+        font-size: 20px;
+    }
+
+    #world-backstage-root .wb-social-friend-card span,
+    #world-backstage-root .wb-social-friend-card small {
+        white-space: normal;
+    }
+}
+
+/* 2.3.0-alpha.16 final · 最后一层才是小猫生活区，不再被旧通讯样式盖回去。 */
+#world-backstage-root .wb-social-shell {
+    grid-template-rows: 54px minmax(0, 1fr);
+    background:
+        radial-gradient(circle at 8% 2%, color-mix(in srgb, var(--wb-accent-soft) 55%, transparent), transparent 30%),
+        radial-gradient(circle at 92% 92%, color-mix(in srgb, var(--wb-jade) 14%, transparent), transparent 34%),
+        color-mix(in srgb, var(--wb-panel) 88%, var(--wb-bg-soft));
+}
+
+#world-backstage-root .wb-social-page-tabs {
+    align-items: center;
+    gap: 7px;
+    min-height: 54px;
+    padding: 8px 14px;
+    border: 0;
+    background: transparent;
+}
+
+#world-backstage-root .wb-social-page-tabs > button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 78px;
+    min-height: 36px;
+    padding: 7px 14px;
+    border: 0;
+    border-radius: 999px;
+    color: var(--wb-text-soft);
+    font-size: 13px;
+}
+
+#world-backstage-root .wb-social-page-tabs > button:hover {
+    background: color-mix(in srgb, var(--wb-panel-strong) 72%, transparent);
+}
+
+#world-backstage-root .wb-social-page-tabs > button.is-active {
+    border: 0;
+    background: color-mix(in srgb, var(--wb-accent-soft) 72%, var(--wb-panel));
+    box-shadow: 0 6px 18px color-mix(in srgb, var(--wb-accent) 10%, transparent);
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-social-page-tabs > button i {
+    display: inline-grid;
+    width: 15px;
+    height: 15px;
+    place-items: center;
+    background: none;
+    color: currentColor;
+    font-style: normal;
+}
+
+#world-backstage-root .wb-social-page-tabs > button i::before { font-size: 13px; line-height: 1; }
+#world-backstage-root .wb-social-page-tabs > button[data-page="messages"] i::before { content: "ฅ"; }
+#world-backstage-root .wb-social-page-tabs > button[data-page="contacts"] i::before { content: "♡"; }
+#world-backstage-root .wb-social-page-tabs > button[data-page="moments"] i::before { content: "✿"; }
+
+#world-backstage-root .wb-social-page-body { padding: 0 12px 12px; }
+#world-backstage-root .wb-social-layout,
+#world-backstage-root .wb-social-directory { gap: 10px; background: transparent; }
+
+#world-backstage-root .wb-social-sidebar,
+#world-backstage-root .wb-social-thread,
+#world-backstage-root .wb-social-friend-list,
+#world-backstage-root .wb-social-add-friend,
+#world-backstage-root .wb-social-moments {
+    border: 1px solid color-mix(in srgb, var(--wb-line) 66%, transparent);
+    border-radius: 20px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 78%, transparent);
+    box-shadow: 0 14px 36px color-mix(in srgb, var(--wb-bg) 10%, transparent);
+    overflow: hidden;
+}
+
+#world-backstage-root .wb-social-sidebar-head,
+#world-backstage-root .wb-social-friend-list > header {
+    min-height: 58px;
+    padding: 12px 14px 8px;
+    border: 0;
+}
+
+#world-backstage-root .wb-social-sidebar-head > button {
+    min-height: 34px;
+    border: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wb-accent-soft) 58%, var(--wb-panel));
+    color: var(--wb-accent);
+}
+
+#world-backstage-root .wb-social-sidebar-scroll { padding: 5px 7px; }
+#world-backstage-root .wb-social-conversations,
+#world-backstage-root .wb-social-contacts { gap: 5px; }
+
+#world-backstage-root .wb-social-conversations > button,
+#world-backstage-root .wb-social-contacts > button {
+    min-height: 62px;
+    padding: 8px 10px;
+    border-radius: 15px;
+}
+
+#world-backstage-root .wb-social-conversations > button::after,
+#world-backstage-root .wb-social-contacts > button::after,
+#world-backstage-root .wb-social-conversations > button.is-active::before { display: none; }
+
+#world-backstage-root .wb-social-conversations > button.is-active {
+    background: color-mix(in srgb, var(--wb-accent-soft) 70%, var(--wb-panel));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wb-accent) 14%, transparent);
+}
+
+#world-backstage-root .wb-social-isolation-control {
+    min-height: 44px;
+    margin: 7px;
+    padding: 7px 10px 7px 12px;
+    border: 1px solid color-mix(in srgb, var(--wb-line) 60%, transparent);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--wb-panel) 72%, transparent);
+}
+
+#world-backstage-root .wb-social-thread {
+    background:
+        radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--wb-accent-soft) 38%, transparent), transparent 34%),
+        color-mix(in srgb, var(--wb-panel) 88%, var(--wb-bg-soft));
+}
+
+#world-backstage-root .wb-social-thread > header {
+    min-height: 62px;
+    padding: 9px 17px;
+    border: 0;
+    background: color-mix(in srgb, var(--wb-panel-strong) 70%, transparent);
+}
+
+#world-backstage-root .wb-social-log { gap: 16px; padding: 24px clamp(18px, 4vw, 48px) 30px; }
+#world-backstage-root .wb-social-log article p,
+#world-backstage-root .wb-social-log article.is-user p {
+    border: 0;
+    border-radius: 18px;
+    box-shadow: 0 7px 20px color-mix(in srgb, var(--wb-bg) 9%, transparent);
+}
+#world-backstage-root .wb-social-log article p { border-top-left-radius: 6px; }
+#world-backstage-root .wb-social-log article.is-user p { border-top-right-radius: 6px; }
+
+#world-backstage-root .wb-social-compose {
+    margin: 0 10px 10px;
+    padding: 9px;
+    border: 0;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--wb-panel-strong) 82%, transparent);
+    box-shadow: 0 8px 26px color-mix(in srgb, var(--wb-bg) 8%, transparent);
+}
+#world-backstage-root .wb-social-compose textarea { border: 0; border-radius: 14px; }
+#world-backstage-root .wb-social-compose button { border: 0; border-radius: 14px; }
+
+#world-backstage-root .wb-social-add-friend {
+    padding: clamp(20px, 4vw, 42px);
+    background:
+        radial-gradient(circle at 85% 12%, color-mix(in srgb, var(--wb-accent-soft) 38%, transparent), transparent 34%),
+        color-mix(in srgb, var(--wb-panel-strong) 75%, transparent);
+}
+#world-backstage-root .wb-social-add-friend > header > strong { font-family: inherit; font-size: 20px; font-weight: 650; }
+#world-backstage-root .wb-social-auto-control { border-radius: 16px; }
+#world-backstage-root .wb-social-search,
+#world-backstage-root .wb-social-friend-card { border-radius: 18px; }
+#world-backstage-root .wb-social-friend-card { box-shadow: 0 8px 24px color-mix(in srgb, var(--wb-bg) 7%, transparent); }
+#world-backstage-root .wb-social-friend-card button { border-radius: 999px; }
+#world-backstage-root .wb-social-friend-card form { align-items: center; gap: 8px; }
+#world-backstage-root .wb-social-friend-card input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 38px;
+    padding: 8px 13px;
+    border: 1px solid color-mix(in srgb, var(--wb-line-strong) 72%, transparent);
+    border-radius: 999px;
+    outline: 0;
+    background: color-mix(in srgb, var(--wb-panel) 88%, var(--wb-accent-soft));
+    color: var(--wb-text);
+    font: inherit;
+    font-size: 12px;
+}
+#world-backstage-root .wb-social-friend-card input:focus {
+    border-color: color-mix(in srgb, var(--wb-accent) 48%, var(--wb-line));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent-soft) 62%, transparent);
+}
+
+#world-backstage-root .wb-social-moments {
+    background:
+        radial-gradient(circle at 82% 0%, color-mix(in srgb, var(--wb-accent-soft) 42%, transparent), transparent 36%),
+        color-mix(in srgb, var(--wb-panel-strong) 72%, transparent);
+}
+#world-backstage-root .wb-social-moments > header h3 { font-family: inherit; font-size: 21px; font-weight: 650; }
+#world-backstage-root .wb-social-moments > header button { border: 0; border-radius: 999px; }
+#world-backstage-root .wb-social-moment-card { border-radius: 18px; }
+
+@media (max-width: 680px), (max-height: 520px) and (pointer: coarse) {
+    #world-backstage-root .wb-social-shell { grid-template-rows: 48px minmax(0, 1fr); }
+    #world-backstage-root .wb-social-page-tabs { min-height: 48px; padding: 6px 7px; }
+    #world-backstage-root .wb-social-page-tabs > button { min-width: 0; min-height: 34px; padding: 6px 9px; }
+    #world-backstage-root .wb-social-page-body { padding: 0 6px 6px; }
+    #world-backstage-root .wb-social-layout,
+    #world-backstage-root .wb-social-directory { gap: 6px; }
+    #world-backstage-root .wb-social-sidebar,
+    #world-backstage-root .wb-social-thread,
+    #world-backstage-root .wb-social-friend-list,
+    #world-backstage-root .wb-social-add-friend,
+    #world-backstage-root .wb-social-moments { border-radius: 15px; }
+}
+
+@media (min-width: 681px) and (max-width: 1100px) and (min-height: 521px) {
+    #world-backstage-root .wb-social-page-body { padding: 0 8px 8px; }
+    #world-backstage-root .wb-social-layout,
+    #world-backstage-root .wb-social-directory { gap: 8px; }
+    #world-backstage-root .wb-social-sidebar,
+    #world-backstage-root .wb-social-thread,
+    #world-backstage-root .wb-social-friend-list,
+    #world-backstage-root .wb-social-add-friend,
+    #world-backstage-root .wb-social-moments { border-radius: 17px; }
 }

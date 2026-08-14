@@ -6,6 +6,8 @@ const SKILLS = [
     { id: 'recent_events', name: '近期暗流查询', kind: 'query', category: '查询', risk: 'low' },
     { id: 'memory_status', name: '记忆状态盘点', kind: 'query', category: '查询', risk: 'low' },
     { id: 'settings_overview', name: '设置概览', kind: 'query', category: '查询', risk: 'low' },
+    { id: 'social_overview', name: '通讯与好友盘点', kind: 'query', category: '查询', risk: 'low' },
+    { id: 'social_person_status', name: '人物通讯关系查询', kind: 'query', category: '查询', risk: 'low' },
     { id: 'setting_guide', name: '设置引导', kind: 'query', category: '管家', risk: 'low' },
     { id: 'diagnose_world', name: '世界推演诊断', kind: 'query', category: '诊断', risk: 'low' },
     { id: 'diagnose_person', name: '人物停滞诊断', kind: 'query', category: '诊断', risk: 'low' },
@@ -20,6 +22,11 @@ const SKILLS = [
     { id: 'refresh_public_world', name: '巡查公共世界', kind: 'action', category: '控制', risk: 'medium', confirmation: true },
     { id: 'prioritize_person', name: '人物下轮优先', kind: 'action', category: '控制', risk: 'medium' },
     { id: 'catch_up_person', name: '人物近况补算', kind: 'action', category: '控制', risk: 'medium', confirmation: true },
+    { id: 'social_send_message', name: '代发通讯消息', kind: 'action', category: '通讯', risk: 'high', confirmation: true },
+    { id: 'social_accept_request', name: '接受好友申请', kind: 'action', category: '通讯', risk: 'high', confirmation: true },
+    { id: 'social_refuse_request', name: '拒绝好友申请', kind: 'action', category: '通讯', risk: 'high', confirmation: true },
+    { id: 'social_remove_friend', name: '删除通讯好友', kind: 'action', category: '通讯', risk: 'high', confirmation: true },
+    { id: 'social_refresh_moments', name: '刷新朋友圈', kind: 'action', category: '通讯', risk: 'medium', confirmation: true },
     { id: 'delete_lingqi_chat', name: '删除玲七聊天', kind: 'action', category: '整理', risk: 'high', confirmation: true },
 ];
 
@@ -132,6 +139,17 @@ export const LINGQI_SETTING_GUIDES = Object.freeze([
         delegable: true,
     },
     {
+        id: 'social-life',
+        title: '通讯与主动联系',
+        keywords: ['通讯', '好友', '主动联系', '主动消息', '好友申请', '朋友圈', '聊天影响正文'],
+        path: '世界背面侧栏 → 通讯 → 通讯录；正文开关也可在“全局设置 → 正文注入 → 最近聊天”找到',
+        keys: ['socialAutoEnabled', 'injectionSocial'],
+        meaning: '“角色主动联系”决定人物是否按人设低频发消息、申请、动态或结束关系；“通讯影响正文”只决定聊天是否以未结算记录交给正文。',
+        choices: ['主动联系开启：人物有真实动机时可以行动，没有动机仍保持安静', '主动联系关闭：只保留 user 主动操作与已有记录', '正文参考关闭：聊天完全留在通讯层，不进入正文上下文'],
+        recommendation: '想要生活感就开启主动联系；聊天影响正文继续默认关闭，需要正文承接聊天语气或计划时再单独开启。',
+        delegable: true,
+    },
+    {
         id: 'background-people',
         title: '强化后台人物推演',
         keywords: ['强化后台人物', '后台人物推演', 'npc 推演', '镜头外人物'],
@@ -217,6 +235,9 @@ export function parseLingqiLocalQueryRequest(userText = '', people = []) {
     }
 
     const personName = mentionedPersonName(raw, people);
+    if (personName && /(?:是不是|是否|还算|现在是).{0,5}(?:好友|通讯好友)|(?:好友|通讯关系).{0,6}(?:什么状态|怎么样|还在吗)/u.test(raw)) {
+        return { type: 'social_person_status', personName };
+    }
     if (
         personName
         && /(?:为什么|怎么).{0,12}(?:没动|不动|没推演|没更新|这么久)|(?:这么久|最近).{0,8}(?:没动|不动|没推演|没更新)/u.test(raw)
@@ -250,6 +271,9 @@ export function parseLingqiLocalQueryRequest(userText = '', people = []) {
     if (/(?:设置|开关).{0,8}(?:概览|总览|有哪些|什么状态|现在怎样)|(?:看看|查看).{0,6}(?:设置|开关)/u.test(raw)) {
         return { type: 'settings_overview' };
     }
+    if (/(?:通讯|好友|好友申请|朋友圈).{0,8}(?:概览|总览|什么情况|多少|未读|盘点)|(?:看看|查看).{0,6}(?:通讯录|好友申请|未读消息)/u.test(raw)) {
+        return { type: 'social_overview' };
+    }
 
     const search = raw.match(/(?:找(?:一下|找)?|搜索|翻翻|查查).{0,8}(?:我们|玲七)?(?:之前|以前)?(?:聊过|说过|提到过|提过)?(?:的)?[“「『]?([^”」』，。！？!]{2,80})[”」』]?(?:那段|的地方|在哪|记录)?/u)
         || raw.match(/(?:我们|你和我).{0,6}(?:聊过|说过|提到过|提过)[“「『]?([^”」』，。！？!]{2,80})[”」』]?(?:吗|没有|么|？|\?)/u);
@@ -271,6 +295,7 @@ export function buildLingqiSkillMenuText() {
         '· 诊断：为什么没推演、后台是否卡住、某个人为什么很久没动',
         '· 控制：推演最新正文、巡查公共世界、开关安全设置、停止后台任务',
         '· 人物：开关后台推演、排到下一轮优先、补一次近况',
+        '· 通讯：查好友/申请/未读，确认后代发消息、处理申请、删好友或刷新朋友圈',
         '· 整理：搜索或删除玲七聊天、整理长期记忆、检查世界事实',
         '改人物核心事实、删长期记忆、重置世界和改 API，我不会只凭一句话直接动。',
     ].join('\n');

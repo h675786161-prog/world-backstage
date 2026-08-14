@@ -57,11 +57,35 @@ import {
     isAbortError,
     requestCustomCompletion,
     requestCustomModels,
+    requestImageGeneration,
     resetLastCustomApiOperation,
     resetRetryControl,
     runWithRetries,
 } from './api.js';
 import { createWorldBackstageUI } from './ui.js';
+import {
+    appendUserSocialMessage,
+    applyFriendDecisionPayload,
+    applyMomentsPayload,
+    applySocialPulsePayload,
+    applySocialReplyPayload,
+    attachMomentImage,
+    buildFriendRequestPrompt,
+    buildMomentsPrompt,
+    buildSocialPulsePrompt,
+    buildSocialReplyPrompt,
+    createGroupConversation,
+    emptySocialState,
+    markSocialNoticeRead,
+    normalizeSocialState,
+    openDirectConversation,
+    reconcileSocialRelationships,
+    removeSocialFriend,
+    respondIncomingFriendRequest,
+    selectSocialConversation,
+    setSocialConversationError,
+    toggleMomentLike,
+} from './social-terminal.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 import {
@@ -120,9 +144,9 @@ import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.3.0-alpha.7';
+const PLUGIN_VERSION = '2.4.0';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 29,
+    settingsVersion: 30,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -135,6 +159,10 @@ const DEFAULT_SETTINGS = Object.freeze({
     injectionFacts: true,
     injectionMemory: true,
     injectionPublicOpinion: true,
+    // Social messages are conversation records, not settled world facts.
+    // Keep narrative influence opt-in even when the main injection switch is on.
+    injectionSocial: false,
+    socialAutoEnabled: true,
     memorySystemEnabled: true,
     memoryPromptInjection: true,
     autoSync: true,
@@ -168,6 +196,12 @@ const DEFAULT_SETTINGS = Object.freeze({
     customApiModel: '',
     customApiTransport: 'proxy',
     customApiTimeoutMs: 120000,
+    imageApiEnabled: false,
+    imageApiUrl: '',
+    imageApiKey: '',
+    imageApiModel: '',
+    imageApiSize: '1024x1024',
+    imageApiTimeoutMs: 180000,
     apiProfiles: [],
     apiModuleRoutes: {
         simulation: 'default',
@@ -199,11 +233,12 @@ const runtime = {
     transientStore: null,
     preparedStores: new WeakSet(),
     injection: { text: '', eventIds: [], directorNoteIds: [] },
-    generationOffer: { eventIds: [], directorNoteIds: [], at: 0 },
+    generationOffer: { eventIds: [], directorNoteIds: [], at: 0, rerollBase: false },
     simulationChain: Promise.resolve(),
     simulationCount: 0,
     dataEpoch: 0,
     activeSimulation: null,
+    autoCatchUpSuppressedThroughMessageId: -1,
     activeHistoryScan: null,
     activeWorldPulse: null,
     activePublicImpact: null,
@@ -216,6 +251,14 @@ const runtime = {
     activeObservation: null,
     activeLingqi: null,
     lingqiStatus: { phase: 'idle', message: '', error: '' },
+    activeSocial: null,
+    socialStatus: { phase: 'idle', message: '', error: '', conversationId: '' },
+    activeFriendRequest: null,
+    friendRequestStatus: { phase: 'idle', message: '', error: '', personId: '' },
+    activeMoments: null,
+    momentsStatus: { phase: 'idle', message: '', error: '' },
+    activeSocialPulse: null,
+    socialPulseTimer: null,
     pendingLingqiAction: null,
     inBackgroundGeneration: false,
     consistencyBarrierRunning: false,
@@ -277,6 +320,14 @@ function clone(value) {
 
 function getContext() {
     return globalThis.SillyTavern?.getContext?.() || null;
+}
+
+function recentAssistantNarrativeForSocial(context = getContext(), limit = 8) {
+    return (Array.isArray(context?.chat) ? context.chat : [])
+        .filter(message => !message?.is_user && !message?.is_system && String(message?.mes || '').trim())
+        .slice(-Math.max(1, Number(limit) || 8))
+        .map(message => String(message.mes || '').trim())
+        .join('\n');
 }
 
 function getWorldbookNames() {
@@ -820,6 +871,7 @@ function getSettings() {
     settings.injectionFacts = settings.injectionFacts !== false;
     settings.injectionMemory = settings.injectionMemory !== false;
     settings.injectionPublicOpinion = settings.injectionPublicOpinion !== false;
+    settings.injectionSocial = Boolean(settings.injectionSocial);
     settings.memorySystemEnabled = Boolean(settings.memorySystemEnabled);
     // Legacy alias retained for older exports; the actual injection switch is injectionMemory.
     settings.memoryPromptInjection = settings.injectionMemory;
@@ -919,7 +971,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 29;
+    settings.settingsVersion = 31;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -935,6 +987,18 @@ function getSettings() {
         300000,
         Math.max(15000, Number(settings.customApiTimeoutMs) || 120000),
     );
+    settings.imageApiEnabled = Boolean(settings.imageApiEnabled);
+    settings.imageApiUrl = String(settings.imageApiUrl || '').trim().slice(0, 500);
+    settings.imageApiKey = String(settings.imageApiKey || '').trim().slice(0, 1000);
+    settings.imageApiModel = String(settings.imageApiModel || '').trim().slice(0, 180);
+    if (!['512x512', '768x768', '1024x1024', '1024x1536', '1536x1024'].includes(settings.imageApiSize)) {
+        settings.imageApiSize = '1024x1024';
+    }
+    settings.imageApiTimeoutMs = Math.min(
+        600000,
+        Math.max(30000, Number(settings.imageApiTimeoutMs) || 180000),
+    );
+    settings.socialAutoEnabled = settings.socialAutoEnabled !== false;
     settings.apiProfiles = normalizeApiProfiles(settings.apiProfiles);
     settings.apiModuleRoutes = normalizeApiModuleRoutes(settings.apiModuleRoutes, settings.apiProfiles);
     if (!['observe', 'relevant'].includes(settings.publicOpinionRevealMode)) {
@@ -950,7 +1014,7 @@ function getSettings() {
         : settings.orbEnabled !== false;
     settings.orbEdgeHide = Boolean(settings.orbEdgeHide);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 29) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 31) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -967,14 +1031,17 @@ function makeStore() {
         currentState: clone(initialState),
         branchOverrides: {},
         memorySummaryArchive: [],
+        historyBootstrapCheckpoint: null,
         personObservations: {},
         lingqi: emptyLingqiState(),
+        social: emptySocialState(),
         publicOpinion: emptyPublicOpinionCache(),
         publicOpinionListHidden: false,
         publicOpinionDismissed: { news: [], forums: [] },
         publicOpinionSandbox: emptyPublicOpinionSandbox(),
         manualDeletions: {
             eventIds: [],
+            events: [],
             people: [],
             memory: { factIds: [], clueIds: [], summaryIds: [] },
         },
@@ -1156,6 +1223,27 @@ function normalizeManualDeletions(value) {
             .filter(Boolean),
     )].slice(-240);
 
+    const seenEvents = new Set();
+    const events = [];
+    for (const item of Array.isArray(raw.events) ? raw.events : []) {
+        if (!item || typeof item !== 'object') continue;
+        const entry = {
+            id: String(item.id || '').trim(),
+            title: String(item.title || '').trim().slice(0, 140),
+            place: String(item.place || '').trim().slice(0, 140),
+            summary: String(item.summary || '').trim().slice(0, 420),
+            actors: (Array.isArray(item.actors) ? item.actors : [])
+                .map(actor => String(actor || '').trim())
+                .filter(Boolean)
+                .slice(0, 16),
+        };
+        if (!entry.id && !entry.title) continue;
+        const key = `${entry.id.toLocaleLowerCase()}\u0000${entry.title.toLocaleLowerCase()}\u0000${entry.place.toLocaleLowerCase()}`;
+        if (seenEvents.has(key)) continue;
+        seenEvents.add(key);
+        events.push(entry);
+    }
+
     const memoryRaw = raw.memory && typeof raw.memory === 'object' ? raw.memory : {};
     const memory = {
         factIds: [...new Set((Array.isArray(memoryRaw.factIds) ? memoryRaw.factIds : [])
@@ -1181,7 +1269,49 @@ function normalizeManualDeletions(value) {
         seenPeople.add(key);
         people.push(entry);
     }
-    return { eventIds, people: people.slice(-240), memory };
+    return { eventIds, events: events.slice(-240), people: people.slice(-240), memory };
+}
+
+function normalizedEventDeletionText(value) {
+    return String(value || '')
+        .normalize('NFKC')
+        .toLocaleLowerCase()
+        .replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function eventDeletionSimilarity(left, right) {
+    const a = normalizedEventDeletionText(left);
+    const b = normalizedEventDeletionText(right);
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    const shorter = a.length <= b.length ? a : b;
+    const longer = a.length > b.length ? a : b;
+    if (shorter.length >= 6 && longer.includes(shorter)) return shorter.length / longer.length;
+    if (a.length < 4 || b.length < 4) return 0;
+    const grams = text => {
+        const values = new Set();
+        for (let index = 0; index < text.length - 1; index += 1) values.add(text.slice(index, index + 2));
+        return values;
+    };
+    const leftGrams = grams(a);
+    const rightGrams = grams(b);
+    let overlap = 0;
+    for (const gram of leftGrams) if (rightGrams.has(gram)) overlap += 1;
+    return (2 * overlap) / Math.max(1, leftGrams.size + rightGrams.size);
+}
+
+function eventMatchesDeletion(event, deletion) {
+    const eventId = String(event?.id || '').trim();
+    const deletionId = String(deletion?.id || '').trim();
+    if (eventId && deletionId && eventId === deletionId) return true;
+    const titleScore = eventDeletionSimilarity(event?.title, deletion?.title);
+    if (titleScore >= 0.86) return true;
+    if (titleScore < 0.68) return false;
+    const contextScore = eventDeletionSimilarity(
+        [event?.place, ...(event?.actors || []), event?.summary].filter(Boolean).join(' '),
+        [deletion?.place, ...(deletion?.actors || []), deletion?.summary].filter(Boolean).join(' '),
+    );
+    return contextScore >= 0.58;
 }
 
 function personMatchesDeletion(person, deletion) {
@@ -1203,10 +1333,16 @@ function applyManualDeletionFilters(inputState, store) {
     const deletions = normalizeManualDeletions(store?.manualDeletions);
     const deletedEvents = new Set(deletions.eventIds);
 
-    if (deletedEvents.size) {
-        state.events = (state.events || []).filter(event => !deletedEvents.has(String(event?.id || '')));
-        state.echoes = (state.echoes || []).filter(echo => !deletedEvents.has(String(echo?.eventId || '')));
-        state.archive = (state.archive || []).filter(entry => !deletedEvents.has(String(entry?.eventId || '')));
+    if (deletedEvents.size || deletions.events.length) {
+        const rejectedEventIds = new Set(deletedEvents);
+        state.events = (state.events || []).filter(event => {
+            const rejected = deletedEvents.has(String(event?.id || ''))
+                || deletions.events.some(deletion => eventMatchesDeletion(event, deletion));
+            if (rejected && event?.id) rejectedEventIds.add(String(event.id));
+            return !rejected;
+        });
+        state.echoes = (state.echoes || []).filter(echo => !rejectedEventIds.has(String(echo?.eventId || '')));
+        state.archive = (state.archive || []).filter(entry => !rejectedEventIds.has(String(entry?.eventId || '')));
     }
     if (deletions.people.length) {
         state.people = (state.people || []).filter(person => (
@@ -1244,6 +1380,25 @@ function addEventDeletionTombstone(store, event) {
             id,
         ])].slice(-240);
     }
+    store.manualDeletions.events = normalizeManualDeletions({
+        ...store.manualDeletions,
+        events: [...store.manualDeletions.events, {
+            id,
+            title: event?.title,
+            place: event?.place,
+            summary: event?.summary,
+            actors: event?.actors,
+        }],
+    }).events;
+}
+
+function clearEventDeletionTombstone(store, event) {
+    store.manualDeletions = normalizeManualDeletions(store.manualDeletions);
+    const id = String(event?.id || '').trim();
+    store.manualDeletions.eventIds = store.manualDeletions.eventIds.filter(item => item !== id);
+    store.manualDeletions.events = store.manualDeletions.events.filter(
+        deletion => !eventMatchesDeletion(event, deletion),
+    );
 }
 
 function addMemoryDeletionTombstone(store, kind, item) {
@@ -1326,6 +1481,10 @@ function prepareStore(rawStore, context = getContext()) {
     store.memorySummaryArchive = Array.isArray(store.memorySummaryArchive)
         ? store.memorySummaryArchive
         : [];
+    store.historyBootstrapCheckpoint = store.historyBootstrapCheckpoint
+        && typeof store.historyBootstrapCheckpoint === 'object'
+        ? store.historyBootstrapCheckpoint
+        : null;
     mergeMemorySummaryArchive(store, store.currentState);
 
     const settings = getSettings();
@@ -1347,6 +1506,14 @@ function prepareStore(rawStore, context = getContext()) {
         ? store.personObservations
         : {};
     store.lingqi = normalizeLingqiState(store.lingqi || emptyLingqiState());
+    store.social = reconcileSocialRelationships(
+        store.social || emptySocialState(),
+        store.currentState,
+        {
+            userName: context?.name1 || '',
+            recentNarrative: recentAssistantNarrativeForSocial(context),
+        },
+    );
     store.publicOpinionDismissed = normalizePublicOpinionDismissed(store.publicOpinionDismissed);
     store.publicOpinion = filterDismissedPublicOpinion(
         store.publicOpinion || emptyPublicOpinionCache(),
@@ -1395,6 +1562,14 @@ function saveStore(store, { immediate = false } = {}) {
         getSettings(),
     );
     mergeMemorySummaryArchive(store, store.currentState);
+    store.social = reconcileSocialRelationships(
+        store.social || emptySocialState(),
+        store.currentState,
+        {
+            userName: context?.name1 || '',
+            recentNarrative: recentAssistantNarrativeForSocial(context),
+        },
+    );
     // 舆情/新闻只能通过自己的时间 + 公开事件调度器更新。普通世界状态保存
     // 绝不能顺手把 public event 直接塞进新闻，否则会绕过新闻时间门槛。
     store.updatedAt = new Date().toISOString();
@@ -1442,7 +1617,7 @@ function latestAssistantEntry() {
 }
 
 function taskRouteKey(taskKind = 'simulation') {
-    if (taskKind === 'person-observation' || taskKind === 'lingqi') return 'observation';
+    if (taskKind === 'person-observation' || taskKind === 'lingqi' || taskKind === 'social') return 'observation';
     if (taskKind === 'public-opinion' || taskKind === 'public-opinion-sandbox') return 'opinion';
     if (taskKind === 'history' || taskKind === 'history-index' || taskKind === 'memory') return 'history';
     return 'simulation';
@@ -1891,6 +2066,23 @@ function activeBackgroundTaskLabels() {
         runtime.activeLingqi?.controller
         && !runtime.activeLingqi.controller.signal.aborted
     ) labels.push('玲七');
+    if (
+        runtime.activeSocial?.controller
+        && !runtime.activeSocial.controller.signal.aborted
+    ) labels.push('内置社交');
+    if (
+        runtime.activeFriendRequest?.controller
+        && !runtime.activeFriendRequest.controller.signal.aborted
+    ) labels.push('好友申请');
+    if (
+        runtime.activeMoments?.controller
+        && !runtime.activeMoments.controller.signal.aborted
+    ) labels.push('朋友圈');
+    if (
+        runtime.activeSocialPulse?.controller
+        && !runtime.activeSocialPulse.controller.signal.aborted
+    ) labels.push('生活通讯');
+    else if (runtime.socialPulseTimer !== null) labels.push('生活通讯待运行');
     if (runtime.queuedSimulations.size > 0 || runtime.pendingManualSimulation) {
         labels.push('排队世界推演');
     }
@@ -2101,6 +2293,19 @@ function getSyncStatus() {
                 && runtime.pendingLingqiAction?.contextEpoch === runtime.contextEpoch
             ) ? { ...runtime.pendingLingqiAction } : null,
             running: Boolean(runtime.activeLingqi && runtime.activeLingqi.chatToken === chatToken && !runtime.activeLingqi.controller?.signal?.aborted),
+        },
+        social: {
+            ...normalizeSocialState(store.social || emptySocialState(), state.people),
+            ...runtime.socialStatus,
+            running: Boolean(runtime.activeSocial && runtime.activeSocial.chatToken === chatToken && !runtime.activeSocial.controller?.signal?.aborted),
+            friendRequest: {
+                ...runtime.friendRequestStatus,
+                running: Boolean(runtime.activeFriendRequest && runtime.activeFriendRequest.chatToken === chatToken && !runtime.activeFriendRequest.controller?.signal?.aborted),
+            },
+            momentsStatus: {
+                ...runtime.momentsStatus,
+                running: Boolean(runtime.activeMoments && runtime.activeMoments.chatToken === chatToken && !runtime.activeMoments.controller?.signal?.aborted),
+            },
         },
         worldbook: {
             ...runtime.worldbookScan,
@@ -2456,17 +2661,25 @@ function restoreLatestBranch({ pending = false } = {}) {
     return store.currentState;
 }
 
-function recentChatText(maximum = 8) {
+function recentChatText(maximum = 8, beforeIndex = Infinity) {
     const chat = getContext()?.chat || [];
+    const end = Number.isFinite(Number(beforeIndex))
+        ? Math.max(0, Math.min(chat.length, Number(beforeIndex)))
+        : chat.length;
     return chat
+        .slice(0, end)
         .slice(-maximum)
         .map(message => narrativeMessageText(message))
         .join('\n')
         .slice(-9000);
 }
 
-function recentForegroundIntentText() {
-    const chat = getContext()?.chat || [];
+function recentForegroundIntentText(beforeIndex = Infinity) {
+    const fullChat = getContext()?.chat || [];
+    const end = Number.isFinite(Number(beforeIndex))
+        ? Math.max(0, Math.min(fullChat.length, Number(beforeIndex)))
+        : fullChat.length;
+    const chat = fullChat.slice(0, end);
     if (!chat.length) return '';
 
     let latestUserIndex = -1;
@@ -2735,7 +2948,163 @@ function schedulePublicPostProcessing(state = getState(), {
     if (!impactScheduled) {
         scheduleAutoPublicOpinion(state, opinionDelay);
     }
+    scheduleSocialPulse(Math.max(900, Number(opinionDelay) + 420));
     return impactScheduled;
+}
+
+function historyBootstrapPrefixSignature(endExclusive, context = getContext()) {
+    const limit = Math.max(0, Math.min(
+        context?.chat?.length || 0,
+        Number.parseInt(endExclusive, 10) || 0,
+    ));
+    const parts = [];
+    for (let index = 0; index < limit; index += 1) {
+        const message = context?.chat?.[index];
+        if (!message || message.is_system) continue;
+        parts.push([
+            index,
+            message.is_user ? 'u' : 'a',
+            message.is_user ? 0 : Number(message.swipe_id ?? 0),
+            hashText(narrativeMessageText(message)),
+        ].join(':'));
+    }
+    return hashText(parts.join('|'));
+}
+
+function validHistoryBootstrapCheckpoint(store, {
+    chatToken = currentChatToken(),
+    chatLength = getContext()?.chat?.length || 0,
+    baseRevision = Math.max(0, Number(getState()?.revision) || 0),
+} = {}) {
+    const checkpoint = store?.historyBootstrapCheckpoint;
+    if (!checkpoint || typeof checkpoint !== 'object') return null;
+    const cursor = Math.max(0, Number.parseInt(checkpoint.cursor, 10) || 0);
+    const valid = (
+        Number(checkpoint.version) === 1
+        && String(checkpoint.chatToken || '') === String(chatToken || '')
+        && cursor > 0
+        && cursor <= chatLength
+        && Math.max(0, Number(checkpoint.baseRevision) || 0) === baseRevision
+        && Boolean(checkpoint.stagedState && typeof checkpoint.stagedState === 'object')
+        && Boolean(checkpoint.prefixSignature)
+        && checkpoint.prefixSignature === historyBootstrapPrefixSignature(cursor)
+        && Boolean(checkpoint.recordPlayerCharacter) === Boolean(getSettings().recordPlayerCharacter)
+    );
+    return valid ? { ...checkpoint, cursor } : null;
+}
+
+function saveHistoryBootstrapCheckpoint({
+    chatToken,
+    cursor,
+    chatLength,
+    baseRevision,
+    stagedState,
+    assistantBatchLimit,
+} = {}) {
+    if (!(cursor > 0) || !stagedState) return false;
+    const store = getStore();
+    store.historyBootstrapCheckpoint = {
+        version: 1,
+        chatToken: String(chatToken || ''),
+        cursor: Math.max(0, Number.parseInt(cursor, 10) || 0),
+        totalAtStart: Math.max(0, Number.parseInt(chatLength, 10) || 0),
+        baseRevision: Math.max(0, Number(baseRevision) || 0),
+        prefixSignature: historyBootstrapPrefixSignature(cursor),
+        recordPlayerCharacter: Boolean(getSettings().recordPlayerCharacter),
+        assistantBatchLimit: Math.max(1, Number.parseInt(assistantBatchLimit, 10) || 1),
+        stagedState: trimState(stagedState),
+        updatedAt: new Date().toISOString(),
+    };
+    saveStore(store, { immediate: true });
+    return true;
+}
+
+function clearHistoryBootstrapCheckpoint({ immediate = true } = {}) {
+    const store = getStore();
+    if (!store.historyBootstrapCheckpoint) return false;
+    store.historyBootstrapCheckpoint = null;
+    saveStore(store, { immediate });
+    return true;
+}
+
+function scheduleSocialPulse(delay = 1200) {
+    const settings = getSettings();
+    const latestMessageId = Number(latestAssistantEntry()?.index ?? -1);
+    const store = getStore();
+    const social = normalizeSocialState(store.social || emptySocialState(), store.currentState.people);
+    if (
+        !settings.enabled
+        || !settings.socialAutoEnabled
+        || latestMessageId < 0
+        || latestMessageId <= Number(social.lastPulseMessageId ?? -1)
+    ) return false;
+    const chatToken = currentChatToken();
+    if (runtime.socialPulseTimer !== null) window.clearTimeout(runtime.socialPulseTimer);
+    runtime.socialPulseTimer = window.setTimeout(() => {
+        runtime.socialPulseTimer = null;
+        if (chatToken !== currentChatToken()) return;
+        const blocked = Boolean(
+            runtime.activeSimulation
+            || runtime.activeWorldPulse
+            || runtime.activeHistoryScan
+            || runtime.activePublicImpact
+            || runtime.activeCorrection
+            || runtime.activeSocialPulse
+            || runtime.queuedSimulations.size > 0
+        );
+        if (blocked) {
+            scheduleSocialPulse(Math.max(900, Number(delay) || 1200));
+            return;
+        }
+        void runSocialPulse(latestMessageId).catch(error => {
+            if (!isAbortError(error)) console.warn('[世界背面] 生活通讯脉冲失败', error);
+        });
+    }, Math.max(700, Number(delay) || 1200));
+    return true;
+}
+
+async function runSocialPulse(messageId = Number(latestAssistantEntry()?.index ?? -1)) {
+    if (runtime.activeSocialPulse && !runtime.activeSocialPulse.controller?.signal?.aborted) return null;
+    const chatToken = currentChatToken();
+    const contextEpoch = runtime.contextEpoch;
+    const controller = new AbortController();
+    let store = getStore();
+    const normalized = normalizeSocialState(store.social || emptySocialState(), store.currentState.people);
+    if (Number(messageId) <= Number(normalized.lastPulseMessageId ?? -1)) return null;
+    const prompt = buildSocialPulsePrompt(normalized, store.currentState, {
+        userName: String(getContext()?.name1 || '你'),
+    });
+    if (!prompt) {
+        normalized.lastPulseMessageId = Number(messageId);
+        store.social = normalized;
+        saveStore(store, { immediate: true });
+        return { messageCount: 0, requestCount: 0, removalCount: 0, momentCount: 0 };
+    }
+    runtime.activeSocialPulse = { controller, chatToken, contextEpoch, messageId: Number(messageId) };
+    runtime.ui?.render();
+    try {
+        const raw = await backgroundSimulation(prompt, {
+            maxTokens: 1600,
+            temperature: 0.45,
+            signal: controller.signal,
+            taskKind: 'social',
+            rejectTruncated: true,
+        });
+        const parsed = extractJsonObject(raw);
+        if (!parsed) throw unreadableJsonError(raw, '生活通讯模型');
+        if (controller.signal.aborted || chatToken !== currentChatToken() || contextEpoch !== runtime.contextEpoch) return null;
+        store = getStore();
+        const applied = applySocialPulsePayload(store.social, store.currentState, parsed);
+        applied.social.lastPulseMessageId = Number(messageId);
+        store.social = applied.social;
+        saveStore(store, { immediate: true });
+        refreshInjection();
+        runtime.ui?.render();
+        return applied;
+    } finally {
+        if (runtime.activeSocialPulse?.controller === controller) runtime.activeSocialPulse = null;
+        runtime.ui?.render();
+    }
 }
 
 
@@ -2792,15 +3161,50 @@ function publicOpinionRevealInjection(state, cache, settings, recentText = '') {
     return lines.join('\n');
 }
 
-function refreshInjection() {
+function socialConversationInjection(social, state, settings) {
+    if (settings.injectionSocial !== true) return '';
+    const normalized = normalizeSocialState(social || emptySocialState(), state?.people || []);
+    const accepted = new Set(normalized.connections.filter(item => item.status === 'accepted').map(item => item.personId));
+    const peopleById = new Map((state?.people || []).map(person => [String(person?.id || ''), person]));
+    const conversations = [...normalized.conversations]
+        .filter(conversation => (
+            conversation.rawMessages.length
+            && (conversation.type === 'group' || accepted.has(conversation.memberIds[0]))
+        ))
+        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+        .slice(0, 3);
+    if (!conversations.length) return '';
+    const lines = conversations.flatMap(conversation => {
+        const members = conversation.memberIds
+            .map(id => peopleById.get(id)?.name)
+            .filter(Boolean)
+            .join('、');
+        const messages = conversation.rawMessages.slice(-6).map(message => (
+            `- ${message.senderId === 'user' ? '玩家' : message.senderName}：${String(message.text || '').trim().slice(0, 420)}`
+        ));
+        return [`[通信｜${conversation.title}｜成员：${members || '未知'}]`, ...messages];
+    });
+    return [
+        '<world_backstage_social_context>',
+        '以下是最近社交通信记录，仅代表人物说过或收到的内容，不是已结算的世界事实。',
+        '可以用它保持语言和关系连续；不得因为聊天里有承诺、计划、位置或结果，就当成它已经发生。',
+        ...lines.slice(-24),
+        '</world_backstage_social_context>',
+    ].join('\n');
+}
+
+function refreshInjection({
+    stateOverride = null,
+    chatBeforeIndex = Infinity,
+} = {}) {
     const context = getContext();
     if (!context?.setExtensionPrompt) return;
 
     const settings = getSettings();
-    const state = getState();
-    const recentText = recentChatText();
+    const state = stateOverride || getState();
+    const recentText = recentChatText(8, chatBeforeIndex);
     const packet = buildInjectionPackage(state, settings, recentText, {
-        contextText: recentForegroundIntentText(),
+        contextText: recentForegroundIntentText(chatBeforeIndex),
     });
     const store = getStore();
     const opinionInjection = publicOpinionRevealInjection(
@@ -2809,9 +3213,10 @@ function refreshInjection() {
         settings,
         recentText,
     );
+    const socialInjection = socialConversationInjection(store.social, state, settings);
     const directorInjection = buildLingqiDirectorInjection(store.lingqi || emptyLingqiState());
     const authorityText = String(packet.authorityText ?? packet.text ?? '');
-    const supportText = [directorInjection.text, packet.supportText, opinionInjection].filter(Boolean).join('\n\n');
+    const supportText = [directorInjection.text, packet.supportText, opinionInjection, socialInjection].filter(Boolean).join('\n\n');
     const text = [supportText, authorityText].filter(Boolean).join('\n\n');
     runtime.injection = {
         ...packet,
@@ -2826,6 +3231,53 @@ function refreshInjection() {
     // competing with the newest user turn or authoritative state.
     context.setExtensionPrompt(PROMPT_KEY, authorityText, 1, 0, false, 0);
     context.setExtensionPrompt(SUPPORT_PROMPT_KEY, supportText, 1, 2, false, 0);
+}
+
+function rerollInjectionBase(type) {
+    if (!/(?:swipe|regenerate|reroll)/i.test(String(type || ''))) return null;
+    const chat = getContext()?.chat || [];
+    let target = null;
+    for (let index = chat.length - 1; index >= 0; index -= 1) {
+        const message = chat[index];
+        if (!message || message.is_user || message.is_system) continue;
+        target = { message, index };
+        break;
+    }
+    if (!target) return null;
+
+    const swipeId = Number(target.message?.swipe_id ?? 0);
+    const branch = branchDataFromMessage(target.message, swipeId);
+    if (branch?.base && !branch.stale) {
+        return {
+            state: restoreBranchSnapshot(branch.base, getStore().initialState),
+            chatBeforeIndex: target.index,
+        };
+    }
+
+    const previous = findLatestResultSnapshot(target.index);
+    return {
+        state: previous
+            ? stateWithBranchOverride(previous.snapshot)
+            : clone(getStore().initialState),
+        chatBeforeIndex: target.index,
+    };
+}
+
+function offerGenerationInjection(type) {
+    const rerollBase = rerollInjectionBase(type);
+    refreshInjection(rerollBase
+        ? {
+            stateOverride: rerollBase.state,
+            chatBeforeIndex: rerollBase.chatBeforeIndex,
+        }
+        : undefined);
+    runtime.generationOffer = {
+        eventIds: clone(runtime.injection.eventIds || []),
+        directorNoteIds: clone(runtime.injection.directorNoteIds || []),
+        at: Date.now(),
+        rerollBase: Boolean(rerollBase),
+    };
+    return runtime.generationOffer;
 }
 
 function clearOwnInjection() {
@@ -2999,6 +3451,10 @@ function hasNewerAssistantReply(messageId) {
 function cancelActiveSimulation() {
     const active = runtime.activeSimulation;
     if (!active || active.controller.signal.aborted) return false;
+    runtime.autoCatchUpSuppressedThroughMessageId = Math.max(
+        runtime.autoCatchUpSuppressedThroughMessageId,
+        Number(latestAssistantEntry()?.index ?? active.messageId ?? -1),
+    );
     active.cancelled = true;
     active.controller.abort();
     if (active.apiMode === 'tavern') {
@@ -3020,7 +3476,16 @@ function cancelActiveSimulation() {
 function cancelActiveBackgroundTasks({ preserveLingqi = false } = {}) {
     const labels = activeBackgroundTaskLabels()
         .filter(label => !(preserveLingqi && label === '玲七'));
-    if (!labels.length) return { cancelled: false, labels: [] };
+    const queuedWorldWork = runtime.queuedSimulations.size > 0 || Boolean(runtime.pendingManualSimulation);
+    if (!labels.length && !queuedWorldWork) return { cancelled: false, labels: [] };
+    const cancelledLabels = queuedWorldWork && !labels.includes('世界推演')
+        ? [...labels, '世界推演队列']
+        : labels;
+
+    runtime.autoCatchUpSuppressedThroughMessageId = Math.max(
+        runtime.autoCatchUpSuppressedThroughMessageId,
+        Number(latestAssistantEntry()?.index ?? -1),
+    );
 
     // Invalidate queued world-simulation jobs without changing any world data.
     // Their branch records remain pending, so a later manual sync/new reply can catch up.
@@ -3031,6 +3496,10 @@ function cancelActiveBackgroundTasks({ preserveLingqi = false } = {}) {
     if (runtime.autoMemoryTimer !== null) {
         window.clearTimeout(runtime.autoMemoryTimer);
         runtime.autoMemoryTimer = null;
+    }
+    if (runtime.socialPulseTimer !== null) {
+        window.clearTimeout(runtime.socialPulseTimer);
+        runtime.socialPulseTimer = null;
     }
 
     // Main simulation needs its existing special stop path for Tavern quiet generation.
@@ -3051,6 +3520,10 @@ function cancelActiveBackgroundTasks({ preserveLingqi = false } = {}) {
         runtime.activePublicOpinionSandbox?.controller,
         runtime.activeObservation?.controller,
         preserveLingqi ? null : runtime.activeLingqi?.controller,
+        runtime.activeSocial?.controller,
+        runtime.activeFriendRequest?.controller,
+        runtime.activeMoments?.controller,
+        runtime.activeSocialPulse?.controller,
     ];
     for (const controller of abortables) {
         try {
@@ -3091,6 +3564,14 @@ function cancelActiveBackgroundTasks({ preserveLingqi = false } = {}) {
             error: '',
         };
     }
+    if (runtime.socialStatus?.phase === 'running') {
+        runtime.socialStatus = {
+            phase: 'idle',
+            message: '本次社交回复已停止，你发出的原始消息仍保留',
+            error: '',
+            conversationId: runtime.socialStatus.conversationId || '',
+        };
+    }
 
     setSyncStatus({
         phase: 'pending',
@@ -3098,7 +3579,7 @@ function cancelActiveBackgroundTasks({ preserveLingqi = false } = {}) {
         error: '',
     });
     runtime.ui?.render();
-    return { cancelled: true, labels };
+    return { cancelled: true, labels: cancelledLabels };
 }
 
 function markMessagePending(messageId, {
@@ -3334,7 +3815,7 @@ async function backgroundSimulation(prompt, {
         error.name = 'AbortError';
         throw error;
     }
-    const foregroundNeutralTask = taskKind === 'public-opinion-sandbox' || taskKind === 'lingqi';
+    const foregroundNeutralTask = ['public-opinion-sandbox', 'lingqi', 'social'].includes(taskKind);
 
     if (route.mode === 'tavern-profile') {
         const profileId = String(route.profileId || '');
@@ -3419,6 +3900,25 @@ async function backgroundSimulation(prompt, {
                 operation: taskKind,
                 routeLabel: route.label,
             }));
+        } catch (error) {
+            if (error?.code !== 'OUTPUT_TRUNCATED' && error?.errorType !== 'output-limit') throw error;
+            const capHint = limits.tokenSource === 'module'
+                ? '当前模块 Token 上限限制了这次请求'
+                : limits.tokenSource === 'global'
+                    ? '全局 Token 上限限制了这次请求'
+                    : '模型在本次请求上限处停止';
+            const wrapped = new Error(
+                `${String(error?.message || error)}；实际输出上限 ${effectiveMaxTokens} Token，${capHint}。`
+                + '这和等待秒数无关；可把对应模块 Token 上限设为 0（自动），或调高后重试。',
+            );
+            Object.assign(wrapped, error, {
+                cause: error,
+                code: error?.code || 'OUTPUT_TRUNCATED',
+                errorType: 'output-limit',
+                effectiveMaxTokens,
+                tokenLimitSource: limits.tokenSource,
+            });
+            throw wrapped;
         } finally {
             if (!foregroundNeutralTask) runtime.inBackgroundGeneration = false;
             refreshInjection();
@@ -3436,6 +3936,9 @@ async function backgroundSimulation(prompt, {
     }
     if (taskKind === 'lingqi' && typeof context?.generateRaw !== 'function') {
         throw new Error('当前酒馆版本没有提供独立上下文玲七聊天接口；请更新 SillyTavern 或为世界背面配置独立 API');
+    }
+    if (taskKind === 'social' && typeof context?.generateRaw !== 'function') {
+        throw new Error('当前酒馆版本没有提供独立上下文社交回复接口；请更新 SillyTavern 或为世界背面配置独立 API');
     }
 
     if (!foregroundNeutralTask) runtime.inBackgroundGeneration = true;
@@ -3860,6 +4363,10 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             lifeSettlementTargetIds: backgroundPersonTargets.map(person => person.id),
             memorySummaryMessageIds: memoryEnabledAtCommit ? pendingMessageIds : [],
         });
+        // Manual deletion is an author decision, not a temporary UI filter.
+        // Apply both exact-id and near-duplicate tombstones before snapshots are
+        // written, so a model cannot resurrect the same current under a new id.
+        resultState = applyManualDeletionFilters(resultState, getStore());
         resultState = markWorldCoverageChecked(resultState, worldCoverageTargets, {
             publicCycle: false,
             customInstruction: settings.customSimulationInstruction,
@@ -4355,6 +4862,9 @@ function scheduleAutoSync(messageId, type) {
         });
         return;
     }
+    if (numericMessageId > runtime.autoCatchUpSuppressedThroughMessageId) {
+        runtime.autoCatchUpSuppressedThroughMessageId = -1;
+    }
     if (!settings.enabled || !settings.worldSimulationEnabled) {
         setSyncStatus({
             phase: 'idle',
@@ -4450,6 +4960,7 @@ function schedulePendingCatchUp({ afterMessageId = -1 } = {}) {
     }
     const latest = latestAssistantEntry();
     if (!latest) return;
+    if (latest.index <= runtime.autoCatchUpSuppressedThroughMessageId) return;
     if (latest.index <= Number(afterMessageId)) return;
     const pending = pendingAssistantEntriesThrough(latest.index);
     if (pending.length < settings.autoSimulationInterval) return;
@@ -4571,20 +5082,14 @@ function onMessageReceived(messageId, type) {
 async function runPreGenerationConsistencyBarrier(_chat, _contextSize, _abort, type) {
     const settings = getSettings();
     if (
-        runtime.inBackgroundGeneration
-        || runtime.consistencyBarrierRunning
+        runtime.consistencyBarrierRunning
         || ['quiet', 'impersonate', 'first_message'].includes(type)
     ) {
         return;
     }
 
     const offerCurrentInjection = () => {
-        refreshInjection();
-        runtime.generationOffer = {
-            eventIds: clone(runtime.injection.eventIds || []),
-            directorNoteIds: clone(runtime.injection.directorNoteIds || []),
-            at: Date.now(),
-        };
+        offerGenerationInjection(type);
     };
 
     if (!settings.enabled || !settings.worldSimulationEnabled) {
@@ -4603,6 +5108,8 @@ async function runPreGenerationConsistencyBarrier(_chat, _contextSize, _abort, t
         runtime.activeSimulation
         || runtime.queuedSimulations.size > 0
     );
+    const pluginWorkAlreadyRunning = coreAlreadyRunning || activeBackgroundTaskLabels()
+        .some(label => label !== '玲七');
 
     // Consistency Barrier is a gate, not a hidden auto-run trigger.
     // It may wait for work that is already due/running, but it must not bypass
@@ -4612,16 +5119,23 @@ async function runPreGenerationConsistencyBarrier(_chat, _contextSize, _abort, t
         && pending.length >= settings.autoSimulationInterval
     );
 
-    if (!pending.length && !coreAlreadyRunning) {
+    if (!pending.length && !pluginWorkAlreadyRunning) {
         if (pendingPublicImpactEvents(getState(), { maximum: 8 }).length) {
-            try {
-                await runPublicImpactPropagation({ quiet: true, force: true });
-            } catch (error) {
-                if (!isAbortError(error)) {
-                    console.warn('[世界背面] 发送前公共事件影响未完成，本轮沿用上一份已确认影响状态', error);
-                }
-            }
+            scheduleDeferredPublicImpact(220, currentChatToken());
         }
+        offerCurrentInjection();
+        return;
+    }
+
+    if (pluginWorkAlreadyRunning) {
+        const stopped = cancelActiveBackgroundTasks({ preserveLingqi: true });
+        setSyncStatus({
+            phase: 'pending',
+            message: stopped.cancelled
+                ? '正文生成优先：后台推演已经让路，未完成结果不会提交；新回复出来后再按频率继续'
+                : '正文生成优先：本轮直接沿用上一份已确认世界状态',
+            error: '',
+        });
         offerCurrentInjection();
         return;
     }
@@ -4638,53 +5152,29 @@ async function runPreGenerationConsistencyBarrier(_chat, _contextSize, _abort, t
         return;
     }
 
-    runtime.consistencyBarrierRunning = true;
-    preemptLowPriorityTasksForCore();
+    // Even when automatic simulation is due, foreground prose must never wait
+    // for a plugin model call. MESSAGE_RECEIVED will schedule the accumulated
+    // world work after the new assistant reply has completed.
     setSyncStatus({
-        phase: 'running',
-        message: coreAlreadyRunning
-            ? '已有到期世界任务正在接线～先等它提交完成，再把最新确认状态递给正文'
-            : pending.length > 1
-                ? `已达到自动频率，先把累计的 ${pending.length} 层世界接上～`
-                : '已达到自动频率，先把最新一层世界接上～',
+        phase: 'pending',
+        message: `已有 ${pending.length} 轮正文到达推演频率；本次正文先生成，完成后再继续后台推演`,
         error: '',
     });
-
-    try {
-        if (coreAlreadyRunning) {
-            await runtime.simulationChain.catch(error => {
-                if (!isAbortError(error)) throw error;
-            });
-        } else if (autoTaskIsDue) {
-            await queueSimulation(latest.index, {
-                trigger: 'pre-send-barrier-due',
-                newAssistantCount: pending.length,
-            });
-        }
-
-        if (pendingPublicImpactEvents(getState(), { maximum: 8 }).length) {
-            await runPublicImpactPropagation({ quiet: true, force: true });
-        }
-    } catch (error) {
-        if (!isAbortError(error)) {
-            console.warn('[世界背面] 发送前世界同步未完成，本轮将沿用上一份已确认状态', error);
-        }
-    } finally {
-        runtime.consistencyBarrierRunning = false;
-        offerCurrentInjection();
-    }
+    offerCurrentInjection();
 }
 
 globalThis.worldBackstageGenerationInterceptor = runPreGenerationConsistencyBarrier;
 
 function onGenerationStarted(type, _options, dryRun) {
-    if (dryRun || ['quiet', 'impersonate'].includes(type)) return;
-    refreshInjection();
-    runtime.generationOffer = {
-        eventIds: clone(runtime.injection.eventIds || []),
-        directorNoteIds: clone(runtime.injection.directorNoteIds || []),
-        at: Date.now(),
-    };
+    if (dryRun || ['quiet', 'impersonate', 'first_message'].includes(type)) return;
+    const offer = offerGenerationInjection(type);
+    if (!String(runtime.injection.text || '').trim()) return;
+    toast(
+        offer.rerollBase
+            ? '旧重 roll 分支的资料已撤回；本轮正文收到的是重 roll 前的世界状态。'
+            : '世界背面资料已递给本轮正文。',
+        'success',
+    );
 }
 
 function restoreExistingSwipe(messageId) {
@@ -4924,6 +5414,10 @@ function onChatChanged() {
     if (runtime.autoMemoryTimer !== null) {
         window.clearTimeout(runtime.autoMemoryTimer);
         runtime.autoMemoryTimer = null;
+    }
+    if (runtime.socialPulseTimer !== null) {
+        window.clearTimeout(runtime.socialPulseTimer);
+        runtime.socialPulseTimer = null;
     }
     if (runtime.manualUndoTimer !== null) {
         window.clearTimeout(runtime.manualUndoTimer);
@@ -6219,37 +6713,57 @@ async function bootstrapWorldFromHistory() {
     const chatLength = context?.chat?.length || 0;
     if (!chatLength) throw new Error('当前聊天还没有可回溯的正文');
 
+    const bootstrapBaseRevision = Math.max(0, Number(getState()?.revision) || 0);
+    const checkpointStore = getStore();
+    const checkpoint = validHistoryBootstrapCheckpoint(checkpointStore, {
+        chatToken,
+        chatLength,
+        baseRevision: bootstrapBaseRevision,
+    });
+    if (!checkpoint && checkpointStore.historyBootstrapCheckpoint) {
+        checkpointStore.historyBootstrapCheckpoint = null;
+        saveStore(checkpointStore, { immediate: true });
+    }
+    const resumeCursor = checkpoint?.cursor || 0;
+
     const confirmed = globalThis.confirm?.(
-        `( •ᴗ• )  将从第 0 层开始回溯当前分支，共约 ${chatLength} 条消息。\n`
+        (checkpoint
+            ? `( •ᴗ• )  上次已经安全收好前 ${resumeCursor} 层，将从第 ${resumeCursor} 层继续，共剩约 ${Math.max(0, chatLength - resumeCursor)} 条消息。\n`
+            : `( •ᴗ• )  将从第 0 层开始回溯当前分支，共约 ${chatLength} 条消息。\n`)
         + '会一起建立世界时间、人物当前状态、世界事实、未完暗流、世界脉搏与长期记忆。\n'
-        + '全部扫描成功后才会一次性提交；中途失败不会留下半成品。是否继续？',
+        + '每批会保存安全断点，但全部扫描成功后才会一次性提交到正式世界。是否继续？',
     );
     if (confirmed === false) return false;
 
-    const protectedStore = addRecoveryPoint(getStore(), {
-        reason: 'before-world-history-bootstrap',
-        label: '历史回溯前自动保存',
-    });
-    saveStore(protectedStore, { immediate: true });
+    if (!checkpoint) {
+        const protectedStore = addRecoveryPoint(getStore(), {
+            reason: 'before-world-history-bootstrap',
+            label: '历史回溯前自动保存',
+        });
+        saveStore(protectedStore, { immediate: true });
+    }
 
     const controller = new AbortController();
     runtime.activeHistoryScan = controller;
     runtime.historyProgress = {
         kind: 'world-bootstrap',
         phase: 'running',
-        processed: 0,
+        processed: resumeCursor,
         total: chatLength,
-        message: '正在把旧聊天接成一个完整世界～',
+        message: checkpoint
+            ? `接着上次的爪印，从第 ${resumeCursor} 层继续～`
+            : '正在把旧聊天接成一个完整世界～',
     };
     setBusy(true);
     runtime.ui?.render();
 
     // IMPORTANT: staging only. Nothing below is written to the live store until all
     // batches succeed. Manual edits during the scan invalidate the staged result.
-    const bootstrapBaseRevision = Math.max(0, Number(getState()?.revision) || 0);
-    let stagedState = trimState(getState());
-    let cursor = 0;
-    let assistantBatchLimit = 4;
+    let stagedState = checkpoint ? trimState(checkpoint.stagedState) : trimState(getState());
+    let cursor = resumeCursor;
+    let assistantBatchLimit = checkpoint
+        ? Math.max(1, Number.parseInt(checkpoint.assistantBatchLimit, 10) || 1)
+        : 4;
 
     try {
         while (cursor < chatLength) {
@@ -6289,7 +6803,7 @@ async function bootstrapWorldFromHistory() {
                         recordPlayerCharacter: getSettings().recordPlayerCharacter,
                         compact: attempt > 0,
                     });
-                    const historyBaseTokens = 4800;
+                    const historyBaseTokens = 6400;
                     const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                         maxTokens: retryTokenBudget(historyBaseTokens, attempt),
                         temperature: attempt > 0 ? 0.04 : 0.08,
@@ -6361,6 +6875,14 @@ async function bootstrapWorldFromHistory() {
                 memoryEnabled: getSettings().memorySystemEnabled,
             });
             cursor = batch.nextCursor;
+            saveHistoryBootstrapCheckpoint({
+                chatToken,
+                cursor,
+                chatLength,
+                baseRevision: bootstrapBaseRevision,
+                stagedState,
+                assistantBatchLimit,
+            });
             runtime.historyProgress.processed = Math.min(chatLength, cursor);
             runtime.ui?.render();
         }
@@ -6412,6 +6934,7 @@ async function bootstrapWorldFromHistory() {
             };
         }
         const store = getStore();
+        store.historyBootstrapCheckpoint = null;
         store.currentState = ensureMonotonicRevision(stagedState, store.currentState);
         stagedState = store.currentState;
         const anchorKey = stagedState.lastCommit?.sourceKey || 'root';
@@ -6448,11 +6971,15 @@ async function bootstrapWorldFromHistory() {
         runtime.historyProgress = {
             kind: 'world-bootstrap',
             phase: error?.name === 'AbortError' ? 'idle' : 'error',
-            processed: 0,
+            processed: Math.min(chatLength, cursor),
             total: chatLength,
             message: error?.name === 'AbortError'
-                ? '历史回溯已停止～现有世界没有写入半成品'
-                : `历史回溯失败：${describeError(error)}；现有世界没有改动`,
+                ? (cursor > 0
+                    ? `历史回溯已停在第 ${Math.min(chatLength, cursor)} 层～正式世界没动，下次可以接着来`
+                    : '历史回溯已停止～正式世界没有写入半成品')
+                : (cursor > 0
+                    ? `历史回溯停在第 ${Math.min(chatLength, cursor)} 层：${describeError(error)}；断点已保留，正式世界没有改动`
+                    : `历史回溯失败：${describeError(error)}；正式世界没有改动`),
         };
         runtime.ui?.render();
         if (error?.name === 'AbortError') return false;
@@ -6566,7 +7093,7 @@ async function scanStoryMemoryHistory({
                         playerIdentityAnchor: getPlayerIdentityAnchor(state),
                         compact: attempt > 0,
                     });
-                    const historyBaseTokens = 3200;
+                    const historyBaseTokens = 4200;
                     const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
                         maxTokens: retryTokenBudget(historyBaseTokens, attempt),
                         temperature: attempt > 0 ? 0.05 : 0.1,
@@ -7261,8 +7788,8 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
 
     try {
         const raw = await runWithRetries(
-            () => backgroundSimulation(prompt, {
-                maxTokens: baseTokens,
+            attempt => backgroundSimulation(retryJsonPrompt(prompt, attempt), {
+                maxTokens: retryTokenBudget(baseTokens, attempt),
                 temperature: 0.65,
                 taskKind: 'public-opinion',
                 rejectTruncated: true,
@@ -7455,9 +7982,9 @@ async function generatePublicOpinionSandbox() {
             });
             const settings = getSettings();
             const sandbox = await runWithRetries(
-                async () => {
-                    const raw = await backgroundSimulation(prompt, {
-                        maxTokens: 2800,
+                async attempt => {
+                    const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
+                        maxTokens: retryTokenBudget(2800, attempt),
                         temperature: 0.9,
                         taskKind: 'public-opinion-sandbox',
                         rejectTruncated: true,
@@ -7631,6 +8158,8 @@ const LINGQI_SETTING_LABELS = Object.freeze({
     injectionFacts: '世界事实注入',
     injectionMemory: '长期记忆注入',
     injectionPublicOpinion: '舆情注入',
+    injectionSocial: '通讯影响正文',
+    socialAutoEnabled: '角色主动联系',
     memorySystemEnabled: '记忆系统',
     worldAutoEnabled: '自动世界推演',
     publicOpinionAutoEnabled: '自动舆情',
@@ -7731,6 +8260,8 @@ function buildLingqiButlerContext(userText = '') {
     const lastOperation = getLastCustomApiOperation();
     const clock = formatWorldCalendar(state);
     const help = buildLingqiHelpContext(userText, PLUGIN_VERSION);
+    const social = normalizeSocialState(getStore().social || emptySocialState(), state.people || []);
+    const socialPeopleById = new Map((state.people || []).map(person => [String(person?.id || ''), person]));
     const snapshot = {
         plugin: {
             version: PLUGIN_VERSION,
@@ -7777,6 +8308,8 @@ function buildLingqiButlerContext(userText = '') {
             injectionPublicOpinion: settings.injectionPublicOpinion,
             memorySystemEnabled: settings.memorySystemEnabled,
             publicOpinionAutoEnabled: settings.publicOpinionAutoEnabled,
+            socialAutoEnabled: settings.socialAutoEnabled,
+            injectionSocial: settings.injectionSocial,
             autoSimulationMode: settings.autoSimulationMode,
             worldPulseActivity: settings.worldPulseActivity,
             backgroundNpcBudget: settings.backgroundNpcBudget,
@@ -7824,6 +8357,15 @@ function buildLingqiButlerContext(userText = '') {
                 errorSummary: redactDiagnosticText(lastOperation.errorSummary || ''),
                 retryAfterMs: Number(lastOperation.retryAfterMs) || 0,
             } : null,
+        },
+        social: {
+            accepted: social.connections.filter(item => item.status === 'accepted').map(item => socialPeopleById.get(item.personId)?.name).filter(Boolean).slice(0, 30),
+            incomingRequests: social.connections.filter(item => item.status === 'incoming').map(item => socialPeopleById.get(item.personId)?.name).filter(Boolean).slice(0, 20),
+            pendingRequests: social.connections.filter(item => item.status === 'pending').map(item => socialPeopleById.get(item.personId)?.name).filter(Boolean).slice(0, 20),
+            removed: social.connections.filter(item => item.status === 'removed').map(item => socialPeopleById.get(item.personId)?.name).filter(Boolean).slice(-20),
+            unreadNotices: social.notices.filter(item => !item.readAt).length,
+            conversations: social.conversations.length,
+            moments: social.moments.length,
         },
         counts: {
             people: state.people?.length || 0,
@@ -8060,6 +8602,11 @@ const LINGQI_CONFIRM_ACTION_TYPES = new Set([
     'refresh_public_world',
     'catch_up_person',
     'delete_lingqi_chat',
+    'social_send_message',
+    'social_accept_request',
+    'social_refuse_request',
+    'social_remove_friend',
+    'social_refresh_moments',
 ]);
 
 function lingqiActionConfirmation(action) {
@@ -8152,7 +8699,9 @@ async function executeLingqiButlerActions(actions = [], { confirmed = false } = 
                 }
                 results.push(action.type === 'delete_lingqi_chat'
                     ? '我把要删的范围圈出来啦。先看一眼，点头以后才真的删。'
-                    : '这个会叫一次后台模型。我先把爪子停在按钮上，等你点头～');
+                    : action.type.startsWith('social_')
+                        ? '这是会真实改变通讯或关系的动作。我把人物和内容摆在确认卡上，点头以后才动。'
+                        : '这个会叫一次后台模型。我先把爪子停在按钮上，等你点头～');
                 break;
             }
             if (action.type === 'delete_lingqi_chat') {
@@ -8235,6 +8784,60 @@ async function executeLingqiButlerActions(actions = [], { confirmed = false } = 
                 }
                 await runPersonLifeCatchUp(person.id);
                 results.push(`${person.name}的近况已经补好啦～世界时间没往前拨。`);
+                continue;
+            }
+            if (action.type === 'social_send_message') {
+                const person = findLingqiPersonTarget(action);
+                if (!person || person.isUser) {
+                    results.push('耳朵没听准是哪位通讯人物，这条消息我还按在爪子下面，没有发。');
+                    continue;
+                }
+                let socialStore = getStore();
+                socialStore.social = openDirectConversation(socialStore.social, person, socialStore.currentState.people);
+                const conversationId = socialStore.social.activeConversationId;
+                saveStore(socialStore, { immediate: true });
+                const sent = await sendSocialMessage(conversationId, action.text);
+                results.push(sent?.replyCount
+                    ? `消息已经替你送到 ${person.name} 那边啦～我叼回了 ${sent.replyCount} 条回复。`
+                    : `消息已经替你送到 ${person.name} 那边啦。对方这次没回，我不替她催。`);
+                continue;
+            }
+            if (['social_accept_request', 'social_refuse_request'].includes(action.type)) {
+                const person = findLingqiPersonTarget(action);
+                if (!person || person.isUser) {
+                    results.push('好友申请的人我没认准，先用爪子按住，没有乱处理。');
+                    continue;
+                }
+                const socialStore = getStore();
+                const accept = action.type === 'social_accept_request';
+                socialStore.social = respondIncomingFriendRequest(socialStore.social, socialStore.currentState, person.id, accept);
+                saveStore(socialStore, { immediate: true });
+                results.push(accept
+                    ? `${person.name} 的好友申请已经按你的确认接受。她现在在通讯录里啦～`
+                    : `${person.name} 的好友申请已经按你的确认拒绝。关系记录我也留好了。`);
+                continue;
+            }
+            if (action.type === 'social_remove_friend') {
+                const person = findLingqiPersonTarget(action);
+                if (!person || person.isUser) {
+                    results.push('要解除关系的人我没认准，先没动。');
+                    continue;
+                }
+                const socialStore = getStore();
+                socialStore.social = removeSocialFriend(socialStore.social, socialStore.currentState, person.id, {
+                    source: 'lingqi-user-request',
+                    reason: '用户通过玲七确认删除好友',
+                });
+                saveStore(socialStore, { immediate: true });
+                refreshInjection();
+                results.push(`已经按你的确认解除和 ${person.name} 的好友关系。历史消息与共同群聊还在，我没有多碰。`);
+                continue;
+            }
+            if (action.type === 'social_refresh_moments') {
+                const refreshed = await refreshSocialMoments();
+                results.push(refreshed?.postCount
+                    ? `我从朋友圈窗口蹲回来啦～看到 ${refreshed.postCount} 条新动态${refreshed.imageCount ? '，其中一条还带了配图' : ''}。`
+                    : '我蹲了一圈，这次没有好友想发动态。安静也算正常，不替她们硬编。');
                 continue;
             }
             if (action.type === 'simulate_latest') {
@@ -8594,11 +9197,42 @@ function resolveLingqiLocalQuery(request, { state, settings, sync, clock }) {
         const keys = [
             'worldSimulationEnabled', 'worldAutoEnabled', 'enhancedBackgroundSimulation',
             'recordPlayerCharacter', 'worldPromptInjection', 'injectionTimeMode',
-            'injectionPeople', 'injectionEvents', 'injectionMemory', 'injectionPublicOpinion',
-            'memorySystemEnabled', 'publicOpinionAutoEnabled',
+            'injectionPeople', 'injectionEvents', 'injectionMemory', 'injectionPublicOpinion', 'injectionSocial',
+            'socialAutoEnabled', 'memorySystemEnabled', 'publicOpinionAutoEnabled',
         ];
         const lines = keys.map(key => `· ${LINGQI_SETTING_LABELS[key]}：${lingqiSettingDisplayValue(key, settings[key])}`);
         return { reply: `常用开关：\n${lines.join('\n')}`, mascotState: 'watch', actions: [] };
+    }
+    if (request.type === 'social_overview') {
+        const social = normalizeSocialState(getStore().social || emptySocialState(), state.people || []);
+        const accepted = social.connections.filter(item => item.status === 'accepted');
+        const incoming = social.connections.filter(item => item.status === 'incoming');
+        const pending = social.connections.filter(item => item.status === 'pending');
+        const unread = social.notices.filter(item => !item.readAt);
+        const peopleById = new Map((state.people || []).map(person => [String(person.id || ''), person]));
+        const requestNames = incoming.map(item => peopleById.get(item.personId)?.name).filter(Boolean);
+        const lines = [
+            `通讯好友：${accepted.length} 人`,
+            `收到的好友申请：${incoming.length}${requestNames.length ? `（${requestNames.join('、')}）` : ''}`,
+            `你发出、仍待处理：${pending.length}`,
+            `未读通讯提醒：${unread.length}`,
+            `朋友圈动态：${social.moments.length} 条`,
+            `角色主动联系：${settings.socialAutoEnabled !== false ? '开启' : '关闭'}`,
+            `聊天影响正文：${settings.injectionSocial === true ? '开启（仍只作未结算记录）' : '关闭'}`,
+        ];
+        return { reply: `我把通讯角落巡了一圈，叼回来的情况是：\n${lines.join('\n')}`, mascotState: unread.length || incoming.length ? 'watch' : 'idle', actions: [] };
+    }
+    if (request.type === 'social_person_status') {
+        const person = findLingqiPersonTarget(request);
+        if (!person || person.isUser) return { reply: '耳朵转了两圈，还是没认准你说的是谁。我先不拿关系乱猜。', mascotState: 'confused', actions: [] };
+        const social = normalizeSocialState(getStore().social || emptySocialState(), state.people || []);
+        const relation = social.connections.find(item => item.personId === String(person.id || ''));
+        const label = {
+            accepted: '通讯好友', incoming: '对方向你发来好友申请', pending: '你的申请待处理',
+            declined: '申请未通过', suggested: '可能认识，但还不是好友', removed: '好友关系已结束',
+        }[relation?.status] || '没有通讯关系';
+        const evidence = relation?.decisionReply || relation?.decisionReason || relation?.evidence || '';
+        return { reply: `我把 ${person.name} 的关系卡翻出来啦：${label}${evidence ? `\n留下的记录：${evidence}` : ''}`, mascotState: 'watch', actions: [] };
     }
     if (request.type === 'diagnose_world') {
         const reply = lingqiLocalWorldDiagnosis();
@@ -8675,6 +9309,8 @@ function resolveLingqiLocalButlerRequest(userText = '') {
         { re: /记录玩家角色.{0,5}(?:开|关|开启|关闭|状态|吗|么)/iu, key: 'recordPlayerCharacter' },
         { re: /记忆注入.{0,5}(?:开|关|开启|关闭|状态|吗|么)/iu, key: 'injectionMemory' },
         { re: /舆情注入.{0,5}(?:开|关|开启|关闭|状态|吗|么)/iu, key: 'injectionPublicOpinion' },
+        { re: /(?:通讯|聊天).{0,5}(?:影响正文|注入).{0,5}(?:开|关|开启|关闭|状态|吗|么)/iu, key: 'injectionSocial' },
+        { re: /(?:角色|人物).{0,5}(?:主动联系|主动消息|主动申请).{0,5}(?:开|关|开启|关闭|状态|吗|么)/iu, key: 'socialAutoEnabled' },
         { re: /世界事实注入.{0,5}(?:开|关|开启|关闭|状态|吗|么)/iu, key: 'injectionFacts' },
         { re: /自动(?:世界)?推演.{0,5}(?:开|关|开启|关闭|状态|吗|么)/iu, key: 'worldAutoEnabled' },
         { re: /记忆系统.{0,5}(?:开|关|开启|关闭|状态|吗|么)/iu, key: 'memorySystemEnabled' },
@@ -8710,6 +9346,24 @@ function resolveLingqiLocalButlerRequest(userText = '') {
             mascotState: 'watch',
             actions: [{ type: 'refresh_public_world' }],
         };
+    }
+    if (/^(?:帮我|请|让玲七|玲七)?\s*(?:刷新|看看|看下)\s*(?:新的)?朋友圈\s*[吧。！!]*$/iu.test(raw)) {
+        return { reply: '我去朋友圈窗边蹲一会儿，看看有没有人真想发动态～这会叫一次后台模型；开着配图时还可能再用一次生图接口，先让你确认。', mascotState: 'watch', actions: [{ type: 'social_refresh_moments' }] };
+    }
+
+    const socialSendMatch = raw.match(/^(?:帮我|请|让玲七|玲七)?\s*(?:给|向)\s*([^，。！？!：:]{1,40})\s*(?:发消息|发条消息|说)\s*[：:]?\s*[“「『]?([^”」』]{1,1600})[”」』]?\s*$/iu);
+    if (socialSendMatch) {
+        return { reply: '这句话会真的送到对方那边。我先用爪爪按住，把收件人和原文放进确认卡；你点头我再发。', mascotState: 'watch', actions: [{ type: 'social_send_message', personName: socialSendMatch[1].trim(), text: socialSendMatch[2].trim() }] };
+    }
+    const socialRelationMatch = raw.match(/^(?:帮我|请|让玲七|玲七)?\s*(接受|同意|拒绝|婉拒|删除|删掉|移除)\s*([^，。！？!]{1,40}?)(?:的)?\s*(好友申请|好友)?\s*[吧。！!]*$/iu);
+    if (socialRelationMatch) {
+        const verb = socialRelationMatch[1];
+        const type = /接受|同意/u.test(verb)
+            ? 'social_accept_request'
+            : /拒绝|婉拒/u.test(verb)
+                ? 'social_refuse_request'
+                : 'social_remove_friend';
+        return { reply: '关系动作不能一爪拍下去。我先把人物和当前关系核准，再让你确认。', mascotState: 'hold', actions: [{ type, personName: socialRelationMatch[2].trim() }] };
     }
 
     const priorityPersonMatch = raw.match(
@@ -8747,6 +9401,18 @@ function resolveLingqiLocalButlerRequest(userText = '') {
             re: /^(?:帮我|请|把|直接)?\s*(?:打开|开启)\s*(?:人物(?:状态)?注入)\s*[吧。！!]*$/iu,
             action: { type: 'update_setting', setting: 'injectionPeople', value: true },
             reply: '人物状态要递给正文。好。',
+            mascotState: 'happy',
+        },
+        {
+            re: /^(?:帮我|请|把|直接)?\s*(?:关掉|关闭)\s*(?:角色|人物)?(?:主动联系|主动消息|主动申请)\s*[吧。！!]*$/iu,
+            action: { type: 'update_setting', setting: 'socialAutoEnabled', value: false },
+            reply: '角色不再主动发消息、申请或动态。已有关系和记录都保留。',
+            mascotState: 'happy',
+        },
+        {
+            re: /^(?:帮我|请|把|直接)?\s*(?:打开|开启)\s*(?:角色|人物)?(?:主动联系|主动消息|主动申请)\s*[吧。！!]*$/iu,
+            action: { type: 'update_setting', setting: 'socialAutoEnabled', value: true },
+            reply: '角色可以按人设低频主动联系；没有动机时仍会安静。',
             mascotState: 'happy',
         },
         {
@@ -8866,7 +9532,7 @@ async function sendLingqiMessage(text) {
         try {
             const parsed = await runWithRetries(async attempt => {
                 const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
-                    maxTokens: 1800,
+                    maxTokens: retryTokenBudget(1800, attempt),
                     temperature: attempt > 0 ? 0.25 : 0.55,
                     signal: controller.signal,
                     taskKind: 'lingqi',
@@ -9043,6 +9709,10 @@ function resetRuntimeMaintenanceState({
         runtime.activePublicOpinionSandbox?.controller,
         runtime.activeObservation?.controller,
         runtime.activeLingqi?.controller,
+        runtime.activeSocial?.controller,
+        runtime.activeFriendRequest?.controller,
+        runtime.activeMoments?.controller,
+        runtime.activeSocialPulse?.controller,
     ];
     for (const abortable of abortables) {
         try {
@@ -9071,7 +9741,14 @@ function resetRuntimeMaintenanceState({
     runtime.activePublicOpinionSandbox = null;
     runtime.activeObservation = null;
     runtime.activeLingqi = null;
+    runtime.activeSocial = null;
+    runtime.activeFriendRequest = null;
+    runtime.activeMoments = null;
+    runtime.activeSocialPulse = null;
     runtime.lingqiStatus = { phase: 'idle', message: '', error: '' };
+    runtime.socialStatus = { phase: 'idle', message: '', error: '', conversationId: '' };
+    runtime.friendRequestStatus = { phase: 'idle', message: '', error: '', personId: '' };
+    runtime.momentsStatus = { phase: 'idle', message: '', error: '' };
     runtime.pendingLingqiAction = null;
     runtime.pendingPublicImpact = false;
     runtime.pendingPublicOpinion = false;
@@ -9084,7 +9761,7 @@ function resetRuntimeMaintenanceState({
     runtime.manualUndo = null;
     runtime.editDecision = null;
     runtime.injection = { text: '', eventIds: [], directorNoteIds: [] };
-    runtime.generationOffer = { eventIds: [], directorNoteIds: [], at: 0 };
+    runtime.generationOffer = { eventIds: [], directorNoteIds: [], at: 0, rerollBase: false };
     runtime.lastPromptBridge = null;
     runtime.lastTaskConnection = null;
     runtime.customModels = [];
@@ -9130,6 +9807,7 @@ function clearStoredChatCaches() {
     const store = getStore();
     store.personObservations = {};
     store.publicOpinionSandbox = emptyPublicOpinionSandbox();
+    store.historyBootstrapCheckpoint = null;
     saveStore(store, { immediate: true });
     return store;
 }
@@ -9311,7 +9989,327 @@ async function checkAndCorrectWorldState() {
     }
 }
 
+async function sendSocialMessage(conversationId, messageText) {
+    if (runtime.activeSocial && !runtime.activeSocial.controller?.signal?.aborted) {
+        throw new Error('上一条社交消息还在等回复');
+    }
+    const chatToken = currentChatToken();
+    const contextEpoch = runtime.contextEpoch;
+    const controller = new AbortController();
+    let store = getStore();
+    store.social = appendUserSocialMessage(
+        store.social,
+        conversationId,
+        messageText,
+        store.currentState.clock?.absoluteMinute,
+        store.currentState.people,
+    );
+    saveStore(store, { immediate: true });
+    runtime.activeSocial = { controller, chatToken, contextEpoch, conversationId };
+    runtime.socialStatus = {
+        phase: 'running',
+        message: '消息已发出，正在判断谁看见、谁知道、谁愿意回……',
+        error: '',
+        conversationId,
+    };
+    runtime.ui?.render();
+
+    try {
+        const prompt = buildSocialReplyPrompt(store.social, store.currentState, conversationId, {
+            userName: String(getContext()?.name1 || '你'),
+        });
+        const raw = await backgroundSimulation(prompt, {
+            maxTokens: 1400,
+            temperature: 0.72,
+            signal: controller.signal,
+            taskKind: 'social',
+            rejectTruncated: true,
+        });
+        const parsed = extractJsonObject(raw);
+        if (!parsed) throw unreadableJsonError(raw, '社交回复模型');
+        if (
+            controller.signal.aborted
+            || chatToken !== currentChatToken()
+            || contextEpoch !== runtime.contextEpoch
+        ) return null;
+        store = getStore();
+        const applied = applySocialReplyPayload(store.social, conversationId, parsed, store.currentState);
+        store.social = applied.social;
+        saveStore(store, { immediate: true });
+        refreshInjection();
+        runtime.socialStatus = {
+            phase: 'success',
+            message: applied.replyCount
+                ? `收到 ${applied.replyCount} 条回复。`
+                : '这次没有人回话。这不是生成失败，而是路由后的沉默结果。',
+            error: '',
+            conversationId,
+        };
+        runtime.ui?.render();
+        return applied;
+    } catch (error) {
+        if (isAbortError(error) || controller.signal.aborted) return null;
+        if (chatToken === currentChatToken() && contextEpoch === runtime.contextEpoch) {
+            store = getStore();
+            store.social = setSocialConversationError(store.social, conversationId, error, store.currentState.people);
+            saveStore(store, { immediate: true });
+            runtime.socialStatus = {
+                phase: 'error',
+                message: '消息已保留，但这次没能拿到人物回复。',
+                error: describeError(error),
+                conversationId,
+            };
+            runtime.ui?.render();
+        }
+        // The outgoing raw message was already saved successfully. Treat the
+        // action as completed so the composer does not put the same text back
+        // and invite an accidental duplicate send.
+        return { stored: true, replyCount: 0, error: describeError(error) };
+    } finally {
+        if (runtime.activeSocial?.controller === controller) runtime.activeSocial = null;
+    }
+}
+
+async function requestSocialFriend(personId, requestMessage = '') {
+    if (runtime.activeFriendRequest && !runtime.activeFriendRequest.controller?.signal?.aborted) {
+        throw new Error('上一条好友申请还在等待对方处理');
+    }
+    const chatToken = currentChatToken();
+    const contextEpoch = runtime.contextEpoch;
+    const controller = new AbortController();
+    let store = getStore();
+    const person = store.currentState.people.find(item => String(item?.id || '') === String(personId || ''));
+    if (!person || person.isUser) throw new Error('没有找到这个人物');
+    const prompt = buildFriendRequestPrompt(store.social, store.currentState, person.id, {
+        userName: String(getContext()?.name1 || '你'),
+        requestMessage,
+    });
+    runtime.activeFriendRequest = { controller, chatToken, contextEpoch, personId: String(person.id) };
+    runtime.friendRequestStatus = {
+        phase: 'running',
+        message: `正在等待 ${person.name} 处理申请`,
+        error: '',
+        personId: String(person.id),
+    };
+    runtime.ui?.render();
+    try {
+        const raw = await backgroundSimulation(prompt, {
+            maxTokens: 700,
+            temperature: 0.38,
+            signal: controller.signal,
+            taskKind: 'social',
+            rejectTruncated: true,
+        });
+        const parsed = extractJsonObject(raw);
+        if (!parsed) throw unreadableJsonError(raw, '好友申请判定模型');
+        if (controller.signal.aborted || chatToken !== currentChatToken() || contextEpoch !== runtime.contextEpoch) return null;
+        store = getStore();
+        const result = applyFriendDecisionPayload(store.social, store.currentState, person.id, parsed, { requestMessage });
+        store.social = result.social;
+        saveStore(store, { immediate: true });
+        runtime.friendRequestStatus = {
+            phase: 'success',
+            message: result.decision === 'accepted'
+                ? `${person.name} 已通过好友申请`
+                : result.decision === 'declined'
+                    ? `${person.name} 没有通过申请`
+                    : `${person.name} 暂时没有处理申请`,
+            error: '',
+            personId: String(person.id),
+        };
+        runtime.ui?.render();
+        return { ...result, personName: person.name };
+    } catch (error) {
+        if (isAbortError(error) || controller.signal.aborted) return null;
+        runtime.friendRequestStatus = {
+            phase: 'error',
+            message: '好友申请没有完成',
+            error: describeError(error),
+            personId: String(person.id),
+        };
+        runtime.ui?.render();
+        throw error;
+    } finally {
+        if (runtime.activeFriendRequest?.controller === controller) runtime.activeFriendRequest = null;
+    }
+}
+
+async function refreshSocialMoments() {
+    if (runtime.activeMoments && !runtime.activeMoments.controller?.signal?.aborted) {
+        throw new Error('朋友圈还在刷新');
+    }
+    const chatToken = currentChatToken();
+    const contextEpoch = runtime.contextEpoch;
+    const controller = new AbortController();
+    let store = getStore();
+    const prompt = buildMomentsPrompt(store.social, store.currentState, {
+        userName: String(getContext()?.name1 || '你'),
+    });
+    runtime.activeMoments = { controller, chatToken, contextEpoch };
+    runtime.momentsStatus = { phase: 'running', message: '正在看看好友最近有没有想分享的内容', error: '' };
+    runtime.ui?.render();
+    try {
+        const raw = await backgroundSimulation(prompt, {
+            maxTokens: 1800,
+            temperature: 0.68,
+            signal: controller.signal,
+            taskKind: 'social',
+            rejectTruncated: true,
+        });
+        const parsed = extractJsonObject(raw);
+        if (!parsed) throw unreadableJsonError(raw, '朋友圈生成模型');
+        if (controller.signal.aborted || chatToken !== currentChatToken() || contextEpoch !== runtime.contextEpoch) return null;
+        store = getStore();
+        const applied = applyMomentsPayload(store.social, store.currentState, parsed);
+        store.social = applied.social;
+        saveStore(store, { immediate: true });
+
+        const settings = getSettings();
+        let imageCount = 0;
+        if (
+            settings.imageApiEnabled
+            && settings.imageApiUrl
+            && settings.imageApiKey
+            && settings.imageApiModel
+        ) {
+            // Limit one generated photo per refresh. It keeps costs and chat
+            // metadata bounded while still allowing a natural mixed feed.
+            const target = applied.posts.find(post => post.wantsImage && post.imagePrompt);
+            if (target) {
+                try {
+                    const person = store.currentState.people.find(item => String(item?.id || '') === target.personId);
+                    const generated = await requestImageGeneration(settings, {
+                        prompt: [
+                            '一张自然、生活化的朋友圈配图。画面属于发布者当下能够拍摄或拥有的内容，不出现界面文字、水印或未知秘密。',
+                            `发布者：${person?.name || '人物'}。动态：${target.text}`,
+                            `画面：${target.imagePrompt}`,
+                        ].join('\n'),
+                        signal: controller.signal,
+                    });
+                    store = getStore();
+                    store.social = attachMomentImage(store.social, store.currentState, target.id, {
+                        imageUrl: generated.imageUrl,
+                    });
+                    saveStore(store, { immediate: true });
+                    imageCount = 1;
+                } catch (imageError) {
+                    if (!isAbortError(imageError)) {
+                        store = getStore();
+                        store.social = attachMomentImage(store.social, store.currentState, target.id, {
+                            error: describeError(imageError),
+                        });
+                        saveStore(store, { immediate: true });
+                    }
+                }
+            }
+        }
+        runtime.momentsStatus = {
+            phase: 'success',
+            message: applied.posts.length
+                ? `看到 ${applied.posts.length} 条新动态${imageCount ? '，其中 1 条带配图' : ''}`
+                : '这次没有好友想发动态',
+            error: '',
+        };
+        runtime.ui?.render();
+        return { postCount: applied.posts.length, imageCount };
+    } catch (error) {
+        if (isAbortError(error) || controller.signal.aborted) return null;
+        runtime.momentsStatus = { phase: 'error', message: '朋友圈刷新失败', error: describeError(error) };
+        runtime.ui?.render();
+        throw error;
+    } finally {
+        if (runtime.activeMoments?.controller === controller) runtime.activeMoments = null;
+    }
+}
+
 async function handleUiAction(action, payload = {}) {
+    if (action === 'test-image-api') {
+        const result = await requestImageGeneration({
+            imageApiUrl: payload.imageApiUrl,
+            imageApiKey: payload.imageApiKey,
+            imageApiModel: payload.imageApiModel,
+            imageApiSize: '512x512',
+            imageApiTimeoutMs: 180000,
+        }, {
+            prompt: 'A simple softly lit ceramic cup on a plain wooden table, natural photo, no text, no watermark.',
+        });
+        return Boolean(result?.imageUrl);
+    }
+
+    if (action === 'social-open-person') {
+        const store = getStore();
+        const person = store.currentState.people.find(item => String(item.id || '') === String(payload.personId || ''));
+        if (!person || person.isUser) throw new Error('没有找到可联系的人物');
+        store.social = openDirectConversation(store.social, person, store.currentState.people);
+        saveStore(store, { immediate: true });
+        runtime.ui?.render();
+        return store.social.activeConversationId;
+    }
+
+    if (action === 'social-select-conversation') {
+        const store = getStore();
+        store.social = selectSocialConversation(store.social, payload.conversationId, store.currentState.people);
+        saveStore(store);
+        return true;
+    }
+
+    if (action === 'social-create-group') {
+        const store = getStore();
+        store.social = createGroupConversation(store.social, payload, store.currentState.people);
+        saveStore(store, { immediate: true });
+        runtime.ui?.render();
+        return store.social.activeConversationId;
+    }
+
+    if (action === 'social-send-message') {
+        return await sendSocialMessage(payload.conversationId, payload.text);
+    }
+
+    if (action === 'social-request-friend') {
+        return await requestSocialFriend(payload.personId, payload.message || '');
+    }
+
+    if (action === 'social-respond-friend-request') {
+        const store = getStore();
+        const personId = String(payload.personId || '');
+        const person = store.currentState.people.find(item => String(item?.id || '') === personId && !item?.isUser);
+        if (!person) throw new Error('没有找到申请人');
+        store.social = respondIncomingFriendRequest(store.social, store.currentState, personId, payload.accept === true);
+        saveStore(store, { immediate: true });
+        runtime.ui?.render();
+        return { accepted: payload.accept === true, personName: person.name };
+    }
+
+    if (action === 'social-remove-friend') {
+        const store = getStore();
+        const personId = String(payload.personId || '');
+        const person = store.currentState.people.find(item => String(item?.id || '') === personId && !item?.isUser);
+        if (!person) throw new Error('没有找到这个好友');
+        store.social = removeSocialFriend(store.social, store.currentState, personId);
+        saveStore(store, { immediate: true });
+        refreshInjection();
+        runtime.ui?.render();
+        return { removed: true, personName: person.name };
+    }
+
+    if (action === 'social-read-notice') {
+        const store = getStore();
+        store.social = markSocialNoticeRead(store.social, store.currentState, payload.noticeId || '');
+        saveStore(store, { immediate: true });
+        return true;
+    }
+
+    if (action === 'social-refresh-moments') {
+        return await refreshSocialMoments();
+    }
+
+    if (action === 'social-toggle-moment-like') {
+        const store = getStore();
+        store.social = toggleMomentLike(store.social, store.currentState, payload.momentId);
+        saveStore(store, { immediate: true });
+        return true;
+    }
+
     if (action === 'undo-manual') {
         undoManualChange();
         return;
@@ -9930,6 +10928,58 @@ async function handleUiAction(action, payload = {}) {
         return true;
     }
 
+    if (action === 'delete-manual-people') {
+        const ids = new Set(
+            (Array.isArray(payload.ids) ? payload.ids : [])
+                .map(id => String(id || '').trim())
+                .filter(Boolean)
+                .slice(0, 120),
+        );
+        if (!ids.size) throw new Error('请先选择要删除的人物');
+        const next = clone(getState());
+        const removed = next.people.filter(person => (
+            ids.has(String(person.id || ''))
+            && !person.locked
+            && !person.isUser
+        ));
+        if (!removed.length) throw new Error('所选人物都已锁定、属于玩家角色，或已经不在名单中');
+        next.people = next.people.filter(person => !removed.includes(person));
+        commitManualState(next, `已批量移除 ${removed.length} 个后台人物。`, {
+            mutateStore: store => {
+                for (const person of removed) addPersonDeletionTombstone(store, person);
+            },
+        });
+        return {
+            removed: removed.length,
+            names: removed.map(person => person.name).filter(Boolean),
+            skipped: ids.size - removed.length,
+        };
+    }
+    if (['social_send_message', 'social_accept_request', 'social_refuse_request', 'social_remove_friend'].includes(action.type)) {
+        const person = findLingqiPersonTarget(action);
+        if (!person || person.isUser) return { error: '耳朵没听准要操作的是谁，我先按住爪子，不乱动关系。' };
+        if (action.type === 'social_send_message') {
+            const body = String(action.text || '').trim();
+            if (!body) return { error: '消息是空的，我不会替你猜一句塞进去。' };
+            return {
+                title: `把这句话送给 ${person.name}？`,
+                detail: `我会照原文实际发出：“${body.slice(0, 180)}${body.length > 180 ? '…' : ''}”\n发送后不能在对方那里撤回；对方仍会按自己的处境决定是否回复。`,
+                confirmLabel: '确认发送',
+            };
+        }
+        if (action.type === 'social_accept_request') return { title: `把 ${person.name} 收进通讯录？`, detail: '确认后会接受好友申请，双方可以互发私聊。', confirmLabel: '接受' };
+        if (action.type === 'social_refuse_request') return { title: `拒绝 ${person.name} 的好友申请？`, detail: '拒绝后不会进入通讯录，对方的申请与反应会保留为关系记录。', confirmLabel: '拒绝' };
+        return { title: `和 ${person.name} 解除好友关系？`, detail: '确认后只解除好友关系并停止私聊；历史消息和共同群聊会保留。', confirmLabel: '删除好友' };
+    }
+    if (action.type === 'social_refresh_moments') {
+        return {
+            title: '去朋友圈窗口蹲一会儿？',
+            detail: getSettings().imageApiEnabled
+                ? '会调用一次社交模型；若人物确实想配图，还可能额外调用一次生图 API。'
+                : '会调用一次社交模型；没有人物想发动态时允许保持空白。',
+            confirmLabel: '刷新',
+        };
+    }
     if (action === 'sync-clock-from-story') {
         const latest = latestAssistantEntry();
         if (!latest?.message) {
@@ -10015,7 +11065,10 @@ async function handleUiAction(action, payload = {}) {
             visibility: payload.visibility,
             delivery_route: '',
         });
-        commitManualState(next, `暗流“${payload.title}”已经开始发展。`);
+        const created = next.events.at(-1);
+        commitManualState(next, `暗流“${payload.title}”已经开始发展。`, {
+            mutateStore: store => clearEventDeletionTombstone(store, created),
+        });
         return;
     }
 
@@ -10088,12 +11141,15 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'delete-event') {
         const eventId = String(payload.eventId || payload.id || '');
+        cancelActiveBackgroundTasks({ preserveLingqi: true });
         const next = clone(getState());
         const index = next.events.findIndex(item => item.id === eventId);
         if (index < 0) throw new Error('没有找到这条暗流');
         const [removed] = next.events.splice(index, 1);
         next.echoes = (next.echoes || []).filter(echo => echo.eventId !== eventId);
-        commitManualState(next, `暗流“${removed.title}”已经删除。`);
+        commitManualState(next, `暗流“${removed.title}”已经删除，并且不会被后续推演自动补回。`, {
+            mutateStore: store => addEventDeletionTombstone(store, removed),
+        });
         return;
     }
 

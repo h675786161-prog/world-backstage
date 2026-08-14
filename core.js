@@ -4396,12 +4396,13 @@ function selectRelevantPeople(state, recentText = '', maximum = 6) {
 }
 
 export function buildInjectionPackage(state, settings = {}, recentText = '', { contextText = recentText } = {}) {
-    if (!settings.enabled || settings.worldPromptInjection === false) {
+    if (!settings.enabled) {
         return { text: '', authorityText: '', supportText: '', eventIds: [] };
     }
 
     // 注入只决定“当前镜头能拿到什么”，不决定后台模块是否存在或运行。
-    const worldRunning = settings.worldSimulationEnabled !== false;
+    const worldRunning = settings.worldSimulationEnabled !== false
+        && settings.worldPromptInjection !== false;
     const injectBackground = worldRunning && settings.injectionWorldBackground !== false;
     const injectPeople = worldRunning && settings.injectionPeople !== false;
     const injectEvents = worldRunning && settings.injectionEvents !== false;

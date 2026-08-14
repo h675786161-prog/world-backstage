@@ -22,8 +22,8 @@ const HELP_TOPICS = [
     {
         id: 'injection',
         title: '正文注入',
-        keywords: ['注入', '正文注入', '人物注入', '事实注入', '回声注入', '记忆注入', '舆情注入', '时间锚点'],
-        text: '正文注入只决定哪些后台信息交给正文模型看，不控制对应后台模块是否运行。总开关关闭时后台仍会继续保存与运转。时间注入有“完整 / 最小锚点 / 关闭”三档；最小锚点只负责防止时间无因果倒退或乱跳。',
+        keywords: ['注入', '正文注入', '人物注入', '事实注入', '回声注入', '记忆注入', '舆情注入', '通讯注入', '聊天影响正文', '时间锚点'],
+        text: '正文注入只决定哪些后台信息交给正文模型看，不控制对应后台模块是否运行。总开关关闭时后台仍会继续保存与运转。通讯默认不影响正文；单独开启后也只作为“未结算通信记录”参考，聊天里的承诺、计划不会被当成已发生。时间注入有“完整 / 最小锚点 / 关闭”三档；最小锚点只负责防止时间无因果倒退或乱跳。',
     },
     {
         id: 'player-recording',
@@ -47,7 +47,7 @@ const HELP_TOPICS = [
         id: 'memory',
         title: '记忆',
         keywords: ['记忆', '整理记忆', '扫描历史', '历史回溯', '记错', '长期记忆', 'memory'],
-        text: '记忆系统会整理长期事实、线索和分层摘要。关闭“记忆注入”只是不把记忆交给正文，记忆仍可继续整理；关闭“记忆系统”才会停止记忆任务。手动事实/锁定内容优先级高于普通 AI 推断。',
+        text: '记忆系统会整理长期事实、线索和分层摘要。普通记忆整理逐批保存，失败后从上次成功位置继续；“中途接入”的完整历史回溯也会逐批保存安全断点，但只有全部成功后才把暂存世界一次性提交，断点不会覆盖正式世界。关闭“记忆注入”只是不把记忆交给正文，关闭“记忆系统”才会停止记忆任务。输出达到 length 是 Token 上限，不是等待超时；应把“历史 / 记忆”Token 上限设为 0 自动或适当调高。',
     },
     {
         id: 'public-opinion',
@@ -89,7 +89,7 @@ const HELP_TOPICS = [
         id: 'lingqi',
         title: '玲七',
         keywords: ['玲七', '小猫', '纸条', '导演', '小管家', '问猫'],
-        text: '玲七是插件内置的小猫管家：可以聊天、解释插件、汇报世界总览，查询人物/暗流/记忆/设置，诊断推演与人物停滞，搜索或管理自己的聊天记录，代办安全设置与后台任务，也可以把“下一段想怎么玩”翻成导演小纸条。真正删除聊天前会先弹出范围预览并再次确认；删除玲七聊天默认不删除长期记忆。玲七聊天本身不是世界事实，用户的猜测不会自动写进人物或世界状态。',
+        text: '玲七是插件内置的小猫管家：可以聊天、解释插件、汇报世界总览，查询人物/暗流/记忆/设置与通讯关系，诊断推演与人物停滞，搜索或管理自己的聊天记录，确认后代发消息、处理好友申请、刷新朋友圈，也可以把“下一段想怎么玩”翻成导演小纸条。真正发送、解除关系或删除聊天前都会先弹确认；删除玲七聊天默认不删除长期记忆。玲七聊天本身不是世界事实，用户的猜测不会自动写进人物或世界状态。',
     },
 ];
 
@@ -160,6 +160,16 @@ export function normalizeLingqiButlerActions(value) {
                     enabled: type === 'prioritize_person' ? raw.enabled !== false : true,
                 };
             }
+            if (['social_send_message', 'social_accept_request', 'social_refuse_request', 'social_remove_friend'].includes(type)) {
+                return {
+                    type,
+                    personId: String(raw.person_id ?? raw.personId ?? '').trim().slice(0, 120),
+                    personName: String(raw.person_name ?? raw.personName ?? '').trim().slice(0, 100),
+                    text: type === 'social_send_message'
+                        ? String(raw.text ?? raw.message ?? '').trim().slice(0, 1600)
+                        : '',
+                };
+            }
             if (type === 'delete_lingqi_chat') {
                 const requestedMode = String(raw.mode || '').trim().toLowerCase();
                 const mode = [
@@ -190,7 +200,7 @@ export function normalizeLingqiButlerActions(value) {
 
 export const LINGQI_BUTLER_TOOL_HELP = [
     '可代办的低风险动作只有这些：',
-    '1. update_setting：修改可逆的面板开关/枚举。setting 只能是：worldSimulationEnabled / worldPromptInjection / injectionTimeMode / injectionWorldBackground / injectionPeople / injectionEvents / injectionEchoes / injectionFacts / injectionMemory / injectionPublicOpinion / memorySystemEnabled / worldAutoEnabled / publicOpinionAutoEnabled / recordPlayerCharacter / enhancedBackgroundSimulation。不要碰 API Key、URL、模型、人物核心事实、删除/重置。',
+    '1. update_setting：修改可逆的面板开关/枚举。setting 只能是：worldSimulationEnabled / worldPromptInjection / injectionTimeMode / injectionWorldBackground / injectionPeople / injectionEvents / injectionEchoes / injectionFacts / injectionMemory / injectionPublicOpinion / injectionSocial / socialAutoEnabled / memorySystemEnabled / worldAutoEnabled / publicOpinionAutoEnabled / recordPlayerCharacter / enhancedBackgroundSimulation。不要碰 API Key、URL、模型、人物核心事实、删除/重置。',
     '2. set_person_simulation：开启/关闭某个明确人物的后台推演。必须给 person_id 或准确名字；找不到/重名时不要猜。',
     '3. cancel_simulation：只停止当前世界推演。',
     '4. cancel_background_tasks：停止全部尚未完成的后台任务。',
@@ -201,6 +211,10 @@ export const LINGQI_BUTLER_TOOL_HELP = [
     '9. prioritize_person：让一个明确人物在下一轮后台结算中优先；不立即调用 API。必须给 person_id 或准确名字，找不到/重名时不要猜。',
     '10. catch_up_person：为一个明确人物立即补一次近况，复用现有人物补推演。会调用后台模型，插件必须先向用户确认。',
     '11. delete_lingqi_chat：只管理“玲七和用户自己的聊天记录”，不删除世界正文、不删除世界状态、不删除人物/事件，也默认不动玲七已经形成的长期记忆。用户明确要求删除玲七聊天时才可使用；支持 mode=all / recent / between / before / after / day / topic。between 用 start_query + end_query；before/after 用 query；topic 用 query；recent 用 count；day 用 today / yesterday / day_before_yesterday。插件会先在本地定位实际记录并弹出删除范围、条数和首尾预览，用户再次确认后才真正删除。找不到或存在明显歧义时不要猜。',
+    '12. social_send_message：用户明确要求给一位现有通讯好友发出具体文字时使用；必须给准确人物与 text，插件会预览确认后才发送。',
+    '13. social_accept_request / social_refuse_request：只处理当前真实存在的主动好友申请；必须给准确人物，插件会确认。',
+    '14. social_remove_friend：删除一位现有通讯好友；只解除关系并保留历史/共同群聊，插件会确认，不得声称聊天记录也被删除。',
+    '15. social_refresh_moments：用户明确要求查看新朋友圈时使用；会调用后台模型，若启用生图还可能产生一次生图费用，插件会确认。',
     '这些动作由插件本地执行。reply 不要提前声称“已经修改成功”；可以说“我来弄/我去看看”，真正成功结果会由插件补到回复后面。',
 ].join('\n');
 
@@ -215,6 +229,8 @@ export const LINGQI_SAFE_SETTING_KEYS = Object.freeze({
     injectionFacts: 'boolean',
     injectionMemory: 'boolean',
     injectionPublicOpinion: 'boolean',
+    injectionSocial: 'boolean',
+    socialAutoEnabled: 'boolean',
     memorySystemEnabled: 'boolean',
     worldAutoEnabled: 'boolean',
     publicOpinionAutoEnabled: 'boolean',

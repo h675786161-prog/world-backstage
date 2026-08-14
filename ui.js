@@ -14,6 +14,7 @@ const WB_PANEL_STABILITY_HINT = 'fold:7/2';
 const VIEWS = [
     { id: 'now', label: '此刻', eyebrow: 'NOW' },
     { id: 'lingqi', label: '玲七', eyebrow: 'LINGQI' },
+    { id: 'social', label: '通讯', eyebrow: 'SOCIAL' },
     { id: 'people', label: '人物', eyebrow: 'PEOPLE' },
     { id: 'currents', label: '暗流', eyebrow: 'CURRENTS' },
     { id: 'echoes', label: '回声', eyebrow: 'ECHOES' },
@@ -121,6 +122,7 @@ function pluginReleaseStage(version = '') {
 
 function pluginDisplayVersion(version = '') {
     const text = String(version || '');
+    if (/^2\.4\.\d+(?:-|$)/i.test(text)) return '小猫版 V2.4';
     if (/^2\.3\.0-alpha\.\d+$/i.test(text)) return '小猫版 V2.3 · 体验版';
     if (/^2\.2\.\d+$/i.test(text)) return '小猫版 V2.2';
     return `${pluginReleaseStage(text)} ${text || '1.1.0'}`;
@@ -984,6 +986,10 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「舆情」</small><strong>新闻与论坛</strong><span>${settings.publicOpinionAutoEnabled ? '外面的声音我还会竖着耳朵听。' : '我先不自动听风声啦，想看时还能手动叫我去。'}</span></div>
                         <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPublicOpinion" ${settings.injectionPublicOpinion !== false ? 'checked' : ''}><i></i></label>
                     </article>
+                    <article class="wb-injection-source">
+                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">来自侧栏「通讯」</small><strong>最近聊天</strong><span>默认关闭；开启后也只按“未结算通信记录”递给正文。</span></div>
+                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionSocial" ${settings.injectionSocial === true ? 'checked' : ''}><i></i></label>
+                    </article>
                 </div>
 
                 <div class="wb-injection-behavior">
@@ -1092,6 +1098,15 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                             ${availableModels.map(model => `<option value="${escapeAttr(model)}"></option>`).join('')}
                         </datalist>
                     </label>
+                    ${availableModels.length ? `
+                        <label class="wb-api-model-picker">从已拉取列表选择
+                            <select data-wb-api-model-picker>
+                                <option value="">点这里选择（${availableModels.length} 个）</option>
+                                ${availableModels.map(model => `<option value="${escapeAttr(model)}" ${model === apiValues.customApiModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')}
+                            </select>
+                        </label>
+                        <p>列表选择会填进上面的模型名称；也可以继续手动输入列表之外的模型。</p>
+                    ` : ''}
                     <label>连接方式
                         <select name="customApiTransport">
                             <option value="proxy" ${apiValues.customApiTransport === 'proxy' ? 'selected' : ''}>
@@ -1119,6 +1134,41 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </div>
                     ${modelPull.message ? `<p class="wb-api-model-status is-${escapeAttr(modelPull.phase)}">${escapeHtml(modelPull.message)}</p>` : ''}
                 </form>
+                        </div>
+                    </details>
+
+                    <details class="wb-settings-subgroup" data-settings-subgroup="connection-image" ${subgroupOpen('connection-image')}>
+                        <summary><span>朋友圈生图接口</span><small>${settings.imageApiEnabled ? '已开启' : '默认关闭'}</small></summary>
+                        <div class="wb-settings-subgroup-body">
+                            <form class="wb-api-form wb-image-api-form" data-wb-form="image-api" autocomplete="off">
+                                <label class="wb-setting-check">
+                                    <input name="imageApiEnabled" type="checkbox" ${settings.imageApiEnabled ? 'checked' : ''}>
+                                    <span><strong>允许朋友圈生成配图</strong><small>每次刷新最多生成一张；人物没动机配图时不会调用。</small></span>
+                                </label>
+                                <label>生图 API 地址
+                                    <input name="imageApiUrl" type="url" value="${escapeAttr(settings.imageApiUrl || '')}" autocomplete="off" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="https://example.com/v1">
+                                </label>
+                                <p>使用 OpenAI 兼容的 <code>/images/generations</code>；填到 <code>/v1</code> 即可。当前由浏览器直连，接口需要允许 CORS。</p>
+                                <label>生图 API Key
+                                    <span class="wb-api-secret-field">
+                                        <input class="wb-secret-input" name="imageApiCredential" type="text" value="" placeholder="${settings.imageApiKey ? '留空则继续使用已保存的 Key' : '请输入 API Key'}" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other">
+                                        <button type="button" data-wb-action="toggle-api-key-visibility" aria-pressed="false">显示</button>
+                                    </span>
+                                </label>
+                                <label>生图模型
+                                    <input name="imageApiModel" value="${escapeAttr(settings.imageApiModel || '')}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="例如 gpt-image-1">
+                                </label>
+                                <label>图片尺寸
+                                    <select name="imageApiSize">
+                                        ${['512x512', '768x768', '1024x1024', '1024x1536', '1536x1024'].map(size => `<option value="${size}" ${settings.imageApiSize === size ? 'selected' : ''}>${size}</option>`).join('')}
+                                    </select>
+                                </label>
+                                <div class="wb-api-actions">
+                                    <button class="wb-api-action is-primary" type="submit">保存生图接口</button>
+                                    <button class="wb-api-action" type="button" data-wb-action="test-image-api">生成测试图（会计费）</button>
+                                </div>
+                                <p>Key 只保存在本机扩展设置，不放进世界状态；关闭开关不会删除已经生成的朋友圈图片。</p>
+                            </form>
                         </div>
                     </details>
 
@@ -1259,6 +1309,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 <div class="wb-setting-toggle"><div><strong>「此刻」· 世界事实</strong><span>已经成立的事实我会拿来对账，不让世界自己打架。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionFacts" ${settings.injectionFacts !== false ? 'checked' : ''}><i></i></label></div>
                 <div class="wb-setting-toggle"><div><strong>「记忆」· 长期记忆</strong><span>关掉后我还会收拾记忆盒子～只是不往正文里叼。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionMemory" ${settings.injectionMemory !== false ? 'checked' : ''}><i></i></label></div>
                 <div class="wb-setting-toggle"><div><strong>「舆情」· 新闻与论坛</strong><span>外面的声音还会继续变化～这里只决定离镜头多近。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPublicOpinion" ${settings.injectionPublicOpinion !== false ? 'checked' : ''}><i></i></label></div>
+                <div class="wb-setting-toggle"><div><strong>「通讯」· 最近聊天</strong><span>默认隔离；开启后只供正文参考说过什么，不把约定当成已发生。</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionSocial" ${settings.injectionSocial === true ? 'checked' : ''}><i></i></label></div>
             </div>
             <p class="wb-setting-explanation">这里的开关都只管「给不给正文看」～压在爪爪下面，不等于它就不存在啦。</p>
 
@@ -2231,12 +2282,12 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                         ? memory.message || '我正在把前面的聊天一层层捡回来……别踩，我刚排好。'
                         : '时间、人物、事实、没走完的暗流和记忆，我一起叼回来排好')}</strong>
                 </div>
-                <span>${historyRunning && memory.kind === 'world-bootstrap' ? `${historyPercent}%` : '一次性提交'}</span>
+                <span>${historyRunning && memory.kind === 'world-bootstrap' ? `${historyPercent}%` : '可断点续跑'}</span>
             </div>
             ${historyRunning && memory.kind === 'world-bootstrap'
                 ? `<div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>`
                 : ''}
-            <p>中途才把我叫来，也行～我先把前面都闻一遍，确认能接好才一次放进去。半路摔了？那我整筐都不倒进去。</p>
+            <p>每批收好都会留个爪印；半路停下，下次从爪印继续。正式世界仍等全部完成才一起接上。</p>
             <button type="button" data-wb-action="bootstrap-history" ${historyRunning ? 'disabled' : ''}>让玲七回溯当前聊天</button>
         </div>
 
@@ -2787,24 +2838,269 @@ function renderNowView(state, observerMode, people, activeEvents, narrativeSync 
     `;
 }
 
-function renderPeopleView(state, observerMode, people, openFolds = new Set()) {
+function renderSocialView(state, social = {}, settings = {}, {
+    draft = '',
+    groupOpen = false,
+    groupSelectedIds = new Set(),
+    page = 'messages',
+    searchQuery = '',
+} = {}) {
+    const people = (Array.isArray(state?.people) ? state.people : []).filter(person => !person?.isUser);
+    const peopleById = new Map(people.map(person => [String(person.id || ''), person]));
+    const allConversations = Array.isArray(social?.conversations) ? social.conversations : [];
+    const connections = Array.isArray(social?.connections) ? social.connections : [];
+    const connectionsByPersonId = new Map(connections.map(item => [String(item.personId || ''), item]));
+    const acceptedIds = new Set(connections.filter(item => item.status === 'accepted').map(item => String(item.personId || '')));
+    const conversations = allConversations.filter(conversation => (
+        conversation?.type === 'group'
+        || acceptedIds.has(String(conversation?.memberIds?.[0] || ''))
+    ));
+    const friends = people.filter(person => acceptedIds.has(String(person.id || '')));
+    const active = conversations.find(item => item.id === social.activeConversationId) || null;
+    const activeBusy = social.running === true
+        && (!social.conversationId || social.conversationId === active?.id);
+    const emptyMascot = '<div class="wb-social-empty-sticker" aria-hidden="true"><span>(^..^)</span></div>';
+    const conversationAvatar = conversation => {
+        if (conversation?.type === 'group') {
+            const members = (conversation.memberIds || [])
+                .map(id => peopleById.get(String(id)))
+                .filter(Boolean)
+                .slice(0, 3);
+            return `<span class="wb-social-group-avatar is-members" aria-hidden="true">${members.map(person => `<b>${escapeHtml(String(person.name || '·').slice(0, 1))}</b>`).join('') || '<b>群</b>'}</span>`;
+        }
+        const person = conversation?.memberIds
+            ?.map(id => peopleById.get(String(id)))
+            .find(Boolean);
+        return person
+            ? renderPersonAvatar(person, 'is-social')
+            : '<span class="wb-social-group-avatar is-direct" aria-hidden="true">·</span>';
+    };
+    const activeMembers = active?.memberIds
+        ?.map(id => peopleById.get(String(id)))
+        .filter(Boolean) || [];
+    const activePerson = active?.type === 'direct' ? activeMembers[0] : null;
+    const activeSubtitle = active?.type === 'group'
+        ? `${activeMembers.length} 人小群`
+        : (activePerson?.location || activePerson?.role || '私聊');
+    const directConversationPersonIds = new Set(conversations
+        .filter(conversation => conversation?.type === 'direct')
+        .flatMap(conversation => conversation.memberIds || [])
+        .map(String));
+    const availableContacts = friends.filter(person => !directConversationPersonIds.has(String(person.id || '')));
+    const normalizedSearch = String(searchQuery || '').trim().toLocaleLowerCase();
+    const searchResults = normalizedSearch.length >= 2
+        ? people.filter(person => `${person.name || ''}\n${person.identityAnchor || ''}`.toLocaleLowerCase().includes(normalizedSearch)).slice(0, 12)
+        : [];
+    const suggestedPeople = connections
+        .filter(item => item.status === 'suggested')
+        .map(item => peopleById.get(String(item.personId || '')))
+        .filter(Boolean)
+        .slice(0, 8);
+    const incomingPeople = connections
+        .filter(item => item.status === 'incoming')
+        .map(item => peopleById.get(String(item.personId || '')))
+        .filter(Boolean);
+    const moments = (Array.isArray(social?.moments) ? social.moments : [])
+        .map(moment => ({ ...moment, person: peopleById.get(String(moment.personId || '')) }))
+        .filter(moment => moment.person && acceptedIds.has(String(moment.personId || '')))
+        .reverse();
+    const unreadNotices = (Array.isArray(social?.notices) ? social.notices : []).filter(item => !item?.readAt);
+    const hasUnreadMessages = unreadNotices.some(item => item.kind === 'message');
+    const hasUnreadContacts = unreadNotices.some(item => ['friend_request', 'friend_removed'].includes(item.kind));
+    const hasUnreadMoments = unreadNotices.some(item => item.kind === 'moment');
+    const messageAvatar = message => {
+        if (message?.senderId === 'user') {
+            return '<span class="wb-social-self-avatar" aria-hidden="true">我</span>';
+        }
+        const person = peopleById.get(String(message?.senderId || ''))
+            || activeMembers.find(item => item.name === message?.senderName);
+        return person
+            ? renderPersonAvatar(person, 'is-social')
+            : '<span class="wb-social-group-avatar is-direct" aria-hidden="true">·</span>';
+    };
+    const messageTime = message => formatWorldMinute(Math.max(0, Number(message?.worldMinute) || 0)).time;
+    const emptyThread = friends.length
+        ? `<div class="wb-social-empty-thread is-large">
+            ${emptyMascot}
+            <strong>想找谁说说话呀？</strong>
+            <button type="button" data-wb-action="social-toggle-group" ${friends.length < 2 ? 'disabled' : ''}>${friends.length < 2 ? '需要两位好友才能建群' : '新建群聊'}</button>
+        </div>`
+        : people.length
+            ? `<div class="wb-social-empty-thread is-large is-first-use">
+                ${emptyMascot}
+                <strong>玲七还没找到朋友呢</strong>
+                <div class="wb-social-empty-actions"><button class="is-primary" type="button" data-wb-action="social-set-page" data-page="contacts">去添加好友</button></div>
+            </div>`
+        : `<div class="wb-social-empty-thread is-large is-first-use">
+            ${emptyMascot}
+            <strong>先让玲七认识几个人吧</strong>
+            <div class="wb-social-empty-actions">
+                <button class="is-primary" type="button" data-wb-action="social-import-people">让玲七去世界书找找</button>
+                <button type="button" data-wb-action="social-go-people">去人物页看看</button>
+            </div>
+        </div>`;
+    const messagesView = `
+        ${groupOpen ? `
+            <form class="wb-social-group-form" data-wb-form="social-group">
+                <label>群名<input name="title" maxlength="120" placeholder="不填就用成员名"></label>
+                <div class="wb-social-group-people">
+                    ${friends.map(person => `<label><input type="checkbox" name="memberIds" value="${escapeAttr(person.id)}" ${groupSelectedIds.has(String(person.id || '')) ? 'checked' : ''}><span>${escapeHtml(person.name)}</span></label>`).join('') || '<span>还没有朋友</span>'}
+                </div>
+                <button type="submit" ${friends.length < 2 ? 'disabled' : ''}>建群</button>
+            </form>
+        ` : ''}
+        <div class="wb-social-layout">
+            <aside class="wb-social-sidebar">
+                <header class="wb-social-sidebar-head">
+                    <div><strong>最近聊过</strong>${conversations.length ? `<small>${conversations.length}</small>` : ''}</div>
+                    <button type="button" data-wb-action="social-toggle-group" ${friends.length < 2 ? 'disabled title="至少需要两位好友"' : ''}><span aria-hidden="true">＋</span>${groupOpen ? '收起' : '小群'}</button>
+                </header>
+                <div class="wb-social-sidebar-scroll">
+                    <div class="wb-social-conversations">
+                        ${conversations.map(conversation => {
+                            const last = conversation.rawMessages?.at(-1);
+                            return `<button type="button" class="${conversation.id === active?.id ? 'is-active' : ''}" data-wb-action="social-select-conversation" data-conversation-id="${escapeAttr(conversation.id)}">
+                                ${conversationAvatar(conversation)}<span><strong>${escapeHtml(conversation.title)}</strong><small>${escapeHtml(last?.text || '还没有消息')}</small></span>
+                            </button>`;
+                        }).join('')}
+                    </div>
+                    ${availableContacts.length ? `<div class="wb-social-section-title"><strong>玲七可以帮你传话</strong><small>${availableContacts.length}</small></div>
+                    <div class="wb-social-contacts">
+                        ${availableContacts.map(person => `<button type="button" data-wb-action="social-open-person" data-person-id="${escapeAttr(person.id)}">${renderPersonAvatar(person, 'is-social')}<span><strong>${escapeHtml(person.name)}</strong><small>${escapeHtml(person.location || '暂未记录位置')}</small></span></button>`).join('')}
+                    </div>` : ''}
+                </div>
+                <label class="wb-social-isolation-control" title="打开后，最近聊天会作为未结算记录给正文参考">
+                    <span><i></i><b>${settings.injectionSocial === true ? '带进正文' : '只留在这里'}</b></span>
+                    <span class="wb-switch"><input type="checkbox" data-wb-setting="injectionSocial" ${settings.injectionSocial === true ? 'checked' : ''}><i></i></span>
+                </label>
+            </aside>
+            <main class="wb-social-thread">
+                ${active ? `
+                    <header>
+                        <div class="wb-social-thread-contact">${conversationAvatar(active)}<div><h3>${escapeHtml(active.title)}</h3><span>${escapeHtml(activeSubtitle)}</span></div></div>
+                        ${activeBusy ? '<span class="wb-social-thread-state"><i></i>正在回…</span>' : ''}
+                    </header>
+                    <div class="wb-social-log" aria-live="polite">
+                        ${settings.injectionSocial === true ? '<p class="wb-social-context-banner">这段聊天会带进正文</p>' : ''}
+                        ${(active.rawMessages || []).map(message => `<article class="${message.senderId === 'user' ? 'is-user' : ''}">${messageAvatar(message)}<div class="wb-social-message-main"><span><b>${escapeHtml(message.senderName)}</b><time>${escapeHtml(messageTime(message))}</time></span><p>${escapeHtml(message.text)}</p></div></article>`).join('') || `<div class="wb-social-empty-thread is-conversation"><span class="wb-social-empty-monogram">${escapeHtml(active.title.slice(0, 1))}</span><strong>和 ${escapeHtml(active.title)} 说点什么吧</strong></div>`}
+                    </div>
+                    ${active.lastError ? `<p class="wb-social-error">上次错误：${escapeHtml(active.lastError)}</p>` : ''}
+                    <form class="wb-social-compose" data-wb-form="social-message">
+                        <input type="hidden" name="conversationId" value="${escapeAttr(active.id)}">
+                        <textarea name="text" rows="1" maxlength="1600" placeholder="让玲七捎句话…" ${activeBusy ? 'disabled' : ''}>${escapeHtml(draft)}</textarea>
+                        <button type="submit" ${activeBusy ? 'disabled' : ''}>${activeBusy ? '玲七在路上…' : '递过去'}</button>
+                    </form>
+                ` : emptyThread}
+            </main>
+        </div>`;
+
+    const friendCard = person => {
+        const connection = connectionsByPersonId.get(String(person.id || ''));
+        const requestBusy = social?.friendRequest?.running && social.friendRequest.personId === String(person.id || '');
+        const status = connection?.status || '';
+        const action = status === 'accepted'
+            ? `<div class="wb-social-friend-actions"><button type="button" data-wb-action="social-open-person" data-person-id="${escapeAttr(person.id)}">发消息</button><button class="is-danger" type="button" data-wb-action="social-remove-friend" data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}">删除</button></div>`
+            : status === 'incoming'
+                ? `<div class="wb-social-friend-actions"><button class="is-primary" type="button" data-wb-action="social-respond-friend-request" data-person-id="${escapeAttr(person.id)}" data-accept="true">接受</button><button type="button" data-wb-action="social-respond-friend-request" data-person-id="${escapeAttr(person.id)}" data-accept="false">拒绝</button></div>`
+            : status === 'pending'
+                ? '<button type="button" disabled>等待处理</button>'
+                : `<form data-wb-form="social-friend-request"><input type="hidden" name="personId" value="${escapeAttr(person.id)}"><input name="message" maxlength="300" placeholder="${status === 'declined' ? '重新申请说明（可选）' : status === 'removed' ? '重新添加说明（可选）' : '验证消息（可选）'}"><button type="submit" ${requestBusy ? 'disabled' : ''}>${requestBusy ? '等待中…' : status === 'declined' || status === 'removed' ? '重新申请' : '添加好友'}</button></form>`;
+        const visibleReply = connection?.decisionReply
+            || (status === 'incoming' ? connection?.requestMessage : '')
+            || (status === 'removed' || status === 'declined' ? connection?.decisionReason : '')
+            || (status === 'suggested' ? connection?.evidence : '')
+            || (status === 'accepted' ? connection?.evidence : '按姓名查找到的人物');
+        return `<article class="wb-social-friend-card">${renderPersonAvatar(person, 'is-social')}<div><strong>${escapeHtml(person.name)}</strong><span>${escapeHtml(person.identityAnchor || '世界人物')}</span>${visibleReply ? `<small>${escapeHtml(visibleReply)}</small>` : ''}</div>${action}</article>`;
+    };
+    const contactsView = `
+        <div class="wb-social-directory">
+            <aside class="wb-social-friend-list">
+                <header><strong>好友</strong><small>${friends.length}</small></header>
+                <div>${friends.map(person => `<article>${renderPersonAvatar(person, 'is-social')}<button type="button" data-wb-action="social-open-person" data-person-id="${escapeAttr(person.id)}"><span><strong>${escapeHtml(person.name)}</strong><small>${escapeHtml(connectionsByPersonId.get(String(person.id || ''))?.evidence || '已经是好友啦')}</small></span></button><button class="wb-social-friend-remove" type="button" data-wb-action="social-remove-friend" data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}" title="删除好友">×</button></article>`).join('') || '<p>还没有好友</p>'}</div>
+            </aside>
+            <main class="wb-social-add-friend">
+                <header><strong>玲七帮你找找 ฅ</strong></header>
+                <label class="wb-social-auto-control"><span><strong>让玲七帮忙留意新动静</strong></span><span class="wb-switch"><input type="checkbox" data-wb-setting="socialAutoEnabled" ${settings.socialAutoEnabled !== false ? 'checked' : ''}><i></i></span></label>
+                <label class="wb-social-search"><span aria-hidden="true">⌕</span><input type="search" data-wb-social-search value="${escapeAttr(searchQuery)}" placeholder="告诉玲七名字…" autocomplete="off"></label>
+                ${social?.friendRequest?.phase === 'error' ? `<p class="wb-social-request-error">${escapeHtml(social.friendRequest.error || social.friendRequest.message)}</p>` : ''}
+                <div class="wb-social-search-results">
+                    ${normalizedSearch.length >= 2
+                        ? (searchResults.map(friendCard).join('') || '<div class="wb-social-directory-empty">玲七没找到这个名字呀。</div>')
+                        : incomingPeople.length || suggestedPeople.length
+                            ? `${incomingPeople.length ? `<div class="wb-social-suggestion-title"><strong>有人托玲七来敲门</strong><span>${incomingPeople.length}</span></div>${incomingPeople.map(friendCard).join('')}` : ''}${suggestedPeople.length ? `<div class="wb-social-suggestion-title"><strong>玲七好像见过</strong></div>${suggestedPeople.map(friendCard).join('')}` : ''}`
+                            : '<div class="wb-social-directory-empty">告诉玲七名字，玲七去找找。</div>'}
+                </div>
+            </main>
+        </div>`;
+
+    const momentsView = `
+        <div class="wb-social-moments">
+            <header><div><h3>朋友圈</h3></div><button type="button" data-wb-action="social-refresh-moments" ${social?.momentsStatus?.running ? 'disabled' : ''}>${social?.momentsStatus?.running ? '玲七在外面转悠…' : '让玲七去逛逛'}</button></header>
+            ${social?.momentsStatus?.phase === 'error' ? `<p class="wb-social-request-error">${escapeHtml(social.momentsStatus.error || social.momentsStatus.message)}</p>` : ''}
+            <div class="wb-social-moment-feed">
+                ${moments.map(moment => `<article class="wb-social-moment-card">
+                    ${renderPersonAvatar(moment.person, 'is-social')}
+                    <div class="wb-social-moment-body"><header><strong>${escapeHtml(moment.person.name)}</strong><time>${escapeHtml(formatWorldMinute(moment.worldMinute).time)}</time></header><p>${escapeHtml(moment.text)}</p>
+                    ${moment.imageUrl ? `<img src="${escapeAttr(moment.imageUrl)}" alt="${escapeAttr(moment.person.name)} 发布的朋友圈配图" loading="lazy">` : ''}
+                    <footer><span>好友可见${moment.imageError ? ' · 配图生成失败，已保留文字' : ''}</span><button type="button" class="${moment.likedByUser ? 'is-active' : ''}" data-wb-action="social-toggle-moment-like" data-moment-id="${escapeAttr(moment.id)}">♡ ${Math.max(0, Number(moment.likes) || 0)}</button></footer></div>
+                </article>`).join('') || `<div class="wb-social-moments-empty">${emptyMascot}<strong>${friends.length ? '玲七还没听到新鲜事' : '先让玲七认识几个朋友吧'}</strong></div>`}
+            </div>
+        </div>`;
+
+    return `
+        <section class="wb-social-shell is-page-${escapeAttr(page)}">
+            <nav class="wb-social-page-tabs" aria-label="通讯页面">
+                <button type="button" class="${page === 'messages' ? 'is-active' : ''}" data-wb-action="social-set-page" data-page="messages"><i></i>消息${hasUnreadMessages ? '<em></em>' : ''}</button>
+                <button type="button" class="${page === 'contacts' ? 'is-active' : ''}" data-wb-action="social-set-page" data-page="contacts"><i></i>好友${hasUnreadContacts || connections.some(item => item.status === 'incoming') ? '<em></em>' : ''}</button>
+                <button type="button" class="${page === 'moments' ? 'is-active' : ''}" data-wb-action="social-set-page" data-page="moments"><i></i>朋友圈${hasUnreadMoments ? '<em></em>' : ''}</button>
+            </nav>
+            <div class="wb-social-page-body">${page === 'contacts' ? contactsView : page === 'moments' ? momentsView : messagesView}</div>
+        </section>
+    `;
+}
+
+function renderPeopleView(state, observerMode, people, openFolds = new Set(), {
+    selectionMode = false,
+    selectedIds = new Set(),
+} = {}) {
+    const deletablePeople = people.filter(person => !person.locked && !person.isUser);
     return `
         <div class="wb-view-intro">
-            <div class="wb-memory-intro-actions">
-                <span>${people.length} 条可观测轨迹</span>
-                <button type="button" data-wb-action="open-person-editor">＋ 添加后台 NPC</button>
+            <div class="wb-memory-intro-actions wb-people-batch-actions">
+                <span>${selectionMode ? `已选 ${selectedIds.size} 人` : `${people.length} 条可观测轨迹`}</span>
+                ${selectionMode ? `
+                    <button type="button" data-wb-action="select-all-people" ${deletablePeople.length ? '' : 'disabled'}>全选可删除</button>
+                    <button type="button" data-wb-action="clear-people-selection" ${selectedIds.size ? '' : 'disabled'}>取消选择</button>
+                    <button class="is-danger" type="button" data-wb-action="delete-selected-people" ${selectedIds.size ? '' : 'disabled'}>删除选中 · ${selectedIds.size}</button>
+                    <button type="button" data-wb-action="toggle-people-batch">退出批量</button>
+                ` : `
+                    <button type="button" data-wb-action="toggle-people-batch" ${deletablePeople.length ? '' : 'disabled'}>批量管理</button>
+                    <button type="button" data-wb-action="open-person-editor">＋ 添加后台 NPC</button>
+                `}
             </div>
         </div>
         <div class="wb-view-fold-head">
             ${renderFoldToolbar('people:')}
         </div>
         <div class="wb-people-grid">
-            ${people.map(person => renderPersonCard(
-                person,
-                observerMode,
-                state.clock.absoluteMinute,
-                openFolds,
-            )).join('') || renderEmpty(
+            ${people.map(person => `
+                <div class="wb-person-batch-item ${selectionMode ? 'is-selecting' : ''} ${selectedIds.has(person.id) ? 'is-selected' : ''}">
+                    ${selectionMode ? `
+                        <label class="wb-person-batch-check ${person.locked || person.isUser ? 'is-disabled' : ''}">
+                            <input type="checkbox" data-wb-person-select value="${escapeAttr(person.id)}"
+                                ${selectedIds.has(person.id) ? 'checked' : ''}
+                                ${person.locked || person.isUser ? 'disabled' : ''}>
+                            <span>${person.isUser ? '玩家角色' : person.locked ? '已锁定' : '选择'}</span>
+                        </label>
+                    ` : ''}
+                    ${renderPersonCard(
+                        person,
+                        observerMode,
+                        state.clock.absoluteMinute,
+                        openFolds,
+                    )}
+                </div>
+            `).join('') || renderEmpty(
                 observerMode === 'known' ? '角色目前没有可确认的人物轨迹' : '后台人物尚未建立',
                 observerMode === 'known' ? '切回幕后视角可以查看未知轨迹。' : '回复后自动推演或手动推演一次。',
             )}
@@ -4063,6 +4359,16 @@ export function createWorldBackstageUI({
     let lingqiReadableOpenKeys = new Set();
     let lingqiPetCount = 0;
     let lingqiPetWindowAt = 0;
+    let socialDraft = '';
+    let socialGroupOpen = false;
+    let socialGroupSelectedIds = new Set();
+    let socialChatScrollState = { top: 0, atBottom: true, initialized: false };
+    let socialPage = 'messages';
+    let socialSearchQuery = '';
+    let socialSearchTimer = null;
+    let socialNoticeTimer = null;
+    let socialNoticeVisibleId = '';
+    const socialNoticeShownIds = new Set();
 
     function currentLingqiMascotState(override = '') {
         const latest = getSyncStatus()?.lingqi || {};
@@ -4114,6 +4420,8 @@ export function createWorldBackstageUI({
     let memoryQuery = '';
     let memoryVisibleCount = 12;
     let memorySelectedKeys = new Set();
+    let peopleSelectionMode = false;
+    let peopleSelectedIds = new Set();
     let memoryEditor = null;
     let personEditor = null;
     let worldEditorOpen = false;
@@ -4132,6 +4440,7 @@ export function createWorldBackstageUI({
     let worldbookOnlyPeople = false;
     let worldbookOnlyEnabled = false;
     let worldbookSelectedIds = new Set();
+    let worldbookListScrollTop = 0;
     let worldbookSearchTimer = null;
     let skipApiDraftCapture = false;
     let skipTagFilterDraftCapture = false;
@@ -4302,6 +4611,8 @@ export function createWorldBackstageUI({
         personEditor = null;
         memoryEditor = null;
         memorySelectedKeys = new Set();
+        peopleSelectionMode = false;
+        peopleSelectedIds = new Set();
         memoryQuery = '';
         memoryFilter = 'active';
         memoryClueRelationFilter = 'all';
@@ -4310,6 +4621,7 @@ export function createWorldBackstageUI({
         recordEditor = null;
         worldbookSelectedIds = new Set();
         worldbookQuery = '';
+        worldbookListScrollTop = 0;
         lingqiDraft = '';
         lingqiChatScrollState = { top: 0, atBottom: true, initialized: false };
         lingqiNotesScrollTop = 0;
@@ -4350,6 +4662,8 @@ export function createWorldBackstageUI({
         openContentFolds = new Set(viewFoldStates.get(activeView) || []);
         const previousSettings = root.querySelector('.wb-settings-popover');
         if (previousSettings) settingsScrollTop = previousSettings.scrollTop;
+        const previousWorldbookList = root.querySelector('.wb-worldbook-entry-list');
+        if (previousWorldbookList) worldbookListScrollTop = previousWorldbookList.scrollTop;
         const previousSettingGroups = root.querySelectorAll('.wb-settings-group[data-settings-group]');
         if (previousSettingGroups.length) {
             openSettingsGroups = new Set(
@@ -4380,6 +4694,27 @@ export function createWorldBackstageUI({
         }
         const previousLingqiInput = root.querySelector('[data-wb-form="lingqi-chat"] textarea[name="text"]');
         if (previousLingqiInput) lingqiDraft = previousLingqiInput.value;
+        const previousSocialInput = root.querySelector('[data-wb-form="social-message"] textarea[name="text"]');
+        if (previousSocialInput) socialDraft = previousSocialInput.value;
+        const previousSocialChat = root.querySelector('.wb-social-log');
+        if (previousSocialChat) {
+            const bottomGap = previousSocialChat.scrollHeight
+                - previousSocialChat.scrollTop
+                - previousSocialChat.clientHeight;
+            socialChatScrollState = {
+                top: previousSocialChat.scrollTop,
+                atBottom: bottomGap <= 28,
+                initialized: true,
+            };
+        }
+        const previousSocialGroup = root.querySelector('[data-wb-form="social-group"]');
+        if (previousSocialGroup) {
+            socialGroupSelectedIds = new Set(
+                [...previousSocialGroup.querySelectorAll('input[name="memberIds"]:checked')]
+                    .map(input => String(input.value || ''))
+                    .filter(Boolean),
+            );
+        }
 
         const previousLingqiChat = root.querySelector('.wb-lingqi-chat-log');
         if (previousLingqiChat) {
@@ -4533,6 +4868,43 @@ export function createWorldBackstageUI({
         const renderedOrbStyle = orbEdgeHidden
             ? halfDockOrbInlineStyle(settings.orbPosition, orbEdgeSide)
             : orbStyles.orb;
+        const socialNotices = (Array.isArray(syncStatus.social?.notices) ? syncStatus.social.notices : [])
+            .filter(item => !item?.readAt)
+            .reverse();
+        if (socialNoticeVisibleId && !socialNotices.some(item => item.id === socialNoticeVisibleId)) {
+            socialNoticeVisibleId = '';
+            window.clearTimeout(socialNoticeTimer);
+            socialNoticeTimer = null;
+        }
+        const newestSocialNotice = socialNotices[0] || null;
+        if (!socialNoticeVisibleId && newestSocialNotice && !socialNoticeShownIds.has(newestSocialNotice.id)) {
+            socialNoticeVisibleId = newestSocialNotice.id;
+            socialNotices.forEach(item => socialNoticeShownIds.add(item.id));
+            window.clearTimeout(socialNoticeTimer);
+            socialNoticeTimer = window.setTimeout(() => {
+                if (socialNoticeVisibleId === newestSocialNotice.id) {
+                    socialNoticeVisibleId = '';
+                    socialNoticeTimer = null;
+                    render();
+                }
+            }, 6000);
+        }
+        const socialNotice = socialNotices.find(item => item.id === socialNoticeVisibleId) || null;
+        const socialNoticePerson = socialNotice
+            ? state.people.find(item => String(item?.id || '') === String(socialNotice.personId || ''))
+            : null;
+        const socialNoticePage = socialNotice?.kind === 'message'
+            ? 'messages'
+            : socialNotice?.kind === 'moment'
+                ? 'moments'
+                : 'contacts';
+        const socialNoticeLabel = socialNotice?.kind === 'message'
+            ? '新消息'
+            : socialNotice?.kind === 'friend_request'
+                ? '好友申请'
+                : socialNotice?.kind === 'friend_removed'
+                    ? '关系变化'
+                    : '新动态';
 
         let content = '';
         if (activeView === 'now') content = renderNowView(state, observerMode, visiblePeople, activeEvents, narrativeSync);
@@ -4542,7 +4914,21 @@ export function createWorldBackstageUI({
             lingqiMascotOverride,
             lingqiReadableOpenKeys,
         );
-        if (activeView === 'people') content = renderPeopleView(state, observerMode, visiblePeople, openContentFolds);
+        if (activeView === 'social') content = renderSocialView(state, syncStatus.social || {}, settings, {
+            draft: socialDraft,
+            groupOpen: socialGroupOpen,
+            groupSelectedIds: socialGroupSelectedIds,
+            page: socialPage,
+            searchQuery: socialSearchQuery,
+        });
+        if (activeView === 'people') {
+            const validPeopleIds = new Set(state.people.map(person => person.id));
+            peopleSelectedIds = new Set([...peopleSelectedIds].filter(id => validPeopleIds.has(id)));
+            content = renderPeopleView(state, observerMode, visiblePeople, openContentFolds, {
+                selectionMode: peopleSelectionMode,
+                selectedIds: peopleSelectedIds,
+            });
+        }
         if (activeView === 'currents') content = renderCurrentsView(state, activeEvents, openContentFolds, settings);
         if (activeView === 'echoes') content = renderEchoesView(state, outcomes, openContentFolds);
         if (activeView === 'opinion') content = renderPublicOpinionView(
@@ -4683,7 +5069,7 @@ export function createWorldBackstageUI({
                                 </button>
                             </nav>
 
-                            <div class="wb-content-column ${activeView === 'lingqi' ? 'is-lingqi-column' : ''}">
+                            <div class="wb-content-column ${activeView === 'lingqi' ? 'is-lingqi-column' : ''} ${activeView === 'social' ? 'is-social-column' : ''}">
                                 <div class="wb-view-header">
                                     <div><span>${currentView.eyebrow}</span><h2>${currentView.label}</h2></div>
                                     <div class="wb-view-header-tools">
@@ -4694,6 +5080,8 @@ export function createWorldBackstageUI({
                                             </div>
                                         ` : activeView === 'lingqi' ? `
                                             <div class="wb-lingqi-header-badge" aria-label="玲七">₍^. .^₎⟆</div>
+                                        ` : activeView === 'social' ? `
+                                            <div class="wb-social-header-badge" aria-label="内置通讯">会话独立层</div>
                                         ` : `
                                             <div class="wb-observer-switch">
                                                 <button type="button" data-wb-action="set-observer" data-mode="backstage"
@@ -4715,7 +5103,7 @@ export function createWorldBackstageUI({
                                     </div>
                                 </div>
                                 ${renderSyncStrip(syncStatus)}
-                                <div class="wb-view-content ${activeView === 'lingqi' ? 'is-lingqi-view' : ''} ${viewChanged ? 'is-entering' : ''}">${content}</div>
+                                <div class="wb-view-content ${activeView === 'lingqi' ? 'is-lingqi-view' : ''} ${activeView === 'social' ? 'is-social-view' : ''} ${viewChanged ? 'is-entering' : ''}">${content}</div>
                                 <footer class="wb-window-footer">
                                     <div class="wb-footer-world-meta">
                                         <span>主世界 ${escapeHtml(clockLabel)}</span><i></i>
@@ -4816,6 +5204,18 @@ export function createWorldBackstageUI({
                     </div>
                 </div>
             ` : ''}
+            ${settings.enabled && socialNotice ? `
+                <aside class="wb-social-notice" role="status" aria-live="polite">
+                    <button class="wb-social-notice-main" type="button" data-wb-action="social-open-notice"
+                        data-notice-id="${escapeAttr(socialNotice.id)}"
+                        data-page="${escapeAttr(socialNoticePage)}"
+                        data-conversation-id="${escapeAttr(socialNotice.conversationId || '')}">
+                        ${socialNoticePerson ? renderPersonAvatar(socialNoticePerson, 'is-social') : '<span class="wb-social-notice-avatar">讯</span>'}
+                        <span><small>${escapeHtml(socialNoticeLabel)}${socialNotices.length > 1 ? ` · 另有 ${socialNotices.length - 1} 条` : ''}</small><strong>${escapeHtml(socialNoticePerson?.name || '世界背面通讯')}</strong><em>${escapeHtml(socialNotice.text || '点开查看')}</em></span>
+                    </button>
+                    <button class="wb-social-notice-close" type="button" data-wb-action="social-dismiss-notice" data-notice-id="${escapeAttr(socialNotice.id)}" aria-label="稍后再看">×</button>
+                </aside>
+            ` : ''}
             ${toast ? `
                 <div class="wb-toast" role="${root.dataset.toastTone === 'error' ? 'alert' : 'status'}" aria-live="polite">
                     <span aria-hidden="true">${escapeHtml(TOAST_FACES[root.dataset.toastTone] || TOAST_FACES.info)}</span>
@@ -4866,6 +5266,33 @@ export function createWorldBackstageUI({
         }
         const currentSettings = root.querySelector('.wb-settings-popover');
         if (currentSettings) currentSettings.scrollTop = settingsScrollTop;
+        const currentWorldbookList = root.querySelector('.wb-worldbook-entry-list');
+        if (currentWorldbookList) {
+            currentWorldbookList.scrollTop = Math.min(
+                worldbookListScrollTop,
+                Math.max(0, currentWorldbookList.scrollHeight - currentWorldbookList.clientHeight),
+            );
+        }
+        const currentSocialChat = root.querySelector('.wb-social-log');
+        if (currentSocialChat) {
+            if (!socialChatScrollState.initialized || socialChatScrollState.atBottom) {
+                currentSocialChat.scrollTop = currentSocialChat.scrollHeight;
+            } else {
+                currentSocialChat.scrollTop = Math.min(
+                    socialChatScrollState.top,
+                    Math.max(0, currentSocialChat.scrollHeight - currentSocialChat.clientHeight),
+                );
+            }
+            socialChatScrollState = {
+                top: currentSocialChat.scrollTop,
+                atBottom: (
+                    currentSocialChat.scrollHeight
+                    - currentSocialChat.scrollTop
+                    - currentSocialChat.clientHeight
+                ) <= 28,
+                initialized: true,
+            };
+        }
         const currentEventForm = root.querySelector('[data-wb-form="event"]');
         if (currentEventForm && eventFormDraft) {
             for (const [name, value] of Object.entries(eventFormDraft)) {
@@ -5508,6 +5935,161 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'social-toggle-group') {
+            socialGroupOpen = !socialGroupOpen;
+            if (!socialGroupOpen) socialGroupSelectedIds = new Set();
+            render();
+            return;
+        }
+        if (action === 'social-open-notice') {
+            const page = String(target.dataset.page || 'contacts');
+            const conversationId = String(target.dataset.conversationId || '');
+            socialNoticeVisibleId = '';
+            window.clearTimeout(socialNoticeTimer);
+            socialNoticeTimer = null;
+            target.closest('.wb-social-notice')?.remove();
+            await invokeAction('social-read-notice', { noticeId: target.dataset.noticeId || '' });
+            if (conversationId) {
+                await invokeAction('social-select-conversation', { conversationId });
+            }
+            activeView = 'social';
+            socialPage = ['messages', 'contacts', 'moments'].includes(page) ? page : 'contacts';
+            socialChatScrollState = { top: 0, atBottom: true, initialized: false };
+            open();
+            return;
+        }
+        if (action === 'social-dismiss-notice') {
+            socialNoticeVisibleId = '';
+            window.clearTimeout(socialNoticeTimer);
+            socialNoticeTimer = null;
+            target.closest('.wb-social-notice')?.remove();
+            await invokeAction('social-read-notice', { noticeId: target.dataset.noticeId || '' });
+            render();
+            return;
+        }
+        if (action === 'social-set-page') {
+            const nextPage = String(target.dataset.page || 'messages');
+            socialPage = ['messages', 'contacts', 'moments'].includes(nextPage) ? nextPage : 'messages';
+            socialGroupOpen = false;
+            render();
+            return;
+        }
+        if (action === 'social-go-people') {
+            activeView = 'people';
+            moduleSettingsView = '';
+            render();
+            return;
+        }
+        if (action === 'social-import-people') {
+            activeView = 'people';
+            settingsOpen = false;
+            moduleSettingsView = 'people';
+            openSettingsSubgroups = new Set(['people-worldbook']);
+            settingsScrollTop = 0;
+            render();
+            return;
+        }
+        if (action === 'social-open-person') {
+            const completed = await invokeAction('social-open-person', {
+                personId: target.dataset.personId || '',
+            });
+            if (completed) {
+                activeView = 'social';
+                socialPage = 'messages';
+                selectedPersonId = null;
+                socialDraft = '';
+                socialChatScrollState = { top: 0, atBottom: true, initialized: false };
+            }
+            render();
+            return;
+        }
+        if (action === 'social-respond-friend-request') {
+            const accept = target.dataset.accept === 'true';
+            if (!accept) {
+                const confirmed = globalThis.confirm?.('(・_・;)  要拒绝这条好友申请吗？对方会保留自己的反应，但不会进入通讯录。');
+                if (confirmed === false) return;
+            }
+            const result = await invokeAction('social-respond-friend-request', {
+                personId: target.dataset.personId || '',
+                accept,
+            });
+            if (result) notify(accept ? `已接受 ${result.personName} 的好友申请。` : `已拒绝 ${result.personName} 的好友申请。`, accept ? 'success' : 'info');
+            render();
+            return;
+        }
+        if (action === 'social-remove-friend') {
+            const personName = String(target.dataset.personName || '这位好友');
+            const confirmed = globalThis.confirm?.(
+                `(・_・;)  确定删除 ${personName} 吗？\n私聊记录会保留，但不能继续发送；共同群聊不会自动退出。之后仍可重新申请好友。`,
+            );
+            if (confirmed === false) return;
+            const result = await invokeAction('social-remove-friend', { personId: target.dataset.personId || '' });
+            if (result) notify(`已从通讯录删除 ${result.personName}。`, 'info');
+            render();
+            return;
+        }
+        if (action === 'social-refresh-moments') {
+            const result = await invokeAction('social-refresh-moments');
+            if (result && typeof result === 'object') {
+                notify(result.postCount
+                    ? `朋友圈新增 ${result.postCount} 条动态${result.imageCount ? '，有 1 条配图' : ''}。`
+                    : '这次没有好友想发动态。', result.postCount ? 'success' : 'info');
+            }
+            render();
+            return;
+        }
+        if (action === 'social-toggle-moment-like') {
+            await invokeAction('social-toggle-moment-like', { momentId: target.dataset.momentId || '' });
+            render();
+            return;
+        }
+        if (action === 'social-select-conversation') {
+            await invokeAction('social-select-conversation', {
+                conversationId: target.dataset.conversationId || '',
+            });
+            socialDraft = '';
+            socialChatScrollState = { top: 0, atBottom: true, initialized: false };
+            render();
+            return;
+        }
+        if (action === 'toggle-people-batch') {
+            peopleSelectionMode = !peopleSelectionMode;
+            peopleSelectedIds = new Set();
+            render();
+            return;
+        }
+        if (action === 'select-all-people') {
+            peopleSelectedIds = new Set(
+                [...root.querySelectorAll('[data-wb-person-select]:not(:disabled)')]
+                    .map(input => String(input.value || ''))
+                    .filter(Boolean),
+            );
+            render();
+            return;
+        }
+        if (action === 'clear-people-selection') {
+            peopleSelectedIds = new Set();
+            render();
+            return;
+        }
+        if (action === 'delete-selected-people') {
+            const ids = [...peopleSelectedIds];
+            const selected = getState().people.filter(person => ids.includes(person.id));
+            if (!selected.length) return;
+            const preview = selected.slice(0, 10).map(person => `• ${person.name}`).join('\n');
+            const remainder = selected.length > 10 ? `\n……另有 ${selected.length - 10} 人` : '';
+            const confirmed = globalThis.confirm?.(
+                `(・_・;)  确定批量删除这 ${selected.length} 个人物吗？\n\n${preview}${remainder}\n\n会一并清掉这些人物的即时观测缓存；不会删除聊天正文或正式世界记忆。删除后仍可用底部“撤销”恢复。`,
+            );
+            if (confirmed === false) return;
+            const completed = await invokeAction('delete-manual-people', { ids });
+            if (completed) {
+                peopleSelectedIds = new Set();
+                peopleSelectionMode = false;
+            }
+            render();
+            return;
+        }
         if (action === 'close-person-editor') {
             personEditor = null;
             render();
@@ -5539,7 +6121,16 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'open-terminal-person') {
-            globalThis.worldTerminalHost?.openPersonChat?.(target.dataset.personId || '');
+            const completed = await invokeAction('social-open-person', {
+                personId: target.dataset.personId || '',
+            });
+            if (completed) {
+                activeView = 'social';
+                selectedPersonId = null;
+                socialDraft = '';
+                socialChatScrollState = { top: 0, atBottom: true, initialized: false };
+                render();
+            }
             return;
         }
         if (action === 'open-terminal-event') {
@@ -5637,6 +6228,7 @@ export function createWorldBackstageUI({
         if (action === 'smart-import-worldbook-people') {
             const form = target.closest('[data-wb-form="worldbook"]');
             worldbookSelectedIds = new Set();
+            worldbookListScrollTop = 0;
             const result = await invokeAction('smart-import-worldbook-people', {
                 bookName: form?.elements?.bookName?.value || '',
             });
@@ -5659,6 +6251,7 @@ export function createWorldBackstageUI({
         if (action === 'scan-worldbook') {
             const form = target.closest('[data-wb-form="worldbook"]');
             worldbookSelectedIds = new Set();
+            worldbookListScrollTop = 0;
             const result = await invokeAction('scan-worldbook', {
                 bookName: form?.elements?.bookName?.value || '',
             });
@@ -5819,8 +6412,29 @@ export function createWorldBackstageUI({
             return;
         }
         if (action === 'pull-api-profile-models') {
-            await invokeAction('pull-api-profile-models', { profileId: target.dataset.profileId || '' });
+            const profileId = String(target.dataset.profileId || '');
+            const profile = (getSettings().apiProfiles || []).find(item => item.id === profileId);
+            if (profile) {
+                apiFormDraft = {
+                    profileId: profile.id,
+                    profileName: profile.name || '',
+                    customApiUrl: profile.url || '',
+                    customApiCredential: '',
+                    customApiModel: profile.model || '',
+                    customApiTransport: profile.transport || 'proxy',
+                };
+                skipApiDraftCapture = true;
+                settingsSection = 'connection';
+                openSettingsGroups.add('connection');
+                openSettingsSubgroups.add('connection-custom');
+            }
+            await invokeAction('pull-api-profile-models', { profileId });
             render();
+            window.setTimeout(() => {
+                const picker = root.querySelector('[data-wb-api-model-picker]');
+                picker?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+                picker?.focus();
+            }, 0);
             return;
         }
         if (action === 'duplicate-api-profile') {
@@ -5884,8 +6498,16 @@ export function createWorldBackstageUI({
                 keyField?.focus();
                 return;
             }
-            await invokeAction('pull-api-draft-models', request);
+            const models = await invokeAction('pull-api-draft-models', request);
+            if (Array.isArray(models) && models.length === 1 && !String(form.elements?.customApiModel?.value || '').trim()) {
+                form.elements.customApiModel.value = models[0];
+                readApiForm(form);
+                notify(`只找到一个模型，已经替你选好：${models[0]}`, 'success');
+            }
             render();
+            window.setTimeout(() => {
+                root.querySelector('[data-wb-api-model-picker]')?.focus();
+            }, 0);
             return;
         }
         if (action === 'reset-api-draft') {
@@ -5987,7 +6609,46 @@ export function createWorldBackstageUI({
     root.addEventListener('change', async event => {
         const apiForm = event.target.closest?.('[data-wb-form="api"]');
         if (apiForm) {
+            if (event.target.matches?.('[data-wb-api-model-picker]')) {
+                const model = String(event.target.value || '').trim();
+                const modelField = apiForm.elements?.customApiModel;
+                if (model && modelField) {
+                    modelField.value = model;
+                    readApiForm(apiForm);
+                    notify(`模型已选：${model}`, 'success');
+                }
+                return;
+            }
             readApiForm(apiForm);
+            return;
+        }
+        if (action === 'test-image-api') {
+            const form = target.closest('[data-wb-form="image-api"]');
+            if (!form) return;
+            const confirmed = globalThis.confirm?.('(・_・;)  测试会真的生成一张 512×512 图片，可能产生一次 API 费用。继续吗？');
+            if (confirmed === false) return;
+            const data = Object.fromEntries(new FormData(form).entries());
+            const key = String(data.imageApiCredential || '').trim() || getSettings().imageApiKey;
+            if (!String(data.imageApiUrl || '').trim() || !key || !String(data.imageApiModel || '').trim()) {
+                notify('先把生图地址、Key 和模型填完整。', 'error');
+                return;
+            }
+            const completed = await invokeAction('test-image-api', {
+                imageApiUrl: data.imageApiUrl,
+                imageApiKey: key,
+                imageApiModel: data.imageApiModel,
+            });
+            if (completed) notify('测试图生成成功，接口可以用。', 'success');
+            return;
+        }
+
+        if (event.target.matches?.('[data-wb-person-select]')) {
+            const id = String(event.target.value || '');
+            const next = new Set(peopleSelectedIds);
+            if (event.target.checked) next.add(id);
+            else next.delete(id);
+            peopleSelectedIds = next;
+            render();
             return;
         }
 
@@ -6135,6 +6796,16 @@ export function createWorldBackstageUI({
     });
 
     root.addEventListener('input', event => {
+        if (event.target.matches?.('[data-wb-form="social-message"] textarea[name="text"]')) {
+            socialDraft = String(event.target.value || '').slice(0, 1600);
+            return;
+        }
+        if (event.target.matches?.('[data-wb-social-search]')) {
+            socialSearchQuery = String(event.target.value || '').slice(0, 80);
+            window.clearTimeout(socialSearchTimer);
+            socialSearchTimer = window.setTimeout(render, 120);
+            return;
+        }
         const apiForm = event.target.closest?.('[data-wb-form="api"]');
         if (apiForm) {
             readApiForm(apiForm);
@@ -6170,6 +6841,48 @@ export function createWorldBackstageUI({
             const completed = await invokeAction('lingqi-send-message', { text });
             if (completed === false) lingqiDraft = text;
         }
+        if (form.dataset.wbForm === 'social-message') {
+            const text = String(data.text || '').trim();
+            const conversationId = String(data.conversationId || '').trim();
+            if (!text || !conversationId) return;
+            socialDraft = '';
+            if (form.elements.text) form.elements.text.value = '';
+            const completed = await invokeAction('social-send-message', { conversationId, text });
+            if (completed === false) socialDraft = text;
+        }
+        if (form.dataset.wbForm === 'social-group') {
+            const memberIds = new FormData(form).getAll('memberIds').map(String).filter(Boolean);
+            socialGroupSelectedIds = new Set(memberIds);
+            const completed = await invokeAction('social-create-group', {
+                title: String(data.title || ''),
+                memberIds,
+            });
+            if (completed) {
+                socialGroupOpen = false;
+                socialGroupSelectedIds = new Set();
+                socialDraft = '';
+            }
+        }
+        if (form.dataset.wbForm === 'social-friend-request') {
+            const personId = String(data.personId || '').trim();
+            if (!personId) return;
+            const result = await invokeAction('social-request-friend', {
+                personId,
+                message: String(data.message || '').trim(),
+            });
+            if (result && typeof result === 'object') {
+                const visible = result.reply ? `：${result.reply}` : '';
+                notify(
+                    result.decision === 'accepted'
+                        ? `${result.personName} 通过了好友申请${visible}`
+                        : result.decision === 'declined'
+                            ? `${result.personName} 没有通过申请${visible}`
+                            : `${result.personName} 暂时没有处理申请${visible}`,
+                    result.decision === 'accepted' ? 'success' : 'info',
+                );
+            }
+            render();
+        }
         if (form.dataset.wbForm === 'clock') {
             clockFormDraft = { ...data };
             const completed = await invokeAction('set-clock', data);
@@ -6181,6 +6894,26 @@ export function createWorldBackstageUI({
             if (completed) {
                 forgetApiKeyDraft(data);
                 notify('独立接口存好啦～旧 Key 还是不会偷偷回填哦。', 'success');
+            }
+        }
+        if (form.dataset.wbForm === 'image-api') {
+            const replacementKey = String(data.imageApiCredential || '').trim();
+            const enabled = Boolean(form.elements.imageApiEnabled?.checked);
+            const patch = {
+                imageApiEnabled: enabled,
+                imageApiUrl: String(data.imageApiUrl || '').trim(),
+                imageApiKey: replacementKey || getSettings().imageApiKey,
+                imageApiModel: String(data.imageApiModel || '').trim(),
+                imageApiSize: String(data.imageApiSize || '1024x1024'),
+            };
+            if (enabled && (!patch.imageApiUrl || !patch.imageApiKey || !patch.imageApiModel)) {
+                notify('要开启生图，地址、Key 和模型都得填完整。', 'error');
+            } else {
+                const completed = await invokeAction('update-settings', patch);
+                if (completed) {
+                    form.elements.imageApiCredential.value = '';
+                    notify(enabled ? '朋友圈生图接口已开启。' : '生图配置已保存，目前保持关闭。', 'success');
+                }
             }
         }
         if (form.dataset.wbForm === 'world') {
@@ -6357,6 +7090,7 @@ export function createWorldBackstageUI({
             window.clearTimeout(memorySearchTimer);
             window.clearTimeout(closeTimer);
             window.clearTimeout(lingqiMascotTimer);
+            window.clearTimeout(socialNoticeTimer);
             window.cancelAnimationFrame?.(freshOpenCheckFrame);
             window.clearInterval(selfHealTimer);
             document.removeEventListener('keydown', onKeydown);

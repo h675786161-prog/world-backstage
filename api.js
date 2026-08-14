@@ -341,6 +341,13 @@ export function normalizeCustomModelsUrl(value) {
     return base ? `${base}/models` : '';
 }
 
+export function normalizeImageApiUrl(value) {
+    const url = cleanText(value).replace(/\/+$/, '');
+    if (!url) return '';
+    if (/\/images\/generations$/i.test(url)) return url;
+    return `${url}/images/generations`;
+}
+
 function contentText(value) {
     if (typeof value === 'string') return value;
     if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -468,7 +475,8 @@ function buildCustomApiResponseError(response, data, text, subject = '独立 API
         if (Number(response?.status) === 200) message += '（酒馆转发层 HTTP 200）';
         message += '。请检查该接口/模型的额度或余额。';
     } else if (classified.errorType === 'authorization') {
-        message = `${subject} 鉴权失败：${detail || 'Unauthorized'}`;
+        const status = Number(response?.status) || classified.upstreamStatus || 401;
+        message = `${subject} 鉴权失败（HTTP ${status}）：${detail || 'Unauthorized'}`;
         if (Number(response?.status) === 200) message += '（酒馆转发层 HTTP 200）';
         message += '。请检查该方案的密钥/权限，或确认接口要求的认证头。';
     } else if (classified.errorType === 'not-found') {
@@ -899,4 +907,61 @@ export async function requestCustomCompletion(settings, messages, {
         succeededAt: new Date().toISOString(),
     });
     return completion;
+}
+
+export async function requestImageGeneration(settings, {
+    prompt = '',
+    fetchImpl = globalThis.fetch,
+    timeoutMs = null,
+    signal = null,
+} = {}) {
+    if (typeof fetchImpl !== 'function') throw new Error('当前环境不支持网络请求');
+    const apiUrl = normalizeImageApiUrl(settings?.imageApiUrl);
+    const apiKey = cleanText(settings?.imageApiKey);
+    const model = cleanText(settings?.imageApiModel);
+    const imagePrompt = cleanText(prompt).slice(0, 4000);
+    const size = ['512x512', '768x768', '1024x1024', '1024x1536', '1536x1024'].includes(settings?.imageApiSize)
+        ? settings.imageApiSize
+        : '1024x1024';
+    const requestTimeout = Number(timeoutMs ?? settings?.imageApiTimeoutMs ?? 180000);
+    if (!apiUrl) throw new Error('请先填写生图 API 地址');
+    if (!apiKey) throw new Error('请先填写生图 API Key');
+    if (!model) throw new Error('请先填写生图模型名');
+    if (!imagePrompt) throw new Error('生图提示词为空');
+
+    const response = await fetchWithTimeout(fetchImpl, apiUrl, {
+        method: 'POST',
+        cache: 'no-cache',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+            model,
+            prompt: imagePrompt,
+            n: 1,
+            size,
+            response_format: 'b64_json',
+        }),
+    }, requestTimeout, signal);
+    const { text: responseText, data } = await readResponse(response);
+    if (!response.ok || data?.error) {
+        throw buildCustomApiResponseError(response, data, responseText, '生图请求');
+    }
+    const first = Array.isArray(data?.data) ? data.data[0] : null;
+    const base64 = cleanText(first?.b64_json ?? first?.b64Json);
+    const url = cleanText(first?.url);
+    if (base64) {
+        return {
+            imageUrl: `data:image/png;base64,${base64}`,
+            revisedPrompt: cleanText(first?.revised_prompt ?? first?.revisedPrompt),
+        };
+    }
+    if (/^https?:\/\//i.test(url) || /^data:image\//i.test(url)) {
+        return {
+            imageUrl: url,
+            revisedPrompt: cleanText(first?.revised_prompt ?? first?.revisedPrompt),
+        };
+    }
+    throw new Error('生图接口返回成功，但没有找到图片数据');
 }

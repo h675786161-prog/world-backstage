@@ -4,10 +4,10 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "index.js",
+  "js": "bootstrap.js",
   "css": "style.css",
   "author": "玲",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "auto_update": false,
   "minimum_client_version": "1.12.0",
   "generate_interceptor": "worldBackstageGenerationInterceptor"

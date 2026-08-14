@@ -3,13 +3,14 @@ import { SNAPSHOT_KEY, STATE_KEY } from './core.js';
 const GUARD_RUNTIME_KEY = '__WORLD_BACKSTAGE_STORAGE_GUARD_V1__';
 
 // Full branch snapshots are intentionally treated as a bounded cache. The
-// authoritative currentState/initialState and the currently selected historical
-// branch snapshot are never pruned by this guard.
+// authoritative currentState/initialState and recent selected branches are
+// never pruned by this guard.
 const MAX_BRANCH_OVERRIDE_ENTRIES = 12;
 const SOFT_BRANCH_OVERRIDE_BYTES = 6 * 1024 * 1024;
 const HARD_BRANCH_OVERRIDE_BYTES = 10 * 1024 * 1024;
 const KEEP_RECENT_ASSISTANT_SNAPSHOTS = 12;
 const GUARD_INTERVAL_MS = 15_000;
+const STARTUP_DELAY_MS = 1_500;
 
 function getContext() {
     return globalThis.SillyTavern?.getContext?.() || null;
@@ -29,17 +30,36 @@ function jsonByteLength(value) {
     }
 }
 
-function currentProtectedOverrideKeys(store) {
+function selectedSnapshot(message) {
+    if (!message || message.is_user || message.is_system) return null;
+    const currentSwipe = Number(message.swipe_id ?? 0);
+    return message.swipe_info?.[currentSwipe]?.extra?.[SNAPSHOT_KEY]
+        || message.extra?.[SNAPSHOT_KEY]
+        || null;
+}
+
+function protectedOverrideKeys(store, chat) {
     const keys = new Set(['root']);
     const currentSourceKey = String(store?.currentState?.lastCommit?.sourceKey || '').trim();
     if (currentSourceKey) keys.add(currentSourceKey);
+
+    // Keep the selected world state for the recent editing window. This makes
+    // the byte budget safe for normal rerolls while still allowing old cache
+    // entries to expire.
+    const recentAssistant = (Array.isArray(chat) ? chat : [])
+        .filter(message => !message?.is_user && !message?.is_system)
+        .slice(-KEEP_RECENT_ASSISTANT_SNAPSHOTS);
+    for (const message of recentAssistant) {
+        const sourceKey = String(selectedSnapshot(message)?.meta?.sourceKey || '').trim();
+        if (sourceKey) keys.add(sourceKey);
+    }
     return keys;
 }
 
-function compactBranchOverrides(store) {
+function compactBranchOverrides(store, chat) {
     if (!store?.branchOverrides || typeof store.branchOverrides !== 'object') return false;
 
-    const protectedKeys = currentProtectedOverrideKeys(store);
+    const protectedKeys = protectedOverrideKeys(store, chat);
     let entries = Object.entries(store.branchOverrides);
     let changed = false;
 
@@ -75,7 +95,7 @@ function compactBranchOverrides(store) {
     if (totalBytes > HARD_BRANCH_OVERRIDE_BYTES) {
         console.warn(
             `[世界背面][storage-guard] 受保护的分支快照仍占 ${(totalBytes / 1024 / 1024).toFixed(2)} MiB；` +
-            '已停止继续删除，避免破坏当前分支。',
+            '已停止继续删除，避免破坏当前/近期分支。',
         );
     }
 
@@ -130,7 +150,7 @@ async function runStorageGuard(reason = 'scheduled') {
         const store = context?.chatMetadata?.[STATE_KEY];
         if (!context || !store) return false;
 
-        const branchChanged = compactBranchOverrides(store);
+        const branchChanged = compactBranchOverrides(store, context.chat);
         const swipeChanged = compactHistoricalSwipeSnapshots(context.chat);
         const changed = branchChanged || swipeChanged;
         if (!changed) return false;
@@ -175,7 +195,7 @@ function installStorageGuard() {
     };
 
     // Let the main module finish chat restoration first, then clean legacy bloat.
-    globalThis.setTimeout(() => void runStorageGuard('startup'), 800);
+    globalThis.setTimeout(() => void runStorageGuard('startup'), STARTUP_DELAY_MS);
 }
 
 installStorageGuard();

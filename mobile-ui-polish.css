@@ -1,0 +1,266 @@
+/* World Backstage 2.4.3 · mobile interaction polish
+   Keep desktop layout untouched; phones get a denser, single-column control flow. */
+
+@media (max-width: 700px), (max-height: 520px) and (pointer: coarse) {
+    /* ---------- global settings: less card-stacking, easier thumbs ---------- */
+    #world-backstage-root .wb-settings-layer > .wb-settings-popover {
+        width: 100% !important;
+        max-width: none !important;
+        height: 100% !important;
+        max-height: none !important;
+        border-radius: 0 !important;
+    }
+
+    #world-backstage-root .wb-settings-sticky-head {
+        margin: 0 !important;
+        padding: max(8px, env(safe-area-inset-top)) 10px 8px !important;
+        background: color-mix(in srgb, var(--wb-bg) 92%, transparent) !important;
+        backdrop-filter: blur(18px);
+    }
+
+    #world-backstage-root .wb-settings-sticky-head .wb-popover-heading {
+        min-height: 42px;
+        padding: 0 2px 6px !important;
+    }
+
+    #world-backstage-root .wb-settings-tabs {
+        display: grid !important;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 5px !important;
+        padding: 4px !important;
+        border-radius: 13px !important;
+    }
+
+    #world-backstage-root .wb-settings-tabs > button {
+        min-width: 0 !important;
+        min-height: 37px !important;
+        padding: 6px 4px !important;
+        border-radius: 10px !important;
+        white-space: normal !important;
+        line-height: 1.18 !important;
+    }
+
+    #world-backstage-root .wb-settings-section-body {
+        gap: 9px !important;
+        padding: 10px 10px calc(84px + env(safe-area-inset-bottom)) !important;
+    }
+
+    #world-backstage-root .wb-global-common-grid,
+    #world-backstage-root .wb-flat-setting-list,
+    #world-backstage-root .wb-settings-subgroup-stack {
+        gap: 8px !important;
+    }
+
+    #world-backstage-root .wb-settings-group,
+    #world-backstage-root .wb-settings-subgroup,
+    #world-backstage-root .wb-setting-block,
+    #world-backstage-root .wb-connection-card,
+    #world-backstage-root .wb-settings-common-hint,
+    #world-backstage-root .wb-injection-intro,
+    #world-backstage-root .wb-injection-bottom-note {
+        border-radius: 14px !important;
+    }
+
+    #world-backstage-root .wb-settings-group > summary,
+    #world-backstage-root .wb-settings-subgroup > summary {
+        grid-template-columns: minmax(0, 1fr) 26px !important;
+        grid-template-rows: auto auto !important;
+        gap: 2px 8px !important;
+        min-height: 54px !important;
+        padding: 9px 11px !important;
+        align-items: center !important;
+    }
+
+    #world-backstage-root .wb-settings-group > summary > span,
+    #world-backstage-root .wb-settings-subgroup > summary > span {
+        grid-column: 1 !important;
+        grid-row: 1 !important;
+        min-width: 0 !important;
+        margin: 0 !important;
+    }
+
+    #world-backstage-root .wb-settings-group > summary > small,
+    #world-backstage-root .wb-settings-subgroup > summary > small {
+        grid-column: 1 !important;
+        grid-row: 2 !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        margin: 0 !important;
+        overflow: visible !important;
+        display: block !important;
+        -webkit-line-clamp: unset !important;
+        line-clamp: unset !important;
+        white-space: normal !important;
+        text-align: left !important;
+    }
+
+    #world-backstage-root .wb-settings-group > summary::after,
+    #world-backstage-root .wb-settings-subgroup > summary::after {
+        grid-column: 2 !important;
+        grid-row: 1 / 3 !important;
+        align-self: center !important;
+        justify-self: center !important;
+    }
+
+    #world-backstage-root .wb-settings-group-body,
+    #world-backstage-root .wb-settings-subgroup-body,
+    #world-backstage-root .wb-module-settings-body {
+        gap: 8px !important;
+        padding: 8px !important;
+    }
+
+    #world-backstage-root .wb-setting-toggle {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) auto !important;
+        align-items: center !important;
+        gap: 8px 12px !important;
+        min-height: 58px !important;
+        margin: 0 !important;
+        padding: 9px 10px !important;
+        border: 1px solid var(--wb-line) !important;
+        border-radius: 12px !important;
+        background: color-mix(in srgb, var(--wb-panel-faint) 66%, transparent) !important;
+    }
+
+    #world-backstage-root .wb-setting-toggle > div {
+        min-width: 0;
+        gap: 2px !important;
+    }
+
+    #world-backstage-root .wb-setting-toggle strong,
+    #world-backstage-root .wb-setting-toggle span {
+        overflow-wrap: anywhere;
+    }
+
+    #world-backstage-root .wb-setting-toggle .wb-switch {
+        align-self: center;
+        margin: 0 !important;
+    }
+
+    #world-backstage-root .wb-setting-block {
+        margin: 0 !important;
+        padding: 10px !important;
+        border: 1px solid var(--wb-line) !important;
+        background: color-mix(in srgb, var(--wb-panel-faint) 52%, transparent) !important;
+    }
+
+    #world-backstage-root .wb-option-row,
+    #world-backstage-root .wb-option-row-four {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 7px !important;
+    }
+
+    #world-backstage-root .wb-option-row > button,
+    #world-backstage-root .wb-setting-actions > button,
+    #world-backstage-root .wb-time-actions > button,
+    #world-backstage-root .wb-api-actions > button {
+        min-height: 42px !important;
+        padding: 8px 10px !important;
+        border-radius: 11px !important;
+        white-space: normal !important;
+        line-height: 1.25 !important;
+    }
+
+    #world-backstage-root .wb-setting-actions,
+    #world-backstage-root .wb-time-actions,
+    #world-backstage-root .wb-api-actions {
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 7px !important;
+    }
+
+    #world-backstage-root .wb-number-setting {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) minmax(92px, 36%) !important;
+        align-items: center !important;
+        gap: 10px !important;
+    }
+
+    #world-backstage-root .wb-settings-common-hint,
+    #world-backstage-root .wb-injection-bottom-note {
+        padding: 9px 10px !important;
+    }
+
+    /* ---------- simulation controls: one visual family ---------- */
+    #world-backstage-root .wb-footer-task-controls {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1.12fr) minmax(0, .88fr) !important;
+        gap: 8px !important;
+        width: 100% !important;
+        max-width: 460px !important;
+        margin: 0 auto !important;
+    }
+
+    #world-backstage-root .wb-sim-action,
+    #world-backstage-root .wb-side-sync {
+        min-height: 44px !important;
+        padding: 9px 12px !important;
+        border: 1px solid var(--wb-line-strong) !important;
+        border-radius: 13px !important;
+        background: color-mix(in srgb, var(--wb-panel) 86%, var(--wb-accent-soft)) !important;
+        color: var(--wb-text-soft) !important;
+        box-shadow: 0 8px 24px color-mix(in srgb, var(--wb-bg) 30%, transparent) !important;
+        font-weight: 650 !important;
+        letter-spacing: .01em !important;
+    }
+
+    #world-backstage-root .wb-footer-sim-mobile,
+    #world-backstage-root .wb-side-sync:not(.is-cancel) {
+        border-color: color-mix(in srgb, var(--wb-accent) 46%, var(--wb-line)) !important;
+        background: color-mix(in srgb, var(--wb-accent-soft) 72%, var(--wb-panel)) !important;
+        color: var(--wb-accent) !important;
+    }
+
+    #world-backstage-root .wb-sim-action:not(:disabled):active,
+    #world-backstage-root .wb-side-sync:not(:disabled):active {
+        transform: translateY(1px) scale(.985) !important;
+    }
+
+    #world-backstage-root .wb-sim-action:disabled,
+    #world-backstage-root .wb-side-sync:disabled {
+        opacity: .46 !important;
+        box-shadow: none !important;
+    }
+
+    #world-backstage-root .wb-global-stop.is-cancel,
+    #world-backstage-root .wb-sim-action.is-cancel {
+        border-color: color-mix(in srgb, var(--wb-danger) 48%, var(--wb-line)) !important;
+        background: color-mix(in srgb, var(--wb-danger) 10%, var(--wb-panel)) !important;
+        color: var(--wb-danger) !important;
+    }
+
+    /* ---------- message / social notice: true viewport centering ---------- */
+    #world-backstage-root .wb-social-notice {
+        top: max(68px, calc(env(safe-area-inset-top) + 10px)) !important;
+        right: auto !important;
+        bottom: auto !important;
+        left: 50% !important;
+        width: min(380px, calc(100dvw - 24px)) !important;
+        max-width: calc(100dvw - 24px) !important;
+        transform: translateX(-50%);
+        transform-origin: top center;
+    }
+
+    #world-backstage-root .wb-toast {
+        left: 50% !important;
+        right: auto !important;
+        width: min(380px, calc(100dvw - 24px));
+        max-width: calc(100dvw - 24px) !important;
+    }
+}
+
+@media (max-width: 390px) {
+    #world-backstage-root .wb-settings-tabs > button {
+        font-size: 10px !important;
+    }
+
+    #world-backstage-root .wb-footer-task-controls {
+        grid-template-columns: 1fr !important;
+    }
+
+    #world-backstage-root .wb-setting-actions,
+    #world-backstage-root .wb-time-actions,
+    #world-backstage-root .wb-api-actions {
+        grid-template-columns: 1fr !important;
+    }
+}

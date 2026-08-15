@@ -1,5 +1,6 @@
 import './storage-guard.js';
 import './mobile-social-fix.js';
+import './mobile-character-search-scroll.js';
 import './mobile-ui-polish.js';
 import './ui-hotfix.js';
 import './token-budget-policy.js';

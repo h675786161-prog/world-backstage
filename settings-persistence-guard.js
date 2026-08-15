@@ -55,24 +55,21 @@ function persistVisibleTagRules(root = document.querySelector(ROOT_SELECTOR)) {
     return true;
 }
 
-function isDirectFreeformSetting(target) {
-    if (!target?.matches?.(DIRECT_SETTING_SELECTOR)) return false;
-    const tagName = String(target.tagName || '').toLowerCase();
-    if (tagName === 'textarea') return true;
-    if (tagName !== 'input') return false;
-    const type = String(target.type || 'text').toLowerCase();
-    return !['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'hidden'].includes(type);
-}
-
 function persistDirectSetting(target) {
-    if (!isDirectFreeformSetting(target)) return false;
+    if (!target?.matches?.(DIRECT_SETTING_SELECTOR)) return false;
     const key = String(target.dataset.wbSetting || '').trim();
     const settings = getSettings();
     if (!key || !settings) return false;
 
-    // Match the main UI's generic update-settings path: freeform values are
-    // stored as entered; getSettings() owns canonical normalization/clamping.
-    settings[key] = target.value;
+    const type = String(target.type || '').toLowerCase();
+    const value = type === 'checkbox' || type === 'radio'
+        ? Boolean(target.checked)
+        : target.value;
+
+    // Match the main UI's generic update-settings path. Canonical clamping and
+    // migrations stay owned by getSettings(); the existing bubbling change
+    // handler still performs any runtime side effects.
+    settings[key] = value;
     saveSettings();
     return true;
 }
@@ -195,9 +192,9 @@ document.addEventListener('input', event => {
     persistDurableField(target, root);
 }, true);
 
-// Also mirror durable selects/checkbox-like routed settings at change time before
-// the UI rerenders them. This is redundant by design: persistence must not rely on
-// event ordering in one browser/WebView.
+// Persist at capture phase before the UI's asynchronous change handler can
+// rerender the settings surface. The normal handler still runs afterwards and
+// owns runtime side effects such as stopping timers.
 document.addEventListener('change', event => {
     const target = event.target;
     const root = target?.closest?.(ROOT_SELECTOR);

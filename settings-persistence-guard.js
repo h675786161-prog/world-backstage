@@ -1,10 +1,12 @@
 const MODULE_ID = 'world_backstage';
 const ROOT_SELECTOR = '#world-backstage-root';
 const TAG_FIELD_SELECTOR = '[data-wb-tag-filter-field]';
-const NARRATIVE_SETTING_KEYS = new Set([
-    'narrativeIncludeTag',
-    'narrativeRegexFilters',
-]);
+const DIRECT_SETTING_SELECTOR = '[data-wb-setting]';
+const SETTING_SECONDS_SELECTOR = '[data-wb-setting-seconds]';
+const GENERATION_LIMIT_SELECTOR = '[data-wb-generation-limit]';
+const API_ROUTE_SELECTOR = '[data-wb-api-route]';
+const TAVERN_PROFILE_SELECTOR = '[data-wb-tavern-profile-select]';
+const GENERATION_MODULES = new Set(['simulation', 'observation', 'history', 'opinion']);
 
 function getContext() {
     try {
@@ -21,6 +23,8 @@ function getSettings() {
 }
 
 function saveSettings() {
+    // SillyTavern already debounces this write, so input-time persistence does not
+    // turn every keystroke into a disk write.
     getContext()?.saveSettingsDebounced?.();
 }
 
@@ -51,69 +55,171 @@ function persistVisibleTagRules(root = document.querySelector(ROOT_SELECTOR)) {
     return true;
 }
 
-function sanitizeNarrativeSetting(key, value) {
-    if (key === 'narrativeIncludeTag') {
-        return String(value || '').trim().replace(/[<>]/g, '').slice(0, 80);
-    }
-    if (key === 'narrativeRegexFilters') {
-        return String(value || '')
-            .split(/\r?\n/)
-            .map(line => line.trim())
-            .filter(Boolean)
-            .slice(0, 8)
-            .join('\n')
-            .slice(0, 2200);
-    }
-    return value;
+function isDirectFreeformSetting(target) {
+    if (!target?.matches?.(DIRECT_SETTING_SELECTOR)) return false;
+    const tagName = String(target.tagName || '').toLowerCase();
+    if (tagName === 'textarea') return true;
+    if (tagName !== 'input') return false;
+    const type = String(target.type || 'text').toLowerCase();
+    return !['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'hidden'].includes(type);
 }
 
-function persistNarrativeField(target) {
-    const key = String(target?.dataset?.wbSetting || '');
-    if (!NARRATIVE_SETTING_KEYS.has(key)) return false;
+function persistDirectSetting(target) {
+    if (!isDirectFreeformSetting(target)) return false;
+    const key = String(target.dataset.wbSetting || '').trim();
     const settings = getSettings();
-    if (!settings) return false;
-    settings[key] = sanitizeNarrativeSetting(key, target.value);
+    if (!key || !settings) return false;
+
+    // Match the main UI's generic update-settings path: freeform values are
+    // stored as entered; getSettings() owns canonical normalization/clamping.
+    settings[key] = target.value;
     saveSettings();
     return true;
 }
 
-function flushVisibleDrafts() {
+function persistSettingSeconds(target) {
+    if (!target?.matches?.(SETTING_SECONDS_SELECTOR)) return false;
+    const key = String(target.dataset.wbSettingSeconds || '').trim();
+    const settings = getSettings();
+    if (!key || !settings) return false;
+    const seconds = Math.max(0, Number(target.value) || 0);
+    settings[key] = seconds > 0 ? Math.round(seconds * 1000) : 0;
+    saveSettings();
+    return true;
+}
+
+function persistGenerationLimit(target) {
+    if (!target?.matches?.(GENERATION_LIMIT_SELECTOR)) return false;
+    const field = String(target.dataset.wbGenerationLimit || '');
+    const moduleKey = String(target.dataset.module || '');
+    const settings = getSettings();
+    if (!settings || !GENERATION_MODULES.has(moduleKey)) return false;
+    if (!['maxTokens', 'timeoutSeconds'].includes(field)) return false;
+
+    const current = settings.generationModuleLimits && typeof settings.generationModuleLimits === 'object'
+        ? settings.generationModuleLimits
+        : {};
+    const moduleLimit = {
+        ...(current[moduleKey] || { maxTokens: 0, timeoutMs: 0 }),
+    };
+
+    if (field === 'maxTokens') {
+        moduleLimit.maxTokens = Math.max(0, Number.parseInt(target.value, 10) || 0);
+    } else {
+        const seconds = Math.max(0, Number(target.value) || 0);
+        moduleLimit.timeoutMs = seconds > 0 ? Math.round(seconds * 1000) : 0;
+    }
+
+    settings.generationModuleLimits = {
+        ...current,
+        [moduleKey]: moduleLimit,
+    };
+    saveSettings();
+    return true;
+}
+
+function persistApiRoute(target) {
+    if (!target?.matches?.(API_ROUTE_SELECTOR)) return false;
+    const moduleKey = String(target.dataset.wbApiRoute || '');
+    const settings = getSettings();
+    if (!settings || !GENERATION_MODULES.has(moduleKey)) return false;
+    settings.apiModuleRoutes = {
+        ...(settings.apiModuleRoutes || {}),
+        [moduleKey]: String(target.value || 'default'),
+    };
+    saveSettings();
+    return true;
+}
+
+function persistTavernProfile(target) {
+    if (!target?.matches?.(TAVERN_PROFILE_SELECTOR)) return false;
+    const settings = getSettings();
+    if (!settings) return false;
+    settings.tavernApiProfileId = String(target.value || '');
+    saveSettings();
+    return true;
+}
+
+function persistDurableField(target, root = target?.closest?.(ROOT_SELECTOR)) {
+    if (!target || !root) return false;
+
+    if (target.matches?.(TAG_FIELD_SELECTOR)) return persistVisibleTagRules(root);
+    if (persistSettingSeconds(target)) return true;
+    if (persistGenerationLimit(target)) return true;
+    if (persistDirectSetting(target)) return true;
+    if (persistApiRoute(target)) return true;
+    if (persistTavernProfile(target)) return true;
+    return false;
+}
+
+function flushVisibleDurableSettings() {
     const root = document.querySelector(ROOT_SELECTOR);
     if (!root) return;
+
     persistVisibleTagRules(root);
-    root.querySelectorAll('[data-wb-setting]').forEach(target => {
-        persistNarrativeField(target);
+
+    root.querySelectorAll([
+        DIRECT_SETTING_SELECTOR,
+        SETTING_SECONDS_SELECTOR,
+        GENERATION_LIMIT_SELECTOR,
+        API_ROUTE_SELECTOR,
+        TAVERN_PROFILE_SELECTOR,
+    ].join(',')).forEach(target => {
+        persistDurableField(target, root);
     });
 }
 
-// Tag-filter cards intentionally keep a UI draft so typing does not rerender the
-// settings panel. Persist the same draft directly into extensionSettings on every
-// input event; saving must never depend on blur/change firing before a mobile
-// settings panel is removed from the DOM.
+let composingTarget = null;
+
+document.addEventListener('compositionstart', event => {
+    const target = event.target;
+    if (target?.closest?.(ROOT_SELECTOR)) composingTarget = target;
+}, true);
+
+document.addEventListener('compositionend', event => {
+    const target = event.target;
+    if (target === composingTarget) composingTarget = null;
+    const root = target?.closest?.(ROOT_SELECTOR);
+    if (root) persistDurableField(target, root);
+}, true);
+
+// Durable settings save on input, not on blur. The main UI may still run its
+// existing change handler later for runtime side effects; this guard's job is to
+// make the user's latest value impossible to lose when mobile destroys the field
+// before change/blur is delivered.
 document.addEventListener('input', event => {
     const target = event.target;
     const root = target?.closest?.(ROOT_SELECTOR);
     if (!root) return;
-
-    if (target.matches?.(TAG_FIELD_SELECTOR)) {
-        persistVisibleTagRules(root);
-        return;
-    }
-
-    persistNarrativeField(target);
+    if (event.isComposing || target === composingTarget) return;
+    persistDurableField(target, root);
 }, true);
 
-// Mobile WebViews can remove a focused input before dispatching its final change
-// event when the settings panel is closed. Flush first, while the DOM still owns
-// the user's latest text.
+// Also mirror durable selects/checkbox-like routed settings at change time before
+// the UI rerenders them. This is redundant by design: persistence must not rely on
+// event ordering in one browser/WebView.
+document.addEventListener('change', event => {
+    const target = event.target;
+    const root = target?.closest?.(ROOT_SELECTOR);
+    if (!root) return;
+    persistDurableField(target, root);
+}, true);
+
+// Closing a settings surface is the dangerous path on mobile: flush while the
+// current DOM still owns the user's text, before the click handler can rerender it.
 document.addEventListener('pointerdown', event => {
     const action = event.target?.closest?.('[data-wb-action]')?.dataset?.wbAction;
     if (!['toggle-settings', 'toggle-module-settings'].includes(action)) return;
-    flushVisibleDrafts();
+    flushVisibleDurableSettings();
 }, true);
 
-// Backgrounding / page teardown should not resurrect defaults either.
+// Backgrounding / page teardown must not resurrect defaults either.
 document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flushVisibleDrafts();
+    if (document.visibilityState === 'hidden') flushVisibleDurableSettings();
 });
-globalThis.addEventListener?.('pagehide', flushVisibleDrafts);
+globalThis.addEventListener?.('pagehide', flushVisibleDurableSettings);
+
+// Intentionally NOT persisted here:
+// - worldbook/memory/social search and selection state (UI-only transient state)
+// - Lingqi/social message drafts (unsent conversation text)
+// - API/image API and world/person/event/memory/record editor forms (explicit Save/Submit semantics)

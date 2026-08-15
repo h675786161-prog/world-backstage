@@ -1,0 +1,82 @@
+/* World Backstage 2.4.5 · mobile footer/nav collision fix
+   Keep the task controls in their own row above the bottom navigation. */
+
+@media (max-width: 700px), (max-height: 520px) and (pointer: coarse) {
+    #world-backstage-root .wb-content-column {
+        grid-template-rows: 64px auto minmax(0, 1fr) 58px !important;
+    }
+
+    #world-backstage-root .wb-window-footer {
+        min-height: 58px !important;
+        height: 58px !important;
+        justify-content: center !important;
+        gap: 0 !important;
+        padding: 6px 8px !important;
+        overflow: hidden !important;
+        border-top: 1px solid var(--wb-line) !important;
+        background: color-mix(in srgb, var(--wb-bg-soft) 88%, var(--wb-panel)) !important;
+    }
+
+    #world-backstage-root .wb-footer-world-meta {
+        display: none !important;
+    }
+
+    #world-backstage-root .wb-footer-task-controls {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+        gap: 6px !important;
+        width: 100% !important;
+        max-width: none !important;
+        min-width: 0 !important;
+        margin: 0 !important;
+        overflow: visible !important;
+    }
+
+    #world-backstage-root .wb-footer-task-controls .wb-sim-action {
+        width: 100% !important;
+        min-width: 0 !important;
+        min-height: 44px !important;
+        height: 44px !important;
+        padding: 6px 8px !important;
+        border-radius: 13px !important;
+        font-size: clamp(10px, 2.8vw, 12px) !important;
+        line-height: 1.15 !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+
+    #world-backstage-root .wb-window-body {
+        /* Main content and the bottom nav remain separate grid rows. */
+        grid-template-rows: minmax(0, 1fr) 62px !important;
+    }
+
+    #world-backstage-root .wb-side-nav {
+        position: relative !important;
+        z-index: 2 !important;
+        min-height: 62px !important;
+        overflow: hidden !important;
+        background: color-mix(in srgb, var(--wb-bg) 94%, var(--wb-panel)) !important;
+    }
+}
+
+/* Never stack the two task buttons vertically on narrow phones: the footer has
+   a dedicated single row, while labels scale down instead of overflowing into nav. */
+@media (max-width: 390px) {
+    #world-backstage-root .wb-footer-task-controls {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+        gap: 4px !important;
+    }
+
+    #world-backstage-root .wb-footer-task-controls .wb-sim-action {
+        padding-inline: 5px !important;
+        font-size: 10px !important;
+        letter-spacing: 0 !important;
+    }
+}
+
+@media (max-width: 330px) {
+    #world-backstage-root .wb-footer-task-controls .wb-sim-action {
+        font-size: 9px !important;
+    }
+}

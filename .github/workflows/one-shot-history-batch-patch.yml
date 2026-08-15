@@ -1,0 +1,35 @@
+name: one-shot history batch patch
+
+on:
+  push:
+    branches:
+      - fix/history-batch-regression
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[history-batch-patched]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/history-batch-regression
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Patch history batching
+        run: node scripts/patch-history-batch.mjs
+      - name: Verify syntax and tests
+        run: |
+          npm run check
+          npm test
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.js
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: restore adaptive 10-turn history batching [history-batch-patched]"
+          git push

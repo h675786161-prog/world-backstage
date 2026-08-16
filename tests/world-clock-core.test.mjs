@@ -246,7 +246,9 @@ test('coarse clock precision never exposes the internal minute as a fact label',
     assert.match(label, /具体钟点未确定/);
     assert.equal(compact.world_now_label, label);
     assert.equal(compact.world_now_coordinate_only, true);
-    assert.equal(compact.world_now, state.clock.absoluteMinute);
+    assert.equal(compact.world_now, null);
+    assert.equal(compact.world_story_minute, null);
+    assert.equal(compact.world_day_index, 3);
 });
 
 test('unbound story clock exposes story-day fact instead of a fake calendar date', () => {
@@ -261,7 +263,8 @@ test('unbound story clock exposes story-day fact instead of a fake calendar date
     assert.match(label, /故事第 5 日/);
     assert.doesNotMatch(label, /13:41/);
     assert.equal(compact.world_now, null);
-    assert.equal(compact.world_story_minute, state.clock.absoluteMinute);
+    assert.equal(compact.world_story_minute, null);
+    assert.equal(compact.world_day_index, 5);
     assert.equal(compact.world_now_label, label);
 });
 
@@ -296,4 +299,27 @@ test('legacy save with no calendar evidence cannot revive a synthetic calendar a
     assert.equal(migrated.clock.precision, 'day');
     assert.match(formatWorldClockFactLabel(migrated), /故事第 7 日/);
     assert.doesNotMatch(formatWorldClockFactLabel(migrated), /11:09/);
+});
+
+
+test('model context exposes numeric minute coordinate only when minute precision is factual', () => {
+    let state = createInitialState();
+    state.clock.absoluteMinute = 2 * 24 * 60 + 14 * 60 + 26;
+    state.clock.lastCheckedAt = state.clock.absoluteMinute;
+    state.clock.anchored = true;
+    state.clock.precision = 'minute';
+    state.world.calendar = {
+        name: '主世界历',
+        anchorAbsoluteDay: 2,
+        anchorYear: 2138,
+        anchorMonth: 1,
+        anchorDay: 2,
+    };
+
+    const compact = compactStateForModel(state);
+    assert.equal(compact.world_now, state.clock.absoluteMinute);
+    assert.equal(compact.world_story_minute, state.clock.absoluteMinute);
+    assert.equal(compact.world_day_index, 2);
+    assert.equal(compact.world_now_coordinate_only, false);
+    assert.match(compact.world_now_label, /14:26/);
 });

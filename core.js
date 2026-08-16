@@ -6136,12 +6136,17 @@ export function compactStateForModel(state, {
         ))
         .slice(0, LIMITS.events);
 
-    return {
-        // world_now remains the internal scheduling coordinate for compatibility.
-        // When precision is coarse, consumers must not present its minute component
-        // as a fact; world_now_label is the authoritative human/model-facing label.
-        world_now: state.clock?.anchored ? state.clock.absoluteMinute : null,
-        world_story_minute: state.clock?.absoluteMinute ?? 0,
+    return {        // Numeric minute coordinates are model-visible only when minute precision is
+        // actually known. Coarse date/day/daypart states keep their internal minute
+        // solely for deterministic scheduling; exposing it here would let the model
+        // reconstruct a clock time that the narrative never established.
+        world_now: state.clock?.anchored && state.clock?.precision === 'minute'
+            ? state.clock.absoluteMinute
+            : null,
+        world_story_minute: state.clock?.precision === 'minute'
+            ? state.clock?.absoluteMinute ?? 0
+            : null,
+        world_day_index: Math.floor((state.clock?.absoluteMinute ?? 0) / MINUTES_PER_DAY),
         world_now_coordinate_only: state.clock?.precision !== 'minute',
         world_now_label: formatWorldClockFactLabel(state),
         world_clock_anchored: Boolean(state.clock?.anchored),

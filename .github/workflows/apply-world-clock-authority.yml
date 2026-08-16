@@ -31,7 +31,21 @@ jobs:
         run: npm run check
 
       - name: Tests
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test 2>&1 | tee test-output.txt
+          status=${PIPESTATUS[0]}
+          exit "$status"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-clock-test-output
+          path: test-output.txt
+          if-no-files-found: warn
+          retention-days: 1
 
       - name: Commit generated refactor
         run: |

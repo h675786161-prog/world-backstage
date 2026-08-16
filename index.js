@@ -87,6 +87,7 @@ import {
     toggleMomentLike,
 } from './social-terminal.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
+import { normalizeClueTiming, resolveFutureTimeExpression } from './world-clock-authority.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 import {
     detectWorldbookCharacter,
@@ -144,7 +145,7 @@ import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.4.0';
+const PLUGIN_VERSION = '2.5.0';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 30,
     enabled: true,
@@ -10674,6 +10675,18 @@ async function handleUiAction(action, payload = {}) {
                 updatedAt: next.clock.absoluteMinute,
                 createdAt: existing?.createdAt ?? next.clock.absoluteMinute,
             };
+            const timingBaseMinute = Number(updated.createdAt ?? next.clock.absoluteMinute) || next.clock.absoluteMinute;
+            updated.timing = resolveFutureTimeExpression(
+                [updated.sourceExcerpt, updated.text].filter(Boolean).join('\n'),
+                {
+                    baseAbsoluteMinute: timingBaseMinute,
+                    baseCalendar: formatWorldCalendar(next, timingBaseMinute),
+                    calendarBound: Boolean(next.clock?.anchored),
+                },
+            );
+            if (updated.timing) {
+                updated.timing = normalizeClueTiming(updated.timing, next.clock.absoluteMinute);
+            }
         } else {
             const anchor = latestAssistantEntry()?.index ?? 0;
             updated = {

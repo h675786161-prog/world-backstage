@@ -190,7 +190,10 @@ function dayIndex(absoluteMinute) {
 
 function targetMinuteForDay(baseAbsoluteMinute, dayDelta, desiredMinuteOfDay = null) {
     const baseDay = dayIndex(baseAbsoluteMinute);
-    const minute = Number.isFinite(Number(desiredMinuteOfDay))
+    const hasDesiredMinute = desiredMinuteOfDay !== null
+        && desiredMinuteOfDay !== undefined
+        && Number.isFinite(Number(desiredMinuteOfDay));
+    const minute = hasDesiredMinute
         ? Math.max(0, Math.min(MINUTES_PER_DAY - 1, Number(desiredMinuteOfDay)))
         : minuteOfDay(baseAbsoluteMinute);
     return (baseDay + integer(dayDelta, 0)) * MINUTES_PER_DAY + minute;

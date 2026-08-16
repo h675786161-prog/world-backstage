@@ -17,15 +17,57 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restore repository line endings
+      - name: Restore unchanged lines byte-for-byte from main
         shell: bash
         run: |
           python - <<'PY'
+          from difflib import SequenceMatcher
           from pathlib import Path
+          import subprocess
+
+          def split_lines(data):
+              return data.decode('utf-8').splitlines(keepends=True)
+
+          def body(line):
+              return line.rstrip('\r\n')
+
           for name in ('core.js', 'index.js'):
               path = Path(name)
-              text = path.read_bytes().replace(b'\r\n', b'\n')
-              path.write_bytes(text.replace(b'\n', b'\r\n'))
+              base_bytes = subprocess.check_output(['git', 'show', f'origin/main:{name}'])
+              current_bytes = path.read_bytes()
+              base_lines = split_lines(base_bytes)
+              current_lines = split_lines(current_bytes)
+              base_text = [body(line) for line in base_lines]
+              current_text = [body(line) for line in current_lines]
+
+              matcher = SequenceMatcher(None, base_text, current_text, autojunk=False)
+              output = []
+              for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                  if tag == 'equal':
+                      output.extend(base_lines[i1:i2])
+                      continue
+
+                  segment = current_lines[j1:j2]
+                  if tag == 'replace' and (i2 - i1) == (j2 - j1):
+                      rebuilt = []
+                      for offset, line in enumerate(segment):
+                          text = body(line)
+                          source = base_lines[i1 + offset]
+                          source_body = body(source)
+                          ending = source[len(source_body):]
+                          if not ending and line.endswith(('\r', '\n')):
+                              ending = '\n'
+                          rebuilt.append(text + ending)
+                      output.extend(rebuilt)
+                  else:
+                      output.extend(segment)
+
+              cleaned = ''.join(output).encode('utf-8')
+              if cleaned != current_bytes:
+                  path.write_bytes(cleaned)
+                  print(f'{name}: restored original bytes for semantically unchanged lines')
+              else:
+                  print(f'{name}: no line-ending noise found')
           PY
 
       - name: Commit clean diff
@@ -37,5 +79,5 @@ jobs:
             echo "No line-ending cleanup needed"
             exit 0
           fi
-          git commit -m "chore(time): restore original line endings"
+          git commit -m "chore(time): remove generated line-ending noise"
           git push

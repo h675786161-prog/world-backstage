@@ -781,9 +781,12 @@ function resolveGenerationLimits(settings, taskKind, requestedMaxTokens = 2200) 
             ? Number(settings.maxOutputTokens)
             : 0;
     const requested = Math.max(64, Number.parseInt(requestedMaxTokens, 10) || 2200);
+    // A task's requestedMaxTokens is only a sizing hint. In automatic mode the
+    // plugin must not turn that hint into a hard response cap. Only an explicit
+    // user-configured positive limit is sent as a token ceiling.
     const maxTokens = tokenCap > 0
-        ? Math.max(64, Math.min(requested, tokenCap))
-        : requested;
+        ? Math.max(64, Math.round(tokenCap))
+        : 0;
 
     const timeoutMs = Number(moduleLimit.timeoutMs) > 0
         ? Number(moduleLimit.timeoutMs)
@@ -3841,7 +3844,7 @@ async function backgroundSimulation(prompt, {
             const result = await runInConnectionLane(taskKind, guard.signal, () => service.sendRequest(
                 profileId,
                 messages,
-                effectiveMaxTokens,
+                effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
                 {
                     stream: false,
                     signal: guard.signal,
@@ -3904,15 +3907,13 @@ async function backgroundSimulation(prompt, {
             }));
         } catch (error) {
             if (error?.code !== 'OUTPUT_TRUNCATED' && error?.errorType !== 'output-limit') throw error;
+            const pluginLimited = effectiveMaxTokens > 0;
             const capHint = limits.tokenSource === 'module'
                 ? '当前模块 Token 上限限制了这次请求'
-                : limits.tokenSource === 'global'
-                    ? '全局 Token 上限限制了这次请求'
-                    : '模型在本次请求上限处停止';
-            const wrapped = new Error(
-                `${String(error?.message || error)}；实际输出上限 ${effectiveMaxTokens} Token，${capHint}。`
-                + '这和等待秒数无关；可把对应模块 Token 上限设为 0（自动），或调高后重试。',
-            );
+                : '全局 Token 上限限制了这次请求';
+            const wrapped = new Error(pluginLimited
+                ? `${String(error?.message || error)}；插件实际输出上限 ${effectiveMaxTokens} Token，${capHint}。可把对应 Token 上限设为 0（自动）或调高后重试。`
+                : `${String(error?.message || error)}；插件未设置输出 Token 上限，本次截断来自模型、上游服务或酒馆当前连接本身的输出边界。`);
             Object.assign(wrapped, error, {
                 cause: error,
                 code: error?.code || 'OUTPUT_TRUNCATED',
@@ -3971,7 +3972,7 @@ async function backgroundSimulation(prompt, {
             runtime.syncStatus.method = '独立上下文推演';
             request = context.generateRaw({
                 prompt: messages,
-                responseLength: effectiveMaxTokens,
+                responseLength: effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
                 trimNames: false,
                 signal: requestSignal,
             });
@@ -3980,7 +3981,7 @@ async function backgroundSimulation(prompt, {
             request = context.generateQuietPrompt({
                 quietPrompt: `${messages[0]?.content || ''}\n\n${messages[1]?.content || ''}`.trim(),
                 skipWIAN: true,
-                responseLength: effectiveMaxTokens,
+                responseLength: effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
                 removeReasoning: true,
                 signal: requestSignal,
             });

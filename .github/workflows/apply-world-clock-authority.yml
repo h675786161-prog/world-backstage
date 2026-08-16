@@ -21,13 +21,45 @@ jobs:
         with:
           node-version: 22
 
+      - name: Detect world clock refactor state
+        id: refactor-state
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const core = fs.readFileSync('core.js', 'utf8');
+          const hasAuthorityImport = core.includes("from './world-clock-authority.js'");
+          const hasSchema25 = core.includes('export const SCHEMA_VERSION = 25;');
+          const hasSchema24 = core.includes('export const SCHEMA_VERSION = 24;');
+          const hasAuthorityModule = fs.existsSync('world-clock-authority.js');
+
+          if (hasAuthorityImport && hasSchema25 && hasAuthorityModule) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'already_applied=true\n');
+              console.log('World clock authority refactor is already applied; patch generation will be skipped.');
+              process.exit(0);
+          }
+
+          if (!hasAuthorityImport && hasSchema24) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'already_applied=false\n');
+              console.log('World clock authority refactor is not applied yet; deterministic patch generation will run.');
+              process.exit(0);
+          }
+
+          console.error('Refusing to patch a partial or inconsistent world clock refactor state.');
+          console.error({ hasAuthorityImport, hasSchema25, hasSchema24, hasAuthorityModule });
+          process.exit(1);
+          NODE
+
       - name: Prepare scoped patcher
+        if: steps.refactor-state.outputs.already_applied != 'true'
         run: node scripts/prepare-world-clock-patcher.mjs
 
       - name: Apply deterministic time authority patch
+        if: steps.refactor-state.outputs.already_applied != 'true'
         run: node scripts/apply-world-clock-authority.mjs
 
       - name: Apply world clock follow-up fixes
+        if: steps.refactor-state.outputs.already_applied != 'true'
         run: node scripts/fix-world-clock-followups.mjs
 
       - name: Syntax check

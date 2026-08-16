@@ -29,6 +29,7 @@ import {
     extractNarrativeTimeAnchor,
     filterNarrativeText,
     formatWorldCalendar,
+    formatWorldClockFactLabel,
     isPersonObservationEligible,
     countSurvivingNewAssistantTurns,
     hashText,
@@ -7776,7 +7777,7 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
 
     const settings = getSettings();
     const prompt = buildPublicOpinionPrompt(state, {
-        clockLabel: formatWorldCalendar(state)?.stamp || '',
+        clockLabel: formatWorldClockFactLabel(state),
         previousCache,
         forumElapsedMinutes: Number.isFinite(plan.forumElapsed) ? plan.forumElapsed : 0,
         newsElapsedMinutes: Number.isFinite(plan.newsElapsed) ? plan.newsElapsed : 0,
@@ -7979,7 +7980,7 @@ async function generatePublicOpinionSandbox() {
     const promise = (async () => {
         try {
             const prompt = buildPublicOpinionSandboxPrompt(state, {
-                clockLabel: formatWorldCalendar(state)?.stamp || '',
+                clockLabel: formatWorldClockFactLabel(state),
             });
             const settings = getSettings();
             const sandbox = await runWithRetries(
@@ -8097,7 +8098,7 @@ function lingqiWorldDigest(state = getState()) {
             detail: String(state.world?.detail || ''),
             background: String(state.world?.background || '').slice(0, 1800),
         },
-        clock: state.clock?.anchored ? clock.stamp : '尚未建立时间锚点',
+        clock: formatWorldClockFactLabel(state),
         people: (state.people || [])
             .slice()
             .sort((a, b) => Number(b?.relevance || 0) - Number(a?.relevance || 0))

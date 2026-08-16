@@ -461,6 +461,28 @@ export function formatWorldCalendar(state, totalMinutes = state?.clock?.absolute
     };
 }
 
+export function formatWorldClockFactLabel(state, totalMinutes = state?.clock?.absoluteMinute ?? 0) {
+    const formatted = formatWorldCalendar(state, totalMinutes);
+    const precision = String(state?.clock?.precision || 'day');
+    const daypart = asString(state?.clock?.daypart, '', 20);
+    const anchored = Boolean(state?.clock?.anchored);
+
+    if (anchored) {
+        if (precision === 'minute') return formatted.stamp;
+        if (precision === 'daypart' && daypart) {
+            return `${formatted.calendarName} ${formatted.date} · ${daypart}（具体钟点未确定）`;
+        }
+        return `${formatted.calendarName} ${formatted.date}（具体钟点未确定）`;
+    }
+
+    const relative = formatWorldMinute(totalMinutes);
+    if (precision === 'minute') return `故事第 ${relative.day} 日 ${relative.time}`;
+    if (precision === 'daypart' && daypart) {
+        return `故事第 ${relative.day} 日 · ${daypart}（具体钟点未确定）`;
+    }
+    return `故事第 ${relative.day} 日（具体钟点未确定）`;
+}
+
 export function formatDuration(minutes) {
     const safeMinutes = Math.max(0, Math.round(Number(minutes) || 0));
     const days = Math.floor(safeMinutes / MINUTES_PER_DAY);
@@ -5916,7 +5938,7 @@ export function buildPersonObservationPrompt(state, person, {
         '6B. 禁止为了满足最低字数而重复同义内容、复述动作、堆砌环境、复习设定、解释背景、强加感悟、连续定义自己的感受、添加总结，或凭空制造新事件/新秘密/新记忆/新关系变化。',
         '6C. 最终只返回该人物此刻的内心活动本身，不写标题、说明、分析、项目符号、“第一视角”等标签或任何场外文字；最后一句必须完整结束。',
         '',
-        `主世界时间：${formatWorldCalendar(state).stamp}`,
+        `主世界时间：${formatWorldClockFactLabel(state)}`,
         '人物状态：',
         JSON.stringify({
             name: person?.name,
@@ -6115,12 +6137,15 @@ export function compactStateForModel(state, {
         .slice(0, LIMITS.events);
 
     return {
+        // world_now remains the internal scheduling coordinate for compatibility.
+        // When precision is coarse, consumers must not present its minute component
+        // as a fact; world_now_label is the authoritative human/model-facing label.
         world_now: state.clock?.anchored ? state.clock.absoluteMinute : null,
-        world_now_label: state.clock?.anchored
-            ? formatWorldCalendar(state).stamp
-            : 'UNINITIALIZED_STORY_CLOCK',
+        world_story_minute: state.clock?.absoluteMinute ?? 0,
+        world_now_coordinate_only: state.clock?.precision !== 'minute',
+        world_now_label: formatWorldClockFactLabel(state),
         world_clock_anchored: Boolean(state.clock?.anchored),
-        world_clock_precision: state.clock?.precision || 'uninitialized',
+        world_clock_precision: state.clock?.precision || 'day',
         world: {
             name: modelText(state.world.name, 80),
             title: modelText(state.world.title, 140),
@@ -7700,29 +7725,44 @@ export function trimState(inputState) {
     state.schemaVersion = SCHEMA_VERSION;
     const absoluteMinute = asInteger(state.clock?.absoluteMinute, MINUTES_PER_DAY, 0);
     const absoluteDay = Math.floor(absoluteMinute / MINUTES_PER_DAY);
+    // Keep the raw calendar long enough to decide whether an old save ever had
+    // real calendar evidence. Normalization manufactures a harmless calculation
+    // fallback, so using the normalized object for migration would make "missing"
+    // data look like a genuine Gregorian date.
+    const rawCalendar = state.world?.calendar;
     state.world = {
         name: asString(state.world?.name, '未命名世界', 80),
         title: asString(state.world?.title, '世界仍在继续', 180),
         detail: asString(state.world?.detail, '', 640),
         // User-authored foundation. Routine simulation can read it but never rewrites it.
         background: asString(state.world?.background, '', LIMITS.worldBackground),
-        calendar: normalizeWorldCalendar(state.world?.calendar, absoluteDay),
+        calendar: normalizeWorldCalendar(rawCalendar, absoluteDay),
     };
-    const rawCalendar = state.world.calendar;
     const hasCalendarCalibrationAudit = asArray(state.audit).some(entry => (
         ['calendar_calibrated', 'clock_anchor_initialized', 'clock_anchor_recalibrated']
             .includes(entry?.type)
     ));
+    const rawAnchorYear = Number(rawCalendar?.anchor_year ?? rawCalendar?.anchorYear);
+    const rawAnchorMonth = Number(rawCalendar?.anchor_month ?? rawCalendar?.anchorMonth);
+    const rawAnchorDay = Number(rawCalendar?.anchor_day ?? rawCalendar?.anchorDay);
+    const rawCalendarHasAnchor = Number.isFinite(rawAnchorYear)
+        && Number.isFinite(rawAnchorMonth)
+        && Number.isFinite(rawAnchorDay)
+        && rawAnchorYear >= 1
+        && rawAnchorMonth >= 1 && rawAnchorMonth <= 12
+        && rawAnchorDay >= 1 && rawAnchorDay <= 31;
     const legacyCalendarLooksPlaceholder = previousSchemaVersion < 8
-        && rawCalendar?.name === '主世界历'
-        && Number(rawCalendar?.anchorYear) === 1
-        && Number(rawCalendar?.anchorMonth) === 1
-        && Number(rawCalendar?.anchorDay) === 1
+        && (!rawCalendar || (
+            rawCalendar?.name === '主世界历'
+            && rawAnchorYear === 1
+            && rawAnchorMonth === 1
+            && rawAnchorDay === 1
+        ))
         && !hasCalendarCalibrationAudit
         && ['initial', 'narrative', 'unknown'].includes(asString(state.clock?.source, 'initial', 40));
     const inferredAnchored = legacyCalendarLooksPlaceholder
         ? false
-        : asString(state.clock?.source, 'initial', 40) !== 'initial';
+        : rawCalendarHasAnchor && asString(state.clock?.source, 'initial', 40) !== 'initial';
     state.clock = {
         absoluteMinute,
         lastCheckedAt: asInteger(

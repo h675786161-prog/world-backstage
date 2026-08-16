@@ -179,3 +179,23 @@ test('trimState preserves clock precision/daypart and clue timing metadata', () 
     assert.equal(trimmed.clock.daypart, '傍晚');
     assert.equal(trimmed.storyMemory.clues[0].timing?.targetWorldMinute, state.clock.absoluteMinute + 24 * 60);
 });
+
+
+test('known minute precision survives cumulative elapsed transitions', () => {
+    let state = createInitialState();
+    state.clock.absoluteMinute = 24 * 60 + 9 * 60;
+    state.clock.lastCheckedAt = state.clock.absoluteMinute;
+    state.clock.precision = 'minute';
+    state.clock.daypart = '';
+    const before = state.clock.absoluteMinute;
+
+    state = applySimulationResult(state, minimalPayload(), {
+        messageId: 88,
+        sourceKey: 'test:cumulative-elapsed',
+        timePolicy: 'world',
+        narrativeText: '过了2小时，她吃完饭。\n又过了30分钟，她出了门。',
+    });
+
+    assert.equal(state.clock.absoluteMinute, before + 150);
+    assert.equal(state.clock.precision, 'minute');
+});

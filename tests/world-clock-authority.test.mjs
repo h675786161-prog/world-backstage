@@ -136,3 +136,28 @@ test('anchored daypart precision does not pretend an exact minute is authoritati
     assert.match(text, /具体钟点未确定/);
     assert.doesNotMatch(text, /time=15:00/);
 });
+
+
+test('stale unbound structured clock never rewinds authoritative time', () => {
+    const base = day(2) + 21 * 60;
+    const result = resolveNarrativeTimeTransition('<details><summary>时间与地点</summary>10:00 · 客厅</details>', {
+        currentAbsoluteMinute: base,
+        calendarBound: false,
+        currentPrecision: 'minute',
+        narrativeAnchor: { hour: 10, minute: 0, structured: true, excerpt: '10:00 · 客厅' },
+    });
+    assert.equal(result, null);
+});
+
+test('sequential elapsed transitions accumulate instead of keeping only the last one', () => {
+    const base = day(2) + 9 * 60;
+    const result = resolveNarrativeTimeTransition('过了2小时，她吃完饭。\n又过了30分钟，她出了门。', {
+        currentAbsoluteMinute: base,
+        calendarBound: false,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    assert.equal(result.targetAbsoluteMinute, base + 150);
+    assert.equal(result.precision, 'minute');
+    assert.equal(result.evidenceCount, 2);
+});

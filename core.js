@@ -3572,6 +3572,8 @@ export function applySimulationResult(baseState, rawPayload, {
         currentCalendar,
         calendarBound: baseClockAnchored,
         narrativeAnchor,
+        currentPrecision: baseState.clock?.precision || (baseClockAnchored ? 'date' : 'day'),
+        currentDaypart: baseState.clock?.daypart || '',
     });
     const anchor = {
         mode: 'none',

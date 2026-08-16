@@ -202,7 +202,8 @@ function targetMinuteForDay(baseAbsoluteMinute, dayDelta, desiredMinuteOfDay = n
 function transitionCandidates(text = '') {
     const source = String(text || '');
     const candidates = [];
-    const boundary = '(?:^|[。！？!?\\n])\\s*';
+    const boundary = '(?:^|[。！？!?；;\\n])\\s*';
+    const sequencePrefix = '(?:(?:随后|接着|然后|之后|此后)\\s*)?(?:又\\s*|再\\s*)?';
     const daypart = '(凌晨|黎明|清晨|早晨|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|深夜)?';
     const add = (pattern, mapper) => {
         for (const match of source.matchAll(pattern)) {
@@ -211,19 +212,19 @@ function transitionCandidates(text = '') {
         }
     };
 
-    add(new RegExp(`${boundary}(次日|翌日|第二天|隔天)(?:的)?\\s*${daypart}`, 'gu'), match => ({
+    add(new RegExp(`${boundary}${sequencePrefix}(次日|翌日|第二天|隔天)(?:的)?\\s*${daypart}`, 'gu'), match => ({
         dayDelta: 1,
         daypart: match[2] || '',
         confidence: 'high',
     }));
 
-    add(new RegExp(`${boundary}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?|醒来时(?:已经)?|一觉醒来(?:已经)?)\\s*(明天|后天|大后天)\\s*${daypart}`, 'gu'), match => ({
+    add(new RegExp(`${boundary}${sequencePrefix}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?|醒来时(?:已经)?|一觉醒来(?:已经)?)\\s*(明天|后天|大后天)\\s*${daypart}`, 'gu'), match => ({
         dayDelta: match[1] === '明天' ? 1 : match[1] === '后天' ? 2 : 3,
         daypart: match[2] || '',
         confidence: 'high',
     }));
 
-    add(new RegExp(`${boundary}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?|经过|过了)\\s*(\\d+|[一二两三四五六七八九十]+)\\s*(分钟|小时|天|日)(?:后)?\\s*${daypart}`, 'gu'), match => {
+    add(new RegExp(`${boundary}${sequencePrefix}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?|经过|过了)\\s*(\\d+|[一二两三四五六七八九十]+)\\s*(分钟|小时|天|日)(?:后)?\\s*${daypart}`, 'gu'), match => {
         const count = chineseInteger(match[1]);
         if (!Number.isFinite(count) || count < 0) return null;
         if (match[2] === '分钟') return { minuteDelta: count, daypart: match[3] || '', confidence: 'high' };
@@ -231,7 +232,7 @@ function transitionCandidates(text = '') {
         return { dayDelta: count, daypart: match[3] || '', confidence: 'high' };
     });
 
-    add(new RegExp(`${boundary}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?)\\s*(下周|本周)?(?:周|星期)([一二三四五六日天])\\s*${daypart}`, 'gu'), match => ({
+    add(new RegExp(`${boundary}${sequencePrefix}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?)\\s*(下周|本周)?(?:周|星期)([一二三四五六日天])\\s*${daypart}`, 'gu'), match => ({
         weekdayMode: match[1] === '下周' ? 'next-week' : match[1] === '本周' ? 'this-week' : 'next-occurrence',
         weekday: WEEKDAY_INDEX[match[2]],
         daypart: match[3] || '',
@@ -240,7 +241,6 @@ function transitionCandidates(text = '') {
 
     return candidates.sort((a, b) => a.index - b.index);
 }
-
 function weekdayDelta(currentDate, targetWeekday, mode) {
     const currentWeekday = weekdayIndex(currentDate);
     if (currentWeekday === null || !Number.isFinite(targetWeekday)) return null;
@@ -268,6 +268,8 @@ export function resolveNarrativeTimeTransition(text = '', {
     currentCalendar = null,
     calendarBound = false,
     narrativeAnchor = null,
+    currentPrecision = 'day',
+    currentDaypart = '',
 } = {}) {
     const source = String(text || '');
     const structuredScope = extractStructuredTimeScope(source);
@@ -291,60 +293,90 @@ export function resolveNarrativeTimeTransition(text = '', {
 
     if (structuredScope && exact) {
         const target = dayIndex(baseAbsoluteMinute) * MINUTES_PER_DAY + exact.hour * 60 + exact.minute;
-        if (!calendarBound) {
-            return {
-                kind: 'structured-clock',
-                targetAbsoluteMinute: target,
-                replaceCurrent: true,
-                precision: 'minute',
-                daypart: structuredDaypart,
-                sourceText: exact.sourceText || structuredScope.slice(0, 160),
-                reason: '正文时间栏给出明确钟点，校准相对世界时钟',
-            };
-        }
+        // Bare same-day clock evidence may improve precision only forward. A clock
+        // behind the authoritative minute is stale/ambiguous, never permission to
+        // rewrite already-lived world time.
         if (target >= baseAbsoluteMinute) {
             return {
                 kind: 'structured-clock',
                 targetAbsoluteMinute: target,
-                replaceCurrent: false,
+                replaceCurrent: !calendarBound,
                 precision: 'minute',
                 daypart: structuredDaypart,
                 sourceText: exact.sourceText || structuredScope.slice(0, 160),
-                reason: '正文时间栏给出更晚的明确钟点，推进世界时钟',
+                reason: calendarBound
+                    ? '正文时间栏给出更晚的明确钟点，推进世界时钟'
+                    : '正文时间栏给出明确钟点，向前校准相对世界时钟',
             };
         }
     }
 
     const candidates = transitionCandidates(source);
-    const transition = candidates.at(-1) || null;
-    if (transition) {
+    if (candidates.length) {
         let target = baseAbsoluteMinute;
-        if (Number.isFinite(transition.minuteDelta)) target += transition.minuteDelta;
-        else if (Number.isFinite(transition.dayDelta)) {
-            target = targetMinuteForDay(baseAbsoluteMinute, transition.dayDelta, daypartMinute(transition.daypart));
-        } else if (Number.isFinite(transition.weekday) && calendarBound && currentDate) {
-            const delta = weekdayDelta(currentDate, transition.weekday, transition.weekdayMode);
-            if (delta !== null) target = targetMinuteForDay(baseAbsoluteMinute, delta, daypartMinute(transition.daypart));
-            else return null;
-        } else {
-            return null;
+        const coarsePrecision = calendarBound ? 'date' : 'day';
+        let precision = ['minute', 'daypart', 'date', 'day'].includes(currentPrecision)
+            ? currentPrecision
+            : coarsePrecision;
+        let resolvedDaypart = precision === 'daypart' ? String(currentDaypart || '').trim() : '';
+        if (precision === 'daypart' && !resolvedDaypart) precision = coarsePrecision;
+        const applied = [];
+
+        for (const transition of candidates) {
+            let nextTarget = null;
+            let wholeDayShift = false;
+            if (Number.isFinite(transition.minuteDelta)) {
+                nextTarget = target + transition.minuteDelta;
+            } else if (Number.isFinite(transition.dayDelta)) {
+                wholeDayShift = true;
+                nextTarget = targetMinuteForDay(target, transition.dayDelta, daypartMinute(transition.daypart));
+            } else if (Number.isFinite(transition.weekday) && calendarBound && currentDate) {
+                const elapsedDays = dayIndex(target) - dayIndex(baseAbsoluteMinute);
+                const cursorDate = addDateDays(currentDate, elapsedDays);
+                const delta = weekdayDelta(cursorDate, transition.weekday, transition.weekdayMode);
+                if (delta !== null) {
+                    wholeDayShift = true;
+                    nextTarget = targetMinuteForDay(target, delta, daypartMinute(transition.daypart));
+                }
+            }
+
+            if (!Number.isFinite(nextTarget) || nextTarget < target) continue;
+            target = Math.max(0, nextTarget);
+            if (transition.daypart) {
+                precision = 'daypart';
+                resolvedDaypart = transition.daypart;
+            } else if (!wholeDayShift && precision === 'daypart') {
+                // Exact minute precision survives exact elapsed duration. A fuzzy
+                // daypart does not remain trustworthy after an arbitrary duration.
+                precision = coarsePrecision;
+                resolvedDaypart = '';
+            }
+            applied.push(transition);
         }
-        return {
-            kind: 'narrative-transition',
-            targetAbsoluteMinute: Math.max(0, target),
-            replaceCurrent: false,
-            precision: transition.daypart ? 'daypart' : 'day',
-            daypart: transition.daypart || '',
-            sourceText: transition.sourceText,
-            reason: '正文明确发生了时间跳转，按世界钟确定性推进',
-        };
+
+        if (applied.length) {
+            const finalTransition = applied.at(-1);
+            return {
+                kind: 'narrative-transition',
+                targetAbsoluteMinute: target,
+                replaceCurrent: false,
+                precision,
+                daypart: resolvedDaypart,
+                sourceText: applied.map(item => item.sourceText).filter(Boolean).join(' → ').slice(0, 180),
+                reason: applied.length > 1
+                    ? `正文连续发生了 ${applied.length} 段时间推进，按出现顺序累计结算`
+                    : '正文明确发生了时间跳转，按世界钟确定性推进',
+                evidenceCount: applied.length,
+                finalEvidence: finalTransition.sourceText,
+            };
+        }
     }
 
     if (structuredScope && structuredDaypart && !exact) {
         const desired = daypartMinute(structuredDaypart);
         if (desired !== null) {
             const target = dayIndex(baseAbsoluteMinute) * MINUTES_PER_DAY + desired;
-            if (!calendarBound || target >= baseAbsoluteMinute) {
+            if (target >= baseAbsoluteMinute) {
                 return {
                     kind: 'structured-daypart',
                     targetAbsoluteMinute: target,
@@ -360,7 +392,6 @@ export function resolveNarrativeTimeTransition(text = '', {
 
     return null;
 }
-
 function findFutureExpression(text = '') {
     const source = String(text || '');
     const explicit = latestAbsoluteDate(source);

@@ -24,7 +24,11 @@ jobs:
       - name: Event status regression gate
         run: node --test tests/manual-event-status.test.mjs
       - name: Full regression suite
-        run: npm test > /tmp/world-backstage-test.log 2>&1 || (tail -n 180 /tmp/world-backstage-test.log && exit 1)
+        run: |
+          if ! npm test > /tmp/world-backstage-test.log 2>&1; then
+            grep -B 8 -A 26 -E '^not ok|# Subtest:.*not ok|failureType:|AssertionError|ERR_' /tmp/world-backstage-test.log | head -n 500
+            exit 1
+          fi
       - name: Commit fix
         run: |
           git config user.name "github-actions[bot]"

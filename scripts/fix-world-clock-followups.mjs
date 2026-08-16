@@ -26,7 +26,9 @@ function writeIfChanged(path, before, after) {
     console.log(`${path}: follow-up fixes applied`);
 }
 
-const transitionCandidates = String.raw`function transitionCandidates(text = '') {
+// These functions are never executed by this patcher. Their source text is used
+// verbatim as the replacement, which keeps nested regex/template syntax valid.
+function patchedTransitionCandidates(text = '') {
     const source = String(text || '');
     const candidates = [];
     const boundary = '(?:^|[。！？!?；;\\n])\\s*';
@@ -67,9 +69,9 @@ const transitionCandidates = String.raw`function transitionCandidates(text = '')
     }));
 
     return candidates.sort((a, b) => a.index - b.index);
-}`;
+}
 
-const narrativeTransition = String.raw`export function resolveNarrativeTimeTransition(text = '', {
+function patchedResolveNarrativeTimeTransition(text = '', {
     currentAbsoluteMinute = 0,
     currentCalendar = null,
     calendarBound = false,
@@ -99,9 +101,9 @@ const narrativeTransition = String.raw`export function resolveNarrativeTimeTrans
 
     if (structuredScope && exact) {
         const target = dayIndex(baseAbsoluteMinute) * MINUTES_PER_DAY + exact.hour * 60 + exact.minute;
-        // A bare same-day clock is allowed to improve precision only forward. If it
-        // points behind the authoritative world minute, it is stale/ambiguous—not a
-        // licence to rewrite history or silently move the world backwards.
+        // Bare same-day clock evidence may improve precision only forward. A clock
+        // behind the authoritative minute is stale/ambiguous, never permission to
+        // rewrite already-lived world time.
         if (target >= baseAbsoluteMinute) {
             return {
                 kind: 'structured-clock',
@@ -152,8 +154,8 @@ const narrativeTransition = String.raw`export function resolveNarrativeTimeTrans
                 precision = 'daypart';
                 resolvedDaypart = transition.daypart;
             } else if (!wholeDayShift && precision === 'daypart') {
-                // “下午 + 8 小时” no longer proves it is still afternoon. Exact
-                // minute precision survives exact elapsed duration; fuzzy dayparts do not.
+                // Exact minute precision survives exact elapsed duration. A fuzzy
+                // daypart does not remain trustworthy after an arbitrary duration.
                 precision = coarsePrecision;
                 resolvedDaypart = '';
             }
@@ -197,7 +199,14 @@ const narrativeTransition = String.raw`export function resolveNarrativeTimeTrans
     }
 
     return null;
-}`;
+}
+
+const transitionCandidatesSource = patchedTransitionCandidates
+    .toString()
+    .replace('patchedTransitionCandidates', 'transitionCandidates');
+const narrativeTransitionSource = `export ${patchedResolveNarrativeTimeTransition
+    .toString()
+    .replace('patchedResolveNarrativeTimeTransition', 'resolveNarrativeTimeTransition')}`;
 
 let authority = fs.readFileSync('world-clock-authority.js', 'utf8');
 const authorityBefore = authority;
@@ -211,14 +220,14 @@ authority = replaceRange(
     authority,
     "function transitionCandidates(text = '') {",
     '\nfunction weekdayDelta(',
-    transitionCandidates,
+    transitionCandidatesSource,
     'transition candidates',
 );
 authority = replaceRange(
     authority,
     'export function resolveNarrativeTimeTransition',
     '\nfunction findFutureExpression(',
-    narrativeTransition,
+    narrativeTransitionSource,
     'narrative time transition',
 );
 writeIfChanged('world-clock-authority.js', authorityBefore, authority);
@@ -235,14 +244,17 @@ if (!core.includes('currentPrecision: baseState.clock?.precision')) {
     const eol = match[2];
     const indent = match[3].match(/^\s*/)?.[0] || '    ';
     const optionIndent = `${indent}    `;
-    core = core.replace(callPattern, `${match[1]}${eol}${optionIndent}currentPrecision: baseState.clock?.precision || (baseClockAnchored ? 'date' : 'day'),${eol}${optionIndent}currentDaypart: baseState.clock?.daypart || '',${eol}${match[3]}`);
+    core = core.replace(
+        callPattern,
+        `${match[1]}${eol}${optionIndent}currentPrecision: baseState.clock?.precision || (baseClockAnchored ? 'date' : 'day'),${eol}${optionIndent}currentDaypart: baseState.clock?.daypart || '',${eol}${match[3]}`,
+    );
 }
 writeIfChanged('core.js', coreBefore, core);
 
 const authorityTestsPath = 'tests/world-clock-authority.test.mjs';
 let authorityTests = fs.readFileSync(authorityTestsPath, 'utf8');
 if (!authorityTests.includes("test('stale unbound structured clock never rewinds authoritative time'")) {
-    authorityTests += `\n\ntest('stale unbound structured clock never rewinds authoritative time', () => {\n    const base = day(2) + 21 * 60;\n    const result = resolveNarrativeTimeTransition('<details><summary>时间与地点</summary>10:00 · 客厅</details>', {\n        currentAbsoluteMinute: base,\n        calendarBound: false,\n        currentPrecision: 'minute',\n        narrativeAnchor: {\n            hour: 10,\n            minute: 0,\n            structured: true,\n            excerpt: '10:00 · 客厅',\n        },\n    });\n    assert.equal(result, null);\n});\n\ntest('sequential elapsed transitions accumulate instead of keeping only the last one', () => {\n    const base = day(2) + 9 * 60;\n    const result = resolveNarrativeTimeTransition('过了2小时，她吃完饭。\\n又过了30分钟，她出了门。', {\n        currentAbsoluteMinute: base,\n        calendarBound: false,\n        currentPrecision: 'minute',\n    });\n    assert.ok(result);\n    assert.equal(result.targetAbsoluteMinute, base + 150);\n    assert.equal(result.precision, 'minute');\n    assert.equal(result.evidenceCount, 2);\n});\n`;
+    authorityTests += `\n\ntest('stale unbound structured clock never rewinds authoritative time', () => {\n    const base = day(2) + 21 * 60;\n    const result = resolveNarrativeTimeTransition('<details><summary>时间与地点</summary>10:00 · 客厅</details>', {\n        currentAbsoluteMinute: base,\n        calendarBound: false,\n        currentPrecision: 'minute',\n        narrativeAnchor: { hour: 10, minute: 0, structured: true, excerpt: '10:00 · 客厅' },\n    });\n    assert.equal(result, null);\n});\n\ntest('sequential elapsed transitions accumulate instead of keeping only the last one', () => {\n    const base = day(2) + 9 * 60;\n    const result = resolveNarrativeTimeTransition('过了2小时，她吃完饭。\\n又过了30分钟，她出了门。', {\n        currentAbsoluteMinute: base,\n        calendarBound: false,\n        currentPrecision: 'minute',\n    });\n    assert.ok(result);\n    assert.equal(result.targetAbsoluteMinute, base + 150);\n    assert.equal(result.precision, 'minute');\n    assert.equal(result.evidenceCount, 2);\n});\n`;
     fs.writeFileSync(authorityTestsPath, authorityTests, 'utf8');
     console.log(`${authorityTestsPath}: regression cases added`);
 }

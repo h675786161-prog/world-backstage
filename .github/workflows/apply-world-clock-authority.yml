@@ -27,6 +27,9 @@ jobs:
       - name: Apply deterministic time authority patch
         run: node scripts/apply-world-clock-authority.mjs
 
+      - name: Apply world clock follow-up fixes
+        run: node scripts/fix-world-clock-followups.mjs
+
       - name: Syntax check
         run: npm run check
 
@@ -51,7 +54,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add core.js index.js manifest.json package.json
+          git add core.js index.js manifest.json package.json world-clock-authority.js
           if git diff --cached --quiet; then
             echo "No generated changes"
             exit 0

@@ -1,0 +1,41 @@
+name: Clean world clock generated diff
+
+on:
+  push:
+    branches:
+      - refactor/world-clock-authority
+
+permissions:
+  contents: write
+
+jobs:
+  clean-diff:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore repository line endings
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('core.js', 'index.js'):
+              path = Path(name)
+              text = path.read_bytes().replace(b'\r\n', b'\n')
+              path.write_bytes(text.replace(b'\n', b'\r\n'))
+          PY
+
+      - name: Commit clean diff
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add core.js index.js
+          if git diff --cached --quiet; then
+            echo "No line-ending cleanup needed"
+            exit 0
+          fi
+          git commit -m "chore(time): restore original line endings"
+          git push

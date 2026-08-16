@@ -24,7 +24,7 @@ jobs:
       - name: Event status regression gate
         run: node --test tests/manual-event-status.test.mjs
       - name: Full regression suite
-        run: npm test
+        run: npm test > /tmp/world-backstage-test.log 2>&1 || (tail -n 180 /tmp/world-backstage-test.log && exit 1)
       - name: Commit fix
         run: |
           git config user.name "github-actions[bot]"

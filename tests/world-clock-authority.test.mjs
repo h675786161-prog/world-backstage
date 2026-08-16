@@ -52,7 +52,7 @@ test('unbound structured exact clock may calibrate same relative story day', () 
     assert.equal(result.precision, 'minute');
 });
 
-test('clue relative day is anchored at creation world minute', () => {
+test('clue relative day stays anchored to its creation day without inventing a clock time', () => {
     const base = day(10) + 9 * 60;
     const timing = resolveFutureTimeExpression('她约好后天去医院复诊。', {
         baseAbsoluteMinute: base,
@@ -60,7 +60,9 @@ test('clue relative day is anchored at creation world minute', () => {
         calendarBound: true,
     });
     assert.ok(timing);
-    assert.equal(timing.targetWorldMinute, day(12) + 9 * 60);
+    assert.equal(timing.targetWorldMinute, day(12));
+    assert.equal(timing.anchoredAtWorldMinute, base);
+    assert.equal(timing.precision, 'date');
     assert.deepEqual(timing.targetDate, { year: 2138, month: 8, day: 14 });
     assert.equal(timing.relativeLabel, '后天');
 
@@ -204,4 +206,48 @@ test('explicit daypart on a whole-day transition replaces stale minute precision
     assert.equal(result.targetAbsoluteMinute, day(4) + 15 * 60);
     assert.equal(result.precision, 'daypart');
     assert.equal(result.daypart, '下午');
+});
+
+
+test('date-only future clue uses target-day threshold without inventing creation clock', () => {
+    const base = day(10) + 15 * 60 + 17;
+    const timing = resolveFutureTimeExpression('明天复诊。', {
+        baseAbsoluteMinute: base,
+        calendarBound: false,
+    });
+    assert.ok(timing);
+    assert.equal(timing.precision, 'date');
+    assert.equal(timing.targetWorldMinute, day(11));
+});
+
+test('relative words with built-in dayparts keep that factual daypart', () => {
+    const base = day(10) + 15 * 60 + 17;
+    const morning = resolveFutureTimeExpression('明早去复诊。', {
+        baseAbsoluteMinute: base,
+        calendarBound: false,
+    });
+    const evening = resolveFutureTimeExpression('明晚再联系。', {
+        baseAbsoluteMinute: base,
+        calendarBound: false,
+    });
+    assert.ok(morning);
+    assert.equal(morning.precision, 'daypart');
+    assert.equal(morning.daypart, '早晨');
+    assert.equal(morning.targetWorldMinute, day(11) + 7 * 60);
+    assert.ok(evening);
+    assert.equal(evening.precision, 'daypart');
+    assert.equal(evening.daypart, '晚上');
+    assert.equal(evening.targetWorldMinute, day(11) + 20 * 60);
+});
+
+test('future clue does not steal an unrelated clock from another sentence', () => {
+    const base = day(10) + 15 * 60 + 17;
+    const timing = resolveFutureTimeExpression('明天复诊。今天09:00出的报告记得带上。', {
+        baseAbsoluteMinute: base,
+        calendarBound: false,
+    });
+    assert.ok(timing);
+    assert.equal(timing.precision, 'date');
+    assert.equal(timing.targetWorldMinute, day(11));
+    assert.equal(timing.daypart, '');
 });

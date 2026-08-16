@@ -155,7 +155,12 @@ test('clue future phrase receives structured timing without rewriting original t
     assert.equal(clue.text, clueText);
     assert.ok(clue.timing);
     assert.equal(clue.timing.relativeLabel, '后天');
-    assert.equal(clue.timing.targetWorldMinute - clue.timing.anchoredAtWorldMinute, 2 * 24 * 60);
+    assert.equal(clue.timing.precision, 'date');
+    assert.equal(
+        Math.floor(clue.timing.targetWorldMinute / (24 * 60)),
+        Math.floor(clue.timing.anchoredAtWorldMinute / (24 * 60)) + 2,
+    );
+    assert.equal(clue.timing.targetWorldMinute % (24 * 60), 0);
 });
 
 test('trimState preserves clock precision/daypart and clue timing metadata', () => {

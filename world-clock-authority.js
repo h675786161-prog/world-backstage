@@ -407,6 +407,7 @@ function findFutureExpression(text = '') {
         const daypart = latestDaypart(source.slice(Math.max(0, explicit.index - 20), explicit.index + 100));
         return {
             type: 'absolute-date',
+            index: explicit.index,
             date: { year: explicit.year, month: explicit.month, day: explicit.day },
             exact,
             daypart: daypart?.label || '',
@@ -428,7 +429,7 @@ function findFutureExpression(text = '') {
         }
     }
     if (!earliest) return null;
-    return { type: earliest.type, match: earliest.match, sourceText: earliest.match[0] };
+    return { type: earliest.type, match: earliest.match, index: earliest.index, sourceText: earliest.match[0] };
 }
 
 export function resolveFutureTimeExpression(text = '', {
@@ -445,8 +446,27 @@ export function resolveFutureTimeExpression(text = '', {
         day: baseCalendar?.dayOfMonth ?? baseCalendar?.day,
     });
     const nearby = String(text || '');
-    const daypart = latestDaypart(nearby)?.label || '';
-    const exact = latestExactClock(nearby);
+    const expressionIndex = Math.max(0, Number(expression.index ?? expression.match?.index ?? 0));
+    const expressionEnd = Math.min(nearby.length, expressionIndex + String(expression.sourceText || '').length);
+    const tail = nearby.slice(expressionEnd);
+    const boundaryOffset = tail.search(/[。！？!?；;\n]/u);
+    const localEnd = boundaryOffset >= 0
+        ? expressionEnd + boundaryOffset
+        : nearby.length;
+    // Attach a clock/daypart only when it belongs to the same clause as the
+    // chosen future expression. An unrelated 09:00 elsewhere in the evidence
+    // must never turn a date-only promise into a fake 09:00 appointment.
+    const localTimingScope = nearby.slice(expressionIndex, localEnd);
+    const relativeWord = expression.type === 'relative-word' ? String(expression.match?.[1] || '') : '';
+    const implicitDaypart = relativeWord === '今晚' || relativeWord === '明晚'
+        ? '晚上'
+        : relativeWord === '明早'
+            ? '早晨'
+            : relativeWord === '明晨'
+                ? '清晨'
+                : '';
+    const daypart = latestDaypart(localTimingScope)?.label || implicitDaypart;
+    const exact = latestExactClock(localTimingScope);
     const desiredMinute = exact
         ? exact.hour * 60 + exact.minute
         : daypartMinute(daypart);
@@ -512,7 +532,11 @@ export function resolveFutureTimeExpression(text = '', {
     return normalizeClueTiming({
         kind: 'relative',
         sourceText: expression.sourceText,
-        targetWorldMinute: targetMinuteForDay(baseMinute, dayDelta, desiredMinute),
+        // Date-only clues become eligible at the start of their target day.
+        // Midnight is an internal threshold, not an asserted occurrence time; the
+        // exposed precision remains "date". Preserving the creation clock here
+        // would incorrectly delay a "明天" clue until that same hour tomorrow.
+        targetWorldMinute: targetMinuteForDay(baseMinute, dayDelta, desiredMinute ?? 0),
         targetDate,
         precision,
         daypart,

@@ -11107,6 +11107,13 @@ async function handleUiAction(action, payload = {}) {
         const durationHours = Math.max(0, Number(payload.durationHours) || 0);
         const durationMinutes = Math.round(durationHours * 60);
         const timingChanged = previousClockMode !== clockMode || previousDuration !== durationMinutes;
+        const previousStatus = event.status;
+        const previousWasTerminal = ['resolved', 'cancelled', 'missed'].includes(previousStatus);
+        const requestedStatus = ['active', 'waiting', 'ready', 'resolved', 'cancelled', 'missed']
+            .includes(payload.status)
+            ? payload.status
+            : previousStatus;
+        const hasManualResult = Object.prototype.hasOwnProperty.call(payload, 'result');
 
         event.title = title.slice(0, 140);
         event.place = String(payload.place || '地点待确认').trim().slice(0, 140) || '地点待确认';
@@ -11148,8 +11155,17 @@ async function handleUiAction(action, payload = {}) {
             }
         }
 
+        event.status = requestedStatus;
+        if (['resolved', 'cancelled', 'missed'].includes(requestedStatus)) {
+            if (hasManualResult) event.result = String(payload.result || '').trim().slice(0, 620);
+            event.resolvedAt = previousWasTerminal
+                ? (event.resolvedAt ?? next.clock.absoluteMinute)
+                : next.clock.absoluteMinute;
+        } else {
+            if (previousWasTerminal && requestedStatus !== previousStatus) event.result = '';
+            event.resolvedAt = null;
+        }
         event.updatedAt = next.clock.absoluteMinute;
-        event.resolvedAt = null;
         commitManualState(next, `暗流“${event.title}”已经更新。`);
         return event;
     }

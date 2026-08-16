@@ -139,7 +139,7 @@ function eventStatusLabel(event) {
         active: '发展中',
         waiting: '等待条件',
         ready: '到时待确认',
-        resolved: '结果已形成',
+        resolved: '已结束',
         cancelled: '已经取消',
         missed: '已经错过',
     }[event.status] || event.status;
@@ -2348,6 +2348,24 @@ function renderEventModal(state, editorId = '') {
                     value="${escapeAttr(event?.place || '')}" placeholder="南岸维修站"></label>
                 <label>正在发生什么<textarea name="summary" maxlength="420" rows="3">${escapeHtml(event?.summary || '')}</textarea></label>
                 <label>预计结果<textarea name="expectedResult" maxlength="420" rows="2">${escapeHtml(event?.expectedResult || event?.consequence || '')}</textarea></label>
+                ${isEdit ? `
+                    <div class="wb-form-grid">
+                        <label>当前状态
+                            <select name="status">
+                                <option value="active" ${event?.status === 'active' ? 'selected' : ''}>发展中</option>
+                                <option value="waiting" ${event?.status === 'waiting' ? 'selected' : ''}>等待条件</option>
+                                <option value="ready" ${event?.status === 'ready' ? 'selected' : ''}>到时待确认</option>
+                                <option value="resolved" ${event?.status === 'resolved' ? 'selected' : ''}>已结束</option>
+                                <option value="cancelled" ${event?.status === 'cancelled' ? 'selected' : ''}>已取消</option>
+                                <option value="missed" ${event?.status === 'missed' ? 'selected' : ''}>已错过</option>
+                            </select>
+                        </label>
+                        <label>实际结果（可选）
+                            <textarea name="result" maxlength="620" rows="2" placeholder="只写已经真实形成的结果">${escapeHtml(event?.result || '')}</textarea>
+                        </label>
+                    </div>
+                    <p class="wb-form-hint">手动状态是当前世界事实；标记为已结束 / 已取消 / 已错过后，后台推演不会把这条旧暗流偷偷改回发展中。若后来真的出现新后果，应作为新的暗流继续。</p>
+                ` : ''}
                 <div class="wb-form-grid">
                     <label>计时方式
                         <select name="clockMode">

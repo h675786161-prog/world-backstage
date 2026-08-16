@@ -57,29 +57,21 @@ index = index.replaceAll(
     '                responseLength: effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,',
 );
 
-index = replaceOnce(index,
-    block([
-        "            const capHint = limits.tokenSource === 'module'",
-        "                ? '当前模块 Token 上限限制了这次请求'",
-        "                : limits.tokenSource === 'global'",
-        "                    ? '全局 Token 上限限制了这次请求'",
-        "                    : '模型在本次请求上限处停止';",
-        '            const wrapped = new Error(',
-        '                `${String(error?.message || error)}；实际输出上限 ${effectiveMaxTokens} Token，${capHint}。`',
-        "                + '这和等待秒数无关；可把对应模块 Token 上限设为 0（自动），或调高后重试。',",
-        '            );',
-    ], indexEol),
-    block([
-        '            const pluginLimited = effectiveMaxTokens > 0;',
-        "            const capHint = limits.tokenSource === 'module'",
-        "                ? '当前模块 Token 上限限制了这次请求'",
-        "                : '全局 Token 上限限制了这次请求';",
-        '            const wrapped = new Error(pluginLimited',
-        '                ? `${String(error?.message || error)}；插件实际输出上限 ${effectiveMaxTokens} Token，${capHint}。可把对应 Token 上限设为 0（自动）或调高后重试。`',
-        '                : `${String(error?.message || error)}；插件未设置输出 Token 上限，本次截断来自模型、上游服务或酒馆当前连接本身的输出边界。`);',
-    ], indexEol),
-    'output-limit error message',
-);
+const errorPattern = /            const capHint = limits\.tokenSource === 'module'\r?\n                \? '当前模块 Token 上限限制了这次请求'\r?\n                : limits\.tokenSource === 'global'\r?\n                    \? '全局 Token 上限限制了这次请求'\r?\n                    : '模型在本次请求上限处停止';\r?\n            const wrapped = new Error\(\r?\n                `\$\{String\(error\?\.message \|\| error\)\}；实际输出上限 \$\{effectiveMaxTokens\} Token，\$\{capHint\}。`\r?\n                \+ '这和等待秒数无关；可把对应模块 Token 上限设为 0（自动），或调高后重试。',\r?\n            \);/g;
+const errorMatches = [...index.matchAll(errorPattern)];
+if (errorMatches.length !== 1) {
+    throw new Error(`output-limit error message: expected exactly one match, got ${errorMatches.length}`);
+}
+const errorEol = eolFor(errorMatches[0][0]);
+index = index.replace(errorPattern, block([
+    '            const pluginLimited = effectiveMaxTokens > 0;',
+    "            const capHint = limits.tokenSource === 'module'",
+    "                ? '当前模块 Token 上限限制了这次请求'",
+    "                : '全局 Token 上限限制了这次请求';",
+    '            const wrapped = new Error(pluginLimited',
+    '                ? `${String(error?.message || error)}；插件实际输出上限 ${effectiveMaxTokens} Token，${capHint}。可把对应 Token 上限设为 0（自动）或调高后重试。`',
+    '                : `${String(error?.message || error)}；插件未设置输出 Token 上限，本次截断来自模型、上游服务或酒馆当前连接本身的输出边界。`);',
+], errorEol));
 fs.writeFileSync('index.js', index);
 
 let api = fs.readFileSync('api.js', 'utf8');

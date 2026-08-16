@@ -22,43 +22,49 @@ function terminalEventState() {
     return state;
 }
 
-test('routine simulation cannot resurrect a terminal event through events_update', () => {
-    const state = terminalEventState();
-    const next = applySimulationResult(state, {
-        elapsed_minutes: 0,
-        events_update: [{
-            id: 'finished-current',
-            status: 'active',
-            summary: '模型误以为它还在继续。',
-            result: '',
-        }],
-    }, {
-        timePolicy: 'world',
-        narrativeText: '',
-    });
-    const event = next.events.find(item => item.id === 'finished-current');
-    assert.equal(event.status, 'resolved');
-    assert.equal(event.result, '事情已经办完。');
-    assert.equal(event.resolvedAt, state.events[0].resolvedAt);
+test('routine simulation cannot resurrect or rewrite a terminal event through events_update', () => {
+    for (const incomingStatus of ['active', 'cancelled']) {
+        const state = terminalEventState();
+        const next = applySimulationResult(state, {
+            elapsed_minutes: 0,
+            events_update: [{
+                id: 'finished-current',
+                status: incomingStatus,
+                summary: '模型又对旧事件作了推断。',
+                result: '模型新猜的结果。',
+            }],
+        }, {
+            timePolicy: 'world',
+            narrativeText: '',
+        });
+        const event = next.events.find(item => item.id === 'finished-current');
+        assert.equal(event.status, 'resolved');
+        assert.equal(event.result, '事情已经办完。');
+        assert.equal(event.resolvedAt, state.events[0].resolvedAt);
+    }
 });
 
-test('events_create cannot overwrite an existing terminal event back to active', () => {
-    const state = terminalEventState();
-    const next = applySimulationResult(state, {
-        elapsed_minutes: 0,
-        events_create: [{
-            id: 'finished-current',
-            title: '已经结束的暗流',
-            summary: '模型把旧事件当新事件重新创建。',
-            status: 'active',
-        }],
-    }, {
-        timePolicy: 'world',
-        narrativeText: '',
-    });
-    const event = next.events.find(item => item.id === 'finished-current');
-    assert.equal(event.status, 'resolved');
-    assert.equal(event.result, '事情已经办完。');
+test('events_create cannot overwrite an existing terminal event with a recycled model event', () => {
+    for (const incomingStatus of ['active', 'cancelled']) {
+        const state = terminalEventState();
+        const next = applySimulationResult(state, {
+            elapsed_minutes: 0,
+            events_create: [{
+                id: 'finished-current',
+                title: '已经结束的暗流',
+                summary: '模型把旧事件当新事件重新创建。',
+                status: incomingStatus,
+                result: '模型新猜的结果。',
+            }],
+        }, {
+            timePolicy: 'world',
+            narrativeText: '',
+        });
+        const event = next.events.find(item => item.id === 'finished-current');
+        assert.equal(event.status, 'resolved');
+        assert.equal(event.result, '事情已经办完。');
+        assert.equal(event.resolvedAt, state.events[0].resolvedAt);
+    }
 });
 
 test('event editor exposes explicit status/result correction and manual update persists terminal fields', async () => {

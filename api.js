@@ -715,7 +715,7 @@ export async function requestCustomModels(settings, {
 export async function requestCustomCompletion(settings, messages, {
     fetchImpl = globalThis.fetch,
     getRequestHeaders = null,
-    maxTokens = 2200,
+    maxTokens = 0,
     temperature = 0.2,
     timeoutMs = null,
     signal = null,
@@ -741,9 +741,12 @@ export async function requestCustomCompletion(settings, messages, {
         model,
         messages: Array.isArray(messages) ? messages : [],
         temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.2,
-        max_tokens: Math.max(64, Number.parseInt(maxTokens, 10) || 2200),
         stream: false,
     };
+    const configuredMaxTokens = Number.parseInt(maxTokens, 10);
+    if (Number.isFinite(configuredMaxTokens) && configuredMaxTokens > 0) {
+        body.max_tokens = Math.max(64, configuredMaxTokens);
+    }
     const useDeepSeekV4Compatibility = isDeepSeekV4Model(model);
     if (useDeepSeekV4Compatibility) {
         // DeepSeek V4 defaults to thinking mode. Structured background work does

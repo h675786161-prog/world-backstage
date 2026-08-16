@@ -1,0 +1,35 @@
+name: Fix true unlimited output
+
+on:
+  push:
+    branches:
+      - fix/true-unlimited-output
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Remove plugin-side automatic output caps
+        run: node scripts/fix-true-unlimited-output.mjs
+      - name: Syntax check
+        run: npm run check
+      - name: Unlimited-output regression gate
+        run: node --test tests/unlimited-output.test.mjs
+      - name: Full regression report
+        continue-on-error: true
+        run: npm test
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.js api.js
+          git commit -m "fix(api): truly remove automatic output caps"
+          git push

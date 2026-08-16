@@ -41,8 +41,29 @@ writeIfChanged(authorityPath, before, source);
 const testsPath = 'tests/world-clock-authority.test.mjs';
 let tests = fs.readFileSync(testsPath, 'utf8');
 const testsBefore = tests;
+
+// The old regression encoded a stronger fact than the text actually supplied:
+// “后天” identifies a target day, not the creation clock time two days later.
+tests = tests.replace(
+    `test('clue relative day is anchored at creation world minute', () => {`,
+    `test('clue relative day stays anchored to its creation day without inventing a clock time', () => {`,
+);
+tests = tests.replace(
+    `    assert.equal(timing.targetWorldMinute, day(12) + 9 * 60);\n    assert.deepEqual(timing.targetDate, { year: 2138, month: 8, day: 14 });`,
+    `    assert.equal(timing.targetWorldMinute, day(12));\n    assert.equal(timing.anchoredAtWorldMinute, base);\n    assert.equal(timing.precision, 'date');\n    assert.deepEqual(timing.targetDate, { year: 2138, month: 8, day: 14 });`,
+);
+
 const marker = "test('date-only future clue uses target-day threshold without inventing creation clock'";
 if (!tests.includes(marker)) {
     tests += `\n\ntest('date-only future clue uses target-day threshold without inventing creation clock', () => {\n    const base = day(10) + 15 * 60 + 17;\n    const timing = resolveFutureTimeExpression('明天复诊。', {\n        baseAbsoluteMinute: base,\n        calendarBound: false,\n    });\n    assert.ok(timing);\n    assert.equal(timing.precision, 'date');\n    assert.equal(timing.targetWorldMinute, day(11));\n});\n\ntest('relative words with built-in dayparts keep that factual daypart', () => {\n    const base = day(10) + 15 * 60 + 17;\n    const morning = resolveFutureTimeExpression('明早去复诊。', {\n        baseAbsoluteMinute: base,\n        calendarBound: false,\n    });\n    const evening = resolveFutureTimeExpression('明晚再联系。', {\n        baseAbsoluteMinute: base,\n        calendarBound: false,\n    });\n    assert.ok(morning);\n    assert.equal(morning.precision, 'daypart');\n    assert.equal(morning.daypart, '早晨');\n    assert.equal(morning.targetWorldMinute, day(11) + 7 * 60);\n    assert.ok(evening);\n    assert.equal(evening.precision, 'daypart');\n    assert.equal(evening.daypart, '晚上');\n    assert.equal(evening.targetWorldMinute, day(11) + 20 * 60);\n});\n\ntest('future clue does not steal an unrelated clock from another sentence', () => {\n    const base = day(10) + 15 * 60 + 17;\n    const timing = resolveFutureTimeExpression('明天复诊。今天09:00出的报告记得带上。', {\n        baseAbsoluteMinute: base,\n        calendarBound: false,\n    });\n    assert.ok(timing);\n    assert.equal(timing.precision, 'date');\n    assert.equal(timing.targetWorldMinute, day(11));\n    assert.equal(timing.daypart, '');\n});\n`;
 }
 writeIfChanged(testsPath, testsBefore, tests);
+
+const coreTestsPath = 'tests/world-clock-core.test.mjs';
+let coreTests = fs.readFileSync(coreTestsPath, 'utf8');
+const coreTestsBefore = coreTests;
+coreTests = coreTests.replace(
+    `    assert.equal(clue.timing.relativeLabel, '后天');\n    assert.equal(clue.timing.targetWorldMinute - clue.timing.anchoredAtWorldMinute, 2 * 24 * 60);`,
+    `    assert.equal(clue.timing.relativeLabel, '后天');\n    assert.equal(clue.timing.precision, 'date');\n    assert.equal(\n        Math.floor(clue.timing.targetWorldMinute / (24 * 60)),\n        Math.floor(clue.timing.anchoredAtWorldMinute / (24 * 60)) + 2,\n    );\n    assert.equal(clue.timing.targetWorldMinute % (24 * 60), 0);`,
+);
+writeIfChanged(coreTestsPath, coreTestsBefore, coreTests);

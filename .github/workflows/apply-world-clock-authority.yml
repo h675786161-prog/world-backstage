@@ -59,7 +59,6 @@ jobs:
         run: node scripts/apply-world-clock-authority.mjs
 
       - name: Apply world clock follow-up fixes
-        if: steps.refactor-state.outputs.already_applied != 'true'
         run: node scripts/fix-world-clock-followups.mjs
 
       - name: Syntax check
@@ -86,10 +85,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add core.js index.js manifest.json package.json world-clock-authority.js
+          git add core.js index.js manifest.json package.json world-clock-authority.js tests/world-clock-authority.test.mjs tests/world-clock-core.test.mjs
           if git diff --cached --quiet; then
             echo "No generated changes"
             exit 0
           fi
-          git commit -m "feat(time): make world clock authoritative"
+          git commit -m "fix(time): harden authoritative clock transitions"
           git push

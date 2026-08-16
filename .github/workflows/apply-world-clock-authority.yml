@@ -73,6 +73,9 @@ jobs:
       - name: Apply clock fact safety follow-up
         run: node scripts/fix-world-clock-fact-safety.mjs
 
+      - name: Hide coarse minute coordinates from model context
+        run: node scripts/fix-world-clock-model-coordinate-leak.mjs
+
       - name: Syntax check
         run: npm run check
 

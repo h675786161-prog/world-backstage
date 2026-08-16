@@ -21,6 +21,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Prepare scoped patcher
+        run: node scripts/prepare-world-clock-patcher.mjs
+
       - name: Apply deterministic time authority patch
         run: node scripts/apply-world-clock-authority.mjs
 

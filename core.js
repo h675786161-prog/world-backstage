@@ -3993,9 +3993,21 @@ export function applySimulationResult(baseState, rawPayload, {
 
     for (const rawEvent of payload.eventsCreate) {
         const existing = findEvent(state, rawEvent);
+        const terminalBeforeMerge = existing && isTerminalEvent(existing)
+            ? {
+                status: existing.status,
+                result: existing.result,
+                resolvedAt: existing.resolvedAt,
+            }
+            : null;
         const event = normalizeEvent(rawEvent, worldMinute, existing);
         event.updatedAt = worldMinute;
         if (existing) {
+            // A finished event is a settled world fact. Routine background inference
+            // may enrich its metadata, but it must not resurrect the old process.
+            if (terminalBeforeMerge) {
+                Object.assign(event, terminalBeforeMerge);
+            }
             Object.assign(existing, event);
         } else {
             state.events.push(event);
@@ -4005,6 +4017,13 @@ export function applySimulationResult(baseState, rawPayload, {
     for (const update of payload.eventsUpdate) {
         const event = findEvent(state, update);
         if (!event) continue;
+        const terminalBeforeUpdate = isTerminalEvent(event)
+            ? {
+                status: event.status,
+                result: event.result,
+                resolvedAt: event.resolvedAt,
+            }
+            : null;
 
         const workedMinutes = asInteger(
             update?.worked_minutes ?? update?.workedMinutes,
@@ -4092,7 +4111,14 @@ export function applySimulationResult(baseState, rawPayload, {
         }
 
         const requestedStatus = normalizeEventStatus(update?.status ?? event.status);
-        if (TERMINAL_EVENT_STATES.has(requestedStatus)) {
+        if (terminalBeforeUpdate) {
+            // Terminal means this process has ended. A later simulation may create a
+            // consequence event, but cannot rewrite or reopen the settled old event.
+            event.status = terminalBeforeUpdate.status;
+            event.result = terminalBeforeUpdate.result;
+            event.resolvedAt = terminalBeforeUpdate.resolvedAt;
+            event.updatedAt = worldMinute;
+        } else if (TERMINAL_EVENT_STATES.has(requestedStatus)) {
             markTerminal(
                 event,
                 requestedStatus,

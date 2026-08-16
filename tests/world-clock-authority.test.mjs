@@ -161,3 +161,47 @@ test('sequential elapsed transitions accumulate instead of keeping only the last
     assert.equal(result.precision, 'minute');
     assert.equal(result.evidenceCount, 2);
 });
+
+
+test('whole-day transition drops stale minute precision instead of inventing a clock time', () => {
+    const base = day(3) + 9 * 60 + 17;
+    const result = resolveNarrativeTimeTransition('第二天，她去了学校。', {
+        currentAbsoluteMinute: base,
+        currentCalendar: { year: 2138, month: 1, dayOfMonth: 3 },
+        calendarBound: true,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    // The minute coordinate is retained internally for deterministic arithmetic,
+    // but it is no longer an asserted fact after a coarse whole-day jump.
+    assert.equal(result.targetAbsoluteMinute, day(4) + 9 * 60 + 17);
+    assert.equal(result.precision, 'date');
+    assert.equal(result.daypart, '');
+});
+
+test('unbound whole-day transition falls back to story-day precision', () => {
+    const base = day(3) + 9 * 60 + 17;
+    const result = resolveNarrativeTimeTransition('隔天，她才重新出门。', {
+        currentAbsoluteMinute: base,
+        calendarBound: false,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    assert.equal(result.targetAbsoluteMinute, day(4) + 9 * 60 + 17);
+    assert.equal(result.precision, 'day');
+    assert.equal(result.daypart, '');
+});
+
+test('explicit daypart on a whole-day transition replaces stale minute precision', () => {
+    const base = day(3) + 9 * 60 + 17;
+    const result = resolveNarrativeTimeTransition('第二天下午，她去了学校。', {
+        currentAbsoluteMinute: base,
+        currentCalendar: { year: 2138, month: 1, dayOfMonth: 3 },
+        calendarBound: true,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    assert.equal(result.targetAbsoluteMinute, day(4) + 15 * 60);
+    assert.equal(result.precision, 'daypart');
+    assert.equal(result.daypart, '下午');
+});

@@ -345,9 +345,16 @@ export function resolveNarrativeTimeTransition(text = '', {
             if (transition.daypart) {
                 precision = 'daypart';
                 resolvedDaypart = transition.daypart;
-            } else if (!wholeDayShift && precision === 'daypart') {
-                // Exact minute precision survives exact elapsed duration. A fuzzy
-                // daypart does not remain trustworthy after an arbitrary duration.
+            } else if (wholeDayShift) {
+                // A whole-day/date jump proves which day the world reached, but it
+                // does not prove that the old clock minute survived unchanged. Keep
+                // the internal minute only as a calculation coordinate and lower the
+                // exposed fact precision so stale exact time cannot propagate.
+                precision = coarsePrecision;
+                resolvedDaypart = '';
+            } else if (precision === 'daypart') {
+                // An exact elapsed duration can preserve exact-minute precision, but
+                // a fuzzy daypart cannot remain authoritative after arbitrary time.
                 precision = coarsePrecision;
                 resolvedDaypart = '';
             }

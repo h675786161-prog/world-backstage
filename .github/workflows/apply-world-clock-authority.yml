@@ -61,6 +61,9 @@ jobs:
       - name: Apply world clock follow-up fixes
         run: node scripts/fix-world-clock-followups.mjs
 
+      - name: Apply whole-day precision follow-up
+        run: node scripts/fix-world-clock-precision-followup.mjs
+
       - name: Syntax check
         run: npm run check
 

@@ -199,3 +199,25 @@ test('known minute precision survives cumulative elapsed transitions', () => {
     assert.equal(state.clock.absoluteMinute, before + 150);
     assert.equal(state.clock.precision, 'minute');
 });
+
+
+test('core does not propagate stale minute precision across a coarse next-day jump', () => {
+    let state = createInitialState();
+    state.clock.absoluteMinute = 3 * 24 * 60 + 9 * 60 + 17;
+    state.clock.lastCheckedAt = state.clock.absoluteMinute;
+    state.clock.anchored = true;
+    state.clock.precision = 'minute';
+    state.clock.daypart = '';
+    const before = state.clock.absoluteMinute;
+
+    state = applySimulationResult(state, minimalPayload(), {
+        messageId: 89,
+        sourceKey: 'test:coarse-next-day',
+        timePolicy: 'world',
+        narrativeText: '第二天，她去了学校。',
+    });
+
+    assert.equal(state.clock.absoluteMinute, before + 24 * 60);
+    assert.equal(state.clock.precision, 'date');
+    assert.equal(state.clock.daypart, '');
+});

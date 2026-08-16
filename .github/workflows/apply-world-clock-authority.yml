@@ -76,6 +76,9 @@ jobs:
       - name: Hide coarse minute coordinates from model context
         run: node scripts/fix-world-clock-model-coordinate-leak.mjs
 
+      - name: Harden clue timing granularity
+        run: node scripts/fix-world-clock-clue-timing.mjs
+
       - name: Syntax check
         run: npm run check
 

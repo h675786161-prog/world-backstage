@@ -67,6 +67,9 @@ jobs:
       - name: Harden legacy calendar migration
         run: node scripts/fix-world-clock-migration-prelude.mjs
 
+      - name: Harden compact clock exposure
+        run: node scripts/fix-world-clock-compact-prelude.mjs
+
       - name: Apply clock fact safety follow-up
         run: node scripts/fix-world-clock-fact-safety.mjs
 

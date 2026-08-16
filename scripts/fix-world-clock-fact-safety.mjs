@@ -1,11 +1,5 @@
 import fs from 'node:fs';
 
-function replaceOnce(source, before, after, label) {
-    if (source.includes(after)) return source;
-    if (!source.includes(before)) throw new Error(`missing ${label}`);
-    return source.replace(before, after);
-}
-
 function writeIfChanged(path, before, after) {
     if (before === after) {
         console.log(`${path}: already up to date`);
@@ -15,14 +9,22 @@ function writeIfChanged(path, before, after) {
     console.log(`${path}: clock fact safety applied`);
 }
 
+function insertBeforeOnce(source, marker, insertion, label) {
+    if (source.includes(insertion.trim())) return source;
+    const index = source.indexOf(marker);
+    if (index < 0) throw new Error(`missing ${label}`);
+    return source.slice(0, index) + insertion + source.slice(index);
+}
+
 const corePath = 'core.js';
 let core = fs.readFileSync(corePath, 'utf8');
 const coreBefore = core;
 
-core = replaceOnce(
-    core,
-    `export function formatDuration(minutes) {`,
-    `export function formatWorldClockFactLabel(state, totalMinutes = state?.clock?.absoluteMinute ?? 0) {
+if (!core.includes('export function formatWorldClockFactLabel(')) {
+    core = insertBeforeOnce(
+        core,
+        'export function formatDuration(minutes) {',
+        `export function formatWorldClockFactLabel(state, totalMinutes = state?.clock?.absoluteMinute ?? 0) {
     const formatted = formatWorldCalendar(state, totalMinutes);
     const precision = String(state?.clock?.precision || 'day');
     const daypart = asString(state?.clock?.daypart, '', 20);
@@ -44,101 +46,14 @@ core = replaceOnce(
     return \`故事第 ${'${relative.day}'} 日（具体钟点未确定）\`;
 }
 
-export function formatDuration(minutes) {`,
-    'formatWorldClockFactLabel insertion',
-);
+`,
+        'formatDuration marker',
+    );
+}
 
-core = replaceOnce(
-    core,
-    `    state.world = {
-        name: asString(state.world?.name, '未命名世界', 80),
-        title: asString(state.world?.title, '世界仍在继续', 180),
-        detail: asString(state.world?.detail, '', 640),
-        // User-authored foundation. Routine simulation can read it but never rewrites it.
-        background: asString(state.world?.background, '', LIMITS.worldBackground),
-        calendar: normalizeWorldCalendar(state.world?.calendar, absoluteDay),
-    };
-    const rawCalendar = state.world.calendar;
-    const hasCalendarCalibrationAudit = asArray(state.audit).some(entry => (
-        ['calendar_calibrated', 'clock_anchor_initialized', 'clock_anchor_recalibrated']
-            .includes(entry?.type)
-    ));
-    const legacyCalendarLooksPlaceholder = previousSchemaVersion < 8
-        && rawCalendar?.name === '主世界历'
-        && Number(rawCalendar?.anchorYear) === 1
-        && Number(rawCalendar?.anchorMonth) === 1
-        && Number(rawCalendar?.anchorDay) === 1
-        && !hasCalendarCalibrationAudit
-        && ['initial', 'narrative', 'unknown'].includes(asString(state.clock?.source, 'initial', 40));
-    const inferredAnchored = legacyCalendarLooksPlaceholder
-        ? false
-        : asString(state.clock?.source, 'initial', 40) !== 'initial';`,
-    `    // Keep the raw calendar long enough to decide whether an old save ever had
-    // real calendar evidence. Normalization manufactures a harmless calculation
-    // fallback, so using the normalized object for migration would make "missing"
-    // data look like a genuine Gregorian date.
-    const rawCalendar = state.world?.calendar;
-    state.world = {
-        name: asString(state.world?.name, '未命名世界', 80),
-        title: asString(state.world?.title, '世界仍在继续', 180),
-        detail: asString(state.world?.detail, '', 640),
-        // User-authored foundation. Routine simulation can read it but never rewrites it.
-        background: asString(state.world?.background, '', LIMITS.worldBackground),
-        calendar: normalizeWorldCalendar(rawCalendar, absoluteDay),
-    };
-    const hasCalendarCalibrationAudit = asArray(state.audit).some(entry => (
-        ['calendar_calibrated', 'clock_anchor_initialized', 'clock_anchor_recalibrated']
-            .includes(entry?.type)
-    ));
-    const rawAnchorYear = Number(rawCalendar?.anchor_year ?? rawCalendar?.anchorYear);
-    const rawAnchorMonth = Number(rawCalendar?.anchor_month ?? rawCalendar?.anchorMonth);
-    const rawAnchorDay = Number(rawCalendar?.anchor_day ?? rawCalendar?.anchorDay);
-    const rawCalendarHasAnchor = Number.isFinite(rawAnchorYear)
-        && Number.isFinite(rawAnchorMonth)
-        && Number.isFinite(rawAnchorDay)
-        && rawAnchorYear >= 1
-        && rawAnchorMonth >= 1 && rawAnchorMonth <= 12
-        && rawAnchorDay >= 1 && rawAnchorDay <= 31;
-    const legacyCalendarLooksPlaceholder = previousSchemaVersion < 8
-        && (!rawCalendar || (
-            rawCalendar?.name === '主世界历'
-            && rawAnchorYear === 1
-            && rawAnchorMonth === 1
-            && rawAnchorDay === 1
-        ))
-        && !hasCalendarCalibrationAudit
-        && ['initial', 'narrative', 'unknown'].includes(asString(state.clock?.source, 'initial', 40));
-    const inferredAnchored = legacyCalendarLooksPlaceholder
-        ? false
-        : rawCalendarHasAnchor && asString(state.clock?.source, 'initial', 40) !== 'initial';`,
-    'raw calendar migration guard',
-);
-
-core = replaceOnce(
-    core,
-    `        \`主世界时间：${'${formatWorldCalendar(state).stamp}'}\`,`,
-    `        \`主世界时间：${'${formatWorldClockFactLabel(state)}'}\`,`,
-    'observation prompt clock label',
-);
-
-core = replaceOnce(
-    core,
-    `        world_now: state.clock?.anchored ? state.clock.absoluteMinute : null,
-        world_now_label: state.clock?.anchored
-            ? formatWorldCalendar(state).stamp
-            : 'UNINITIALIZED_STORY_CLOCK',
-        world_clock_anchored: Boolean(state.clock?.anchored),
-        world_clock_precision: state.clock?.precision || 'uninitialized',`,
-    `        // world_now remains the internal scheduling coordinate for compatibility.
-        // When precision is coarse, consumers must not present its minute component
-        // as a fact; world_now_label is the authoritative human/model-facing label.
-        world_now: state.clock?.anchored ? state.clock.absoluteMinute : null,
-        world_story_minute: state.clock?.absoluteMinute ?? 0,
-        world_now_coordinate_only: state.clock?.precision !== 'minute',
-        world_now_label: formatWorldClockFactLabel(state),
-        world_clock_anchored: Boolean(state.clock?.anchored),
-        world_clock_precision: state.clock?.precision || 'day',`,
-    'compact state clock exposure',
+core = core.replaceAll(
+    `主世界时间：${'${formatWorldCalendar(state).stamp}'}`,
+    `主世界时间：${'${formatWorldClockFactLabel(state)}'}`,
 );
 
 writeIfChanged(corePath, coreBefore, core);
@@ -147,22 +62,19 @@ const indexPath = 'index.js';
 let index = fs.readFileSync(indexPath, 'utf8');
 const indexBefore = index;
 
-index = replaceOnce(
-    index,
-    `    formatWorldCalendar,\n`,
-    `    formatWorldCalendar,\n    formatWorldClockFactLabel,\n`,
-    'index clock fact formatter import',
-);
+if (!/\bformatWorldClockFactLabel\s*,/.test(index)) {
+    const importMarker = /(\s+formatWorldCalendar,\r?\n)/;
+    if (!importMarker.test(index)) throw new Error('missing index formatWorldCalendar import');
+    index = index.replace(importMarker, `$1    formatWorldClockFactLabel,\n`);
+}
 
-index = index.replaceAll(
-    `clockLabel: formatWorldCalendar(state)?.stamp || '',`,
-    `clockLabel: formatWorldClockFactLabel(state),`,
+index = index.replace(
+    /clockLabel:\s*formatWorldCalendar\(state\)\?\.stamp\s*\|\|\s*''\s*,/g,
+    'clockLabel: formatWorldClockFactLabel(state),',
 );
-index = replaceOnce(
-    index,
-    `        clock: state.clock?.anchored ? clock.stamp : '尚未建立时间锚点',`,
-    `        clock: formatWorldClockFactLabel(state),`,
-    'Lingqi clock digest',
+index = index.replace(
+    /clock:\s*state\.clock\?\.anchored\s*\?\s*clock\.stamp\s*:\s*'尚未建立时间锚点'\s*,/g,
+    'clock: formatWorldClockFactLabel(state),',
 );
 
 writeIfChanged(indexPath, indexBefore, index);
@@ -171,12 +83,21 @@ const testsPath = 'tests/world-clock-core.test.mjs';
 let tests = fs.readFileSync(testsPath, 'utf8');
 const testsBefore = tests;
 
-tests = replaceOnce(
-    tests,
-    `    createInitialState,\n    formatWorldCalendar,\n    trimState,`,
-    `    compactStateForModel,\n    createInitialState,\n    formatWorldCalendar,\n    formatWorldClockFactLabel,\n    trimState,`,
-    'core test imports',
-);
+function ensureCoreTestImport(name) {
+    const importBlockEnd = tests.indexOf("} from '../core.js';");
+    if (importBlockEnd < 0) throw new Error('missing core test import block');
+    const importBlockStart = tests.lastIndexOf('import {', importBlockEnd);
+    const importBlock = tests.slice(importBlockStart, importBlockEnd);
+    if (new RegExp(`\\b${name}\\s*,`).test(importBlock)) return;
+    const anchor = '    applySimulationResult,';
+    const anchorIndex = tests.indexOf(anchor, importBlockStart);
+    if (anchorIndex < 0 || anchorIndex > importBlockEnd) throw new Error(`missing test import anchor for ${name}`);
+    const lineEnd = tests.indexOf('\n', anchorIndex) + 1;
+    tests = tests.slice(0, lineEnd) + `    ${name},\n` + tests.slice(lineEnd);
+}
+
+ensureCoreTestImport('compactStateForModel');
+ensureCoreTestImport('formatWorldClockFactLabel');
 
 const factMarker = "test('coarse clock precision never exposes the internal minute as a fact label'";
 if (!tests.includes(factMarker)) {

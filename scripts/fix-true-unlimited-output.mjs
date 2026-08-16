@@ -75,47 +75,26 @@ index = index.replace(errorPattern, block([
 fs.writeFileSync('index.js', index);
 
 let api = fs.readFileSync('api.js', 'utf8');
-const apiEol = eolFor(api);
-api = replaceOnce(api,
-    block([
-        'export async function requestCustomCompletion(settings, messages, {',
-        '    fetchImpl = globalThis.fetch,',
-        '    getRequestHeaders = null,',
-        '    maxTokens = 2200,',
-    ], apiEol),
-    block([
-        'export async function requestCustomCompletion(settings, messages, {',
-        '    fetchImpl = globalThis.fetch,',
-        '    getRequestHeaders = null,',
-        '    maxTokens = 0,',
-    ], apiEol),
-    'custom API default maxTokens',
-);
+const defaultTokenNeedle = '    maxTokens = 2200,';
+if ((api.split(defaultTokenNeedle).length - 1) !== 1) {
+    throw new Error('custom API default maxTokens: expected exactly one match');
+}
+api = api.replace(defaultTokenNeedle, '    maxTokens = 0,');
 
-api = replaceOnce(api,
-    block([
-        '    const body = {',
-        '        model,',
-        '        messages: Array.isArray(messages) ? messages : [],',
-        '        temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.2,',
-        '        max_tokens: Math.max(64, Number.parseInt(maxTokens, 10) || 2200),',
-        '        stream: false,',
-        '    };',
-    ], apiEol),
-    block([
-        '    const body = {',
-        '        model,',
-        '        messages: Array.isArray(messages) ? messages : [],',
-        '        temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.2,',
-        '        stream: false,',
-        '    };',
-        '    const configuredMaxTokens = Number.parseInt(maxTokens, 10);',
-        '    if (Number.isFinite(configuredMaxTokens) && configuredMaxTokens > 0) {',
-        '        body.max_tokens = Math.max(64, configuredMaxTokens);',
-        '    }',
-    ], apiEol),
-    'custom API max_tokens',
-);
+const apiBodyPattern = /        max_tokens: Math\.max\(64, Number\.parseInt\(maxTokens, 10\) \|\| 2200\),\r?\n        stream: false,\r?\n    };/g;
+const apiBodyMatches = [...api.matchAll(apiBodyPattern)];
+if (apiBodyMatches.length !== 1) {
+    throw new Error(`custom API max_tokens: expected exactly one match, got ${apiBodyMatches.length}`);
+}
+const apiBodyEol = eolFor(apiBodyMatches[0][0]);
+api = api.replace(apiBodyPattern, block([
+    '        stream: false,',
+    '    };',
+    '    const configuredMaxTokens = Number.parseInt(maxTokens, 10);',
+    '    if (Number.isFinite(configuredMaxTokens) && configuredMaxTokens > 0) {',
+    '        body.max_tokens = Math.max(64, configuredMaxTokens);',
+    '    }',
+], apiBodyEol));
 fs.writeFileSync('api.js', api);
 
 const finalIndex = fs.readFileSync('index.js', 'utf8');

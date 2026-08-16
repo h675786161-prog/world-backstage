@@ -29,6 +29,7 @@ import {
     extractNarrativeTimeAnchor,
     filterNarrativeText,
     formatWorldCalendar,
+    formatWorldClockFactLabel,
     isPersonObservationEligible,
     countSurvivingNewAssistantTurns,
     hashText,
@@ -87,6 +88,7 @@ import {
     toggleMomentLike,
 } from './social-terminal.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
+import { normalizeClueTiming, resolveFutureTimeExpression } from './world-clock-authority.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 import {
     detectWorldbookCharacter,
@@ -144,7 +146,7 @@ import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.4.0';
+const PLUGIN_VERSION = '2.5.0';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 30,
     enabled: true,
@@ -7775,7 +7777,7 @@ async function generatePublicOpinionSnapshotInternal({ allowDefer = true, ensure
 
     const settings = getSettings();
     const prompt = buildPublicOpinionPrompt(state, {
-        clockLabel: formatWorldCalendar(state)?.stamp || '',
+        clockLabel: formatWorldClockFactLabel(state),
         previousCache,
         forumElapsedMinutes: Number.isFinite(plan.forumElapsed) ? plan.forumElapsed : 0,
         newsElapsedMinutes: Number.isFinite(plan.newsElapsed) ? plan.newsElapsed : 0,
@@ -7978,7 +7980,7 @@ async function generatePublicOpinionSandbox() {
     const promise = (async () => {
         try {
             const prompt = buildPublicOpinionSandboxPrompt(state, {
-                clockLabel: formatWorldCalendar(state)?.stamp || '',
+                clockLabel: formatWorldClockFactLabel(state),
             });
             const settings = getSettings();
             const sandbox = await runWithRetries(
@@ -8096,7 +8098,7 @@ function lingqiWorldDigest(state = getState()) {
             detail: String(state.world?.detail || ''),
             background: String(state.world?.background || '').slice(0, 1800),
         },
-        clock: state.clock?.anchored ? clock.stamp : '尚未建立时间锚点',
+        clock: formatWorldClockFactLabel(state),
         people: (state.people || [])
             .slice()
             .sort((a, b) => Number(b?.relevance || 0) - Number(a?.relevance || 0))
@@ -10674,6 +10676,18 @@ async function handleUiAction(action, payload = {}) {
                 updatedAt: next.clock.absoluteMinute,
                 createdAt: existing?.createdAt ?? next.clock.absoluteMinute,
             };
+            const timingBaseMinute = Number(updated.createdAt ?? next.clock.absoluteMinute) || next.clock.absoluteMinute;
+            updated.timing = resolveFutureTimeExpression(
+                [updated.sourceExcerpt, updated.text].filter(Boolean).join('\n'),
+                {
+                    baseAbsoluteMinute: timingBaseMinute,
+                    baseCalendar: formatWorldCalendar(next, timingBaseMinute),
+                    calendarBound: Boolean(next.clock?.anchored),
+                },
+            );
+            if (updated.timing) {
+                updated.timing = normalizeClueTiming(updated.timing, next.clock.absoluteMinute);
+            }
         } else {
             const anchor = latestAssistantEntry()?.index ?? 0;
             updated = {

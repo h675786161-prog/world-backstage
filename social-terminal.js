@@ -141,6 +141,8 @@ export function emptySocialState() {
         momentsUpdatedAt: '',
         momentsUpdatedWorldMinute: -1,
         lastPulseMessageId: -1,
+        lastPulseWorldMinute: -1,
+        lastPulseRelationSignature: '',
     };
 }
 
@@ -206,6 +208,10 @@ export function normalizeSocialState(raw, people = []) {
         lastPulseMessageId: Number.isFinite(Number(source.lastPulseMessageId ?? source.last_pulse_message_id))
             ? Math.max(-1, Number(source.lastPulseMessageId ?? source.last_pulse_message_id))
             : -1,
+        lastPulseWorldMinute: Number.isFinite(Number(source.lastPulseWorldMinute ?? source.last_pulse_world_minute))
+            ? Math.max(-1, Number(source.lastPulseWorldMinute ?? source.last_pulse_world_minute))
+            : -1,
+        lastPulseRelationSignature: text(source.lastPulseRelationSignature ?? source.last_pulse_relation_signature, 160),
     };
 }
 
@@ -248,15 +254,25 @@ function relationEvidenceFor(person, userPerson, state, userName = '', recentNar
         return { status: 'accepted', evidence: '人物设定中存在明确的现实关系或联系方式' };
     }
 
-    const narrative = text(recentNarrative, 12000);
-    const completedContact = /交换(?:了|好)?联系方式|互(?:相)?加(?:了|上)?(?:好友|联系方式)|加(?:了|上|为)好友|通过(?:了)?好友申请|留下(?:了)?(?:电话|号码|联系方式)|存下(?:了)?(?:电话|号码|联系方式)|通讯录里(?:有|多了)/;
-    const incompleteOrRejected = /没(?:有|能)?|未能|拒绝|婉拒|想(?:要)?|打算|准备|试图|询问|请求|等.+再|如果/;
+    const narrative = text(recentNarrative, 18000);
+    const completedContact = /(?:交换|互换|互留|留下|留了|给了|记下|存下|保存|添加|互加|加上|通过了?)(?:彼此|双方|对方|了|上|好|一下|一下子|的)?(?:联系方式|微信|qq|QQ|号码|手机号|电话|通讯号|联系人|好友)|(?:扫码|扫了码|扫二维码|扫描二维码|加了微信|加上微信|加了QQ|加上QQ|互加好友|互加微信|互加QQ|通讯录里(?:有|多了))/u;
+    const notCompleted = /(?:还没|没有|没能|未能|尚未|并未|拒绝|婉拒|暂不|以后再|改天再|等.+再|如果.+(?:再|才)?|想(?:要)?|打算|准备|试图|询问|请求).{0,24}(?:交换|添加|互加|联系方式|微信|qq|QQ|号码|电话|好友)/u;
     if (personName && narrative.includes(personName)) {
-        const relevantLines = narrative.split(/\r?\n/).filter(line => (
-            line.includes(personName)
-            && ((playerName && line.includes(playerName)) || /(?:你|user|玩家)/iu.test(line))
+        const segments = narrative
+            .replace(/([。！？!?；;])/gu, '$1\n')
+            .split(/\n+/u)
+            .map(segment => segment.trim())
+            .filter(Boolean);
+        const personIndexes = segments
+            .map((segment, index) => segment.includes(personName) ? index : -1)
+            .filter(index => index >= 0);
+        const contactIndexes = segments
+            .map((segment, index) => completedContact.test(segment) && !notCompleted.test(segment) ? index : -1)
+            .filter(index => index >= 0);
+        const nearbyCompleted = contactIndexes.some(contactIndex => (
+            personIndexes.some(personIndex => Math.abs(personIndex - contactIndex) <= 1)
         ));
-        if (relevantLines.some(line => completedContact.test(line) && !incompleteOrRejected.test(line))) {
+        if (nearbyCompleted) {
             return { status: 'accepted', evidence: '正文已明确写成双方完成了联系方式交换' };
         }
     }

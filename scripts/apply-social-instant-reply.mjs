@@ -19,7 +19,6 @@ const indexEol = index.includes('\r\n') ? '\r\n' : '\n';
 const uiEol = ui.includes('\r\n') ? '\r\n' : '\n';
 const styleEol = style.includes('\r\n') ? '\r\n' : '\n';
 
-// Default on preserves the old send-and-immediately-reply behavior.
 if (!index.includes('socialInstantReply: true')) {
     index = replaceOnce(
         index,
@@ -29,7 +28,6 @@ if (!index.includes('socialInstantReply: true')) {
     );
 }
 
-// Reuse the existing reply pipeline. requestOnly=true skips appending a second outgoing message.
 index = replaceOnce(
     index,
     'async function sendSocialMessage(conversationId, messageText) {',
@@ -89,11 +87,6 @@ index = replaceOnce(
 );
 
 if (!index.includes("if (action === 'social-request-reply')")) {
-    const oldAction = block([
-        "    if (action === 'social-send-message') {",
-        '        return await sendSocialMessage(payload.conversationId, payload.text);',
-        '    }',
-    ], indexEol);
     const newAction = block([
         "    if (action === 'social-send-message') {",
         '        return await sendSocialMessage(payload.conversationId, payload.text);',
@@ -103,7 +96,12 @@ if (!index.includes("if (action === 'social-request-reply')")) {
         "        return await sendSocialMessage(payload.conversationId, '', { requestOnly: true });",
         '    }',
     ], indexEol);
-    index = replaceOnce(index, oldAction, newAction, 'manual social reply action');
+    index = replaceOnce(
+        index,
+        /    if \(action === 'social-send-message'\) \{\s*return await sendSocialMessage\(payload\.conversationId, payload\.text\);\s*\}/,
+        newAction,
+        'manual social reply action',
+    );
 }
 
 if (!index.includes('socialInstantReply: settings.socialInstantReply')) {
@@ -115,7 +113,6 @@ if (!index.includes('socialInstantReply: settings.socialInstantReply')) {
     );
 }
 
-// Show the switch directly in Communications > Messages.
 if (!ui.includes('data-wb-setting="socialInstantReply"')) {
     const renderStart = ui.indexOf('function renderSocialView(');
     const shellStart = ui.indexOf('<section class="wb-social-shell', renderStart);
@@ -142,7 +139,6 @@ if (!ui.includes('data-wb-setting="socialInstantReply"')) {
     ui = ui.slice(0, navEnd + 6) + toggle + ui.slice(navEnd + 6);
 }
 
-// Off mode exposes one explicit manual reply trigger only while the latest message is outgoing.
 if (!ui.includes('data-wb-action="social-request-reply"')) {
     const composeNeedle = '<form class="wb-social-compose" data-wb-form="social-message">';
     const composeAt = ui.indexOf(composeNeedle, ui.indexOf('function renderSocialView('));

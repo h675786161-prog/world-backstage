@@ -3022,6 +3022,12 @@ function renderSocialView(state, social = {}, settings = {}, {
                         ${(active.rawMessages || []).map(message => `<article class="${message.senderId === 'user' ? 'is-user' : ''}">${messageAvatar(message)}<div class="wb-social-message-main"><span><b>${escapeHtml(message.senderName)}</b><time>${escapeHtml(messageTime(message))}</time></span><p>${escapeHtml(message.text)}</p></div></article>`).join('') || `<div class="wb-social-empty-thread is-conversation"><span class="wb-social-empty-monogram">${escapeHtml(active.title.slice(0, 1))}</span><strong>和 ${escapeHtml(active.title)} 说点什么吧</strong></div>`}
                     </div>
                     ${active.lastError ? `<p class="wb-social-error">上次错误：${escapeHtml(active.lastError)}</p>` : ''}
+                    <button class="wb-social-cat-delivery" type="button"
+                        data-wb-action="social-request-reply"
+                        data-conversation-id="${escapeAttr(active.id)}"
+                        title="调用一次 API，让这条会话现在回一轮"
+                        ${settings.socialInstantReply !== false || active?.rawMessages?.at(-1)?.senderId !== 'user' ? 'hidden' : ''}
+                        ${activeBusy ? 'disabled' : ''}><span aria-hidden="true">🐾</span> 小猫传递</button>
                     <form class="wb-social-compose" data-wb-form="social-message">
                         <input type="hidden" name="conversationId" value="${escapeAttr(active.id)}">
                         <textarea name="text" rows="1" maxlength="1600" placeholder="让玲七捎句话…" ${activeBusy ? 'disabled' : ''}>${escapeHtml(draft)}</textarea>
@@ -3091,6 +3097,21 @@ function renderSocialView(state, social = {}, settings = {}, {
                 <button type="button" class="${page === 'contacts' ? 'is-active' : ''}" data-wb-action="social-set-page" data-page="contacts"><i></i>好友${hasUnreadContacts || connections.some(item => item.status === 'incoming') ? '<em></em>' : ''}</button>
                 <button type="button" class="${page === 'moments' ? 'is-active' : ''}" data-wb-action="social-set-page" data-page="moments"><i></i>朋友圈${hasUnreadMoments ? '<em></em>' : ''}</button>
             </nav>
+            ${page === 'messages' ? `
+                <div class="wb-social-reply-toggle">
+                    <div>
+                        <strong>及时回复</strong>
+                        <span>${settings.socialInstantReply !== false
+                            ? '每发一条消息就调用 1 次 API，马上等一轮回复。'
+                            : '先只把消息递出去；想让对方现在回时，再点「小猫传递」。'}</span>
+                    </div>
+                    <label class="wb-switch" title="控制你主动发消息后是否立刻请求人物回复">
+                        <input type="checkbox" data-wb-setting="socialInstantReply"
+                            ${settings.socialInstantReply !== false ? 'checked' : ''}>
+                        <i></i>
+                    </label>
+                </div>
+            ` : ''}
             <div class="wb-social-page-body">${page === 'contacts' ? contactsView : page === 'moments' ? momentsView : messagesView}</div>
         </section>
     `;
@@ -6077,6 +6098,13 @@ export function createWorldBackstageUI({
         }
         if (action === 'social-toggle-moment-like') {
             await invokeAction('social-toggle-moment-like', { momentId: target.dataset.momentId || '' });
+            render();
+            return;
+        }
+        if (action === 'social-request-reply') {
+            const conversationId = String(target.dataset.conversationId || '');
+            if (!conversationId) return;
+            await invokeAction('social-request-reply', { conversationId });
             render();
             return;
         }

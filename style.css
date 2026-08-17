@@ -12260,3 +12260,39 @@
     #world-backstage-root .wb-social-add-friend,
     #world-backstage-root .wb-social-moments { border-radius: 17px; }
 }
+
+
+/* 通讯 · 及时回复 / 小猫传递 */
+.wb-social-reply-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin: 10px 0 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--wb-line);
+    border-radius: 14px;
+    background: var(--wb-panel-faint);
+}
+.wb-social-reply-toggle > div { min-width: 0; display: grid; gap: 3px; }
+.wb-social-reply-toggle strong { color: var(--wb-text); font-size: calc(12px + var(--wb-reading-bump)); font-weight: 600; }
+.wb-social-reply-toggle span { color: var(--wb-text-faint); font-size: calc(9px + var(--wb-reading-bump)); line-height: 1.45; }
+.wb-social-cat-delivery {
+    align-self: flex-end;
+    margin: 0 0 8px auto;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--wb-accent) 38%, var(--wb-line));
+    border-radius: 999px;
+    background: var(--wb-accent-soft);
+    color: var(--wb-accent);
+    cursor: pointer;
+    font-size: calc(10px + var(--wb-reading-bump));
+    transition: transform 120ms ease, opacity 120ms ease;
+}
+.wb-social-cat-delivery:hover:not(:disabled) { transform: translateY(-1px); }
+.wb-social-cat-delivery:disabled { opacity: 0.55; cursor: wait; }
+.wb-social-cat-delivery[hidden] { display: none !important; }
+@media (max-width: 720px) {
+    .wb-social-reply-toggle { margin: 8px 0 10px; padding: 9px 10px; }
+    .wb-social-cat-delivery { margin-bottom: 6px; }
+}

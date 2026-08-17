@@ -165,6 +165,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     // Keep narrative influence opt-in even when the main injection switch is on.
     injectionSocial: false,
     socialAutoEnabled: true,
+    socialInstantReply: true,
     memorySystemEnabled: true,
     memoryPromptInjection: true,
     autoSync: true,
@@ -8346,6 +8347,7 @@ function buildLingqiButlerContext(userText = '') {
             memorySystemEnabled: settings.memorySystemEnabled,
             publicOpinionAutoEnabled: settings.publicOpinionAutoEnabled,
             socialAutoEnabled: settings.socialAutoEnabled,
+            socialInstantReply: settings.socialInstantReply,
             injectionSocial: settings.injectionSocial,
             autoSimulationMode: settings.autoSimulationMode,
             worldPulseActivity: settings.worldPulseActivity,
@@ -10026,7 +10028,7 @@ async function checkAndCorrectWorldState() {
     }
 }
 
-async function sendSocialMessage(conversationId, messageText) {
+async function sendSocialMessage(conversationId, messageText, { requestOnly = false } = {}) {
     if (runtime.activeSocial && !runtime.activeSocial.controller?.signal?.aborted) {
         throw new Error('上一条社交消息还在等回复');
     }
@@ -10034,18 +10036,43 @@ async function sendSocialMessage(conversationId, messageText) {
     const contextEpoch = runtime.contextEpoch;
     const controller = new AbortController();
     let store = getStore();
-    store.social = appendUserSocialMessage(
-        store.social,
-        conversationId,
-        messageText,
-        store.currentState.clock?.absoluteMinute,
-        store.currentState.people,
-    );
-    saveStore(store, { immediate: true });
+    if (requestOnly) {
+        const normalizedSocial = normalizeSocialState(
+            store.social || emptySocialState(),
+            store.currentState.people,
+        );
+        const conversation = normalizedSocial.conversations.find(item => item.id === String(conversationId || ''));
+        if (!conversation) throw new Error('没有找到这个会话');
+        const lastMessage = conversation.rawMessages?.at(-1) || null;
+        if (!lastMessage || lastMessage.senderId !== 'user') {
+            throw new Error('现在没有等着回的消息～先递一句过去吧');
+        }
+    } else {
+        store.social = appendUserSocialMessage(
+            store.social,
+            conversationId,
+            messageText,
+            store.currentState.clock?.absoluteMinute,
+            store.currentState.people,
+        );
+        saveStore(store, { immediate: true });
+        if (getSettings().socialInstantReply === false) {
+            runtime.socialStatus = {
+                phase: 'success',
+                message: '消息已经递出去啦～这次没有调用 API；想让对方现在回，就点「小猫传递」。',
+                error: '',
+                conversationId,
+            };
+            runtime.ui?.render();
+            return { stored: true, replyCount: 0, waitingForManualReply: true };
+        }
+    }
     runtime.activeSocial = { controller, chatToken, contextEpoch, conversationId };
     runtime.socialStatus = {
         phase: 'running',
-        message: '消息已发出，正在判断谁看见、谁知道、谁愿意回……',
+        message: requestOnly
+            ? '小猫叼着消息去敲门啦～正在等对方回话……'
+            : '消息已发出，正在判断谁看见、谁知道、谁愿意回……',
         error: '',
         conversationId,
     };
@@ -10300,6 +10327,10 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'social-send-message') {
         return await sendSocialMessage(payload.conversationId, payload.text);
+    }
+
+    if (action === 'social-request-reply') {
+        return await sendSocialMessage(payload.conversationId, '', { requestOnly: true });
     }
 
     if (action === 'social-request-friend') {

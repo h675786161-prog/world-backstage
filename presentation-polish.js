@@ -1,12 +1,13 @@
 import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
-const STYLE_ID = 'wb-presentation-polish-v248';
+const STYLE_ID = 'wb-presentation-polish-v249';
 const CSS = `
-/* 2.4.8 · 通讯层排版修复 + 玲七悬浮入口 */
+/* 2.4.9 · 通讯层排版修复 + 玲七悬浮入口 */
 #world-backstage-root .wb-social-shell.is-page-messages {
-  grid-template-rows: 54px auto minmax(0,1fr) !important;
+  grid-template-rows: 54px 44px minmax(0,1fr) !important;
   min-height: 0;
   overflow: hidden;
+  align-content: stretch;
 }
 #world-backstage-root .wb-social-shell.is-page-messages .wb-social-page-body {
   min-height: 0;
@@ -61,12 +62,35 @@ const CSS = `
   scrollbar-gutter: stable; padding: 14px 16px;
 }
 #world-backstage-root .wb-social-shell.is-page-messages .wb-social-message-main { max-width: min(76%,560px); }
-#world-backstage-root .wb-social-reply-toggle {
-  min-height: 42px; margin: 6px 12px 8px; padding: 7px 10px; border-radius: 12px;
-  background: color-mix(in srgb,var(--wb-panel-faint) 76%,transparent);
+
+/* 回复模式只是工具条，不准参与剩余高度分配。 */
+#world-backstage-root .wb-social-shell.is-page-messages > .wb-social-reply-toggle {
+  align-self: center !important;
+  width: calc(100% - 24px) !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  margin: 0 12px !important;
+  padding: 5px 9px !important;
+  overflow: hidden !important;
+  border-radius: 11px;
+  background: color-mix(in srgb,var(--wb-panel-faint) 68%,transparent);
 }
-#world-backstage-root .wb-social-reply-toggle > div > span {
-  display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+#world-backstage-root .wb-social-shell.is-page-messages > .wb-social-reply-toggle > div {
+  min-width: 0;
+  grid-template-columns: auto minmax(0,1fr);
+  align-items: baseline;
+  column-gap: 8px;
+}
+#world-backstage-root .wb-social-shell.is-page-messages > .wb-social-reply-toggle strong {
+  white-space: nowrap;
+}
+#world-backstage-root .wb-social-shell.is-page-messages > .wb-social-reply-toggle > div > span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 #world-backstage-root .wb-social-cat-delivery {
   flex: 0 0 auto; margin: 0 12px 6px auto; padding: 7px 10px; border-radius: 999px; box-shadow: none;
@@ -83,7 +107,7 @@ const CSS = `
 }
 
 @media (max-width:680px),(max-height:520px) and (pointer:coarse) {
-  #world-backstage-root .wb-social-shell.is-page-messages { grid-template-rows: 48px auto minmax(0,1fr) !important; }
+  #world-backstage-root .wb-social-shell.is-page-messages { grid-template-rows: 48px 38px minmax(0,1fr) !important; }
   #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout {
     grid-template-columns: minmax(112px,34%) minmax(0,1fr) !important; border-radius: 14px;
   }
@@ -108,9 +132,12 @@ const CSS = `
   #world-backstage-root .wb-social-shell.is-page-messages .wb-social-thread-contact span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #world-backstage-root .wb-social-shell.is-page-messages .wb-social-log { padding: 8px; scrollbar-gutter: auto; }
   #world-backstage-root .wb-social-shell.is-page-messages .wb-social-message-main { max-width: 88%; }
-  #world-backstage-root .wb-social-reply-toggle { min-height: 38px; margin: 5px 6px 6px; padding: 6px 8px; gap: 7px; }
-  #world-backstage-root .wb-social-reply-toggle strong { font-size: 10px; }
-  #world-backstage-root .wb-social-reply-toggle > div > span { font-size: 8px; -webkit-line-clamp: 1; }
+  #world-backstage-root .wb-social-shell.is-page-messages > .wb-social-reply-toggle {
+    width: calc(100% - 12px) !important; height: 32px !important; min-height: 32px !important; max-height: 32px !important;
+    margin: 0 6px !important; padding: 4px 7px !important; gap: 7px;
+  }
+  #world-backstage-root .wb-social-shell.is-page-messages > .wb-social-reply-toggle strong { font-size: 9px; }
+  #world-backstage-root .wb-social-shell.is-page-messages > .wb-social-reply-toggle > div > span { font-size: 8px; }
   #world-backstage-root .wb-social-cat-delivery { margin: 0 7px 4px auto; padding: 5px 8px; font-size: 9px; }
   #world-backstage-root .wb-social-compose { gap: 5px; padding: 6px 7px 7px !important; }
   #world-backstage-root .wb-social-compose textarea { min-height: 34px; max-height: 86px; padding: 7px 8px; border-radius: 11px; font-size: 11px; }
@@ -151,6 +178,7 @@ const CSS = `
 `;
 
 function installStyle() {
+  document.getElementById('wb-presentation-polish-v248')?.remove();
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;

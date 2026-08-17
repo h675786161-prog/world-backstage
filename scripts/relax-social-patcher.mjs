@@ -38,6 +38,45 @@ index = replaceOnce(
 `,
 );
 
+replaceSection(
+    '// 5) Make the social autonomy switch visible and memory status truthful.',
+    "fs.writeFileSync('index.js', index);",
+    `// 5) Make the social autonomy switch visible and memory status truthful.
+ui = replaceOnce(
+    ui,
+    /(\\r?\\n\\s*)<div class="wb-settings-common-hint">/,
+    \`$1<div class="wb-setting-toggle">
+                        <div>
+                            <strong>通讯自主活动</strong>
+                            <span>关掉后，人物不会自己发消息、好友申请、删好友或发朋友圈；已有通讯录和你手动聊天仍然保留。</span>
+                        </div>
+                        <label class="wb-switch">
+                            <input type="checkbox" data-wb-setting="socialAutoEnabled"
+                                \\\${settings.socialAutoEnabled !== false ? 'checked' : ''}>
+                            <i></i>
+                        </label>
+                    </div>$1<div class="wb-settings-common-hint">\`,
+    'visible social autonomy switch',
+);
+
+ui = replaceOnce(
+    ui,
+    /<span>\\$\\{historyRunning \\? \\`\\$\\{historyPercent\\}%\\` : \\(Number\\(memory\\.pendingAssistantResponses \\|\\| 0\\) > 0 \\? '有新的东西等我收～' : '我已经跟上正文啦～'\\)\\}<\\/span>/,
+    \`<span>\\${historyRunning
+                        ? \\`\\${historyPercent}%\\`
+                        : Number(memory.pendingAssistantResponses || 0) > 0
+                            ? '有新的东西等我收～'
+                            : memory.summaryBehind
+                                ? \\`长期摘要还停在第 \\${Math.max(0, Number(memory.latestSummaryMessageId || 0))} 层\\`
+                                : memory.pendingRollup
+                                    ? '长期摘要还在等我压一层～'
+                                    : '长期记忆已追平正文～'}</span>\`,
+    'truthful long-memory status',
+);
+
+`,
+);
+
 source = source.replace("    assert.match(swipeBlock, /trigger: 'swipe-selected'/);\n", '');
 fs.writeFileSync(path, source);
-console.log('Adjusted swipe and memory patchers to current branch layout.');
+console.log('Adjusted swipe, memory and UI patchers to current branch layout.');

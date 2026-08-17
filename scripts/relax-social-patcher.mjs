@@ -15,21 +15,8 @@ index = replaceOnce(
     'remove swipe auto-sync',
 );
 
-// A selected alternate swipe may have no stored branch snapshot yet. Treat it as pending
-// when the user actually continues from it, so the next normal world batch can include it.
-index = replaceOnce(
-    index,
-    \`        const branch = branchDataFromMessage(message);\n        if (!branch) continue;\n        if (branch?.status === 'committed' && !branch.stale) continue;\n        entries.push({ message, index });\`,
-    \`        const branch = branchDataFromMessage(message);\n        if (branch?.status === 'committed' && !branch.stale) continue;\n        entries.push({ message, index });\`,
-    'branchless selected swipe remains pending',
-);
-
 `;
 source = source.slice(0, start) + replacement + source.slice(end);
 source = source.replace("    assert.match(swipeBlock, /trigger: 'swipe-selected'/);\n", '');
-source = source.replace(
-    "    assert.doesNotMatch(swipeBlock, /scheduleAutoSync\\\\(Number\\\\(messageId\\\\), 'swipe'\\\\)/);\n",
-    "    assert.doesNotMatch(swipeBlock, /scheduleAutoSync\\\\(Number\\\\(messageId\\\\), 'swipe'\\\\)/);\n    assert.doesNotMatch(index, /const branch = branchDataFromMessage\\\\(message\\\\);\\\\s*if \\\\(!branch\\\\) continue;/);\n",
-);
 fs.writeFileSync(path, source);
-console.log('Relaxed swipe patch to current branch layout.');
+console.log('Narrowed swipe patch to eager-generation removal.');

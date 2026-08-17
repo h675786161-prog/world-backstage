@@ -324,14 +324,19 @@ function getContext() {
     return globalThis.SillyTavern?.getContext?.() || null;
 }
 
-function recentAssistantNarrativeForSocial(context = getContext(), limit = 8) {
+function recentNarrativeForSocial(context = getContext(), limit = 12) {
     return (Array.isArray(context?.chat) ? context.chat : [])
-        .filter(message => !message?.is_user && !message?.is_system && String(message?.mes || '').trim())
-        .slice(-Math.max(1, Number(limit) || 8))
-        .map(message => String(message.mes || '').trim())
-        .join('\n');
+        .filter(message => message && !message.is_system)
+        .slice(-Math.max(2, Number(limit) || 12))
+        .map(message => {
+            if (message.is_user) return String(message.mes || '').trim();
+            const swipeId = Number(message.swipe_id ?? 0);
+            return String(message.swipes?.[swipeId] ?? message.mes ?? '').trim();
+        })
+        .filter(Boolean)
+        .join('\n')
+        .slice(-18000);
 }
-
 function getWorldbookNames() {
     const names = getContext()?.getWorldInfoNames?.();
     return Array.isArray(names)
@@ -1516,7 +1521,7 @@ function prepareStore(rawStore, context = getContext()) {
         store.currentState,
         {
             userName: context?.name1 || '',
-            recentNarrative: recentAssistantNarrativeForSocial(context),
+            recentNarrative: recentNarrativeForSocial(context),
         },
     );
     store.publicOpinionDismissed = normalizePublicOpinionDismissed(store.publicOpinionDismissed);
@@ -1572,7 +1577,7 @@ function saveStore(store, { immediate = false } = {}) {
         store.currentState,
         {
             userName: context?.name1 || '',
-            recentNarrative: recentAssistantNarrativeForSocial(context),
+            recentNarrative: recentNarrativeForSocial(context),
         },
     );
     // 舆情/新闻只能通过自己的时间 + 公开事件调度器更新。普通世界状态保存
@@ -2237,6 +2242,18 @@ function getSyncStatus() {
                 )).length
             )),
             pendingRollup: Boolean(planMemoryRollup(state)),
+            latestSummaryMessageId: Math.max(
+                -1,
+                ...(state.storyMemory?.summaries || []).map(summary => Number(summary?.endMessageId ?? -1)),
+            ),
+            summaryBehind: (() => {
+                const indexedThrough = Number(state.storyMemory?.indexedThroughMessageId ?? -1);
+                const latestSummaryMessageId = Math.max(
+                    -1,
+                    ...(state.storyMemory?.summaries || []).map(summary => Number(summary?.endMessageId ?? -1)),
+                );
+                return indexedThrough >= 0 && latestSummaryMessageId < indexedThrough;
+            })(),
             clues: state.storyMemory?.clues?.length || 0,
             hasDigest: Boolean(state.storyMemory?.digest?.text),
             pendingAssistantResponses: unindexedAssistantCount(),
@@ -3032,16 +3049,32 @@ function clearHistoryBootstrapCheckpoint({ immediate = true } = {}) {
     return true;
 }
 
+function socialPulseRelationSignature(social = {}) {
+    const rows = (Array.isArray(social?.connections) ? social.connections : [])
+        .map(item => [String(item?.personId || ''), String(item?.status || '')].join(':'))
+        .filter(Boolean)
+        .sort();
+    return hashText(rows.join('|'));
+}
+
 function scheduleSocialPulse(delay = 1200) {
     const settings = getSettings();
     const latestMessageId = Number(latestAssistantEntry()?.index ?? -1);
     const store = getStore();
     const social = normalizeSocialState(store.social || emptySocialState(), store.currentState.people);
+    const currentWorldMinute = Math.max(0, Number(store.currentState?.clock?.absoluteMinute) || 0);
+    const relationSignature = socialPulseRelationSignature(social);
+    const relationChanged = relationSignature !== String(social.lastPulseRelationSignature || '');
+    const lastPulseWorldMinute = Number(social.lastPulseWorldMinute ?? -1);
+    const worldTimeDue = lastPulseWorldMinute < 0
+        ? relationChanged
+        : currentWorldMinute - lastPulseWorldMinute >= 60;
     if (
         !settings.enabled
         || !settings.socialAutoEnabled
         || latestMessageId < 0
         || latestMessageId <= Number(social.lastPulseMessageId ?? -1)
+        || (!relationChanged && !worldTimeDue)
     ) return false;
     const chatToken = currentChatToken();
     if (runtime.socialPulseTimer !== null) window.clearTimeout(runtime.socialPulseTimer);
@@ -3081,6 +3114,8 @@ async function runSocialPulse(messageId = Number(latestAssistantEntry()?.index ?
     });
     if (!prompt) {
         normalized.lastPulseMessageId = Number(messageId);
+        normalized.lastPulseWorldMinute = Math.max(0, Number(store.currentState?.clock?.absoluteMinute) || 0);
+        normalized.lastPulseRelationSignature = socialPulseRelationSignature(normalized);
         store.social = normalized;
         saveStore(store, { immediate: true });
         return { messageCount: 0, requestCount: 0, removalCount: 0, momentCount: 0 };
@@ -3101,6 +3136,8 @@ async function runSocialPulse(messageId = Number(latestAssistantEntry()?.index ?
         store = getStore();
         const applied = applySocialPulsePayload(store.social, store.currentState, parsed);
         applied.social.lastPulseMessageId = Number(messageId);
+        applied.social.lastPulseWorldMinute = Math.max(0, Number(store.currentState?.clock?.absoluteMinute) || 0);
+        applied.social.lastPulseRelationSignature = socialPulseRelationSignature(applied.social);
         store.social = applied.social;
         saveStore(store, { immediate: true });
         refreshInjection();
@@ -5224,9 +5261,6 @@ function restoreExistingSwipe(messageId) {
             restoreBranchSnapshot(data.base, store.initialState),
             true,
         );
-        if (message.mes && message.mes !== '...' && getSettings().worldAutoEnabled) {
-            scheduleAutoSync(Number(messageId), 'swipe');
-        }
     } else {
         const previous = findLatestResultSnapshot(Number(messageId));
         store.currentState = markPendingSync(

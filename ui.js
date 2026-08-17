@@ -917,7 +917,18 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                         </label>
                     </div>
                 </div>
-                <div class="wb-settings-common-hint">
+                <div class="wb-setting-toggle">
+    <div>
+        <strong>通讯自主活动</strong>
+        <span>关掉后，人物不会自己发消息、好友申请、删好友或发朋友圈；已有通讯录和你手动聊天仍然保留。</span>
+    </div>
+    <label class="wb-switch">
+        <input type="checkbox" data-wb-setting="socialAutoEnabled"
+            ${settings.socialAutoEnabled !== false ? 'checked' : ''}>
+        <i></i>
+    </label>
+</div>
+<div class="wb-settings-common-hint">
                     <strong>常用的先放爪边。别的我收里面了。</strong>
                     <span>人物、暗流、记忆、舆情各有自己的窝；哪些要叼给正文看，统一来「正文注入」告诉我。</span>
                 </div>
@@ -1592,7 +1603,15 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                 : '会自己收拾长期记忆～',
                         )}</strong>
                     </div>
-                    <span>${historyRunning ? `${historyPercent}%` : (Number(memory.pendingAssistantResponses || 0) > 0 ? '有新的东西等我收～' : '我已经跟上正文啦～')}</span>
+                    <span>${historyRunning
+    ? String(historyPercent) + '%'
+    : Number(memory.pendingAssistantResponses || 0) > 0
+        ? '有新的东西等我收～'
+        : memory.summaryBehind
+            ? '长期摘要还停在第 ' + Math.max(0, Number(memory.latestSummaryMessageId || 0)) + ' 层'
+            : memory.pendingRollup
+                ? '长期摘要还在等我压一层～'
+                : '长期记忆已追平正文～'}</span>
                 </div>
                 ${historyRunning ? `
                     <div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>

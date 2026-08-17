@@ -6,6 +6,7 @@ on:
       - fix/social-memory-swipe-batch
     paths:
       - scripts/apply-social-memory-swipe-fixes.mjs
+      - scripts/relax-social-patcher.mjs
       - .github/workflows/apply-social-memory-swipe-fixes.yml
 
 permissions:
@@ -22,6 +23,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Align patcher with current branch layout
+        run: node scripts/relax-social-patcher.mjs
       - name: Apply patch
         run: node scripts/apply-social-memory-swipe-fixes.mjs
       - name: Syntax check
@@ -37,6 +40,7 @@ jobs:
       - name: Remove one-shot tooling and commit
         run: |
           rm -f scripts/apply-social-memory-swipe-fixes.mjs
+          rm -f scripts/relax-social-patcher.mjs
           rm -f .github/workflows/apply-social-memory-swipe-fixes.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

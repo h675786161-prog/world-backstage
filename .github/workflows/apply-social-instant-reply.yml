@@ -6,6 +6,7 @@ on:
       - feat/social-instant-reply-toggle
     paths:
       - scripts/apply-social-instant-reply.mjs
+      - tests/social-instant-reply.test.mjs
       - .github/workflows/apply-social-instant-reply.yml
 
 permissions:

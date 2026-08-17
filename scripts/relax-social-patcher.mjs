@@ -17,7 +17,6 @@ let index = fs.readFileSync('index.js', 'utf8');
 let social = fs.readFileSync('social-terminal.js', 'utf8');
 let ui = fs.readFileSync('ui.js', 'utf8');
 
-// Contact reconciliation reads the recent selected narrative from BOTH sides.
 index = replaceRegexOnce(
     index,
     /function recentAssistantNarrativeForSocial\(context = getContext\(\), limit = 8\) \{[\s\S]*?\r?\n\}\r?\n(?=\r?\nfunction getWorldbookNames)/,
@@ -40,7 +39,7 @@ index = replaceRegexOnce(
 );
 index = index.replaceAll('recentAssistantNarrativeForSocial(', 'recentNarrativeForSocial(');
 
-// Selecting/browsing a swipe is not accepting that world line: restore locally only.
+// Merely browsing/selecting a swipe must never start a model call.
 index = replaceRegexOnce(
     index,
     /\r?\n\s*if \(message\.mes && message\.mes !== '\.\.\.' && getSettings\(\)\.worldAutoEnabled\) \{\s*scheduleAutoSync\(Number\(messageId\), 'swipe'\);\s*\}/,
@@ -48,45 +47,6 @@ index = replaceRegexOnce(
     'remove eager swipe simulation',
 );
 
-// If an old alternate swipe has no snapshot, mark it pending WITHOUT an API call.
-// When the user continues from it, the next normal world batch can include both turns.
-index = replaceTextOnce(
-    index,
-    '    saveStore(store);\n    refreshInjection();\n    runtime.ui?.render();\n}\n\nfunction markSnapshotsStaleFrom(messageId) {',
-    [
-        '    const selectedBranch = branchDataFromMessage(message, swipeId);',
-        '    if (!selectedBranch && message.mes && message.mes !== \'...\') {',
-        '        const selectedSourceKey = branchSourceKey(Number(messageId), message, swipeId);',
-        '        attachBranchData(message, swipeId, {',
-        '            schemaVersion: SCHEMA_VERSION,',
-        "            status: 'pending',",
-        '            sourceKey: selectedSourceKey,',
-        "            trigger: 'swipe-selected',",
-        '            offeredEventIds: [],',
-        '            offeredDirectorNoteIds: [],',
-        '            base: createBranchSnapshot(store.currentState, {',
-        '                messageId: Number(messageId),',
-        '                swipeId,',
-        '                sourceKey: selectedSourceKey,',
-        "                kind: 'base',",
-        '            }),',
-        '            result: null,',
-        "            error: '',",
-        '            stale: false,',
-        '        });',
-        '        void context?.saveChat?.();',
-        '    }',
-        '    saveStore(store);',
-        '    refreshInjection();',
-        '    runtime.ui?.render();',
-        '}',
-        '',
-        'function markSnapshotsStaleFrom(messageId) {',
-    ].join('\n'),
-    'mark selected swipe pending',
-);
-
-// Memory status must distinguish indexed prose from long-summary coverage.
 index = replaceRegexOnce(
     index,
     /(\s*pendingRollup:\s*Boolean\(planMemoryRollup\(state\)\),\r?\n)/,
@@ -94,7 +54,6 @@ index = replaceRegexOnce(
     'memory summary coverage',
 );
 
-// Social autonomy has a due gate: changed relationship graph OR >= 60 world minutes.
 index = replaceTextOnce(
     index,
     'function scheduleSocialPulse(delay = 1200) {',
@@ -178,7 +137,6 @@ social = replaceRegexOnce(
     'normalized social due fields',
 );
 
-// Completed-contact facts tolerate ordinary sentence boundaries but reject plans/conditions.
 social = replaceRegexOnce(
     social,
     /    const narrative = text\(recentNarrative, 12000\);[\s\S]*?\r?\n    const relationRecords = \[/,
@@ -211,7 +169,6 @@ social = replaceRegexOnce(
     'completed contact evidence',
 );
 
-// Visible autonomy switch. It intentionally controls autonomous actions only.
 const commonHint = '<div class="wb-settings-common-hint">';
 const commonHintIndex = ui.indexOf(commonHint);
 if (commonHintIndex < 0) throw new Error('settings common hint not found');
@@ -292,9 +249,7 @@ test('swipe browsing, social due gate, autonomy switch and memory coverage stay 
     assert.doesNotMatch(index, /recentAssistantNarrativeForSocial/);
     const swipeStart = index.indexOf('function restoreExistingSwipe');
     const swipeEnd = index.indexOf('function markSnapshotsStaleFrom', swipeStart);
-    const swipeBlock = index.slice(swipeStart, swipeEnd);
-    assert.match(swipeBlock, /trigger: 'swipe-selected'/);
-    assert.doesNotMatch(swipeBlock, /scheduleAutoSync\(Number\(messageId\), 'swipe'\)/);
+    assert.doesNotMatch(index.slice(swipeStart, swipeEnd), /scheduleAutoSync\(Number\(messageId\), 'swipe'\)/);
     assert.match(index, /function socialPulseRelationSignature/);
     assert.match(index, /currentWorldMinute - lastPulseWorldMinute >= 60/);
     assert.match(social, /lastPulseWorldMinute: -1/);

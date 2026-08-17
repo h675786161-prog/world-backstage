@@ -8,6 +8,6 @@ import './communication-ecology.js';
 import './settings-persistence-guard.js';
 import './index.js';
 
-void import('./presentation-polish.js').catch(error => {
+void import('./presentation-polish.js?v=249').catch(error => {
     console.error('[世界背面] 表现层修复加载失败', error);
 });

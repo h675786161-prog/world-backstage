@@ -9,10 +9,11 @@ test('social instant reply and manual cat delivery stay wired', async () => {
     ]);
 
     assert.match(index, /socialInstantReply:\s*true/);
-    assert.match(index, /async function requestSocialReply\(/);
+    assert.match(index, /async function sendSocialMessage\(conversationId, messageText, \{ requestOnly = false \} = \{\}\)/);
     assert.match(index, /getSettings\(\)\.socialInstantReply === false/);
     assert.match(index, /waitingForManualReply:\s*true/);
     assert.match(index, /action === 'social-request-reply'/);
+    assert.match(index, /requestOnly:\s*true/);
 
     assert.match(ui, /data-wb-setting="socialInstantReply"/);
     assert.match(ui, />及时回复</);

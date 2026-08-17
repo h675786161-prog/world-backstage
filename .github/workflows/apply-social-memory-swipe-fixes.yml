@@ -1,0 +1,45 @@
+name: Apply social memory swipe fixes
+
+on:
+  push:
+    branches:
+      - fix/social-memory-swipe-batch
+    paths:
+      - scripts/apply-social-memory-swipe-fixes.mjs
+      - .github/workflows/apply-social-memory-swipe-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/social-memory-swipe-batch
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply patch
+        run: node scripts/apply-social-memory-swipe-fixes.mjs
+      - name: Syntax check
+        run: |
+          node --check index.js
+          node --check social-terminal.js
+          node --check ui.js
+      - name: Targeted regressions
+        run: |
+          node --test tests/social-memory-swipe.test.mjs
+          node --test tests/communication-ecology.test.mjs
+          node --test tests/core.test.mjs
+      - name: Remove one-shot tooling and commit
+        run: |
+          rm -f scripts/apply-social-memory-swipe-fixes.mjs
+          rm -f .github/workflows/apply-social-memory-swipe-fixes.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: align social, swipe and memory state semantics'
+          git push origin HEAD:fix/social-memory-swipe-batch

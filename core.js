@@ -1,5 +1,6 @@
 import {
     buildClockAuthorityLines,
+    extractStructuredTimeScope,
     normalizeClueTiming,
     resolveFutureTimeExpression,
     resolveNarrativeTimeTransition,
@@ -366,28 +367,26 @@ function extractExplicitCalendarDate(text = '') {
 /**
  * 从一条正文中读取“作者明确写出来”的时间锚点。
  * 手动“与正文校准”使用它：不调用模型、不推断缺失的钟点。
- * 优先解析正文的“时间与地点” details；找不到时才回退到整条正文。
+ * 优先解析正文的语义时间栏；找不到时才回退到整条正文。
  */
 export function extractNarrativeTimeAnchor(text = '') {
     const source = asString(text, '', 60000);
     if (!source.trim()) return null;
 
-    const detailMatches = [...source.matchAll(/<details\b[^>]*>[\s\S]*?<summary\b[^>]*>[\s\S]*?(?:时间\s*[与和]\s*地点|时间地点)[\s\S]*?<\/summary>[\s\S]*?<\/details>/giu)];
-    const scope = detailMatches.length
-        ? String(detailMatches.at(-1)?.[0] || '')
-        : source;
+    const structuredScope = extractStructuredTimeScope(source);
+    const scope = structuredScope || source;
 
     const date = extractExplicitCalendarDate(scope) || (scope === source ? null : extractExplicitCalendarDate(source));
 
     // 形如 ▶07:40→08:15：结尾时间代表这段正文结束时的时间。
-    const transitions = [...scope.matchAll(/(?:▶|>)?\s*([01]?\d|2[0-3])\s*:\s*([0-5]\d)\s*(?:→|->|至|到)\s*([01]?\d|2[0-3])\s*:\s*([0-5]\d)/gu)];
+    const transitions = [...scope.matchAll(/(?:▶|>)?\s*([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)\s*(?:→|->|至|到|[-–—~～])\s*([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)/gu)];
     let exact = null;
     if (transitions.length) {
         const match = transitions.at(-1);
         exact = { hour: Number(match[3]), minute: Number(match[4]), excerpt: match[0].trim() };
     } else {
         // 时间栏里只有单个明确钟点时也允许同步。限制在“时间与地点”区域可减少误抓正文中的普通数字。
-        const times = [...scope.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])\s*:\s*([0-5]\d)(?!\d)/gu)];
+        const times = [...scope.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)(?!\d)/gu)];
         if (times.length) {
             const match = times.at(-1);
             exact = { hour: Number(match[1]), minute: Number(match[2]), excerpt: match[0].trim() };
@@ -405,7 +404,7 @@ export function extractNarrativeTimeAnchor(text = '') {
         hour: exact?.hour ?? null,
         minute: exact?.minute ?? null,
         daypart,
-        structured: detailMatches.length > 0,
+        structured: Boolean(structuredScope),
         precision: date && exact ? 'minute' : date ? (daypart ? 'daypart' : 'date') : 'minute',
         excerpt: [date?.excerpt, exact?.excerpt, daypart].filter(Boolean).join(' · ').slice(0, 240),
     };
@@ -2731,7 +2730,13 @@ export function settleTimedEvents(inputState, targetMinute, {
     if (nextMinute >= previousMinute) {
         for (const event of state.events) {
             if (!ACTIVE_EVENT_STATES.has(event.status)) continue;
-            event.lastCheckedAt = nextMinute;
+
+            // Active events represent actual work, not passive wall-clock expiry.
+            // Keep their settlement cursor behind until a simulation explicitly
+            // accounts for how much work happened during the elapsed world time.
+            // Duration/scheduled/condition events can be checked deterministically
+            // as soon as the authoritative clock advances.
+            if (event.clockMode !== 'active') event.lastCheckedAt = nextMinute;
 
             if (!['duration', 'scheduled'].includes(event.clockMode)) continue;
             if (!Number.isFinite(Number(event.dueAt))) continue;
@@ -2857,9 +2862,45 @@ function findClue(memory, raw) {
     const text = asString(raw?.text, '', 620);
     if (!text) return null;
     const fingerprint = text.replace(/\s+/g, '').slice(0, 80);
-    return memory.clues.find(clue => (
+    const exact = memory.clues.find(clue => (
         clue.text.replace(/\s+/g, '').slice(0, 80) === fingerprint
-    )) || null;
+    ));
+    if (exact) return exact;
+
+    // Models sometimes assign a fresh id while clearly continuing the same clue.
+    // Merge only with strong, explainable evidence: the title must be identical,
+    // and either the narrative text is substantially the same or at least two
+    // explicit relation anchors overlap. This avoids merging unrelated generic
+    // clues merely because they mention the same character once.
+    const normalizedPhrase = value => asString(value, '', 620)
+        .toLocaleLowerCase()
+        .replace(/[\s\p{P}\p{S}]+/gu, '');
+    const title = normalizedPhrase(raw?.title);
+    if (!title) return null;
+    const incomingText = normalizedPhrase(text);
+    const relationValues = item => uniqueStrings([
+        ...asArray(item?.people),
+        ...asArray(item?.locations),
+        ...asArray(item?.events),
+        ...asArray(item?.tags),
+    ], 64).map(value => value.toLocaleLowerCase());
+    const incomingRelations = new Set(relationValues(raw));
+
+    return memory.clues.find(clue => {
+        if (clue.archived || ['resolved', 'discarded'].includes(clue.status)) return false;
+        if (normalizedPhrase(clue.title) !== title) return false;
+        const existingText = normalizedPhrase(clue.text);
+        const textLooksSame = incomingText.length >= 8
+            && existingText.length >= 8
+            && (incomingText.includes(existingText) || existingText.includes(incomingText));
+        if (textLooksSame) return true;
+        if (!incomingRelations.size) return false;
+        let sharedRelations = 0;
+        for (const relation of relationValues(clue)) {
+            if (incomingRelations.has(relation)) sharedRelations += 1;
+        }
+        return sharedRelations >= 2;
+    }) || null;
 }
 
 function appendMemoryMetabolism(state, {
@@ -3062,13 +3103,26 @@ function applyClueUpdates(state, {
     for (const rawClue of asArray(cluesUpsert).slice(0, 24)) {
         const existing = findClue(state.storyMemory, rawClue);
         if (existing?.locked) continue;
+        const rawIncomingId = asString(rawClue?.id, '', 100);
+        const incomingId = rawIncomingId ? normalizeId(rawIncomingId, 'clue') : '';
+        const mergedFreshIdentity = Boolean(
+            existing
+            && incomingId
+            && incomingId !== existing.id
+        );
         const previousText = existing?.text || '';
         const previousExcerpt = existing?.sourceExcerpt || '';
-        const clue = normalizeClue(rawClue, existing, state.clock.absoluteMinute, {
+        const clue = normalizeClue(existing ? { ...rawClue, id: existing.id } : rawClue, existing, state.clock.absoluteMinute, {
             sourceMessageId,
             sourceSwipeId,
         });
         if (!clue.text) continue;
+        if (existing) {
+            clue.people = mergeUniqueStrings(existing.people, clue.people, 16);
+            clue.locations = mergeUniqueStrings(existing.locations, clue.locations, 12);
+            clue.events = mergeUniqueStrings(existing.events, clue.events, 16);
+            clue.tags = mergeUniqueStrings(existing.tags, clue.tags, 20);
+        }
         const sourceChanged = Boolean(
             existing
             && (previousText !== clue.text || previousExcerpt !== clue.sourceExcerpt)
@@ -3079,6 +3133,16 @@ function applyClueUpdates(state, {
         anchorTiming(clue, { force: !existing || sourceChanged });
         if (existing) Object.assign(existing, clue);
         else state.storyMemory.clues.unshift(clue);
+        if (mergedFreshIdentity) {
+            appendMemoryMetabolism(state, {
+                kind: 'clue',
+                action: 'merged',
+                targetId: incomingId,
+                replacementId: existing.id,
+                reason: '模型为同一未完线索提交了新 ID，已保留原身份并合并进展',
+                sourceMessageId: sourceMessageId ?? clue.sourceMessageId ?? 0,
+            });
+        }
     }
 
     for (const rawResolution of asArray(cluesResolve).slice(0, 24)) {
@@ -4025,20 +4089,42 @@ export function applySimulationResult(baseState, rawPayload, {
             }
             : null;
 
-        const workedMinutes = asInteger(
+        const requestedWorkedMinutes = asInteger(
             update?.worked_minutes ?? update?.workedMinutes,
             0,
             0,
             5 * 365 * MINUTES_PER_DAY,
         );
-        if (workedMinutes && event.clockMode === 'active') {
-            event.accruedMinutes = Math.min(
-                event.durationMinutes || Number.MAX_SAFE_INTEGER,
-                event.accruedMinutes + workedMinutes,
+        if (event.clockMode === 'active') {
+            const previousCheckedAt = asInteger(
+                event.lastCheckedAt,
+                worldMinute,
+                0,
             );
-            if (event.durationMinutes > 0 && event.accruedMinutes >= event.durationMinutes) {
-                event.status = 'ready';
+            const availableWorkedMinutes = Math.max(0, worldMinute - previousCheckedAt);
+            const workedMinutes = Math.min(requestedWorkedMinutes, availableWorkedMinutes);
+
+            if (requestedWorkedMinutes > availableWorkedMinutes) {
+                appendAudit(state, {
+                    type: 'event_work_clamped',
+                    text: `活动事件“${event.title}”申报 ${requestedWorkedMinutes} 分钟工时，按世界时间截为 ${availableWorkedMinutes} 分钟`,
+                    reason: '活动事件不能在主世界未经过的时间里单独推进',
+                });
             }
+
+            if (workedMinutes) {
+                event.accruedMinutes = Math.min(
+                    event.durationMinutes || Number.MAX_SAFE_INTEGER,
+                    event.accruedMinutes + workedMinutes,
+                );
+                if (event.durationMinutes > 0 && event.accruedMinutes >= event.durationMinutes) {
+                    event.status = 'ready';
+                }
+            }
+
+            // This event has now been evaluated through the current authoritative
+            // world minute even when no work was performed during the interval.
+            event.lastCheckedAt = worldMinute;
         }
 
         if (update?.summary) event.summary = asString(update.summary, event.summary, 420);
@@ -6299,6 +6385,13 @@ export function compactStateForModel(state, {
                 due_at: event.dueAt,
                 duration_minutes: event.durationMinutes,
                 accrued_minutes: event.accruedMinutes,
+                unsettled_work_window_minutes: event.clockMode === 'active'
+                    ? Math.max(
+                        0,
+                        Number(state.clock?.absoluteMinute || 0)
+                            - Number(event.lastCheckedAt ?? state.clock?.absoluteMinute ?? 0),
+                    )
+                    : 0,
                 prerequisites: event.prerequisites,
                 cause: modelText(event.cause, LIMITS.eventCause),
                 actors: event.actors,
@@ -6971,7 +7064,7 @@ const activeDirectorNotes = asArray(directorNotes)
         '3L. world_pulse 可以产生与当前主线完全无关的新暗流。公开世界事件先在世界里真实发生，再通过 publicity/public_* 字段交给舆情模块；舆情绝不能反向创造事实。',
         '3M. “公开世界事件”不等于“大事件”。天气、交通、商业、政策小变化、行业动态、地方案件、设施故障、活动、消费与网络热点都可以成立。绝大多数公共变化应该普通、地方化、可解释；真正的大型灾害、战争、政变、巨型阴谋等必须极罕见且有强因果。',
         '大量同阵营或同地点 NPC 的共同变化优先合并成势力/地点事件；名字重新出现、地点接近、关联事件到时或伏笔命中时再唤醒个人。',
-        '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
+        '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写实际工作的 worked_minutes，而且工时必须发生在主世界已经真实经过的时间里，不能让事件跑到世界钟前面。unsettled_work_window_minutes 表示此前已经过但尚未结算的可用时间窗；本批正文新发生的明确时间推进也可以成为可用时间。插件会把超出权威世界时间的工时截掉。condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
         '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在该人物的处境、目标或情绪有真实变化时更新。不要让所有人物每轮集体独白。',
         '人物状态中的 identity_anchor、personality_anchor、appearance_profile、background_profile、speaking_style 与 behavior_boundaries 是用户维护的稳定角色设定：必须遵守，不得在 people_upsert 中重写。identity_anchor 可包含任意性别身份、称谓/代词、物种、年龄阶段与社会身份；appearance_profile 负责外貌与身体特征；background_profile 负责背景、经历与关系。不得根据外貌、衣着、身体或物种反推或改写身份。没有身份锚点且正文也不明确时使用中性表述。',
@@ -6996,7 +7089,7 @@ const activeDirectorNotes = asArray(directorNotes)
         '12D-1. 已解决事件本体不要为了“保留剧情”继续挂在暗流里；保留它已经造成的 world_facts / 人物状态 / 环境后果即可。真正需要继续发展的部分创建为新的事件。这样事件链会往前长，而不是反复复读旧事件。',
         '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
         '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',
-        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。伏笔若明确关联人物、地点或世界事件，可分别填写 people / locations / events；不要为了分类硬绑一个人物。',
+        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。相关旧记忆里已经存在的同一伏笔必须沿用原 ID，禁止换标题或换 ID 重复新建；旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。伏笔若明确关联人物、地点或世界事件，可分别填写 people / locations / events；不要为了分类硬绑一个人物。',
         '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。长期事实必须更迭：同一稳定 key 出现新值时提交新值，让旧版本退出 active；明确失效/否定时写 facts_invalidate。不要让过期事实与新事实同时保持当前有效。',
         '14A. 事实层更新只代表世界真相/档案更新，绝不能因此自动把新值塞进所有 NPC 的 known_fact_keys；NPC 认知仍只按 12A 的知情证据单独变化。',
         '14B. 为每个 new="true" 的 assistant_turn 顺手生成一条 L0 单轮摘要，写入 memory_update.turn_summaries。source_message_id 必须等于该 assistant_turn 的 message_id；summary 只总结这一轮真正发生的关键变化、关系/承诺/物品/未完问题，约 60—160 字。不要再让独立记忆任务为了同一轮正文重新请求一次模型。',

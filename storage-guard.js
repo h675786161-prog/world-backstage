@@ -10,7 +10,7 @@ const SOFT_BRANCH_OVERRIDE_BYTES = 6 * 1024 * 1024;
 const HARD_BRANCH_OVERRIDE_BYTES = 10 * 1024 * 1024;
 const KEEP_RECENT_ASSISTANT_SNAPSHOTS = 12;
 const KEEP_RECENT_OVERRIDE_KEYS = 3;
-const GUARD_INTERVAL_MS = 15_000;
+const GUARD_INTERVAL_MS = 60_000;
 const STARTUP_DELAY_MS = 1_500;
 
 function getContext() {
@@ -143,6 +143,32 @@ function compactHistoricalSwipeSnapshots(chat) {
 }
 
 let running = false;
+let lastCheckedFingerprint = '';
+
+function storageFingerprint(store, chat) {
+    const overrideShape = Object.entries(store?.branchOverrides || {})
+        .map(([key, snapshot]) => (
+            `${key}:${Number(snapshot?.state?.revision ?? snapshot?.revision ?? 0)}`
+        ))
+        .join('|');
+    const assistantShape = (Array.isArray(chat) ? chat : [])
+        .map((message, index) => {
+            if (message?.is_user || message?.is_system) return '';
+            const swipeId = Number(message?.swipe_id ?? 0);
+            const selected = selectedSnapshot(message);
+            return `${index}:${swipeId}:${message?.swipes?.length || 0}:${selected?.status || ''}:${selected?.state?.revision ?? selected?.revision ?? 0}`;
+        })
+        .filter(Boolean)
+        .join('|');
+    return [
+        Number(store?.currentState?.revision || 0),
+        String(store?.currentState?.updatedAt || ''),
+        String(store?.historyBootstrapCheckpoint?.cursor ?? ''),
+        overrideShape,
+        assistantShape,
+    ].join('||');
+}
+
 async function runStorageGuard(reason = 'scheduled') {
     if (running) return false;
     running = true;
@@ -150,10 +176,13 @@ async function runStorageGuard(reason = 'scheduled') {
         const context = getContext();
         const store = context?.chatMetadata?.[STATE_KEY];
         if (!context || !store) return false;
+        const fingerprint = storageFingerprint(store, context.chat);
+        if (reason === 'interval' && fingerprint === lastCheckedFingerprint) return false;
 
         const branchChanged = compactBranchOverrides(store, context.chat);
         const swipeChanged = compactHistoricalSwipeSnapshots(context.chat);
         const changed = branchChanged || swipeChanged;
+        lastCheckedFingerprint = storageFingerprint(store, context.chat);
         if (!changed) return false;
 
         console.info(`[世界背面][storage-guard] 已整理快照存储 (${reason})`);

@@ -955,15 +955,18 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                             <span>钟我还是抱着，不会丢。这里只决定要不要把时间递给正文。</span>
                         </div>
                         <div class="wb-time-mode-picker" role="group" aria-label="世界时间注入方式">
-                            <button type="button" data-wb-setting-button="injectionTimeMode" data-value="full"
+                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
+                                data-wb-setting-button="injectionTimeMode" data-value="full"
                                 class="${settings.injectionTimeMode === 'full' ? 'is-active' : ''}">
                                 <strong>完整</strong><small>日期 + 时段 + 具体时间</small>
                             </button>
-                            <button type="button" data-wb-setting-button="injectionTimeMode" data-value="anchor"
+                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
+                                data-wb-setting-button="injectionTimeMode" data-value="anchor"
                                 class="${settings.injectionTimeMode === 'anchor' ? 'is-active' : ''}">
                                 <strong>最小锚点</strong><small>只留连续性需要的时间</small>
                             </button>
-                            <button type="button" data-wb-setting-button="injectionTimeMode" data-value="off"
+                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
+                                data-wb-setting-button="injectionTimeMode" data-value="off"
                                 class="${settings.injectionTimeMode === 'off' ? 'is-active' : ''}">
                                 <strong>关闭</strong><small>时间不递给正文</small>
                             </button>

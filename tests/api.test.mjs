@@ -67,10 +67,12 @@ test('custom API can pull and normalize model lists while keeping manual input p
     });
     assert.deepEqual(proxied, ['gemini-test']);
     assert.equal(proxyRequest.url, '/api/backends/chat-completions/status');
-    assert.equal(proxyRequest.body.reverse_proxy, 'https://example.test/v1');
+    assert.equal(proxyRequest.body.chat_completion_source, 'custom');
+    assert.equal(proxyRequest.body.custom_url, 'https://example.test/v1');
+    assert.match(proxyRequest.body.custom_include_headers, /Bearer proxy-secret/);
 });
 
-test('proxy request uses plugin URL, key and model instead of tavern selection', async () => {
+test('proxy request uses the tavern custom dispatcher with plugin URL, key and model', async () => {
     let request = null;
     const result = await requestCustomCompletion({
         customApiUrl: 'https://example.test/v1',
@@ -88,10 +90,10 @@ test('proxy request uses plugin URL, key and model instead of tavern selection',
 
     assert.equal(result, '{"ok":true}');
     assert.equal(request.url, '/api/backends/chat-completions/generate');
-    assert.equal(request.body.reverse_proxy, 'https://example.test/v1');
-    assert.equal(request.body.proxy_password, 'plugin-secret');
+    assert.equal(request.body.custom_url, 'https://example.test/v1');
+    assert.match(request.body.custom_include_headers, /Bearer plugin-secret/);
     assert.equal(request.body.model, 'plugin-model');
-    assert.equal(request.body.chat_completion_source, 'openai');
+    assert.equal(request.body.chat_completion_source, 'custom');
     assert.equal(request.options.headers['X-CSRF-Token'], 'tavern-token');
 });
 

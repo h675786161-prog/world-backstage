@@ -52,6 +52,83 @@ test('unbound structured exact clock may calibrate same relative story day', () 
     assert.equal(result.precision, 'minute');
 });
 
+test('time_format block uses the end of a clock range as current story time', () => {
+    const result = resolveNarrativeTimeTransition([
+        '<time_format>',
+        'time: 灾变后·第1日·午后 ☆15:55-16:15(屏息的静滞)',
+        'scene: 市中心·受侵袭公寓楼下·银色轿车驾驶室',
+        '</time_format>',
+    ].join('\n'), {
+        currentAbsoluteMinute: day(1) + 15 * 60 + 55,
+        calendarBound: false,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    assert.equal(result.targetAbsoluteMinute, day(1) + 16 * 60 + 15);
+    assert.equal(result.precision, 'minute');
+});
+
+test('time_format story-day marker advances the relative calendar as well as the clock', () => {
+    const result = resolveNarrativeTimeTransition([
+        '<time_format>',
+        'time: 灾变后·第2日·清晨·06:20-06:35',
+        'scene: 临时避难所',
+        '</time_format>',
+    ].join('\n'), {
+        currentAbsoluteMinute: day(1) + 23 * 60,
+        calendarBound: false,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    assert.equal(result.targetAbsoluteMinute, day(2) + 6 * 60 + 35);
+    assert.equal(result.precision, 'minute');
+});
+
+test('semantic time block keeps a story-day line separate from its labelled clock line', () => {
+    const result = resolveNarrativeTimeTransition([
+        '<time_format>',
+        'day: 灾变后·第3日·上午',
+        'time: 10:20到10:50',
+        'scene: 临时避难所',
+        '</time_format>',
+    ].join('\n'), {
+        currentAbsoluteMinute: day(2) + 22 * 60,
+        calendarBound: false,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    assert.equal(result.targetAbsoluteMinute, day(3) + 10 * 60 + 50);
+});
+
+test('Chinese 到 clock range and full-width colons use the range end', () => {
+    const result = resolveNarrativeTimeTransition('<time>当前时间：10：20到10：50</time>', {
+        currentAbsoluteMinute: day(1) + 10 * 60 + 20,
+        calendarBound: false,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    assert.equal(result.targetAbsoluteMinute, day(1) + 10 * 60 + 50);
+});
+
+test('explicitly labelled plain time line is a structured time source', () => {
+    const result = resolveNarrativeTimeTransition('**当前时间：** 10:05\n她推开了门。', {
+        currentAbsoluteMinute: day(1) + 10 * 60 + 2,
+        calendarBound: false,
+        currentPrecision: 'minute',
+    });
+    assert.ok(result);
+    assert.equal(result.targetAbsoluteMinute, day(1) + 10 * 60 + 5);
+});
+
+test('bare dialogue clock remains non-authoritative', () => {
+    const result = resolveNarrativeTimeTransition('她看了眼消息：“我们10:05见。”', {
+        currentAbsoluteMinute: day(1) + 10 * 60 + 2,
+        calendarBound: false,
+        currentPrecision: 'minute',
+    });
+    assert.equal(result, null);
+});
+
 test('clue relative day stays anchored to its creation day without inventing a clock time', () => {
     const base = day(10) + 9 * 60;
     const timing = resolveFutureTimeExpression('她约好后天去医院复诊。', {

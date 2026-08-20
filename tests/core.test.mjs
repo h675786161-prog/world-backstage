@@ -11,6 +11,7 @@ import {
     buildInjectionPackage,
     buildPersonObservationPrompt,
     buildSimulationPrompt,
+    compactStateForModel,
     createInitialState,
     createSnapshot,
     eventProgress,
@@ -216,6 +217,115 @@ test('有效工时事件只累计正文确认的实际工作分钟', () => {
 
     assert.equal(state.events[0].accruedMinutes, 30);
     assert.equal(eventProgress(state.events[0], state.clock.absoluteMinute).percent, 25);
+});
+
+test('世界时间未推进时活动事件不能单独积累工时', () => {
+    let state = createInitialState({ day: 1, hour: 8, minute: 0 });
+    state = addManualEvent(state, {
+        id: 'frozen-work',
+        title: '整理档案',
+        clock_mode: 'active',
+        duration_minutes: 120,
+        visibility: 'hidden',
+    });
+    const startedAt = state.clock.absoluteMinute;
+
+    state = applySimulationResult(state, {
+        elapsed_minutes: 0,
+        time_reason: '本轮没有经过时间',
+        events_update: [{ id: 'frozen-work', status: 'active', worked_minutes: 60 }],
+    }, {
+        timePolicy: 'world',
+        narrativeText: '她仍站在原地。',
+    });
+
+    assert.equal(state.clock.absoluteMinute, startedAt);
+    assert.equal(state.events[0].accruedMinutes, 0);
+    assert.equal(state.events[0].lastCheckedAt, startedAt);
+    assert.equal(state.audit.some(entry => entry.type === 'event_work_clamped'), true);
+});
+
+test('活动事件工时不能超过主世界实际经过的分钟', () => {
+    let state = createInitialState({ day: 1, hour: 8, minute: 0 });
+    state = addManualEvent(state, {
+        id: 'bounded-work',
+        title: '修补屋顶',
+        clock_mode: 'active',
+        duration_minutes: 180,
+        visibility: 'hidden',
+    });
+    const startedAt = state.clock.absoluteMinute;
+
+    state = applySimulationResult(state, {
+        elapsed_minutes: 30,
+        time_reason: '半小时过去',
+        events_update: [{ id: 'bounded-work', status: 'active', worked_minutes: 90 }],
+    }, {
+        timePolicy: 'world',
+        narrativeText: '她修补了半小时屋顶。',
+    });
+
+    assert.equal(state.clock.absoluteMinute, startedAt + 30);
+    assert.equal(state.events[0].accruedMinutes, 30);
+    assert.equal(state.events[0].lastCheckedAt, startedAt + 30);
+    assert.equal(state.audit.some(entry => entry.type === 'event_work_clamped'), true);
+});
+
+test('正文明确时间跳转会为活动事件提供同一段工时窗口', () => {
+    let state = createInitialState({ day: 1, hour: 8, minute: 0 });
+    state = addManualEvent(state, {
+        id: 'narrative-window',
+        title: '清点物资',
+        clock_mode: 'active',
+        duration_minutes: 240,
+        visibility: 'hidden',
+    });
+    const startedAt = state.clock.absoluteMinute;
+
+    state = applySimulationResult(state, {
+        elapsed_minutes: 0,
+        events_update: [{ id: 'narrative-window', status: 'active', worked_minutes: 90 }],
+    }, {
+        timePolicy: 'world',
+        narrativeText: '过了2小时，她终于清点完第一批物资。',
+    });
+
+    assert.equal(state.clock.absoluteMinute, startedAt + 120);
+    assert.equal(state.events[0].accruedMinutes, 90);
+    assert.equal(state.events[0].lastCheckedAt, startedAt + 120);
+});
+
+test('手动推进世界时间后活动事件可以在下一轮补结算', () => {
+    let state = createInitialState({ day: 1, hour: 8, minute: 0 });
+    state = addManualEvent(state, {
+        id: 'catch-up-work',
+        title: '熬煮药剂',
+        clock_mode: 'active',
+        duration_minutes: 180,
+        visibility: 'hidden',
+    });
+    const startedAt = state.clock.absoluteMinute;
+
+    state = advanceWorldClock(state, 60, '手动推进一小时');
+    assert.equal(state.events[0].lastCheckedAt, startedAt);
+    assert.equal(
+        compactStateForModel(state).events[0].unsettled_work_window_minutes,
+        60,
+    );
+
+    state = applySimulationResult(state, {
+        elapsed_minutes: 0,
+        time_reason: '只补结算已经经过的世界时间',
+        events_update: [{ id: 'catch-up-work', status: 'active', worked_minutes: 45 }],
+    }, {
+        timePolicy: 'world',
+        narrativeText: '',
+        preserveCommitAnchor: true,
+    });
+
+    assert.equal(state.clock.absoluteMinute, startedAt + 60);
+    assert.equal(state.events[0].accruedMinutes, 45);
+    assert.equal(state.events[0].lastCheckedAt, startedAt + 60);
 });
 
 test('预定事件使用明确到期时刻', () => {

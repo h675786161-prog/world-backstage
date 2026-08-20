@@ -120,10 +120,41 @@ function weekdayIndex(date) {
     return ordinal === null ? null : ordinal % 7; // 0001-01-01 is Monday in proleptic Gregorian.
 }
 
-function extractStructuredTimeScope(text = '') {
+export function extractStructuredTimeScope(text = '') {
     const source = String(text || '');
-    const matches = [...source.matchAll(/<details\b[^>]*>[\s\S]*?<summary\b[^>]*>[\s\S]*?(?:时间\s*[与和]\s*地点|时间地点)[\s\S]*?<\/summary>[\s\S]*?<\/details>/giu)];
-    return matches.length ? String(matches.at(-1)?.[0] || '') : '';
+    const candidates = [];
+    const collect = (pattern, kind = 'line') => {
+        for (const match of source.matchAll(pattern)) {
+            const index = Number(match.index || 0);
+            const text = String(match[0] || '');
+            candidates.push({
+                index,
+                end: index + text.length,
+                text,
+                kind,
+            });
+        }
+    };
+
+    // Common collapsible status header used by several presets.
+    collect(/<details\b[^>]*>[\s\S]*?<summary\b[^>]*>[\s\S]*?(?:时间\s*[与和]\s*地点|时间地点|time\s*(?:&|and)\s*(?:place|location))[\s\S]*?<\/summary>[\s\S]*?<\/details>/giu, 'block');
+
+    // XML-like semantic wrappers used by prompt presets, for example
+    // <time_format>...</time_format> and <scene_time>...</scene_time>.
+    collect(/<(time(?:[_-]?(?:format|info|status))?|date[_-]?time|datetime|story[_-]?time|world[_-]?time|scene[_-]?time)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, 'block');
+
+    // Plain/Markdown status lines are accepted only when explicitly labelled as
+    // time. A bare clock inside narrative dialogue must never become authority.
+    collect(/^(?:\s*(?:[-*#>|]+\s*)?(?:\*\*|__)?(?:当前|本轮|场景|故事|世界)?\s*(?:时间|time|date\s*(?:&|and)\s*time)(?:\*\*|__)?\s*[:：]\s*[^\n\r]+)$/gimu);
+
+    if (!candidates.length) return '';
+    const blocks = candidates.filter(candidate => candidate.kind === 'block');
+    const visibleCandidates = candidates.filter(candidate => (
+        candidate.kind === 'block'
+        || !blocks.some(block => candidate.index >= block.index && candidate.end <= block.end)
+    ));
+    visibleCandidates.sort((left, right) => left.index - right.index);
+    return visibleCandidates.at(-1).text;
 }
 
 function latestDaypart(text = '') {
@@ -138,9 +169,20 @@ function latestDaypart(text = '') {
     return latest;
 }
 
+function latestStoryDayIndex(text = '') {
+    const source = String(text || '');
+    const matches = [
+        ...source.matchAll(/(?:故事|剧情|灾变后)?\s*第\s*(\d+|[一二两三四五六七八九十]+)\s*[日天]/gu),
+        ...source.matchAll(/\bday\s*(\d+)\b/giu),
+    ].sort((left, right) => Number(left.index || 0) - Number(right.index || 0));
+    if (!matches.length) return null;
+    const value = chineseInteger(matches.at(-1)?.[1]);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 function latestExactClock(text = '') {
     const source = String(text || '');
-    const transitions = [...source.matchAll(/(?:▶|>)?\s*([01]?\d|2[0-3])\s*:\s*([0-5]\d)\s*(?:→|->|至|到)\s*([01]?\d|2[0-3])\s*:\s*([0-5]\d)/gu)];
+    const transitions = [...source.matchAll(/(?:▶|>)?\s*([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)\s*(?:→|->|至|到|[-–—~～])\s*([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)/gu)];
     if (transitions.length) {
         const match = transitions.at(-1);
         return {
@@ -150,7 +192,7 @@ function latestExactClock(text = '') {
             sourceText: match[0].trim(),
         };
     }
-    const clocks = [...source.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])\s*:\s*([0-5]\d)(?!\d)/gu)];
+    const clocks = [...source.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)(?!\d)/gu)];
     if (!clocks.length) return null;
     const match = clocks.at(-1);
     return {
@@ -290,9 +332,13 @@ export function resolveNarrativeTimeTransition(text = '', {
         : (structuredScope ? latestExactClock(structuredScope) : null);
     const anchorDaypart = String(narrativeAnchor?.daypart || '').trim();
     const structuredDaypart = anchorDaypart || latestDaypart(structuredScope)?.label || '';
+    const structuredStoryDay = structuredScope && !calendarBound
+        ? latestStoryDayIndex(structuredScope)
+        : null;
 
     if (structuredScope && exact) {
-        const target = dayIndex(baseAbsoluteMinute) * MINUTES_PER_DAY + exact.hour * 60 + exact.minute;
+        const targetDay = structuredStoryDay ?? dayIndex(baseAbsoluteMinute);
+        const target = targetDay * MINUTES_PER_DAY + exact.hour * 60 + exact.minute;
         // Bare same-day clock evidence may improve precision only forward. A clock
         // behind the authoritative minute is stale/ambiguous, never permission to
         // rewrite already-lived world time.
@@ -382,7 +428,8 @@ export function resolveNarrativeTimeTransition(text = '', {
     if (structuredScope && structuredDaypart && !exact) {
         const desired = daypartMinute(structuredDaypart);
         if (desired !== null) {
-            const target = dayIndex(baseAbsoluteMinute) * MINUTES_PER_DAY + desired;
+            const targetDay = structuredStoryDay ?? dayIndex(baseAbsoluteMinute);
+            const target = targetDay * MINUTES_PER_DAY + desired;
             if (target >= baseAbsoluteMinute) {
                 return {
                     kind: 'structured-daypart',

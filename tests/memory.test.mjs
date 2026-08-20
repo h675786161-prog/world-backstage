@@ -89,6 +89,43 @@ test('history batches create summaries and deduplicated clues', () => {
     assert.equal(second.storyMemory.indexedThroughMessageId, 39);
 });
 
+test('a fresh model id cannot duplicate an obviously continuing clue', () => {
+    const first = applyHistoryIndexResult(createInitialState(), {
+        clues_upsert: [{
+            id: 'missing-key-original',
+            title: '失踪的钥匙',
+            text: '阿青在旧仓库弄丢了一把铜钥匙。',
+            people: ['阿青'],
+            locations: ['旧仓库'],
+            tags: ['铜钥匙'],
+        }],
+    }, { startMessageId: 0, endMessageId: 10 });
+    const second = applyHistoryIndexResult(first, {
+        clues_upsert: [{
+            id: 'missing-key-new-id',
+            title: '失踪的钥匙',
+            text: '阿青仍未在旧仓库找到那把铜钥匙。',
+            people: ['阿青'],
+            locations: ['旧仓库'],
+            tags: ['铜钥匙', '未找回'],
+            status: 'developing',
+        }],
+    }, { startMessageId: 11, endMessageId: 20 });
+
+    assert.equal(second.storyMemory.clues.length, 1);
+    assert.equal(second.storyMemory.clues[0].id, 'missing-key-original');
+    assert.equal(second.storyMemory.clues[0].status, 'developing');
+    assert.deepEqual(second.storyMemory.clues[0].tags.sort(), ['未找回', '铜钥匙'].sort());
+    assert.equal(
+        second.storyMemory.metabolismLog.some(item => (
+            item.action === 'merged'
+            && item.targetId === 'missing-key-new-id'
+            && item.replacementId === 'missing-key-original'
+        )),
+        true,
+    );
+});
+
 test('relevant memory retrieval prefers matching people and objects', () => {
     const state = applyHistoryIndexResult(createInitialState(), {
         clues_upsert: [
@@ -189,7 +226,7 @@ test('person observation is bounded and protects the player by default', () => {
 
     assert.throws(
         () => buildPersonObservationPrompt(state, { ...npc, name: '玩家', isUser: true }),
-        /玩家视角默认关闭/,
+        /玩家角色不使用人物即时观测/,
     );
 });
 
@@ -495,8 +532,8 @@ test('more than 200 turns remain bounded and still recall recent character facts
     assert.equal(state.people.length, 18);
     assert.equal(state.events.length <= 96, true);
     assert.equal(state.storyMemory.facts.length <= 240, true);
-    assert.equal(state.storyMemory.clues.length <= 180, true);
-    assert.equal(state.storyMemory.summaries.length <= 72, true);
+    assert.equal(state.storyMemory.clues.length <= 480, true);
+    assert.equal(state.storyMemory.summaries.length <= 2400, true);
     assert.equal(state.audit.length <= 40, true);
     const prompt = buildSimulationPrompt(state, {
         narrativeTurns: [{ role: 'assistant', content: '人物3再次提起线索3。', messageId: 441 }],

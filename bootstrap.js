@@ -1,5 +1,4 @@
 import './storage-guard.js';
-import './mobile-social-fix.js';
 import './mobile-character-search-scroll.js';
 import './mobile-ui-polish.js';
 import './ui-hotfix.js';
@@ -24,10 +23,6 @@ void import('./orb-motion-randomizer.js?v=2').catch(error => {
 
 void import('./community-note.js?v=3').catch(error => {
     console.error('[世界背面] 妈妈的小纸条加载失败', error);
-});
-
-void import('./community-note-entry-fix.js?v=1').catch(error => {
-    console.error('[世界背面] 妈妈的小纸条常驻入口加载失败', error);
 });
 
 void import('./lingqi-greeting.js?v=2').catch(error => {

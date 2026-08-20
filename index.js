@@ -1587,14 +1587,15 @@ function saveStore(store, { immediate = false } = {}) {
 
     if (!context?.chatMetadata || !hasChatContext()) {
         runtime.transientStore = store;
-        return;
+        return Promise.resolve();
     }
 
     context.chatMetadata[STATE_KEY] = store;
     if (immediate && typeof context.saveMetadata === 'function') {
-        void context.saveMetadata();
+        return Promise.resolve(context.saveMetadata());
     } else {
         context.saveMetadataDebounced?.();
+        return Promise.resolve();
     }
 }
 
@@ -2854,6 +2855,8 @@ function pendingAssistantEntriesThrough(messageId) {
     return entries;
 }
 
+const HISTORY_BATCH_TARGET_ASSISTANT_TURNS = 10;
+
 function nextHistoryBatch(cursor, {
     maximumCharacters = 24000,
     maximumUserTurns = 8,
@@ -3016,7 +3019,7 @@ function validHistoryBootstrapCheckpoint(store, {
     return valid ? { ...checkpoint, cursor } : null;
 }
 
-function saveHistoryBootstrapCheckpoint({
+async function saveHistoryBootstrapCheckpoint({
     chatToken,
     cursor,
     chatLength,
@@ -3038,7 +3041,7 @@ function saveHistoryBootstrapCheckpoint({
         stagedState: trimState(stagedState),
         updatedAt: new Date().toISOString(),
     };
-    saveStore(store, { immediate: true });
+    await saveStore(store, { immediate: true });
     return true;
 }
 
@@ -4524,8 +4527,11 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
         }
         const errorMessage = describeError(error);
         const issueType = error?.errorType || classifyDiagnosticIssue(errorMessage);
+        const pluginOutputLimited = Number(error?.effectiveMaxTokens || 0) > 0;
         const visibleError = issueType === 'output-limit'
-            ? '本次推演内容超过当前输出上限，模型返回被截断；本轮没有提交任何世界状态。可在「生成限制」提高世界推演 Token 上限后再试。'
+            ? pluginOutputLimited
+                ? '本次推演内容超过当前输出上限，模型返回被截断；本轮没有提交任何世界状态。可在「生成限制」提高世界推演 Token 上限后再试。'
+                : '本次推演在自动输出预算下仍被模型截断；本轮没有提交任何世界状态。可直接重试；若连续出现，请检查当前模型或服务端自身的最大输出限制。'
             : errorMessage;
         if (issueType === 'output-limit') {
             console.warn('[世界背面] 世界推演输出被截断，已丢弃未闭合结果：', errorMessage);
@@ -6801,7 +6807,7 @@ async function bootstrapWorldFromHistory() {
     let cursor = resumeCursor;
     let assistantBatchLimit = checkpoint
         ? Math.max(1, Number.parseInt(checkpoint.assistantBatchLimit, 10) || 1)
-        : 4;
+        : HISTORY_BATCH_TARGET_ASSISTANT_TURNS;
 
     try {
         while (cursor < chatLength) {
@@ -6816,6 +6822,7 @@ async function bootstrapWorldFromHistory() {
 
             const batch = nextHistoryBatch(cursor, {
                 maximumAssistantTurns: assistantBatchLimit,
+                maximumUserTurns: HISTORY_BATCH_TARGET_ASSISTANT_TURNS + 1,
             });
             if (!batch.messages.length) {
                 cursor = batch.nextCursor;
@@ -6913,7 +6920,14 @@ async function bootstrapWorldFromHistory() {
                 memoryEnabled: getSettings().memorySystemEnabled,
             });
             cursor = batch.nextCursor;
-            saveHistoryBootstrapCheckpoint({
+            // A malformed/oversized response halves only the current working
+            // batch. Once smaller batches succeed, cautiously climb back toward
+            // the fast target instead of remaining slow for the entire archive.
+            assistantBatchLimit = Math.min(
+                HISTORY_BATCH_TARGET_ASSISTANT_TURNS,
+                assistantBatchLimit + 1,
+            );
+            await saveHistoryBootstrapCheckpoint({
                 chatToken,
                 cursor,
                 chatLength,
@@ -6922,6 +6936,7 @@ async function bootstrapWorldFromHistory() {
                 assistantBatchLimit,
             });
             runtime.historyProgress.processed = Math.min(chatLength, cursor);
+            runtime.historyProgress.message = `消息 ${batch.startMessageId}—${batch.endMessageId} 已安全保存～继续往后收拾`;
             runtime.ui?.render();
         }
 
@@ -7093,8 +7108,11 @@ async function scanStoryMemoryHistory({
     try {
         let completedBatches = 0;
         let assistantBatchLimit = automatic
-            ? Math.min(6, Math.max(1, getSettings().memoryAutoIndexInterval))
-            : 6;
+            ? Math.min(
+                HISTORY_BATCH_TARGET_ASSISTANT_TURNS,
+                Math.max(1, getSettings().memoryAutoIndexInterval),
+            )
+            : HISTORY_BATCH_TARGET_ASSISTANT_TURNS;
         const batchLimit = Number.isFinite(Number(maximumBatches))
             ? Math.max(1, Number.parseInt(maximumBatches, 10) || 1)
             : Number.POSITIVE_INFINITY;
@@ -7109,6 +7127,7 @@ async function scanStoryMemoryHistory({
             }
             const batch = nextHistoryBatch(cursor, {
                 maximumAssistantTurns: assistantBatchLimit,
+                maximumUserTurns: HISTORY_BATCH_TARGET_ASSISTANT_TURNS + 1,
             });
             if (!batch.messages.length) {
                 cursor = batch.nextCursor;
@@ -7209,6 +7228,10 @@ async function scanStoryMemoryHistory({
             });
             cursor = batch.nextCursor;
             completedBatches += 1;
+            assistantBatchLimit = Math.min(
+                HISTORY_BATCH_TARGET_ASSISTANT_TURNS,
+                assistantBatchLimit + 1,
+            );
 
             const store = getStore();
             store.currentState = ensureMonotonicRevision(state, store.currentState);
@@ -7218,8 +7241,13 @@ async function scanStoryMemoryHistory({
                 sourceKey: anchorKey,
                 kind: 'history-index',
             });
-            saveStore(store);
+            // A completed history batch is a durable checkpoint, not merely an
+            // in-memory UI update. Wait for metadata persistence before asking
+            // the model for the next batch so reloads/crashes cannot erase all
+            // earlier work in a long archive scan.
+            await saveStore(store, { immediate: true });
             runtime.historyProgress.processed = Math.min(chatLength, cursor);
+            runtime.historyProgress.message = `消息 ${batch.startMessageId}—${batch.endMessageId} 已安全保存～继续往后收拾`;
             refreshInjection();
             runtime.ui?.render();
 

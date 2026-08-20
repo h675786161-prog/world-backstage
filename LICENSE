@@ -1,21 +1,54 @@
-MIT License
+世界背面 / World Backstage 专有许可协议
+版本 1.0 · 2026
 
-Copyright (c) 2026 玲
+Copyright © 2026 玲. All Rights Reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+一、版权与所有权
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+“世界背面 / World Backstage”及本仓库中由作者原创的源代码、界面设计、交互设计、文案、提示词、视觉素材、配置结构及其他原创内容，其著作权及相关权利归作者“玲”所有。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+除本协议明确授予的权利外，其余权利均由作者保留。
+
+二、允许的使用
+
+仅允许普通最终用户从作者认可的官方渠道获取本项目，并为个人、非商业目的安装、运行和使用官方版本。
+
+该许可是有限的、非独占的、不可转让的，且不包含复制、修改、再发布、商业利用或制作衍生作品的权利。
+
+三、未经授权禁止的行为
+
+未经作者事先明确授权，不得以任何形式实施下列行为：
+
+1. 复制、转载、镜像、二次上传、重新分发、打包分发或以其他方式向第三方提供本项目或其任何实质性部分；
+2. 修改、改编、翻译、反编译、二次开发、制作衍生版本，或基于本项目制作修改版、整合版、分支版、换皮版；
+3. 将本项目的源代码、提示词、界面实现、原创文案、视觉素材或其他实质性内容提取、移植、复用于其他插件、项目、产品或服务；
+4. 将本项目用于商业用途，包括但不限于出售、收费分发、付费代装、捆绑销售、会员权益、广告获利或其他直接、间接获利行为；
+5. 删除、隐藏、篡改作者署名、版权信息、许可信息或来源说明；
+6. 冒充官方版本、以作者名义发布，或以任何方式误导他人认为某个未经授权的版本、项目或服务由作者维护、授权、认可或背书；
+7. 将作者明确禁止授权的内容再次转授权、许可或授予第三方使用。
+
+四、下载不等于再授权
+
+下载、安装、查看或使用本项目，仅表示获得本协议第二条所述的有限使用权，不代表取得本项目源代码、设计、文案、素材或其他知识产权的复制权、修改权、发行权、商业使用权或再授权权。
+
+五、第三方内容
+
+如本项目包含依法使用的第三方组件、依赖、字体、图标、库或其他第三方内容，该等内容仍分别受其各自权利人及许可条款约束。本协议不改变第三方内容原有的权利归属或许可条件。
+
+六、历史版本
+
+本协议适用于自采用本协议起发布并明确受本协议约束的版本。此前已经依据其他许可证合法发布的历史版本，仍按照其当时适用的许可证处理；本协议不追溯撤销已经依法授出的既有许可。
+
+七、终止
+
+如使用者违反本协议，其基于本协议获得的使用许可自动终止。作者保留要求停止侵权、删除未经授权副本及依法追究责任的权利。
+
+八、免责声明
+
+本项目按“现状”提供，不作任何明示或默示保证。在适用法律允许的最大范围内，作者不对因安装、使用、无法使用本项目或第三方环境、接口、模型、依赖变化所产生的任何直接或间接损失承担责任。
+
+九、授权联系
+
+如需获得转载、修改、二次开发、整合、商业使用或其他超出本协议第二条范围的授权，必须事先取得作者明确许可。
+
+作者：小玲七的妈妈·玲

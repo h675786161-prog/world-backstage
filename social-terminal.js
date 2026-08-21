@@ -55,20 +55,74 @@ function normalizedConversation(raw = {}, validPersonIds = null) {
             .filter(id => id && (!validPersonIds || validPersonIds.has(id))),
     )].slice(0, type === 'direct' ? 1 : 24);
     if (!memberIds.length) return null;
+    const rawMessages = (Array.isArray(raw.rawMessages) ? raw.rawMessages : [])
+        .map(normalizedMessage)
+        .filter(Boolean)
+        .slice(-MAX_MESSAGES);
+    const requestedSettlementId = text(
+        raw.narrativeSettledThroughMessageId ?? raw.narrative_settled_through_message_id,
+        160,
+    );
     return {
         id: text(raw.id, 160) || makeId(type),
         type,
         title: text(raw.title, 120) || '未命名会话',
         memberIds,
-        rawMessages: (Array.isArray(raw.rawMessages) ? raw.rawMessages : [])
-            .map(normalizedMessage)
-            .filter(Boolean)
-            .slice(-MAX_MESSAGES),
+        rawMessages,
+        narrativeSettledThroughMessageId: rawMessages.some(message => message.id === requestedSettlementId)
+            ? requestedSettlementId
+            : '',
         lastRouting: normalizedRouting(raw.lastRouting, memberIds),
         lastError: text(raw.lastError, 500),
         createdAt: text(raw.createdAt, 80) || new Date().toISOString(),
         updatedAt: text(raw.updatedAt, 80) || new Date().toISOString(),
     };
+}
+
+export function pendingSocialConversations(social, state = {}) {
+    const normalized = normalizeSocialState(social, state?.people || []);
+    const accepted = new Set(normalized.connections
+        .filter(item => item.status === 'accepted')
+        .map(item => item.personId));
+    const peopleById = new Map((state?.people || []).map(person => [String(person?.id || ''), person]));
+    return normalized.conversations
+        .filter(conversation => conversation.type === 'group' || accepted.has(conversation.memberIds[0]))
+        .map(conversation => {
+            const settledIndex = conversation.rawMessages.findIndex(message => (
+                message.id === conversation.narrativeSettledThroughMessageId
+            ));
+            return {
+                conversationId: conversation.id,
+                title: conversation.title,
+                members: conversation.memberIds.map(id => peopleById.get(id)?.name).filter(Boolean),
+                messages: conversation.rawMessages.slice(settledIndex + 1),
+            };
+        })
+        .filter(conversation => conversation.messages.length)
+        .sort((a, b) => {
+            const aTime = a.messages.at(-1)?.createdAt || '';
+            const bTime = b.messages.at(-1)?.createdAt || '';
+            return String(bTime).localeCompare(String(aTime));
+        });
+}
+
+export function settleSocialConversations(social, state, settlements, narrativeText = '') {
+    const normalized = normalizeSocialState(social, state?.people || []);
+    const narrative = String(narrativeText || '');
+    for (const raw of Array.isArray(settlements) ? settlements : []) {
+        const conversationId = text(raw?.conversation_id ?? raw?.conversationId, 160);
+        const throughMessageId = text(raw?.through_message_id ?? raw?.throughMessageId, 160);
+        const evidence = text(raw?.evidence, 500);
+        if (!conversationId || !throughMessageId || !evidence || !narrative.includes(evidence)) continue;
+        const conversation = normalized.conversations.find(item => item.id === conversationId);
+        if (!conversation) continue;
+        const targetIndex = conversation.rawMessages.findIndex(message => message.id === throughMessageId);
+        const currentIndex = conversation.rawMessages.findIndex(message => (
+            message.id === conversation.narrativeSettledThroughMessageId
+        ));
+        if (targetIndex > currentIndex) conversation.narrativeSettledThroughMessageId = throughMessageId;
+    }
+    return normalized;
 }
 
 function normalizedConnection(raw = {}, validPersonIds = null) {

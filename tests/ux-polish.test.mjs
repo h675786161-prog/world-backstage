@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const [uiSource, styleSource, indexSource, bootstrapSource, hotfixSource, storageGuardSource, socialAdapterSource] = await Promise.all([
+const [uiSource, styleSource, indexSource, bootstrapSource, hotfixSource, storageGuardSource, socialAdapterSource, presentationSource] = await Promise.all([
     readFile(new URL('../ui.js', import.meta.url), 'utf8'),
     readFile(new URL('../style.css', import.meta.url), 'utf8'),
     readFile(new URL('../index.js', import.meta.url), 'utf8'),
@@ -10,6 +10,7 @@ const [uiSource, styleSource, indexSource, bootstrapSource, hotfixSource, storag
     readFile(new URL('../ui-hotfix.js', import.meta.url), 'utf8'),
     readFile(new URL('../storage-guard.js', import.meta.url), 'utf8'),
     readFile(new URL('../social-responsive-adapter.js', import.meta.url), 'utf8'),
+    readFile(new URL('../presentation-polish.js', import.meta.url), 'utf8'),
 ]);
 
 test('long memory UI uses filtering, search and progressive loading', () => {
@@ -215,6 +216,8 @@ test('responsive social thread keeps its vertical grid in single and split layou
     assert.match(socialAdapterSource, /wb-social-adaptive-thread > \.wb-social-thread \{[\s\S]*?display: grid !important/);
     assert.match(socialAdapterSource, /wb-social-adaptive-split > \.wb-social-thread \{[\s\S]*?display: grid !important/);
     assert.doesNotMatch(socialAdapterSource, /wb-social-adaptive-(?:thread|split) > \.wb-social-thread \{[\s\S]*?display: flex !important/);
+    assert.match(presentationSource, /\.wb-social-layout\.wb-social-adaptive-thread,[\s\S]*?grid-template-columns: minmax\(0,1fr\) !important/);
+    assert.doesNotMatch(presentationSource, /wb-mobile-social-(?:list|thread|empty)/);
 });
 
 test('UI safeguards avoid whole-document mutation scans and periodic full serialization', () => {

@@ -157,15 +157,15 @@ const CSS = `
     grid-template-rows: 48px 38px minmax(0,1fr) !important;
   }
 
-  /* mobile-social-fix.js deliberately makes messages single-pane. The generic
-     two-column polish must never override that state and leave a blank column. */
-  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-mobile-social-list,
-  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-mobile-social-thread,
-  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-mobile-social-empty {
+  /* social-responsive-adapter.js deliberately makes narrow messages single-pane.
+     The generic two-column polish must never override that state and leave a blank column. */
+  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-list,
+  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-thread,
+  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-empty {
     grid-template-columns: minmax(0,1fr) !important;
   }
 
-  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout:not(.wb-mobile-social-list):not(.wb-mobile-social-thread):not(.wb-mobile-social-empty) {
+  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout:not(.wb-social-adaptive-list):not(.wb-social-adaptive-thread):not(.wb-social-adaptive-empty):not(.wb-social-adaptive-split) {
     grid-template-columns: minmax(112px,34%) minmax(0,1fr) !important;
   }
   #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout {

@@ -1,7174 +1,2407 @@
-import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
-import {
-    eventProgress,
-    formatDuration,
-    formatWorldCalendar,
-    formatWorldMinute,
-    isActiveEvent,
-    isTerminalEvent,
-} from './core.js';
-import { filterWorldbookEntries, isWorldbookEntryManuallySelectable } from './worldbook.js';
-
-const WB_PANEL_STABILITY_HINT = 'fold:7/2';
-
-const VIEWS = [
-    { id: 'now', label: 'æ­¤åˆ»', eyebrow: 'NOW' },
-    { id: 'lingqi', label: 'ç²ä¸ƒ', eyebrow: 'LINGQI' },
-    { id: 'social', label: 'é€šè®¯', eyebrow: 'SOCIAL' },
-    { id: 'people', label: 'äººç‰©', eyebrow: 'PEOPLE' },
-    { id: 'currents', label: 'æš—æµ', eyebrow: 'CURRENTS' },
-    { id: 'echoes', label: 'å›å£°', eyebrow: 'ECHOES' },
-    { id: 'opinion', label: 'èˆ†æƒ…', eyebrow: 'PUBLIC' },
-    { id: 'memory', label: 'è®°å¿†', eyebrow: 'MEMORY' },
-    { id: 'archive', label: 'çºªäº‹', eyebrow: 'ARCHIVE' },
-];
-
-const TOAST_FACES = {
-    success: '(ï½¡â€¢Ì€á´—-)âœ§',
-    busy: '( â€¢Ì€ Ï‰ â€¢Ì )',
-    info: '( â€¢á´—â€¢ )',
-    normal: '( â€¢á´—â€¢ )',
-    warning: '(ãƒ»_ãƒ»;)',
-    error: '(ï¼›â€²âŒ’`)',
-};
-
-const TOAST_LABELS = {
-    success: 'å¥½å•¦',
-    busy: 'æ­£åœ¨åŠªåŠ›',
-    info: 'å°æç¤º',
-    normal: 'å°æç¤º',
-    warning: 'ç­‰ä¸€ä¸‹',
-    error: 'å‡ºé—®é¢˜äº†',
-};
-
-function escapeHtml(value) {
-    return String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
-}
-
-function escapeAttr(value) {
-    return escapeHtml(value).replaceAll('`', '&#096;');
-}
-
-
-function foldOpenAttr(openFolds, key, defaultOpen = false) {
-    const isOpen = openFolds instanceof Set ? openFolds.has(key) : defaultOpen;
-    return isOpen ? 'open' : '';
-}
-
-function renderFoldToolbar(prefix) {
-    return `
-        <div class="wb-fold-toolbar" aria-label="æŠ˜å æ§åˆ¶">
-            <button type="button" data-wb-action="expand-folds" data-fold-prefix="${escapeAttr(prefix)}">å…¨éƒ¨å±•å¼€</button>
-            <button type="button" data-wb-action="collapse-folds" data-fold-prefix="${escapeAttr(prefix)}">å…¨éƒ¨æ”¶èµ·</button>
-        </div>
-    `;
-}
-
-function compactText(value, maximum = 64) {
-    const text = String(value || '').replace(/\s+/g, ' ').trim();
-    if (text.length <= maximum) return text;
-    return `${text.slice(0, Math.max(1, maximum - 1)).trimEnd()}â€¦`;
-}
-
-function normalizeGroupLabel(value, fallback = 'å…¶ä»–') {
-    const label = String(value || '').trim();
-    return label || fallback;
-}
-
-function groupItems(items, getGroup) {
-    const groups = new Map();
-    for (const item of items) {
-        const descriptor = getGroup(item);
-        const rawLabel = typeof descriptor === 'object' && descriptor
-            ? descriptor.label
-            : descriptor;
-        const label = normalizeGroupLabel(rawLabel);
-        const rawKey = typeof descriptor === 'object' && descriptor
-            ? descriptor.key
-            : label;
-        const key = normalizeGroupLabel(rawKey, label).toLocaleLowerCase();
-        if (!groups.has(key)) groups.set(key, { key, label, items: [] });
-        groups.get(key).items.push(item);
-    }
-    return [...groups.values()];
-}
-function formatLocalTimestamp(value) {
-    const date = new Date(String(value || ''));
-    if (!Number.isFinite(date.getTime())) return 'æ—¶é—´æœªçŸ¥';
-    return date.toLocaleString('zh-CN', {
-        month: 'numeric',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-    });
-}
-
-function worldClockLabel(state, clock = formatWorldCalendar(state)) {
-    return state.clock?.anchored ? clock.stamp : 'å¾…ä»æ­£æ–‡å»ºç«‹æ—¶é—´é”šç‚¹';
-}
-
-
-function pluginReleaseStage(version = '') {
-    const text = String(version || '');
-    if (/-rc\./i.test(text)) return 'å€™é€‰ç‰ˆ';
-    if (/-alpha|dev\./i.test(text)) return 'æµ‹è¯•ç‰ˆ';
-    return 'æ­£å¼ç‰ˆ';
-}
-
-function pluginDisplayVersion(version = '') {
-    const text = String(version || '');
-    if (/^2\.4\.\d+(?:-|$)/i.test(text)) return 'å°çŒ«ç‰ˆ V2.4';
-    if (/^2\.3\.0-alpha\.\d+$/i.test(text)) return 'å°çŒ«ç‰ˆ V2.3 Â· ä½“éªŒç‰ˆ';
-    if (/^2\.2\.\d+$/i.test(text)) return 'å°çŒ«ç‰ˆ V2.2';
-    return `${pluginReleaseStage(text)} ${text || '1.1.0'}`;
-}
-
-function themeFor(state, settings) {
-    if (settings.theme === 'day' || settings.theme === 'night') return settings.theme;
-    const hour = formatWorldMinute(state.clock.absoluteMinute).hour;
-    return hour >= 6 && hour < 18 ? 'day' : 'night';
-}
-
-function eventStatusLabel(event) {
-    return {
-        active: 'å‘å±•ä¸­',
-        waiting: 'ç­‰å¾…æ¡ä»¶',
-        ready: 'åˆ°æ—¶å¾…ç¡®è®¤',
-        resolved: 'å·²ç»“æŸ',
-        cancelled: 'å·²ç»å–æ¶ˆ',
-        missed: 'å·²ç»é”™è¿‡',
-    }[event.status] || event.status;
-}
-
-function visibilityLabel(value) {
-    return {
-        hidden: 'è§’è‰²å°šä¸å¯çŸ¥',
-        trace: 'å¯ç”±ç—•è¿¹å¯Ÿè§‰',
-        known: 'å¯ç»æ¶ˆæ¯è·çŸ¥',
-        direct: 'å¯ä»¥ç›´æ¥æ„ŸçŸ¥',
-    }[value] || 'è§’è‰²å°šä¸å¯çŸ¥';
-}
-
-function deliveryLabel(event) {
-    if (event.status === 'ready') return 'åˆ°æ—¶å¾…åå°ç¡®è®¤';
-    return {
-        none: 'åªåœ¨åå°ç”Ÿæ•ˆ',
-        pending: 'ç­‰å¾…è‡ªç„¶æ˜¾éœ²',
-        delivered: 'å·²ç”±æ­£æ–‡æ‰¿æ¥',
-        expired: 'æœªæ˜¾éœ²ï¼Œè½¬å…¥çºªäº‹',
-    }[event.delivery?.state] || 'åªåœ¨åå°ç”Ÿæ•ˆ';
-}
-
-function clockModeLabel(value) {
-    return {
-        duration: 'è‡ªç„¶æµé€',
-        active: 'æœ‰æ•ˆå·¥æ—¶',
-        scheduled: 'é¢„å®šæ—¶é—´',
-        condition: 'æ¡ä»¶ç­‰å¾…',
-    }[value] || 'è‡ªç„¶æµé€';
-}
-
-function renderBrandMark() {
-    return `
-        <span class="wb-brand-mark" aria-hidden="true">
-            <i class="wb-orbit wb-orbit-a"></i>
-            <i class="wb-orbit wb-orbit-b"></i>
-            <i class="wb-brand-core"></i>
-        </span>
-    `;
-}
-
-function renderEmpty(label, detail = '') {
-    return `
-        <div class="wb-empty">
-            <span class="wb-empty-eye"></span>
-            <strong>${escapeHtml(label)}</strong>
-            ${detail ? `<p>${escapeHtml(detail)}</p>` : ''}
-        </div>
-    `;
-}
-
-function renderPersonAvatar(person, size = '') {
-    const glyph = person?.monogram || person?.name?.slice(0, 1) || 'Â·';
-    const avatar = String(person?.avatarDataUrl || '');
-    const image = /^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(avatar)
-        ? `<img src="${escapeAttr(avatar)}" alt="" loading="lazy">`
-        : escapeHtml(glyph);
-    return `
-        <span class="wb-person-avatar ${size}">
-            ${image}
-            <i></i>
-        </span>
-    `;
-}
-
-async function readPersonAvatarFile(file) {
-    if (!file) return '';
-    if (!String(file.type || '').startsWith('image/')) throw new Error('è¿™ä¸ªæ–‡ä»¶çœ‹èµ·æ¥ä¸æ˜¯å›¾ç‰‡å“¦ï½');
-    if (Number(file.size || 0) > 8 * 1024 * 1024) throw new Error('å¤´åƒå¤ªå¤§å•¦ï½å…ˆé€‰ä¸€å¼  8MB ä»¥å†…çš„å›¾ç‰‡å§ã€‚');
-
-    const source = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('å¤´åƒæ²¡æœ‰è¯»æˆåŠŸï¼Œå†æ¢ä¸€å¼ è¯•è¯•å§ï½'));
-        reader.readAsDataURL(file);
-    });
-    const image = await new Promise((resolve, reject) => {
-        const node = new Image();
-        node.onload = () => resolve(node);
-        node.onerror = () => reject(new Error('è¿™å¼ å›¾ç‰‡æµè§ˆå™¨æ²¡æœ‰è®¤å‡ºæ¥ï¼Œå¯ä»¥æ¢æˆ PNG / JPG / WebP è¯•è¯•ï½'));
-        node.src = source;
-    });
-
-    const side = Math.max(1, Math.min(image.naturalWidth || image.width, image.naturalHeight || image.height));
-    const sx = Math.max(0, ((image.naturalWidth || image.width) - side) / 2);
-    const sy = Math.max(0, ((image.naturalHeight || image.height) - side) / 2);
-    const canvas = document.createElement('canvas');
-    canvas.width = 160;
-    canvas.height = 160;
-    const context = canvas.getContext('2d', { alpha: false });
-    if (!context) throw new Error('å½“å‰æµè§ˆå™¨æ²¡æ³•å¤„ç†å¤´åƒå›¾ç‰‡ã€‚');
-    context.drawImage(image, sx, sy, side, side, 0, 0, 160, 160);
-    let result = canvas.toDataURL('image/webp', 0.78);
-    if (!result.startsWith('data:image/webp')) result = canvas.toDataURL('image/jpeg', 0.78);
-    if (result.length > 180000) result = canvas.toDataURL('image/jpeg', 0.62);
-    if (result.length > 180000) throw new Error('å¤´åƒå‹ç¼©åè¿˜æ˜¯æœ‰ç‚¹å¤ªå¤§ï½æ¢ä¸€å¼ ç®€å•ä¸€ç‚¹çš„å›¾è¯•è¯•å§ã€‚');
-    return result;
-}
-
-export function renderInnerVoice(person, worldMinute, compact = false) {
-    if (!person.innerVoice) return '';
-    return `
-        <blockquote class="wb-inner-voice ${compact ? 'is-compact' : ''}">
-            <p>â€œ${escapeHtml(person.innerVoice)}â€</p>
-        </blockquote>
-    `;
-}
-
-function renderPersonRow(person, observerMode, worldMinute) {
-    return `
-        <article class="wb-person-row" role="button" tabindex="0"
-            data-wb-action="select-person" data-person-id="${escapeAttr(person.id)}">
-            ${renderPersonAvatar(person)}
-            <span class="wb-person-row-main">
-                <span class="wb-person-name-line">
-                    <strong>${escapeHtml(person.name)}</strong>
-                    <small>${escapeHtml(person.location)}</small>
-                </span>
-                <span class="wb-person-action">${escapeHtml(person.action)}</span>
-                ${observerMode === 'backstage' ? renderInnerVoice(person, worldMinute, true) : ''}
-            </span>
-            <span class="wb-row-arrow">â†—</span>
-        </article>
-    `;
-}
-
-export function renderPersonCard(person, observerMode, worldMinute, openFolds = new Set()) {
-    const foldKey = `people:${person.id}`;
-    return `
-        <details class="wb-fold wb-person-card" data-fold-key="${escapeAttr(foldKey)}"
-            ${foldOpenAttr(openFolds, foldKey)}>
-            <summary class="wb-person-card-summary">
-                <span class="wb-person-summary-main">
-                    ${renderPersonAvatar(person, 'is-large')}
-                    <span class="wb-person-summary-copy">
-                        <span class="wb-person-summary-heading">
-                            <strong>${escapeHtml(person.name)}</strong>
-                            <small>${escapeHtml(person.location)}</small>
-                        </span>
-                        <span class="wb-person-summary-action">${escapeHtml(compactText(person.action, 72) || 'æš‚æ—¶æ²¡æœ‰æ–°çš„åŠ¨ä½œã€‚')}</span>
-                    </span>
-                </span>
-                <span class="wb-fold-meta">
-                    <span class="wb-person-sim-state ${person.simulationEnabled === false ? 'is-sleeping' : ''}">
-                        ${person.simulationEnabled === false ? 'åå°ä¼‘çœ ' : 'åå°æ´»åŠ¨'}
-                    </span>
-                    <i class="wb-fold-chevron" aria-hidden="true"></i>
-                </span>
-            </summary>
-            <div class="wb-fold-body wb-person-card-body">
-                <span class="wb-person-thread is-current-action">
-                    <small>æ­£åœ¨åš</small>
-                    <strong>${escapeHtml(person.action || 'æš‚æ—¶æ²¡æœ‰æ–°çš„åŠ¨ä½œã€‚')}</strong>
-                </span>
-                <span class="wb-person-thread">
-                    <small>çŸ­æœŸæ„å›¾</small>
-                    <strong>${escapeHtml(person.intent || 'æš‚æ— æ˜ç¡®çŸ­æœŸæ„å›¾ã€‚')}</strong>
-                </span>
-                ${person.longTermGoal ? `
-                    <span class="wb-person-thread is-long-term">
-                        <small>é•¿æœŸç›®æ ‡</small>
-                        <strong>${escapeHtml(person.longTermGoal)}</strong>
-                    </span>
-                ` : ''}
-                ${observerMode === 'backstage'
-                    ? renderInnerVoice(person, worldMinute)
-                    : '<span class="wb-known-boundary">å¹•åç‹¬ç™½å·²éšè—</span>'}
-                <div class="wb-person-card-actions">
-                    <button class="wb-card-action-button is-primary" type="button"
-                        data-wb-action="select-person" data-person-id="${escapeAttr(person.id)}">æŸ¥çœ‹äººç‰©è¯¦æƒ…</button>
-                    <button class="wb-card-action-button is-terminal" type="button"
-                        data-wb-action="open-terminal-person" data-person-id="${escapeAttr(person.id)}">è”ç³» TA</button>
-                    <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-person-editor"
-                        data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}">ç¼–è¾‘</button>
-                </div>
-            </div>
-        </details>
-    `;
-}
-
-function renderProgress(event, state, wide = false) {
-    const progress = eventProgress(event, state.clock.absoluteMinute);
-    const started = formatWorldCalendar(state, event.startedAt);
-    const due = Number.isFinite(Number(event.dueAt))
-        ? formatWorldCalendar(state, event.dueAt)
-        : null;
-    const remaining = progress.remaining === null
-        ? progress.phase
-        : progress.remaining === 0
-            ? eventStatusLabel(event)
-            : `å‰©ä½™ ${formatDuration(progress.remaining)}`;
-
-    if (progress.percent === null) {
-        return `
-            <div class="wb-condition-progress">
-                <span>${escapeHtml(clockModeLabel(event.clockMode))}</span>
-                <strong>${escapeHtml(progress.phase)}</strong>
-            </div>
-        `;
-    }
-
-    return `
-        <div class="wb-time-progress ${wide ? 'is-wide' : ''}">
-            ${wide ? `
-                <div class="wb-time-progress-copy">
-                    <span>${escapeHtml(started.stamp)}</span>
-                    <strong>${escapeHtml(clockModeLabel(event.clockMode))}</strong>
-                    <span>${due ? escapeHtml(due.stamp) : 'å®Œæˆæ—¶é—´å¾…ç¡®è®¤'}</span>
-                </div>
-            ` : ''}
-            <span class="wb-time-track">
-                <i style="width:${progress.percent}%"></i>
-                <b style="left:${progress.percent}%"></b>
-            </span>
-            <span class="wb-time-foot">
-                <small>${escapeHtml(progress.phase)}</small>
-                <strong>${escapeHtml(remaining)}</strong>
-            </span>
-        </div>
-    `;
-}
-
-function renderEventCard(event, state, wide = false, openFolds = new Set()) {
-    if (!wide) {
-        return `
-            <article class="wb-event-card">
-                <div class="wb-event-topline">
-                    <span class="wb-phase phase-${escapeAttr(event.status)}">${escapeHtml(eventStatusLabel(event))}</span>
-                    <span>${escapeHtml(event.place)}</span>
-                </div>
-                <h3>${escapeHtml(event.title)}</h3>
-                <p>${escapeHtml(event.summary || event.consequence || 'äº‹ä»¶ä»åœ¨å½¢æˆã€‚')}</p>
-                ${renderProgress(event, state, false)}
-                <div class="wb-route">
-                    <i></i>
-                    ${escapeHtml(visibilityLabel(event.visibility))}
-                </div>
-                <div class="wb-event-card-actions">
-                    <button class="wb-card-action-button is-terminal" type="button" data-wb-action="open-terminal-event"
-                        data-event-id="${escapeAttr(event.id)}">çœ‹çœ‹å¤§å®¶åœ¨è¯´ä»€ä¹ˆ</button>
-                    <button class="wb-card-action-button is-primary wb-event-delivery-toggle ${event.delivery?.manualQueued ? 'is-queued' : ''}"
-                        type="button" data-wb-action="toggle-event-delivery"
-                        data-event-id="${escapeAttr(event.id)}"
-                        ${event.visibility === 'hidden' ? 'disabled' : ''}>
-                        ${event.delivery?.manualQueued ? 'âœ“ ä¸‹ä¸€è½®æ˜¾éœ²' : 'ä¸‹ä¸€è½®æ˜¾éœ²'}
-                    </button>
-                </div>
-            </article>
-        `;
-    }
-
-    const progress = eventProgress(event, state.clock.absoluteMinute);
-    const remaining = progress.remaining === null
-        ? progress.phase
-        : progress.remaining === 0
-            ? eventStatusLabel(event)
-            : `å‰©ä½™ ${formatDuration(progress.remaining)}`;
-    const foldKey = `currents:${event.id}`;
-    return `
-        <details class="wb-fold wb-event-card is-wide" data-fold-key="${escapeAttr(foldKey)}"
-            ${foldOpenAttr(openFolds, foldKey)}>
-            <summary class="wb-event-summary">
-                <span class="wb-event-summary-copy">
-                    <span class="wb-event-topline">
-                        <span class="wb-phase phase-${escapeAttr(event.status)}">${escapeHtml(eventStatusLabel(event))}</span>
-                        <span>${escapeHtml(event.place)}</span>
-                    </span>
-                    <strong>${escapeHtml(event.title)}</strong>
-                    <small>${escapeHtml(compactText(event.summary || event.consequence || 'äº‹ä»¶ä»åœ¨å½¢æˆã€‚', 90))}</small>
-                </span>
-                <span class="wb-fold-meta">
-                    <span class="wb-fold-status">${escapeHtml(remaining)}</span>
-                    <i class="wb-fold-chevron" aria-hidden="true"></i>
-                </span>
-            </summary>
-            <div class="wb-fold-body wb-event-card-body">
-                <p>${escapeHtml(event.summary || event.consequence || 'äº‹ä»¶ä»åœ¨å½¢æˆã€‚')}</p>
-                ${event.consequence ? `
-                    <div class="wb-consequence">
-                        <span>å¯èƒ½åæœ</span>
-                        <strong>${escapeHtml(event.consequence)}</strong>
-                    </div>
-                ` : ''}
-                ${renderProgress(event, state, true)}
-                <div class="wb-route">
-                    <i></i>
-                    ${escapeHtml(visibilityLabel(event.visibility))}
-                </div>
-                <div class="wb-event-card-actions">
-                    <button class="wb-card-action-button is-primary wb-event-delivery-toggle ${event.delivery?.manualQueued ? 'is-queued' : ''}"
-                        type="button" data-wb-action="toggle-event-delivery"
-                        data-event-id="${escapeAttr(event.id)}"
-                        ${event.visibility === 'hidden' ? 'disabled' : ''}>
-                        ${event.delivery?.manualQueued ? 'âœ“ ä¸‹ä¸€è½®æ˜¾éœ²' : 'ä¸‹ä¸€è½®æ˜¾éœ²'}
-                    </button>
-                    <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-event-editor"
-                        data-event-id="${escapeAttr(event.id)}">ç¼–è¾‘</button>
-                    <button class="wb-card-action-button is-danger" type="button" data-wb-action="delete-event"
-                        data-event-id="${escapeAttr(event.id)}">åˆ é™¤</button>
-                </div>
-            </div>
-        </details>
-    `;
-}
-
-function echoOutcomeMinute(event) {
-    const resolvedAt = Number(event?.resolvedAt);
-    const dueAt = Number(event?.dueAt);
-    const updatedAt = Number(event?.updatedAt);
-    const status = String(event?.status || '');
-    const timed = ['duration', 'scheduled'].includes(event?.clockMode);
-
-    if (status === 'ready' && Number.isFinite(dueAt)) return dueAt;
-    if (
-        ['resolved', 'missed'].includes(status)
-        && timed
-        && Number.isFinite(dueAt)
-        && dueAt >= 0
-        && (!Number.isFinite(resolvedAt) || dueAt <= resolvedAt)
-    ) {
-        return dueAt;
-    }
-    if (Number.isFinite(resolvedAt)) return resolvedAt;
-    if (Number.isFinite(dueAt)) return dueAt;
-    return Number.isFinite(updatedAt) ? updatedAt : 0;
-}
-
-function renderOutcome(event, state, openFolds = new Set()) {
-    const time = formatWorldCalendar(
-        state,
-        echoOutcomeMinute(event),
-    );
-    const result = event.result || event.expectedResult || event.consequence || 'ç»“æœç­‰å¾…ç¡®è®¤ã€‚';
-    const foldKey = `echoes:${event.id}`;
-    return `
-        <article class="wb-echo-item">
-            <time>${escapeHtml(`${time.shortDate} ${time.time}`)}</time>
-            <span class="wb-timeline-node state-${escapeAttr(event.delivery?.state || 'none')}"></span>
-            <details class="wb-fold wb-echo-card" data-fold-key="${escapeAttr(foldKey)}"
-                ${foldOpenAttr(openFolds, foldKey)}>
-                <summary class="wb-echo-summary">
-                    <span class="wb-echo-copy">
-                        <strong>${escapeHtml(event.title)}</strong>
-                        <small>${escapeHtml(compactText(result, 96))}</small>
-                    </span>
-                    <span class="wb-fold-meta">
-                        <span class="wb-record-state">${escapeHtml(deliveryLabel(event))}</span>
-                        <i class="wb-fold-chevron" aria-hidden="true"></i>
-                    </span>
-                </summary>
-                <div class="wb-fold-body wb-echo-body">
-                    <p>${escapeHtml(result)}</p>
-                    <div class="wb-record-actions">
-                        <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-record-editor"
-                            data-record-kind="echo" data-record-id="${escapeAttr(event.id)}">ç¼–è¾‘</button>
-                        <button class="wb-card-action-button is-danger" type="button" data-wb-action="delete-record"
-                            data-record-kind="echo" data-record-id="${escapeAttr(event.id)}">åˆ é™¤</button>
-                    </div>
-                </div>
-            </details>
-        </article>
-    `;
-}
-
-function renderArchiveEntry(entry, state, recordKind = 'archive', openFolds = new Set()) {
-    const time = Number.isFinite(Number(entry.resolvedAt ?? entry.at))
-        ? formatWorldCalendar(state, entry.resolvedAt ?? entry.at)
-        : null;
-    const title = entry.title || 'æœªå‘½åè®°å½•';
-    const text = entry.result || entry.text || entry.consequence || entry.route || '';
-    const tags = [
-        entry.visibility ? visibilityLabel(entry.visibility) : '',
-        entry.delivery?.state ? deliveryLabel(entry) : '',
-        entry.deliveryState === 'expired' ? 'æœªæ˜¾éœ²ï¼Œè½¬å…¥çºªäº‹' : '',
-    ].filter(Boolean);
-    const foldKey = `archive:${recordKind}:${entry.id}`;
-
-    return `
-        <article class="wb-archive-entry">
-            <div class="wb-archive-date">
-                <strong>${time ? time.date : 'æ—¥æœŸæœªå®š'}</strong>
-                <span>${time ? time.time : 'â€”'}</span>
-            </div>
-            <span class="wb-archive-rule"></span>
-            <details class="wb-fold wb-archive-copy" data-fold-key="${escapeAttr(foldKey)}"
-                ${foldOpenAttr(openFolds, foldKey)}>
-                <summary class="wb-archive-summary">
-                    <span>
-                        <strong>${escapeHtml(title)}</strong>
-                        <small>${escapeHtml(compactText(text || 'è¿™ä»¶äº‹å·²ç»æˆä¸ºä¸–ç•Œäº‹å®ã€‚', 100))}</small>
-                    </span>
-                    <i class="wb-fold-chevron" aria-hidden="true"></i>
-                </summary>
-                <div class="wb-fold-body wb-archive-body">
-                    <p>${escapeHtml(text || 'è¿™ä»¶äº‹å·²ç»æˆä¸ºä¸–ç•Œäº‹å®ã€‚')}</p>
-                    <div class="wb-archive-tags">${tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>
-                    <div class="wb-record-actions">
-                        <button class="wb-card-action-button is-edit" type="button" data-wb-action="open-record-editor"
-                            data-record-kind="${escapeAttr(recordKind)}" data-record-id="${escapeAttr(entry.id)}">ç¼–è¾‘</button>
-                        <button class="wb-card-action-button is-danger" type="button" data-wb-action="delete-record"
-                            data-record-kind="${escapeAttr(recordKind)}" data-record-id="${escapeAttr(entry.id)}">åˆ é™¤</button>
-                    </div>
-                </div>
-            </details>
-        </article>
-    `;
-}
-
-function syncPhaseLabel(phase) {
-    return {
-        idle: 'ç­‰å¾…æ­£æ–‡',
-        queued: 'æ’é˜Ÿä¸­',
-        running: 'æ¨æ¼”ä¸­',
-        cancelling: 'æ­£åœ¨åœæ­¢',
-        success: 'æ¨æ¼”å®Œæˆ',
-        error: 'æ¨æ¼”å¤±è´¥',
-        pending: 'ç­‰å¾…æ¨æ¼”',
-    }[phase] || 'ç­‰å¾…æ­£æ–‡';
-}
-
-function renderSyncStrip(syncStatus) {
-    const status = syncStatus || {};
-    const connection = status.lastConnection || status.connection || {};
-    const memoryPhase = status.memory?.phase;
-    const memoryTakesFocus = ['running', 'error'].includes(memoryPhase);
-    const phase = memoryTakesFocus ? memoryPhase : (status.phase || 'idle');
-    const baseDetail = memoryTakesFocus
-        ? status.memory?.message || (memoryPhase === 'error' ? 'è®°å¿†æ•´ç†æ²¡æœ‰å®Œæˆ' : 'æ­£åœ¨æ•´ç†é•¿æœŸè®°å¿†')
-        : status.error || status.message || 'å°šæœªè¿›è¡Œä¸–ç•Œæ¨æ¼”';
-    const waitingTurns = Math.max(0, Number(status.queue?.waitingTurns) || 0);
-    const detail = !memoryTakesFocus && waitingTurns > 0 && !String(baseDetail).includes('å¾…å¤„ç†')
-        ? `${baseDetail} Â· åé¢è¿˜æœ‰ ${waitingTurns} è½®å¾…å¤„ç†`
-        : baseDetail;
-    const title = memoryTakesFocus
-        ? (memoryPhase === 'error' ? 'è®°å¿†æ•´ç†å¤±è´¥' : 'æ•´ç†è®°å¿†ä¸­')
-        : syncPhaseLabel(phase);
-    const connectionText = [
-        connection.apiLabel,
-        connection.model,
-    ].filter(Boolean).join(' Â· ');
-    const summary = !memoryTakesFocus && phase === 'success' ? status.summary : null;
-    const changedNames = summary?.peopleNames?.length
-        ? `ï¼ˆ${summary.peopleNames.map(escapeHtml).join('ã€')}ï¼‰`
-        : '';
-    const eventNames = summary?.eventTitles?.length
-        ? `ï¼ˆ${summary.eventTitles.map(escapeHtml).join('ã€')}ï¼‰`
-        : '';
-    const summaryHtml = summary ? `
-        <details class="wb-sync-summary">
-            <summary>æœ¬æ¬¡å˜åŒ–</summary>
-            <div>
-                <span>ä¸–ç•Œæ—¶é—´</span><strong>${summary.elapsedMinutes > 0 ? `+${escapeHtml(formatDuration(summary.elapsedMinutes))}` : 'æœªæ¨è¿›'}</strong>
-                <span>äººç‰©å˜åŒ–</span><strong>${summary.peopleChanged || 0} äºº ${changedNames}</strong>
-                <span>äº‹ä»¶å˜åŒ–</span><strong>æ–°å¢ ${summary.eventsAdded || 0} Â· æ›´æ–° ${summary.eventsUpdated || 0} ${eventNames}</strong>
-                <span>è®°å¿†å˜åŒ–</span><strong>æ–°å¢ ${summary.memoryAdded || 0} Â· æ›´æ–° ${summary.memoryUpdated || 0}</strong>
-                <span>æ­£æ–‡æ˜¾éœ²</span><strong>${summary.injectionEvents || 0} ä¸ªäº‹ä»¶</strong>
-            </div>
-        </details>
-    ` : '';
-
-    return `
-        <div class="wb-sync-strip is-${escapeAttr(phase)}" role="${phase === 'error' ? 'alert' : 'status'}">
-            <i class="wb-sync-indicator"></i>
-            <div class="wb-sync-copy">
-                <strong>${escapeHtml(title)}</strong>
-                <span>${escapeHtml(detail)}</span>
-            </div>
-            <span class="wb-sync-connection">${escapeHtml(connectionText || 'è·Ÿéšé…’é¦†å½“å‰ä¸» API')}</span>
-            ${summaryHtml}
-        </div>
-    `;
-}
-
-function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}, tavernProfiles = [], activeSection = 'common') {
-    const clock = formatWorldCalendar(state);
-    const clockLabel = worldClockLabel(state, clock);
-    const connection = syncStatus?.connection || {};
-    const memory = syncStatus?.memory || {};
-    const phase = syncStatus?.phase || 'idle';
-    const historyRunning = memory.phase === 'running';
-    const availableModels = Array.isArray(syncStatus?.availableModels)
-        ? syncStatus.availableModels
-        : [];
-    const modelPull = syncStatus?.modelPull || { phase: 'idle', message: '' };
-    const worldbook = syncStatus?.worldbook || { books: [], entries: [], phase: 'idle' };
-    const recovery = syncStatus?.recovery || { count: 0, latest: null };
-    const latestRecovery = recovery.latest || null;
-    const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
-    const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
-    const worldbookQuery = String(worldbookUi.query || '').slice(0, 120);
-    const worldbookOnlyPeople = Boolean(worldbookUi.onlyPeople);
-    const worldbookOnlyEnabled = Boolean(worldbookUi.onlyEnabled);
-    const worldbookSelectedIds = worldbookUi.selectedIds instanceof Set
-        ? worldbookUi.selectedIds
-        : new Set(Array.isArray(worldbookUi.selectedIds) ? worldbookUi.selectedIds.map(String) : []);
-    const filteredWorldbookEntries = filterWorldbookEntries(worldbookEntries, {
-        query: worldbookQuery,
-        onlyPeople: worldbookOnlyPeople,
-        onlyEnabled: worldbookOnlyEnabled,
-    });
-    const worldbookSelectedCount = worldbookSelectedIds.size;
-    const rules = Array.isArray(tagFilterRules)
-        ? tagFilterRules
-        : (settings.tagFilterRules || []);
-    const hasSavedApiKey = Boolean(settings.customApiKey);
-    const apiValues = {
-        customApiUrl: apiDraft?.customApiUrl ?? settings.customApiUrl,
-        customApiCredential: apiDraft?.customApiCredential ?? '',
-        customApiModel: apiDraft?.customApiModel ?? settings.customApiModel,
-        customApiTransport: apiDraft?.customApiTransport ?? settings.customApiTransport,
-        profileName: apiDraft?.profileName ?? '',
-        profileId: apiDraft?.profileId ?? '',
-    };
-    const apiProfiles = Array.isArray(settings.apiProfiles) ? settings.apiProfiles : [];
-    const tavernApiProfiles = Array.isArray(tavernProfiles) ? tavernProfiles : [];
-    const apiModuleRoutes = settings.apiModuleRoutes && typeof settings.apiModuleRoutes === 'object'
-        ? settings.apiModuleRoutes
-        : {};
-    const tavernProfileById = id => tavernApiProfiles.find(profile => String(profile.id) === String(id || '')) || null;
-    const tavernProfileSelectOptions = (currentId = '') => {
-        const current = String(currentId || '');
-        const currentExists = Boolean(tavernProfileById(current));
-        return [
-            `<option value="" ${current ? '' : 'selected'}>è¯·é€‰æ‹©é…’é¦†å·²ä¿å­˜æ–¹æ¡ˆ</option>`,
-            current && !currentExists
-                ? `<option value="${escapeAttr(current)}" selected disabled>åŸæ–¹æ¡ˆå·²ä¸å­˜åœ¨ Â· ${escapeHtml(current)}</option>`
-                : '',
-            ...tavernApiProfiles.map(profile => (
-                `<option value="${escapeAttr(profile.id)}" ${current === String(profile.id) ? 'selected' : ''}>${escapeHtml(profile.name)} Â· ${escapeHtml(profile.model || 'æœªé€‰æ¨¡å‹')}</option>`
-            )),
-        ].join('');
-    };
-    const routeOptions = (current = 'default') => {
-        const missingTavernId = String(current).startsWith('tavern-profile:')
-            ? String(current).slice('tavern-profile:'.length)
-            : '';
-        const missingTavern = missingTavernId && !tavernProfileById(missingTavernId);
-        return [
-            `<option value="default" ${current === 'default' ? 'selected' : ''}>è·Ÿéšä¸–ç•ŒèƒŒé¢é»˜è®¤è¿æ¥</option>`,
-            `<option value="tavern" ${current === 'tavern' ? 'selected' : ''}>è·Ÿéšå½“å‰é…’é¦†</option>`,
-            missingTavern
-                ? `<option value="${escapeAttr(current)}" selected disabled>é…’é¦†æ–¹æ¡ˆå·²ä¸å­˜åœ¨ Â· ${escapeHtml(missingTavernId)}</option>`
-                : '',
-            tavernApiProfiles.length
-                ? `<optgroup label="é…’é¦†å·²ä¿å­˜æ–¹æ¡ˆ">${tavernApiProfiles.map(profile => {
-                    const value = `tavern-profile:${profile.id}`;
-                    return `<option value="${escapeAttr(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(profile.name)} Â· ${escapeHtml(profile.model || 'æœªé€‰æ¨¡å‹')}</option>`;
-                }).join('')}</optgroup>`
-                : '',
-            apiProfiles.length
-                ? `<optgroup label="ä¸–ç•ŒèƒŒé¢ç‹¬ç«‹æ–¹æ¡ˆ">${apiProfiles.map(profile => {
-                    const value = `profile:${profile.id}`;
-                    return `<option value="${escapeAttr(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(profile.name)} Â· ${escapeHtml(profile.model || 'æœªé€‰æ¨¡å‹')}</option>`;
-                }).join('')}</optgroup>`
-                : '',
-        ].join('');
-    };
-    const settingExplanation = (setting, value) => {
-        const key = String(value);
-        const maps = {
-            apiMode: {
-                tavern: 'æˆ‘è·Ÿç€é…’é¦†ç°åœ¨è¿™æ¡è¿æ¥èµ°ï½ä¸»èŠå¤©æ¢æ¨¡å‹ï¼Œæˆ‘è¿™è¾¹ä¹Ÿä¼šè·Ÿç€æ¢ã€‚çœå¾—å†å¡«ä¸€é à¸…',
-                'tavern-profile': 'æˆ‘è®°ä½é…’é¦†é‚£ä»½æ–¹æ¡ˆçš„ç‰Œç‰Œï½çœŸæ­£çš„ Keyã€åœ°å€å’Œæ¨¡å‹è¿˜æ˜¯è®©é…’é¦†è‡ªå·±ä¿ç®¡ï¼Œæˆ‘æ¯æ¬¡ç”¨ä¹‹å‰å†å»è¯»ã€‚',
-                custom: 'ç»™æˆ‘å•ç‹¬å¼€æ¡å°è·¯ï½æˆ‘è‡ªå·±ä»è¿™è¾¹é’»å‡ºå»ï¼Œä¸è¸©ä¸»èŠå¤©é‚£æ¡è·¯ã€‚',
-            },
-            theme: {
-                auto: 'å¤©äº®æˆ‘å°±æ¢äº®ä¸€ç‚¹ï¼Œå¤©é»‘æˆ‘å°±ç¼©è¿›æ·±è‰²é‡Œï½ä¸ç”¨ä¸€ç›´æ¥æ‘¸å¼€å…³ã€‚',
-                day: 'ä¸€ç›´äº®å ‚å ‚çš„ã€‚å—¯ï¼Œä¸œè¥¿éƒ½æ‘Šåœ¨çˆªè¾¹ï¼Œçœ‹å¾—æ¸…æ¥šã€‚',
-                night: 'ä¸€ç›´é»‘ä¸€ç‚¹ï½æ™šä¸Šè¹²åå°ä¸åˆºçœ¼ï¼Œæˆ‘å–œæ¬¢è¿™ä¸ªã€‚',
-            },
-            uiScale: {
-                compact: 'æˆ‘æŠŠçº¸ç‰‡éƒ½å¾€çˆªè¾¹æ‹¢ä¸€æ‹¢ï½ä¸€çœ¼èƒ½å¤šçœ‹å‡ æ ·ã€‚',
-                comfortable: 'æˆ‘å…ˆæ‘Šæˆè¿™æ ·ï½çˆªå­ä¼¸å¾—å¼€ï¼Œä¹Ÿä¸ä¼šç©ºä¸€å¤§ç‰‡ã€‚',
-                large: 'å­—æ”¾å¤§ä¸€ç‚¹ï½å°å±å¹•ä¸Šä¸ç”¨çœ¯ç€çœ¼ç›¯ã€‚',
-            },
-            deliveryDensity: {
-                restrained: 'æˆ‘å°‘å¾€é•œå¤´è¾¹å¼ä¸œè¥¿ï½åå°è¯¥æ´»çš„è¿˜æ˜¯ç…§æ ·æ´»ã€‚',
-                balanced: 'é‡è¦çš„æˆ‘å¼åˆ°é•œå¤´è¾¹ï¼Œä¸é‡è¦çš„å…ˆå‹çˆªçˆªä¸‹é¢ã€‚å—¯ï¼Œè¿™æ ·ä¸ä¹±ã€‚',
-                active: 'æˆ‘ä¼šæ›´å‹¤å¿«åœ°æŠŠå˜åŒ–å¼åˆ°é•œå¤´è¾¹ï½ä½†æ­£å¿™çš„æ—¶å€™æˆ‘ä¹Ÿä¸ä¼šç¡¬æ‰‘è¿›å»ã€‚',
-            },
-            autoSimulationMode: {
-
-                light: 'æˆ‘è¶´ç€è½»è½»çœ‹ï½åªç®¡çœŸæœ‰å¿…è¦çš„å˜åŒ–ï¼Œä¸åˆ°å¤„ä¹±è·‘ã€‚',
-                balanced: 'æˆ‘ä¼šæŒ¨ä¸ªçœ‹ä¸€çœ¼ï½è¯¥åŠ¨çš„è‡ªå·±åŠ¨ï¼Œæ²¡äº‹æˆ‘å°±ä¸æ‹¿çˆªå­ä¹±æ‹¨ã€‚',
-                deep: 'æˆ‘ä¼šè¹²ä¹…ä¸€ç‚¹ï¼ŒæŠŠé•œå¤´å¤–çš„äººå’Œå› æœéƒ½ç›¯ä»”ç»†ï½å¤æ‚ä¸–ç•Œç”¨è¿™ä¸ªã€‚',
-            },
-            timePolicy: {
-                world: 'æˆ‘å®ˆç€ä¸–ç•Œé’Ÿï½æ­£æ–‡çœŸè¯´æ¸…æ¥šå‡ ç‚¹ï¼Œæˆ‘å°±æŠŠå°çˆªå­æ‹¨è¿‡å»ã€‚',
-                explicit: 'çœŸçš„ç®—å¾—å‡ºæ¥æˆ‘æ‰æ‹¨ã€‚ç®—ä¸å‡†ï¼Ÿé‚£æˆ‘ä¸ç¢°ã€‚',
-                cautious: 'å¯ä»¥è®©æˆ‘çŒœä¸€ç‚¹ç‚¹ï½ä½†ä¸ç¡®å®šæˆ‘å°±æŠŠçˆªå­æ”¶å›æ¥ã€‚',
-                open: 'æ—…è¡Œã€ç­‰å¾…ã€å·¥ä½œè¿™ç§ä¸€çœ‹å°±ä¼šèŠ±æ—¶é—´çš„äº‹ï¼Œæˆ‘å°±é¡ºæ‰‹æŠŠé’Ÿå¾€å‰æ¨ã€‚',
-            },
-            publicOpinionRevealMode: {
-                observe: 'æˆ‘æŠŠå¤–é¢çš„é£å£°éƒ½å‹åœ¨è¿™ä¸ªè§’è½ï½ä½ æ¥çœ‹æˆ‘å†æ€ç»™ä½ ï¼Œä¸å¾€æ­£æ–‡å¼ã€‚',
-                relevant: 'çœŸå’Œçœ¼å‰è¿™æ®µå‰§æƒ…æœ‰å…³ç³»ï¼Œæˆ‘æ‰å¼è¿‡å»ä¸€ç‚¹ï½æ²¡å…³ç³»çš„æˆ‘ç»§ç»­å‹ç€ã€‚',
-            },
-        };
-        return maps[setting]?.[key] || '';
-    };
-    const historyPercent = memory.total > 0
-        ? Math.min(100, Math.round((Number(memory.processed) || 0) / memory.total * 100))
-        : 0;
-    const themeButton = (id, label) => `
-        <button type="button" data-wb-action="setting-button"
-            data-setting="theme" data-value="${id}"
-            class="${settings.theme === id ? 'is-active' : ''}">${label}</button>
-    `;
-    const densityButton = (id, label) => `
-        <button type="button" data-wb-action="setting-button"
-            data-setting="deliveryDensity" data-value="${id}"
-            class="${settings.deliveryDensity === id ? 'is-active' : ''}">${label}</button>
-    `;
-    const settingButton = (setting, current, id, label) => `
-        <button type="button" data-wb-action="setting-button"
-            data-setting="${setting}" data-value="${id}"
-            class="${String(current) === String(id) ? 'is-active' : ''}">${label}</button>
-    `;
-    const generationLimits = settings.generationModuleLimits && typeof settings.generationModuleLimits === 'object'
-        ? settings.generationModuleLimits
-        : {};
-    const automaticTimeouts = {
-        simulation: 180000,
-        observation: 120000,
-        history: 300000,
-        opinion: 150000,
-    };
-    const generationModuleLabel = {
-        simulation: 'ä¸–ç•Œæ¨æ¼”',
-        observation: 'äººç‰©è§‚æµ‹',
-        history: 'å†å² / è®°å¿†',
-        opinion: 'èˆ†æƒ… / é—²é€›',
-    };
-    const generationLimitFor = key => generationLimits[key] || { maxTokens: 0, timeoutMs: 0 };
-    const effectiveGenerationTokenLabel = key => {
-        const moduleLimit = generationLimitFor(key);
-        const cap = Number(moduleLimit.maxTokens) > 0
-            ? Number(moduleLimit.maxTokens)
-            : Number(settings.maxOutputTokens) > 0
-                ? Number(settings.maxOutputTokens)
-                : 0;
-        return cap > 0 ? `æœ€å¤š ${Math.round(cap / 100) / 10}K` : 'è‡ªåŠ¨é¢„ç®—';
-    };
-    const effectiveGenerationTimeoutLabel = key => {
-        const moduleLimit = generationLimitFor(key);
-        const timeoutMs = Number(moduleLimit.timeoutMs) > 0
-            ? Number(moduleLimit.timeoutMs)
-            : Number(settings.generationTimeoutMs) > 0
-                ? Number(settings.generationTimeoutMs)
-                : automaticTimeouts[key];
-        return `${Math.round(timeoutMs / 1000)}s`;
-    };
-    const generationModuleRow = key => {
-        const moduleLimit = generationLimitFor(key);
-        return `
-            <div class="wb-generation-module-row">
-                <div class="wb-generation-module-copy">
-                    <strong>${generationModuleLabel[key]}</strong>
-                    <span>å½“å‰ï¼š${effectiveGenerationTokenLabel(key)} Â· ${effectiveGenerationTimeoutLabel(key)}</span>
-                </div>
-                <label>Token ä¸Šé™
-                    <input type="number" min="0" step="500"
-                        data-wb-generation-limit="maxTokens" data-module="${key}"
-                        value="${escapeAttr(moduleLimit.maxTokens || 0)}"
-                        title="0 = ç»§æ‰¿å…¨å±€">
-                    <small>0 = ç»§æ‰¿</small>
-                </label>
-                <label>ç­‰å¾…ç§’æ•°
-                    <input type="number" min="0" max="600" step="15"
-                        data-wb-generation-limit="timeoutSeconds" data-module="${key}"
-                        value="${escapeAttr(moduleLimit.timeoutMs ? Math.round(moduleLimit.timeoutMs / 1000) : 0)}"
-                        title="0 = ç»§æ‰¿å…¨å±€">
-                    <small>0 = ç»§æ‰¿</small>
-                </label>
-            </div>
-        `;
-    };
-    const groupOpen = id => openGroups.has(id) ? 'open' : '';
-    const subgroupOpen = id => openSubgroups.has(id) ? 'open' : '';
-    const sectionKey = ['common', 'injection', 'connection', 'advanced'].includes(activeSection)
-        ? activeSection
-        : 'common';
-    const sectionButton = (id, label) => `
-        <button type="button" data-wb-action="settings-section" data-section="${id}"
-            class="${sectionKey === id ? 'is-active' : ''}">${label}</button>
-    `;
-
-    return `
-        <div class="wb-settings-popover wb-settings-scope-global wb-settings-section-${sectionKey}" role="dialog" aria-modal="true"
-            aria-label="å…¨å±€è®¾ç½®">
-            <div class="wb-settings-sticky-head">
-                <div class="wb-popover-heading">
-                    <div><span>ç²ä¸ƒçš„å°çª</span><h3>å…¨å±€è®¾ç½®</h3></div>
-                    <button type="button" data-wb-action="toggle-settings" aria-label="å…³é—­è®¾ç½®">Ã—</button>
-                </div>
-                <nav class="wb-settings-tabs" aria-label="è®¾ç½®åˆ†ç±»">
-                    ${sectionButton('common', 'å¸¸ç”¨')}
-                    ${sectionButton('injection', 'æ­£æ–‡æ³¨å…¥')}
-                    ${sectionButton('connection', 'è¿æ¥ä¸æ¨¡å‹')}
-                    ${sectionButton('advanced', 'é«˜çº§ç»´æŠ¤')}
-                </nav>
-            </div>
-
-            <section class="wb-settings-section-body wb-settings-common-section">
-                <div class="wb-global-flat-block">
-                    <div class="wb-flat-section-heading">
-                        <div><strong>å¤–è§‚</strong><span>è¿™é‡Œæ˜¯æˆ‘ä½çš„åœ°æ–¹ã€‚å””â€¦â€¦å½“ç„¶è¦é“ºèˆ’æœä¸€ç‚¹ã€‚</span></div>
-                    </div>
-                    <div class="wb-flat-setting-list">
-                        <div class="wb-setting-block">
-                            <label>ç•Œé¢æ˜æš—</label>
-                            <div class="wb-option-row">
-                                ${themeButton('auto', 'è‡ªåŠ¨')}
-                                ${themeButton('day', 'æ—¥é—´')}
-                                ${themeButton('night', 'å¤œé—´')}
-                            </div>
-                            <p class="wb-setting-explanation">${escapeHtml(settingExplanation('theme', settings.theme))}</p>
-                        </div>
-                        <div class="wb-setting-block">
-                            <label>ç•Œé¢å­—å·</label>
-                            <div class="wb-option-row">
-                                ${settingButton('uiScale', settings.uiScale, 'compact', 'ç´§å‡‘')}
-                                ${settingButton('uiScale', settings.uiScale, 'comfortable', 'æ ‡å‡†')}
-                                ${settingButton('uiScale', settings.uiScale, 'large', 'å¤§å­—')}
-                            </div>
-                            <p class="wb-setting-explanation">${escapeHtml(settingExplanation('uiScale', settings.uiScale))}</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="wb-global-common-grid">
-                    <div class="wb-setting-toggle">
-                        <div>
-                            <strong>æ˜¾ç¤ºæ‚¬æµ®çƒ</strong>
-                            <span>è¿™æ˜¯æˆ‘å®¶é—¨å£çš„å°çƒã€‚è—èµ·æ¥ä¹Ÿè¡Œï¼Œæˆ‘åˆä¸ä¼šå› ä¸ºçœ‹ä¸è§é—¨ç‰Œå°±æ¶ˆå¤±ã€‚</span>
-                        </div>
-                        <label class="wb-switch">
-                            <input type="checkbox" data-wb-setting="orbEnabled"
-                                ${settings.orbEnabled !== false ? 'checked' : ''}>
-                            <i></i>
-                        </label>
-                    </div>
-                    <div class="wb-setting-toggle">
-                        <div>
-                            <strong>æ‚¬æµ®çƒè´´è¾¹æ”¶çº³</strong>
-                            <span>ä¸æŠŠé—¨ç‰Œæ•´ä¸ªè—æ‰ï½å¸åˆ°æœ€è¿‘çš„å±å¹•è¾¹ï¼Œæ­£å¥½è—ä¸€åŠã€éœ²ä¸€åŠï¼›ç‚¹å®ƒè¿˜æ˜¯èƒ½ç›´æ¥æ‰“å¼€ã€‚</span>
-                        </div>
-                        <label class="wb-switch">
-                            <input type="checkbox" data-wb-setting="orbEdgeHide"
-                                ${settings.orbEdgeHide ? 'checked' : ''}>
-                            <i></i>
-                        </label>
-                    </div>
-                    <div class="wb-setting-toggle">
-                        <div>
-                            <strong>å¯ç”¨ä¸–ç•Œå¼•æ“</strong>
-                            <span>å…³æ‰æˆ‘å°±è¶´ç€ä¸åŠ¨äº†ï½å·²ç»å‘ç”Ÿè¿‡çš„ä¸œè¥¿æˆ‘å‹å¥½ï¼Œä¸ä¼šåƒæ‰ã€‚</span>
-                        </div>
-                        <label class="wb-switch">
-                            <input type="checkbox" data-wb-setting="worldSimulationEnabled"
-                                ${settings.worldSimulationEnabled ? 'checked' : ''}>
-                            <i></i>
-                        </label>
-                    </div>
-                    <div class="wb-setting-toggle">
-                        <div>
-                            <strong>è‡ªåŠ¨è¿è¡Œ</strong>
-                            <span>å¼€ç€æˆ‘ä¼šè‡ªå·±é†’æ¥å·¡è§†ï½å…³ç€å°±ç­‰ä½ æˆ³æˆ‘ã€‚ä¸ä¼šå·å·ä¹±è·‘ã€‚</span>
-                        </div>
-                        <label class="wb-switch">
-                            <input type="checkbox" data-wb-setting="worldAutoEnabled"
-                                ${settings.worldAutoEnabled ? 'checked' : ''}>
-                            <i></i>
-                        </label>
-                    </div>
-                </div>
-                <div class="wb-setting-toggle">
-    <div>
-        <strong>é€šè®¯è‡ªä¸»æ´»åŠ¨</strong>
-        <span>å…³æ‰åï¼Œäººç‰©ä¸ä¼šè‡ªå·±å‘æ¶ˆæ¯ã€å¥½å‹ç”³è¯·ã€åˆ å¥½å‹æˆ–å‘æœ‹å‹åœˆï¼›å·²æœ‰é€šè®¯å½•å’Œä½ æ‰‹åŠ¨èŠå¤©ä»ç„¶ä¿ç•™ã€‚</span>
-    </div>
-    <label class="wb-switch">
-        <input type="checkbox" data-wb-setting="socialAutoEnabled"
-            ${settings.socialAutoEnabled !== false ? 'checked' : ''}>
-        <i></i>
-    </label>
-</div>
-<div class="wb-settings-common-hint">
-                    <strong>å¸¸ç”¨çš„å…ˆæ”¾çˆªè¾¹ã€‚åˆ«çš„æˆ‘æ”¶é‡Œé¢äº†ã€‚</strong>
-                    <span>äººç‰©ã€æš—æµã€è®°å¿†ã€èˆ†æƒ…å„æœ‰è‡ªå·±çš„çªï¼›å“ªäº›è¦å¼ç»™æ­£æ–‡çœ‹ï¼Œç»Ÿä¸€æ¥ã€Œæ­£æ–‡æ³¨å…¥ã€å‘Šè¯‰æˆ‘ã€‚</span>
-                </div>
-            </section>
-
-            <section class="wb-settings-section-body wb-settings-injection-section">
-                <div class="wb-injection-intro">
-                    <div>
-                        <span>ç²ä¸ƒå¾€é•œå¤´è¾¹å¼ä»€ä¹ˆ Â· ä¸æ³¨å…¥ â‰  ä¸è¿è¡Œ</span>
-                        <strong>å®ƒä»¬éƒ½è¿˜åœ¨èƒŒåæ´»ç€ã€‚ä½ åªè¦å‘Šè¯‰æˆ‘ï¼šå“ªäº›å¼åˆ°é•œå¤´è¾¹ï¼Œå“ªäº›å…ˆå‹çˆªçˆªä¸‹é¢ã€‚</strong>
-                    </div>
-                    <label class="wb-switch wb-injection-master">
-                        <input type="checkbox" data-wb-setting="worldPromptInjection"
-                            ${settings.worldPromptInjection ? 'checked' : ''}>
-                        <i></i>
-                    </label>
-                </div>
-
-                <div class="wb-injection-source-list ${settings.worldPromptInjection ? '' : 'is-master-off'}">
-                    <article class="wb-injection-source is-time">
-                        <div class="wb-injection-source-copy">
-                            <small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œæ­¤åˆ»ã€</small>
-                            <strong>ä¸–ç•Œæ—¶é—´</strong>
-                            <span>é’Ÿæˆ‘è¿˜æ˜¯æŠ±ç€ï¼Œä¸ä¼šä¸¢ã€‚è¿™é‡Œåªå†³å®šè¦ä¸è¦æŠŠæ—¶é—´é€’ç»™æ­£æ–‡ã€‚</span>
-                        </div>
-                        <div class="wb-time-mode-picker" role="group" aria-label="ä¸–ç•Œæ—¶é—´æ³¨å…¥æ–¹å¼">
-                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
-                                data-wb-setting-button="injectionTimeMode" data-value="full"
-                                class="${settings.injectionTimeMode === 'full' ? 'is-active' : ''}">
-                                <strong>å®Œæ•´</strong><small>æ—¥æœŸ + æ—¶æ®µ + å…·ä½“æ—¶é—´</small>
-                            </button>
-                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
-                                data-wb-setting-button="injectionTimeMode" data-value="anchor"
-                                class="${settings.injectionTimeMode === 'anchor' ? 'is-active' : ''}">
-                                <strong>æœ€å°é”šç‚¹</strong><small>åªç•™è¿ç»­æ€§éœ€è¦çš„æ—¶é—´</small>
-                            </button>
-                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
-                                data-wb-setting-button="injectionTimeMode" data-value="off"
-                                class="${settings.injectionTimeMode === 'off' ? 'is-active' : ''}">
-                                <strong>å…³é—­</strong><small>æ—¶é—´ä¸é€’ç»™æ­£æ–‡</small>
-                            </button>
-                        </div>
-                    </article>
-                    <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œæ­¤åˆ»ã€</small><strong>ä¸–ç•ŒèƒŒæ™¯</strong><span>è¿™æ˜¯ä¸–ç•Œçš„åœ°åŸºï¼Œæˆ‘ä¼šå‹ç¨³ï¼Œä¸è®©è°æ‹¿çˆªå­ä¹±åˆ¨ã€‚</span></div>
-                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionWorldBackground" ${settings.injectionWorldBackground !== false ? 'checked' : ''}><i></i></label>
-                    </article>
-                    <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œäººç‰©ã€</small><strong>å½“å‰çŠ¶æ€</strong><span>${settings.worldSimulationEnabled ? 'ä»–ä»¬è¿˜ä¼šåœ¨èƒŒåè¿‡æ—¥å­ï¼Œæˆ‘è¹²ç€æ›¿ä½ çœ‹ã€‚' : 'ä¸–ç•Œå¼•æ“æ­‡ç€ï¼Œä»–ä»¬å…ˆåœåœ¨å½“å‰çŠ¶æ€ã€‚'}</span></div>
-                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPeople" ${settings.injectionPeople !== false ? 'checked' : ''}><i></i></label>
-                    </article>
-                    <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œæš—æµã€</small><strong>è¿›è¡Œä¸­äº‹ä»¶ä¸ä¸–ç•Œç¯å¢ƒ</strong><span>${settings.worldSimulationEnabled ? 'é•œå¤´å¤–çš„äº‹è¿˜ä¼šå¾€å‰èµ°ï¼Œæˆ‘è¹²åœ¨æ—è¾¹çœ‹ç€ã€‚' : 'ä¸–ç•Œå¼•æ“æ­‡ç€ï¼Œæš—æµå…ˆåœåœ¨è¿™é‡Œã€‚'}</span></div>
-                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEvents" ${settings.injectionEvents !== false ? 'checked' : ''}><i></i></label>
-                    </article>
-                    <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œå›å£°ã€</small><strong>å·²ç»“ç®—åæœ</strong><span>å·²ç»å‘ç”Ÿçš„åæœï¼Œæˆ‘ä¼šå‹ä½ï¼Œä¸è®©å®ƒæ‚„æ‚„æ»šèµ°ã€‚</span></div>
-                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEchoes" ${settings.injectionEchoes !== false ? 'checked' : ''}><i></i></label>
-                    </article>
-                    <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œæ­¤åˆ»ã€</small><strong>ä¸–ç•Œäº‹å®</strong><span>è¿™äº›æ˜¯å·²ç»æˆç«‹çš„äº‹å®ï¼Œæˆ‘å¾—æ‹¿æ¥å¯¹è´¦ï¼Œä¸èƒ½éšæ‰‹æ‹¨ä¹±ã€‚</span></div>
-                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionFacts" ${settings.injectionFacts !== false ? 'checked' : ''}><i></i></label>
-                    </article>
-                    <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œè®°å¿†ã€</small><strong>é•¿æœŸè®°å¿†</strong><span>${settings.memorySystemEnabled ? 'è®°å¿†æˆ‘ä¼šä¸€å¼ å¼ æ”¶å¥½ï¼Œå¡è¿›è¯¥æ”¾çš„ç›’å­ã€‚' : 'è®°å¿†ç³»ç»Ÿæ­‡ç€ï¼Œæ—§è®°å¿†è¿˜åœ¨ï¼Œæˆ‘æ²¡å¼„ä¸¢ã€‚'}</span></div>
-                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionMemory" ${settings.injectionMemory !== false ? 'checked' : ''}><i></i></label>
-                    </article>
-                    <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œèˆ†æƒ…ã€</small><strong>æ–°é—»ä¸è®ºå›</strong><span>${settings.publicOpinionAutoEnabled ? 'å¤–é¢çš„å£°éŸ³æˆ‘è¿˜ä¼šç«–ç€è€³æœµå¬ã€‚' : 'æˆ‘å…ˆä¸è‡ªåŠ¨å¬é£å£°å•¦ï¼Œæƒ³çœ‹æ—¶è¿˜èƒ½æ‰‹åŠ¨å«æˆ‘å»ã€‚'}</span></div>
-                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPublicOpinion" ${settings.injectionPublicOpinion !== false ? 'checked' : ''}><i></i></label>
-                    </article>
-                    <article class="wb-injection-source">
-                        <div class="wb-injection-source-copy"><small class="wb-injection-source-board">æ¥è‡ªä¾§æ ã€Œé€šè®¯ã€</small><strong>æœ€è¿‘èŠå¤©</strong><span>é»˜è®¤å…³é—­ï¼›å¼€å¯åä¹ŸåªæŒ‰â€œæœªç»“ç®—é€šä¿¡è®°å½•â€é€’ç»™æ­£æ–‡ã€‚</span></div>
-                        <label class="wb-switch"><input type="checkbox" data-wb-setting="injectionSocial" ${settings.injectionSocial === true ? 'checked' : ''}><i></i></label>
-                    </article>
-                </div>
-
-                <div class="wb-injection-behavior">
-                    <div class="wb-flat-section-heading"><div><strong>æ˜¾éœ²ç­–ç•¥</strong><span>å·²ç»å…è®¸å¼å‡ºå»çš„ä¸œè¥¿ï¼Œæˆ‘è¦ç¦»é•œå¤´å¤šè¿‘</span></div></div>
-                    <div class="wb-setting-block">
-                        <label>æ­£æ–‡æ˜¾éœ²åº¦</label>
-                        <div class="wb-option-row">
-                            ${densityButton('restrained', 'å…‹åˆ¶')}
-                            ${densityButton('balanced', 'å‡è¡¡')}
-                            ${densityButton('active', 'æ´»è·ƒ')}
-                        </div>
-                        <p class="wb-setting-explanation">${escapeHtml(settingExplanation('deliveryDensity', settings.deliveryDensity))}</p>
-                    </div>
-                    <div class="wb-setting-block">
-                        <label for="wb-scene-timing-global">æ˜¾éœ²æ—¶æœº</label>
-                        <select id="wb-scene-timing-global" data-wb-setting="sceneTiming">
-                            <option value="strict" ${settings.sceneTiming === 'strict' ? 'selected' : ''}>ä¸¥æ ¼ï¼šåªåœ¨è½¬åœºæˆ–ç©ºæ¡£</option>
-                            <option value="smart" ${settings.sceneTiming === 'smart' ? 'selected' : ''}>æ™ºèƒ½ï¼šå…³é”®åœºæ™¯å»¶å</option>
-                            <option value="open" ${settings.sceneTiming === 'open' ? 'selected' : ''}>å¼€æ”¾ï¼šå…è®¸ç®€çŸ­è‡ªç„¶å˜åŒ–</option>
-                        </select>
-                    </div>
-                </div>
-                <p class="wb-injection-bottom-note">æ€»å¼€å…³å…³æ‰ï¼Œæˆ‘å°±æŠŠä¸œè¥¿å…¨å‹åœ¨é•œå¤´åé¢ã€‚ä¸–ç•Œç…§æ ·æ´»ï¼Œæˆ‘åªæ˜¯ä¸€ä¸ªéƒ½ä¸å¾€å‰å¼ã€‚</p>
-            </section>
-
-            <details class="wb-settings-group wb-settings-connection-section" data-settings-group="connection" ${sectionKey === 'connection' ? 'open' : groupOpen('connection')}>
-                <summary><span>è¿æ¥</span><small>API ä¸æ¨¡å‹</small></summary>
-                <div class="wb-settings-group-body wb-settings-subgroup-stack">
-                    <div class="wb-settings-flat-section">
-            <div class="wb-connection-card is-${escapeAttr(phase)}">
-                <div>
-                    <span>ä¸–ç•Œæ¨æ¼”è¿æ¥</span>
-                    <strong>${escapeHtml(connection.apiLabel || 'è·Ÿéšé…’é¦†å½“å‰ä¸» API')}</strong>
-                </div>
-                <dl>
-                    <dt>æ¨¡å‹</dt><dd>${escapeHtml(connection.model || 'è·Ÿéšé…’é¦†å½“å‰æ¨¡å‹')}</dd>
-                    ${connection.profile ? `<dt>è¿æ¥æ¡£æ¡ˆ</dt><dd>${escapeHtml(connection.profile)}</dd>` : ''}
-                    <dt>æ–¹å¼</dt><dd>${escapeHtml(connection.method || 'ç‹¬ç«‹ä¸Šä¸‹æ–‡æ¨æ¼”')}</dd>
-                    <dt>çŠ¶æ€</dt><dd>${escapeHtml(syncPhaseLabel(phase))}</dd>
-                </dl>
-                ${syncStatus?.error ? `<p>${escapeHtml(syncStatus.error)}</p>` : ''}
-                <small>${settings.apiMode === 'custom'
-                    ? 'æˆ‘èµ°è‡ªå·±çš„å°è·¯ï½ä¸»èŠå¤©é‚£è¾¹ä¸ç”¨ç»™æˆ‘è®©é“ã€‚'
-                    : settings.apiMode === 'tavern-profile'
-                        ? 'æˆ‘åªè®°æ–¹æ¡ˆç‰Œç‰Œï¼Œä¸æŠ„èµ° Keyã€‚é…’é¦†é‚£è¾¹æ”¹äº†æ¨¡å‹æˆ–åœ°å€ï¼Œæˆ‘ä¸‹æ¬¡ç”¨çš„æ—¶å€™ä¼šè¯»åˆ°æ–°çš„ã€‚'
-                        : 'æˆ‘è·Ÿç€é…’é¦†å½“å‰è¿™æ¡è·¯èµ°ï½ä¸ç”¨å†ç»™æˆ‘ç”»ç¬¬äºŒå¼ åœ°å›¾ã€‚'}</small>
-            </div>
-
-            <div class="wb-setting-block">
-                <label>ä¸–ç•Œæ¨æ¼”è¿æ¥</label>
-                <div class="wb-option-row">
-                    ${settingButton('apiMode', settings.apiMode, 'tavern', 'è·Ÿéšå½“å‰é…’é¦†')}
-                    ${settingButton('apiMode', settings.apiMode, 'tavern-profile', 'é…’é¦†å·²å­˜æ–¹æ¡ˆ')}
-                    ${settingButton('apiMode', settings.apiMode, 'custom', 'ç‹¬ç«‹æ¥å£')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(settingExplanation('apiMode', settings.apiMode))}</p>
-                ${settings.apiMode === 'tavern-profile' ? `
-                    <label class="wb-tavern-profile-picker">é€‰æ‹©é…’é¦†æ–¹æ¡ˆ
-                        <select data-wb-tavern-profile-select>
-                            ${tavernProfileSelectOptions(settings.tavernApiProfileId)}
-                        </select>
-                    </label>
-                    <p>${tavernApiProfiles.length
-                        ? 'è¿™é‡Œåªä¿å­˜æ–¹æ¡ˆ IDï½Keyã€æ¥å£åœ°å€ã€æ¨¡å‹å’Œ Secret éƒ½ç»§ç»­ç”± SillyTavern ç®¡ã€‚æ–¹æ¡ˆè¢«æ”¹ï¼Œæˆ‘ä¸‹æ¬¡ç›´æ¥è¯»æ–°å€¼ï¼›æ–¹æ¡ˆè¢«åˆ ï¼Œæˆ‘ä¼šåœä¸‹æ¥æŠ¥é”™ï¼Œä¸ä¼šå·å·æ¢è·¯ã€‚'
-                        : 'æˆ‘æ²¡è¯»åˆ°å¯ç”¨çš„é…’é¦†è¿æ¥æ–¹æ¡ˆã€‚å…ˆå» SillyTavern çš„ Connection Manager ä¿å­˜ä¸€ä»½æ–¹æ¡ˆï¼Œå†å›æ¥é€‰å®ƒã€‚'}</p>
-                ` : ''}
-            </div>
-                    </div>
-                    <details class="wb-settings-subgroup" data-settings-subgroup="connection-custom" ${subgroupOpen('connection-custom')}>
-                        <summary><span>ç‹¬ç«‹æ¥å£é…ç½®</span><small>åœ°å€ã€Keyã€æ¨¡å‹ä¸è¿æ¥æ–¹å¼</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                <form class="wb-api-form" data-wb-form="api" autocomplete="off">
-                    <input type="hidden" name="profileId" value="${escapeAttr(apiValues.profileId)}">
-                    <div class="wb-api-draft-heading">
-                        <span>${apiValues.profileId ? 'æˆ‘åœ¨æ”¹è¿™ä»½å·²ç»å­˜å¥½çš„æ–¹æ¡ˆï½Key ç•™ç©ºå°±ç»§ç»­ç”¨åŸæ¥çš„ã€‚' : (hasSavedApiKey ? 'é»˜è®¤ç‹¬ç«‹æ¥å£æˆ‘å·²ç»è®°ç€å•¦ï½æ—§ Key ä¸ä¼šå†æ‘Šå‡ºæ¥ç»™äººçœ‹ã€‚' : 'å¯ä»¥å…ˆç»™æˆ‘ä¸€æ¡æ¥å£è¯•è¯•ï½å¸¸ç”¨çš„è¯å†å­˜æˆæ–¹æ¡ˆï¼Œä¹‹ååˆ«çš„æ¨¡å—ä¹Ÿèƒ½ç›´æ¥ç”¨ã€‚')}</span>
-                        <button type="button" data-wb-action="reset-api-draft">æ¸…ç©ºé‡å¡«</button>
-                    </div>
-                    <label>æ¥å£åœ°å€
-                        <input name="customApiUrl" type="url" required
-                            value="${escapeAttr(apiValues.customApiUrl)}"
-                            autocomplete="off" inputmode="url" autocapitalize="none" spellcheck="false"
-                            placeholder="https://example.com/v1">
-                    </label>
-                    <p>åœ°å€ç»™æˆ‘å¡«åˆ°ç‰ˆæœ¬å±‚å°±å¥½ï¼Œæ¯”å¦‚ <code>/v1</code>ï½åé¢çš„ <code>/chat/completions</code> æˆ‘è‡ªå·±ä¼šè¡¥ã€‚</p>
-                    <label>API Key
-                        <span class="wb-api-secret-field">
-                            <input class="wb-secret-input" name="customApiCredential" type="text"
-                                value="${escapeAttr(apiValues.customApiCredential)}"
-                                placeholder="${hasSavedApiKey ? 'ç•™ç©ºåˆ™ç»§ç»­ä½¿ç”¨å·²ä¿å­˜çš„ Key' : 'è¯·è¾“å…¥ API Key'}"
-                                autocomplete="one-time-code" autocapitalize="none" spellcheck="false"
-                                data-lpignore="true" data-1p-ignore data-form-type="other"
-                                ${hasSavedApiKey ? '' : 'required'}>
-                            <button type="button" data-wb-action="toggle-api-key-visibility"
-                                aria-pressed="false">æ˜¾ç¤º</button>
-                        </span>
-                    </label>
-                    <p>${hasSavedApiKey
-                        ? 'å¡«æ–°çš„æˆ‘å°±æ¢æ‰æ—§ Keyï¼›ç•™ç©ºæˆ‘ç»§ç»­ç”¨åŸæ¥çš„ã€‚æ—§ Key ä¸ä¼šé‡æ–°æ‘†å›è¾“å…¥æ¡†ï¼Œå…å¾—è¢«æ‰‹æœºä¹±å›å¡«ã€‚'
-                        : 'Key æˆ‘åªæ”¾åœ¨æœ¬æœºçš„ SillyTavern æ‰©å±•è®¾ç½®é‡Œï¼Œä¸ä¼šå¡è¿›å¯¼å‡ºçš„ä¸–ç•ŒçŠ¶æ€ã€‚'}</p>
-                    <label>æ¨¡å‹åç§°
-                        <input name="customApiModel" required list="wb-custom-model-list"
-                            value="${escapeAttr(apiValues.customApiModel)}"
-                            autocomplete="off" autocapitalize="none" spellcheck="false"
-                            placeholder="gemini-2.5-flash">
-                        <datalist id="wb-custom-model-list">
-                            ${availableModels.map(model => `<option value="${escapeAttr(model)}"></option>`).join('')}
-                        </datalist>
-                    </label>
-                    ${availableModels.length ? `
-                        <label class="wb-api-model-picker">ä»å·²æ‹‰å–åˆ—è¡¨é€‰æ‹©
-                            <select data-wb-api-model-picker>
-                                <option value="">ç‚¹è¿™é‡Œé€‰æ‹©ï¼ˆ${availableModels.length} ä¸ªï¼‰</option>
-                                ${availableModels.map(model => `<option value="${escapeAttr(model)}" ${model === apiValues.customApiModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')}
-                            </select>
-                        </label>
-                        <p>åˆ—è¡¨é€‰æ‹©ä¼šå¡«è¿›ä¸Šé¢çš„æ¨¡å‹åç§°ï¼›ä¹Ÿå¯ä»¥ç»§ç»­æ‰‹åŠ¨è¾“å…¥åˆ—è¡¨ä¹‹å¤–çš„æ¨¡å‹ã€‚</p>
-                    ` : ''}
-                    <label>è¿æ¥æ–¹å¼
-                        <select name="customApiTransport">
-                            <option value="proxy" ${apiValues.customApiTransport === 'proxy' ? 'selected' : ''}>
-                                ç»é…’é¦†æœåŠ¡å™¨è½¬å‘ï¼ˆæ¨èï¼‰
-                            </option>
-                            <option value="direct" ${apiValues.customApiTransport === 'direct' ? 'selected' : ''}>
-                                æµè§ˆå™¨ç›´è¿
-                            </option>
-                        </select>
-                    </label>
-                    <label>æ–¹æ¡ˆåç§°ï¼ˆå¯é€‰ï¼‰
-                        <input name="profileName" maxlength="80"
-                            value="${escapeAttr(apiValues.profileName)}"
-                            autocomplete="off" placeholder="ä¾‹å¦‚ï¼šä¸»åŠ› Pro / å…¬ç›Šç«™ Flash">
-                    </label>
-                    <p>åªæ˜¯ä¸´æ—¶è¯•ä¸€ä¸‹å°±ä¸ç”¨èµ·åå­—ï½æƒ³ä»¥åå†ç”¨ï¼Œæˆ‘å°±å¸®ä½ æŠŠå®ƒæ”¶æˆä¸€ä¸ªæ–¹æ¡ˆã€‚</p>
-                    <div class="wb-api-actions">
-                        <button class="wb-api-action is-primary" type="submit">ä¿å­˜é»˜è®¤ç‹¬ç«‹æ¥å£</button>
-                        <button class="wb-api-action is-accent" type="button" data-wb-action="save-api-profile-from-form">${apiValues.profileId ? 'ä¿å­˜æ–¹æ¡ˆä¿®æ”¹' : 'ä¿å­˜ä¸ºæ–¹æ¡ˆ'}</button>
-                        <button class="wb-api-action" type="button" data-wb-action="test-api">æµ‹è¯•è¿æ¥</button>
-                        <button class="wb-api-action" type="button" data-wb-action="pull-api-models"
-                            ${modelPull.phase === 'running' ? 'disabled' : ''}>
-                            ${modelPull.phase === 'running' ? 'æ­£åœ¨æ‹‰å–â€¦' : 'æ‹‰å–æ¨¡å‹åˆ—è¡¨'}
-                        </button>
-                    </div>
-                    ${modelPull.message ? `<p class="wb-api-model-status is-${escapeAttr(modelPull.phase)}">${escapeHtml(modelPull.message)}</p>` : ''}
-                </form>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="connection-image" ${subgroupOpen('connection-image')}>
-                        <summary><span>æœ‹å‹åœˆç”Ÿå›¾æ¥å£</span><small>${settings.imageApiEnabled ? 'å·²å¼€å¯' : 'é»˜è®¤å…³é—­'}</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                            <form class="wb-api-form wb-image-api-form" data-wb-form="image-api" autocomplete="off">
-                                <label class="wb-setting-check">
-                                    <input name="imageApiEnabled" type="checkbox" ${settings.imageApiEnabled ? 'checked' : ''}>
-                                    <span><strong>å…è®¸æœ‹å‹åœˆç”Ÿæˆé…å›¾</strong><small>æ¯æ¬¡åˆ·æ–°æœ€å¤šç”Ÿæˆä¸€å¼ ï¼›äººç‰©æ²¡åŠ¨æœºé…å›¾æ—¶ä¸ä¼šè°ƒç”¨ã€‚</small></span>
-                                </label>
-                                <label>ç”Ÿå›¾ API åœ°å€
-                                    <input name="imageApiUrl" type="url" value="${escapeAttr(settings.imageApiUrl || '')}" autocomplete="off" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="https://example.com/v1">
-                                </label>
-                                <p>ä½¿ç”¨ OpenAI å…¼å®¹çš„ <code>/images/generations</code>ï¼›å¡«åˆ° <code>/v1</code> å³å¯ã€‚å½“å‰ç”±æµè§ˆå™¨ç›´è¿ï¼Œæ¥å£éœ€è¦å…è®¸ CORSã€‚</p>
-                                <label>ç”Ÿå›¾ API Key
-                                    <span class="wb-api-secret-field">
-                                        <input class="wb-secret-input" name="imageApiCredential" type="text" value="" placeholder="${settings.imageApiKey ? 'ç•™ç©ºåˆ™ç»§ç»­ä½¿ç”¨å·²ä¿å­˜çš„ Key' : 'è¯·è¾“å…¥ API Key'}" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other">
-                                        <button type="button" data-wb-action="toggle-api-key-visibility" aria-pressed="false">æ˜¾ç¤º</button>
-                                    </span>
-                                </label>
-                                <label>ç”Ÿå›¾æ¨¡å‹
-                                    <input name="imageApiModel" value="${escapeAttr(settings.imageApiModel || '')}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ä¾‹å¦‚ gpt-image-1">
-                                </label>
-                                <label>å›¾ç‰‡å°ºå¯¸
-                                    <select name="imageApiSize">
-                                        ${['512x512', '768x768', '1024x1024', '1024x1536', '1536x1024'].map(size => `<option value="${size}" ${settings.imageApiSize === size ? 'selected' : ''}>${size}</option>`).join('')}
-                                    </select>
-                                </label>
-                                <div class="wb-api-actions">
-                                    <button class="wb-api-action is-primary" type="submit">ä¿å­˜ç”Ÿå›¾æ¥å£</button>
-                                    <button class="wb-api-action" type="button" data-wb-action="test-image-api">ç”Ÿæˆæµ‹è¯•å›¾ï¼ˆä¼šè®¡è´¹ï¼‰</button>
-                                </div>
-                                <p>Key åªä¿å­˜åœ¨æœ¬æœºæ‰©å±•è®¾ç½®ï¼Œä¸æ”¾è¿›ä¸–ç•ŒçŠ¶æ€ï¼›å…³é—­å¼€å…³ä¸ä¼šåˆ é™¤å·²ç»ç”Ÿæˆçš„æœ‹å‹åœˆå›¾ç‰‡ã€‚</p>
-                            </form>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="connection-profiles" ${subgroupOpen('connection-profiles')}>
-                        <summary><span>ä¸–ç•ŒèƒŒé¢è‡ªå­˜æ–¹æ¡ˆ</span><small>${apiProfiles.length ? `${apiProfiles.length} ä¸ªæ–¹æ¡ˆ` : 'è¿˜æ²¡æœ‰ä¿å­˜æ–¹æ¡ˆ'}</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                            ${apiProfiles.length ? `
-                                <div class="wb-api-profile-list">
-                                    ${apiProfiles.map(profile => `
-                                        <article class="wb-api-profile-card">
-                                            <div>
-                                                <strong>${escapeHtml(profile.name)}</strong>
-                                                <span>${escapeHtml(profile.model || 'æœªé€‰æ¨¡å‹')} Â· ${escapeHtml(profile.transport === 'direct' ? 'æµè§ˆå™¨ç›´è¿' : 'é…’é¦†è½¬å‘')}</span>
-                                            </div>
-                                            <div class="wb-api-profile-actions">
-                                                <button class="wb-api-profile-chip is-accent" type="button" data-wb-action="edit-api-profile" data-profile-id="${escapeAttr(profile.id)}">ç¼–è¾‘</button>
-                                                <button class="wb-api-profile-chip" type="button" data-wb-action="test-api-profile" data-profile-id="${escapeAttr(profile.id)}">æµ‹è¯•</button>
-                                                <button class="wb-api-profile-chip" type="button" data-wb-action="pull-api-profile-models" data-profile-id="${escapeAttr(profile.id)}">æ¨¡å‹</button>
-                                                <button class="wb-api-profile-chip" type="button" data-wb-action="duplicate-api-profile" data-profile-id="${escapeAttr(profile.id)}">å¤åˆ¶</button>
-                                                <button class="wb-api-profile-chip is-danger" type="button" data-wb-action="delete-api-profile" data-profile-id="${escapeAttr(profile.id)}">åˆ é™¤</button>
-                                            </div>
-                                        </article>
-                                    `).join('')}
-                                </div>
-                            ` : '<p>å¸¸ç”¨æ¥å£å¯ä»¥ä»ä¸Šé¢çš„ç‹¬ç«‹æ¥å£è¡¨å•ä¸€é”®ä¿å­˜ï½ä¹‹åç»™ä¸åŒæ¨¡å—åˆ†æµæ—¶å°±ä¸ç”¨é‡å¤å¡« URL å’Œ Key å•¦ `(ï½¡â€¢Ì€á´—-)âœ§`</p>'}
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="connection-routing" ${subgroupOpen('connection-routing')}>
-                        <summary><span>æ¨¡å— API åˆ†æµ</span><small>é»˜è®¤éƒ½è·Ÿéšä¸–ç•ŒèƒŒé¢é»˜è®¤è¿æ¥</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                            <p>è°è¦èµ°è‡ªå·±çš„æ¨¡å‹ï¼Œå°±ç»™è°æŒ‡æ¡å•ç‹¬çš„å°è·¯ï½æ²¡ç‰¹åˆ«è¦æ±‚æˆ‘å°±èµ°é»˜è®¤é‚£æ¡ï¼Œæˆ‘è®¤å¾—å›å®¶çš„è·¯ã€‚</p>
-                            <div class="wb-api-route-grid">
-                                <label>ä¸–ç•Œæ¨æ¼”
-                                    <select data-wb-api-route="simulation">${routeOptions(apiModuleRoutes.simulation || 'default')}</select>
-                                </label>
-                                <label>äººç‰©å³æ—¶è§‚æµ‹
-                                    <select data-wb-api-route="observation">${routeOptions(apiModuleRoutes.observation || 'default')}</select>
-                                </label>
-                                <label>é•¿æœŸè®°å¿† / å†å²æ•´ç†
-                                    <select data-wb-api-route="history">${routeOptions(apiModuleRoutes.history || 'default')}</select>
-                                </label>
-                                <label>ä¸–ç•Œèˆ†æƒ…
-                                    <select data-wb-api-route="opinion">${routeOptions(apiModuleRoutes.opinion || 'default')}</select>
-                                </label>
-                            </div>
-                        </div>
-                    </details>
-
-                </div>
-            </details>
-
-            <details class="wb-settings-group" data-settings-group="appearance" ${groupOpen('appearance')}>
-                <summary><span>ç•Œé¢ä¸æ˜¾éœ²</span><small>ä¸»é¢˜ã€å­—å·ã€æ­£æ–‡æ³¨å…¥</small></summary>
-                <div class="wb-settings-group-body wb-settings-subgroup-stack">
-                    <details class="wb-settings-subgroup" data-settings-subgroup="appearance-ui" ${subgroupOpen('appearance-ui')}>
-                        <summary><span>ç•Œé¢</span><small>æ˜æš—ä¸é˜…è¯»å­—å·</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-block">
-                <label>ç•Œé¢æ˜æš—</label>
-                <div class="wb-option-row">
-                    ${themeButton('auto', 'è‡ªåŠ¨')}
-                    ${themeButton('day', 'æ—¥é—´')}
-                    ${themeButton('night', 'å¤œé—´')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(settingExplanation('theme', settings.theme))}</p>
-            </div>
-
-            <div class="wb-setting-block">
-                <label>ç•Œé¢å­—å·</label>
-                <div class="wb-option-row">
-                    ${settingButton('uiScale', settings.uiScale, 'compact', 'ç´§å‡‘')}
-                    ${settingButton('uiScale', settings.uiScale, 'comfortable', 'æ ‡å‡†')}
-                    ${settingButton('uiScale', settings.uiScale, 'large', 'å¤§å­—')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(settingExplanation('uiScale', settings.uiScale))}</p>
-            </div>
-
-            <div class="wb-setting-toggle">
-                <div>
-                    <strong>æ˜¾ç¤ºæ‚¬æµ®çƒ</strong>
-                    <span>ä¸æƒ³è®©å®ƒä¸€ç›´è¶´åœ¨å±å¹•ä¸Šå°±å…³æ‰ï½æ’ä»¶ç…§å¸¸è¿è¡Œï¼Œä¹‹åä¹Ÿèƒ½ä»é…’é¦†æ‰©å±•è®¾ç½®é‡Œé‡æ–°æ‰“å¼€ã€‚</span>
-                </div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="orbEnabled"
-                        ${settings.orbEnabled !== false ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="appearance-reveal" ${subgroupOpen('appearance-reveal')}>
-                        <summary><span>æ˜¾éœ²</span><small>å¯†åº¦ä¸è¿›å…¥æ­£æ–‡çš„æ—¶æœº</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-block">
-                <label>æ­£æ–‡æ˜¾éœ²åº¦</label>
-                <div class="wb-option-row">
-                    ${densityButton('restrained', 'å…‹åˆ¶')}
-                    ${densityButton('balanced', 'å‡è¡¡')}
-                    ${densityButton('active', 'æ´»è·ƒ')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(settingExplanation('deliveryDensity', settings.deliveryDensity))}</p>
-            </div>
-
-            <div class="wb-setting-block">
-                <label for="wb-scene-timing">æ˜¾éœ²æ—¶æœº</label>
-                <select id="wb-scene-timing" data-wb-setting="sceneTiming">
-                    <option value="strict" ${settings.sceneTiming === 'strict' ? 'selected' : ''}>ä¸¥æ ¼ï¼šåªåœ¨è½¬åœºæˆ–ç©ºæ¡£</option>
-                    <option value="smart" ${settings.sceneTiming === 'smart' ? 'selected' : ''}>æ™ºèƒ½ï¼šå…³é”®åœºæ™¯å»¶å</option>
-                    <option value="open" ${settings.sceneTiming === 'open' ? 'selected' : ''}>å¼€æ”¾ï¼šå…è®¸ç®€çŸ­è‡ªç„¶å˜åŒ–</option>
-                </select>
-            </div>
-
-            <div class="wb-setting-toggle">
-                <div><strong>æ­£æ–‡æ³¨å…¥æ€»å¼€å…³</strong><span>å…³æ‰åªæ˜¯å…ˆä¸å¼ç»™æ­£æ–‡çœ‹ï½äººç‰©ã€äº‹ä»¶ã€è®°å¿†å’Œèˆ†æƒ…ä»ä¼šåœ¨èƒŒåç»§ç»­ç”Ÿæ´»ã€‚</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="worldPromptInjection"
-                        ${settings.worldPromptInjection ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-
-            <div class="wb-injection-grid ${settings.worldPromptInjection ? '' : 'is-disabled'}">
-                <div class="wb-setting-block wb-injection-time">
-                    <label>ã€Œæ­¤åˆ»ã€Â· ä¸–ç•Œæ—¶é—´</label>
-                    <div class="wb-option-row">
-                        ${settingButton('injectionTimeMode', settings.injectionTimeMode, 'full', 'å®Œæ•´')}
-                        ${settingButton('injectionTimeMode', settings.injectionTimeMode, 'anchor', 'æœ€å°é”šç‚¹')}
-                        ${settingButton('injectionTimeMode', settings.injectionTimeMode, 'off', 'å…³é—­')}
-                    </div>
-                    <p class="wb-setting-explanation">ã€Œæœ€å°é”šç‚¹ã€åªè®©æˆ‘å®ˆä½æ—¶é—´è¿ç»­æ€§ï½ä¸ä¼šé€¼æ­£æ–‡æŠŠé’Ÿæ‘†åˆ°é•œå¤´æ­£ä¸­é—´ã€‚</p>
-                </div>
-                <div class="wb-setting-toggle"><div><strong>ã€Œæ­¤åˆ»ã€Â· ä¸–ç•ŒèƒŒæ™¯</strong><span>ä¸–ç•Œçš„åœ°åŸºæˆ‘ä¼šå‹ç¨³ï½è¿™é‡Œåªç®¡é€’ä¸é€’ç»™æ­£æ–‡ã€‚</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionWorldBackground" ${settings.injectionWorldBackground !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>ã€Œäººç‰©ã€Â· å½“å‰çŠ¶æ€</strong><span>ä»–ä»¬çš„ä½ç½®å’Œè¡ŒåŠ¨æˆ‘ç…§å¸¸è®°ç€ï½è¿™é‡Œåªç®¡é€’ä¸é€’ã€‚</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPeople" ${settings.injectionPeople !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>ã€Œæš—æµã€Â· è¿›è¡Œä¸­äº‹ä»¶ä¸ä¸–ç•Œç¯å¢ƒ</strong><span>é•œå¤´å¤–çš„äº‹ç…§å¸¸å¾€å‰èµ°ï¼Œæˆ‘ä¼šè¹²åœ¨æ—è¾¹çœ‹ã€‚</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEvents" ${settings.injectionEvents !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>ã€Œå›å£°ã€Â· å·²ç»“ç®—åæœ</strong><span>åªç®¡è¦ä¸è¦å¼è¿›æ­£æ–‡ï¼Œä¸ä¼šæŠ¹æ‰å·²ç»å‘ç”Ÿçš„åæœã€‚</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionEchoes" ${settings.injectionEchoes !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>ã€Œæ­¤åˆ»ã€Â· ä¸–ç•Œäº‹å®</strong><span>å·²ç»æˆç«‹çš„äº‹å®æˆ‘ä¼šæ‹¿æ¥å¯¹è´¦ï¼Œä¸è®©ä¸–ç•Œè‡ªå·±æ‰“æ¶ã€‚</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionFacts" ${settings.injectionFacts !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>ã€Œè®°å¿†ã€Â· é•¿æœŸè®°å¿†</strong><span>å…³æ‰åæˆ‘è¿˜ä¼šæ”¶æ‹¾è®°å¿†ç›’å­ï½åªæ˜¯ä¸å¾€æ­£æ–‡é‡Œå¼ã€‚</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionMemory" ${settings.injectionMemory !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>ã€Œèˆ†æƒ…ã€Â· æ–°é—»ä¸è®ºå›</strong><span>å¤–é¢çš„å£°éŸ³è¿˜ä¼šç»§ç»­å˜åŒ–ï½è¿™é‡Œåªå†³å®šç¦»é•œå¤´å¤šè¿‘ã€‚</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionPublicOpinion" ${settings.injectionPublicOpinion !== false ? 'checked' : ''}><i></i></label></div>
-                <div class="wb-setting-toggle"><div><strong>ã€Œé€šè®¯ã€Â· æœ€è¿‘èŠå¤©</strong><span>é»˜è®¤éš”ç¦»ï¼›å¼€å¯ååªä¾›æ­£æ–‡å‚è€ƒè¯´è¿‡ä»€ä¹ˆï¼Œä¸æŠŠçº¦å®šå½“æˆå·²å‘ç”Ÿã€‚</span></div><label class="wb-switch"><input type="checkbox" data-wb-setting="injectionSocial" ${settings.injectionSocial === true ? 'checked' : ''}><i></i></label></div>
-            </div>
-            <p class="wb-setting-explanation">è¿™é‡Œçš„å¼€å…³éƒ½åªç®¡ã€Œç»™ä¸ç»™æ­£æ–‡çœ‹ã€ï½å‹åœ¨çˆªçˆªä¸‹é¢ï¼Œä¸ç­‰äºå®ƒå°±ä¸å­˜åœ¨å•¦ã€‚</p>
-
-            <div class="wb-setting-block">
-                <label>è¦ä¸è¦è®©æˆ‘æŠŠé£å£°é€’è¿‘ä¸€ç‚¹</label>
-                <div class="wb-option-row">
-                    ${settingButton('publicOpinionRevealMode', settings.publicOpinionRevealMode, 'observe', 'ä»…è§‚å¯Ÿ')}
-                    ${settingButton('publicOpinionRevealMode', settings.publicOpinionRevealMode, 'relevant', 'ç›¸å…³æ—¶æ˜¾éœ²')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(settingExplanation('publicOpinionRevealMode', settings.publicOpinionRevealMode))}</p>
-            </div>
-                        </div>
-                    </details>
-
-                </div>
-            </details>
-
-            <details class="wb-settings-group" data-settings-group="simulation" ${groupOpen('simulation')}>
-                <summary><span>ä¸–ç•Œè¿è¡Œ</span><small>è®©é•œå¤´å¤–çš„ä¸–ç•Œç»§ç»­è‡ªå·±èµ°ï½</small></summary>
-                <div class="wb-settings-group-body wb-settings-subgroup-stack">
-                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-switches" ${subgroupOpen('simulation-switches')}>
-                        <summary><span>åŸºç¡€å¼€å…³</span><small>è¦ä¸è¦è®©åå°ç»§ç»­è½¬èµ·æ¥</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-toggle">
-                <div><strong>å¯ç”¨ä¸–ç•Œå¼•æ“</strong><span>å…³æ‰å°±å…ˆè®©åå°æ­‡ä¸€ä¼šå„¿ï½ç°æœ‰ä¸–ç•Œä¸ä¼šä¸¢</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="worldSimulationEnabled"
-                        ${settings.worldSimulationEnabled ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-trigger" ${subgroupOpen('simulation-trigger')}>
-                        <summary><span>è¿è¡Œæ–¹å¼</span><small>ä¸–ç•ŒèƒŒé¢è¦å¤šå‹¤å¿«ï½</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-block">
-                <label>ä¸–ç•Œè¿è½¬å¼ºåº¦</label>
-                <div class="wb-option-row">
-                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'light', 'è½»é‡')}
-                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'balanced', 'å‡è¡¡')}
-                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'deep', 'æ·±å…¥')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(settingExplanation('autoSimulationMode', settings.autoSimulationMode))}</p>
-                <label>è‡ªåŠ¨è§¦å‘é¢‘ç‡</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 1, 'æ¯è½®')}
-                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 2, 'æ¯ 2 è½®')}
-                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 3, 'æ¯ 3 è½®')}
-                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 5, 'æ¯ 5 è½®')}
-                </div>
-                <label class="wb-number-setting">
-                    è‡ªå®šä¹‰ç´¯è®¡è½®æ•°
-                    <input type="number" min="1" max="20" step="1"
-                        data-wb-setting="autoSimulationInterval"
-                        value="${escapeAttr(settings.autoSimulationInterval)}">
-                </label>
-                <div class="wb-setting-toggle">
-                    <div><strong>æœªæ¨æ¼”æ­£æ–‡æé†’</strong><span>å…³é—­ååªæŒ‰è®¾å®šé¢‘ç‡è‡ªåŠ¨è¿è¡Œï¼Œä¸ä¼šæ¯æ¬¡å›å¤éƒ½é—®è¦ä¸è¦æå‰è¡¥æ¨ï¼›çœŸæ­£å¤±è´¥ä»ä¼šæé†’ã€‚</span></div>
-                    <label class="wb-switch"><input type="checkbox" data-wb-setting="pendingSimulationPromptEnabled" ${settings.pendingSimulationPromptEnabled ? 'checked' : ''}><i></i></label>
-                </div>
-            </div>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-output" ${subgroupOpen('simulation-output')}>
-                        <summary><span>å¤±è´¥ä¸é™„åŠ è¦æ±‚</span><small>é‡è¯•ä¸æ¨æ¼”ä¾§é‡ç‚¹</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-block">
-                <label>æ¨æ¼”å¤±è´¥åè¦ä¸è¦è®©æˆ‘å†è¯•</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('autoRetryCount', settings.autoRetryCount, 0, 'ä¸é‡è¯•')}
-                    ${settingButton('autoRetryCount', settings.autoRetryCount, 1, 'é‡è¯• 1 æ¬¡')}
-                    ${settingButton('autoRetryCount', settings.autoRetryCount, 2, 'é‡è¯• 2 æ¬¡')}
-                    ${settingButton('autoRetryCount', settings.autoRetryCount, 3, 'é‡è¯• 3 æ¬¡')}
-                </div>
-                <label class="wb-number-setting">
-                    è‡ªå®šä¹‰é‡è¯•æ¬¡æ•°
-                    <input type="number" min="0" max="5" step="1"
-                        data-wb-setting="autoRetryCount"
-                        value="${escapeAttr(settings.autoRetryCount)}">
-                </label>
-                <label class="wb-custom-instruction">
-                    è‡ªå®šä¹‰æ¨æ¼”è¦æ±‚
-                    <textarea data-wb-setting="customSimulationInstruction" maxlength="1000" rows="3"
-                        placeholder="ä¾‹å¦‚ï¼šå°‘åˆ¶é€ æ–°äº‹ä»¶ï¼›å¤šçœ‹çœ‹å•†ä¼šå’Œæ¸¯å£ã€‚ç²ä¸ƒä¼šæŒ‰è¿™ä¸ªæ–¹å‘ç•™æ„ã€‚">${escapeHtml(settings.customSimulationInstruction)}</textarea>
-                </label>
-            </div>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-npc" ${subgroupOpen('simulation-npc')}>
-                        <summary><span>NPC ä¸ç©å®¶è¾¹ç•Œ</span><small>åå°äººæ•°ä¸ç©å®¶å†…å¿ƒ</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-block">
-                <label>åå° NPC é¢„ç®—</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 0, 'ä¸ä¸»åŠ¨æ¨æ¼”')}
-                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 2, 'æœ€å¤š 2 äºº')}
-                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 4, 'æœ€å¤š 4 äºº')}
-                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 8, 'æœ€å¤š 8 äºº')}
-                </div>
-                <label class="wb-number-setting">
-                    è‡ªå®šä¹‰å•è½®äººæ•°
-                    <input type="number" min="0" step="1"
-                        data-wb-setting="backgroundNpcBudget"
-                        value="${escapeAttr(settings.backgroundNpcBudget)}">
-                </label>
-                <p class="wb-setting-explanation">æƒ³ç›¯å¤šå°‘äººéƒ½å¯ä»¥è‡ªå·±å¡«ï½æ¨è 2ï½8 äººï¼Œå•è½®å°½é‡åˆ«è¶…è¿‡ 12 äººï¼›è¶Šå¤§è¶Šåƒ Tokenï¼Œä¹Ÿä¼šæ›´æ…¢ã€‚</p>
-            </div>
-
-            <div class="wb-setting-toggle">
-                <div><strong>å¼ºåŒ–åå°äººç‰©æ¨æ¼”</strong><span>è¯¥ç»“ç®—çš„äººæˆ‘ä¼šé¡ºçˆªå¸¦è¿›ç°æœ‰ä¸–ç•Œæ¨æ¼”ï½ä¸é¢å¤–å•å¼€è¯·æ±‚ï¼Œä¹Ÿä¸è®©ä»–ä»¬åªåœ¨é•œå¤´å‰æ‰æ´»ç€ã€‚</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="enhancedBackgroundSimulation"
-                        ${settings.enhancedBackgroundSimulation ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-
-            <div class="wb-setting-toggle">
-                <div><strong>è®°å½•ç©å®¶è§’è‰²</strong><span>å¼€ç€æ—¶ï¼Œæˆ‘åªè®° user åœ¨æ­£æ–‡é‡Œæ˜ç¡®å‘ç”Ÿçš„ä½ç½®ã€è¡ŒåŠ¨å’Œå®¢è§‚çŠ¶æ€ï¼›å…³æ‰å°±ä¸æŠŠ user å»ºè¿›ã€Œäººç‰©ã€ï¼Œä½†å·²ç»å‘ç”Ÿçš„æ­£æ–‡äº‹å®ç…§æ ·ç®—æ•°ã€‚</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="recordPlayerCharacter"
-                        ${settings.recordPlayerCharacter !== false ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="simulation-context" ${subgroupOpen('simulation-context')}>
-                        <summary><span>ä¸Šä¸‹æ–‡ä¸æ—¶é—´</span><small>è¯»å–èŒƒå›´ä¸ä¸–ç•Œé’Ÿç­–ç•¥</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-block">
-                <label>æ­£æ–‡è¯»å–èŒƒå›´</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('contextTurns', settings.contextTurns, 1, 'æœ€è¿‘ 1 è½®')}
-                    ${settingButton('contextTurns', settings.contextTurns, 3, 'æœ€è¿‘ 3 è½®')}
-                    ${settingButton('contextTurns', settings.contextTurns, 5, 'æœ€è¿‘ 5 è½®')}
-                    <button type="button" data-wb-action="setting-button"
-                        data-setting="contextTurns" data-value="${escapeAttr(settings.customContextTurns || 8)}"
-                        class="${![1, 3, 5].includes(Number(settings.contextTurns)) ? 'is-active' : ''}">è‡ªå®šä¹‰</button>
-                </div>
-                ${![1, 3, 5].includes(Number(settings.contextTurns)) ? `
-                    <label class="wb-number-setting wb-context-custom">
-                        è¯»å–æœ€è¿‘å‡ è½®
-                        <input type="number" min="1" max="30" step="1"
-                            data-wb-setting="contextTurns" value="${escapeAttr(settings.contextTurns)}">
-                    </label>
-                ` : ''}
-                <p class="wb-setting-explanation">${escapeHtml(
-                    [1, 3, 5].includes(Number(settings.contextTurns))
-                        ? ({1: 'åªçœ‹æœ€æ–°ä¸€è½®ï¼Œæœ€è½»æœ€çœï½é€‚åˆå½“å‰ä¿¡æ¯å·²ç»å¾ˆæ˜ç¡®çš„å‰§æƒ…ã€‚', 3: 'è¯»æœ€è¿‘ 3 è½®ï¼Œè¿ç»­æ€§å’Œæ¶ˆè€—éƒ½æ¯”è¾ƒè½»å·§ï¼Œé€‚åˆå¤šæ•°æ—¥å¸¸åœºæ™¯ã€‚', 5: 'é»˜è®¤æ¨èï½æœ€è¿‘ 5 è½®é€šå¸¸è¶³å¤Ÿæ¥ä½äººç‰©ä¸äº‹ä»¶ï¼Œåˆä¸å®¹æ˜“æŠŠä¸Šä¸‹æ–‡æ’‘å¾—åœ†æ»šæ»šã€‚'}[Number(settings.contextTurns)])
-                        : `ç°åœ¨ä¼šè¯»æœ€è¿‘ ${settings.contextTurns} è½®ï½é•¿äº‹ä»¶å’Œå¤šäººå‰§æƒ…ä¼šæ›´ç¨³ï¼Œä½†è½®æ•°è¶Šé«˜ï¼ŒToken ä¹Ÿä¼šè·Ÿç€é•¿èƒ–ã€‚`
-                )}</p>
-            </div>
-
-            <div class="wb-setting-block">
-                <label>æ—¶é—´æ¨è¿›</label>
-                <div class="wb-option-row">
-                    ${settingButton('timePolicy', settings.timePolicy, 'world', 'ä¸–ç•Œé’Ÿ')}
-                    ${settingButton('timePolicy', settings.timePolicy, 'explicit', 'ä¸¥æ ¼')}
-                    ${settingButton('timePolicy', settings.timePolicy, 'cautious', 'å…‹åˆ¶')}
-                    ${settingButton('timePolicy', settings.timePolicy, 'open', 'å¼€æ”¾')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(settingExplanation('timePolicy', settings.timePolicy))}</p>
-            </div>
-                        </div>
-                    </details>
-
-                </div>
-            </details>
-
-            <details class="wb-settings-group" data-settings-group="worldbook" ${groupOpen('worldbook')}>
-                <summary><span>ä¸–ç•Œä¹¦äººç‰©</span><small>æœç´¢ã€è¯†åˆ«ä¸æ‰¹é‡å¯¼å…¥</small></summary>
-                <div class="wb-settings-group-body">
-                    <div class="wb-settings-flat-section">
-                    <form class="wb-worldbook-import" data-wb-form="worldbook">
-                        <label>é€‰æ‹©ä¸–ç•Œä¹¦
-                            <select name="bookName" ${worldbookBooks.length ? '' : 'disabled'}>
-                                ${worldbookBooks.length
-                                    ? worldbookBooks.map(book => `<option value="${escapeAttr(book)}"
-                                        ${book === worldbook.bookName ? 'selected' : ''}>${escapeHtml(book)}</option>`).join('')
-                                    : '<option value="">æˆ‘ç°åœ¨æ²¡æ‰¾åˆ°èƒ½è¯»çš„ä¸–ç•Œä¹¦</option>'}
-                            </select>
-                        </label>
-                        <button class="wb-worldbook-scan-button" type="button" data-wb-action="scan-worldbook"
-                            ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
-                            ${worldbook.phase === 'running' ? 'æ­£åœ¨è¯»å–â€¦' : 'è¯»å–å¹¶è¯†åˆ«äººç‰©'}
-                        </button>
-                        ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
-                        ${worldbookEntries.length ? `
-                            <div class="wb-worldbook-browser">
-                                <label class="wb-worldbook-search">
-                                    <span>æœç´¢æ¡ç›®</span>
-                                    <input type="search" name="worldbookSearch" data-wb-worldbook-search value="${escapeAttr(worldbookQuery)}"
-                                        placeholder="æœäººç‰©åã€æ¡ç›®åã€å…³é”®è¯æˆ–æ­£æ–‡">
-                                </label>
-                                <div class="wb-worldbook-filter-row">
-                                    <label class="wb-worldbook-filter-chip ${worldbookOnlyPeople ? 'is-active' : ''}">
-                                        <input type="checkbox" data-wb-worldbook-filter="people" ${worldbookOnlyPeople ? 'checked' : ''}>
-                                        <span>åªçœ‹ç–‘ä¼¼äººç‰©</span>
-                                    </label>
-                                    <label class="wb-worldbook-filter-chip ${worldbookOnlyEnabled ? 'is-active' : ''}">
-                                        <input type="checkbox" data-wb-worldbook-filter="enabled" ${worldbookOnlyEnabled ? 'checked' : ''}>
-                                        <span>åªçœ‹å¯ç”¨æ¡ç›®</span>
-                                    </label>
-                                </div>
-                                <div class="wb-worldbook-toolbar">
-                                    <span>å…± ${worldbookEntries.length} æ¡ Â· å½“å‰ ${filteredWorldbookEntries.length} æ¡ Â· å·²é€‰ ${worldbookSelectedCount} æ¡</span>
-                                    <div>
-                                        <button type="button" data-wb-action="select-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>å…¨é€‰å½“å‰</button>
-                                        <button type="button" data-wb-action="clear-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>å–æ¶ˆå½“å‰</button>
-                                    </div>
-                                </div>
-                                <div class="wb-worldbook-entry-list">
-                                    ${filteredWorldbookEntries.length ? filteredWorldbookEntries.map(entry => `
-                                        <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''} ${entry.likelyPerson ? 'is-person-candidate' : ''}">
-                                            <input id="wb-worldbook-entry-${escapeAttr(entry.uid)}" type="checkbox" name="entryIds" data-wb-worldbook-entry-id="${escapeAttr(entry.uid)}"
-                                                value="${escapeAttr(entry.uid)}" ${worldbookSelectedIds.has(String(entry.uid)) ? 'checked' : ''}>
-                                            <span>
-                                                <span class="wb-worldbook-entry-heading">
-                                                    <strong>${escapeHtml(entry.parsedName || entry.name)}</strong>
-                                                    ${entry.likelyPerson ? '<em>ç–‘ä¼¼äººç‰©</em>' : ''}
-                                                    ${entry.disabled ? '<em class="is-muted">å·²åœç”¨</em>' : ''}
-                                                </span>
-                                                ${entry.parsedName && entry.parsedName !== entry.name
-                                                    ? `<small>æ¡ç›®ï¼š${escapeHtml(entry.name)} Â· ${escapeHtml((entry.keys || []).join('ã€') || `UID ${entry.uid}`)}</small>`
-                                                    : `<small>${escapeHtml((entry.keys || []).join('ã€') || `UID ${entry.uid}`)}</small>`}
-                                                ${entry.profile?.matchedFields?.length
-                                                    ? `<div class="wb-worldbook-profile-hints">å·²è¯†åˆ«ï¼š${escapeHtml(entry.profile.matchedFields.slice(0, 6).map(field => ({
-                                                        name: 'å§“å', nickname: 'åˆ«ç§°', gender: 'æ€§åˆ«', age: 'å¹´é¾„', birthday: 'ç”Ÿæ—¥', species: 'ç§æ—', identity: 'èº«ä»½', personality: 'äººæ ¼', values: 'åå¥½', mbti: 'MBTI', appearance: 'å¤–è²Œ', height: 'èº«é«˜', body: 'ä½“å‹', clothing: 'ç©¿ç€', background: 'èƒŒæ™¯', relations: 'å…³ç³»', speech: 'è¯´è¯', behavior: 'è¡Œä¸ºè¾¹ç•Œ',
-                                                    }[field] || field)).join('ã€'))}</div>`
-                                                    : ''}
-                                                <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? 'â€¦' : ''}</p>
-                                            </span>
-                                        </label>
-                                    `).join('') : `<div class="wb-worldbook-empty">å½“å‰ç­›é€‰ä¸‹æ²¡æœ‰æ¡ç›®ã€‚å¯ä»¥å–æ¶ˆç­›é€‰æˆ–æ¢ä¸ªå…³é”®è¯ã€‚</div>`}
-                                </div>
-                                <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>
-                                    ${worldbookSelectedCount ? `å¯¼å…¥å·²é€‰äººç‰©ï¼ˆ${worldbookSelectedCount}ï¼‰` : 'è¯·é€‰æ‹©è¦å¯¼å…¥çš„äººç‰©'}
-                                </button>
-                            </div>
-                        ` : ''}
-                    </form>
-                    </div>
-                </div>
-            </details>
-
-            <details class="wb-settings-group" data-settings-group="memory" ${groupOpen('memory')}>
-                <summary><span>é•¿æœŸè®°å¿†</span><small>è‡ªåŠ¨æ•´ç†ä¸å†å²å»ºæ¡£</small></summary>
-                <div class="wb-settings-group-body wb-settings-subgroup-stack">
-                    <details class="wb-settings-subgroup" data-settings-subgroup="memory-switches" ${subgroupOpen('memory-switches')}>
-                        <summary><span>è®°å¿†å¼€å…³</span><small>æ•´ç†ä¸æ­£æ–‡æ³¨å…¥</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-setting-toggle">
-                <div><strong>å¯ç”¨è®°å¿†ç³»ç»Ÿ</strong><span>å…³æ‰æˆ‘å°±ä¸å†å¡æ–°çº¸ç‰‡ï½å·²ç»æ”¶å¥½çš„è®°å¿†ï¼Œæˆ‘ä¼šåŸæ ·å‹ä½ã€‚</span></div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="memorySystemEnabled"
-                        ${settings.memorySystemEnabled ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-            <p class="wb-setting-explanation">è¦ä¸è¦æŠŠè®°å¿†å¼ç»™æ­£æ–‡çœ‹ï¼Œè¯·å»ã€Œæ­£æ–‡æ³¨å…¥ã€å‘Šè¯‰æˆ‘ï½è¿™é‡Œä»…ç®¡è®°å¿†ç›’å­æœ¬èº«è¿˜æ”¶ä¸æ”¶æ–°ä¸œè¥¿ã€‚</p>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="memory-history" ${subgroupOpen('memory-history')}>
-                        <summary><span>è‡ªåŠ¨æ•´ç†</span><small>è¿›åº¦ä¸æ‰‹åŠ¨æ•´ç†</small></summary>
-                        <div class="wb-settings-subgroup-body">
-            <div class="wb-history-settings">
-                <div class="wb-history-heading">
-                    <div>
-                        <label>è®°å¿†æ•´ç†</label>
-                        <strong>${escapeHtml(
-                            historyRunning
-                                ? memory.message || 'æ­£åœ¨æ”¶æ‹¾è®°å¿†ï½'
-                                : 'ä¼šè‡ªå·±æ”¶æ‹¾é•¿æœŸè®°å¿†ï½',
-                        )}</strong>
-                    </div>
-                    <span>${historyRunning
-    ? String(historyPercent) + '%'
-    : Number(memory.pendingAssistantResponses || 0) > 0
-        ? 'æœ‰æ–°çš„ä¸œè¥¿ç­‰æˆ‘æ”¶ï½'
-        : memory.summaryBehind
-            ? 'é•¿æœŸæ‘˜è¦è¿˜åœåœ¨ç¬¬ ' + Math.max(0, Number(memory.latestSummaryMessageId || 0)) + ' å±‚'
-            : memory.pendingRollup
-                ? 'é•¿æœŸæ‘˜è¦è¿˜åœ¨ç­‰æˆ‘å‹ä¸€å±‚ï½'
-                : 'é•¿æœŸè®°å¿†å·²è¿½å¹³æ­£æ–‡ï½'}</span>
-                </div>
-                ${historyRunning ? `
-                    <div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>
-                ` : ''}
-                <p>ä¼šè‡ªåŠ¨æ•´ç†æ–°å¢æ­£æ–‡ï½é‡è¦äº‹å®ã€å…³ç³»ã€æ‰¿è¯ºå’Œæ²¡æ”¶å°¾çš„ä¼ç¬”ä¼šä¹–ä¹–ç•™ä¸‹æ¥ (ï½¡â€¢Ì€á´—-)âœ§</p>
-                <div class="wb-memory-queue">
-                    <span>å¾…æ•´ç† ${Math.max(0, Number(memory.pendingAssistantResponses || 0))} æ¡æ­£æ–‡</span>
-                    <strong>${settings.memoryAutoIndexInterval > 0
-                        ? `è‡ªåŠ¨ Â· æ¯ ${settings.memoryAutoIndexInterval} è½®`
-                        : 'æ‰‹åŠ¨æ•´ç†'}</strong>
-                </div>
-                <label>æ•´ç†æ–¹å¼</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 0, 'æ‰‹åŠ¨')}
-                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 5, 'æ¯ 5 è½®')}
-                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 10, 'æ¯ 10 è½®')}
-                    ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 20, 'æ¯ 20 è½®')}
-                </div>
-                <label class="wb-number-setting">
-                    è‡ªå®šä¹‰é—´éš”ï¼ˆè½®ï¼‰
-                    <input type="number" min="0" max="50" step="1"
-                        data-wb-setting="memoryAutoIndexInterval"
-                        value="${escapeAttr(settings.memoryAutoIndexInterval)}">
-                </label>
-                <button type="button" data-wb-action="scan-history"
-                    ${historyRunning || !settings.memorySystemEnabled ? 'disabled' : ''}>
-                    ${Number(memory.indexedThroughMessageId ?? -1) < 0 ? 'æ•´ç†å½“å‰è®°å¿†' : 'ç«‹å³æ•´ç†'}
-                </button>
-            </div>
-                        </div>
-                    </details>
-
-                </div>
-            </details>
-
-            <details class="wb-settings-group" data-settings-group="calendar" ${groupOpen('calendar')}>
-                <summary><span>æ—¥å†</span><small>ä¸»ä¸–ç•Œæ—¶é—´ã€æ ¡å‡†ä¸å¿«è¿›</small></summary>
-                <div class="wb-settings-group-body">
-                    <form class="wb-clock-form" data-wb-form="clock">
-                        <div class="wb-clock-form-heading">
-                            <div><label>ä¸»ä¸–ç•Œæ—¥å†</label><strong>${escapeHtml(clockLabel)}</strong></div>
-                            <span>æ¯ä¸ªèŠå¤©ç‹¬ç«‹ä¿å­˜</span>
-                        </div>
-                        <label class="wb-calendar-name-field">
-                            å†æ³•åç§°
-                            <input name="calendarName" maxlength="40"
-                                value="${escapeAttr(clock.calendarName)}" placeholder="ä¾‹å¦‚ï¼šå¸å›½å†">
-                        </label>
-                        <div class="wb-calendar-date-fields">
-                            <label><input name="year" type="number" min="1" max="999999"
-                                value="${clock.year}"> å¹´</label>
-                            <label><input name="month" type="number" min="1" max="12"
-                                value="${clock.month}"> æœˆ</label>
-                            <label><input name="day" type="number" min="1" max="31"
-                                value="${clock.dayOfMonth}"> æ—¥</label>
-                        </div>
-                        <div class="wb-clock-fields">
-                            <label><input name="hour" type="number" min="0" max="23" value="${clock.hour}"> æ—¶</label>
-                            <label><input name="minute" type="number" min="0" max="59" value="${clock.minute}"> åˆ†</label>
-                            <button type="button" data-wb-action="sync-clock-from-story">ä¸æ­£æ–‡æ ¡å‡†</button>
-                            <button type="submit" class="wb-clock-manual-save">æ‰‹åŠ¨è®¾å®š</button>
-                        </div>
-                        <p class="wb-clock-sync-note">æ­£æ–‡çœŸçš„è¯´æ¸…æ¥šæ—¶é—´ï¼Œæˆ‘ä¼šè‡ªå·±è·Ÿä¸Šï½å¦‚æœä½ æ¯”æˆ‘æ›´æ¸…æ¥šï¼Œä¹Ÿå¯ä»¥åœ¨è¿™é‡Œç›´æ¥å‘Šè¯‰æˆ‘ç°åœ¨å‡ ç‚¹ã€‚</p>
-                        <div class="wb-time-actions">
-                            <button type="button" data-wb-action="advance-clock" data-minutes="60">+ 1 å°æ—¶</button>
-                            <button type="button" data-wb-action="advance-clock" data-minutes="360">+ 6 å°æ—¶</button>
-                            <button type="button" data-wb-action="advance-clock" data-minutes="1440">+ 1 å¤©</button>
-                        </div>
-                    </form>
-                </div>
-            </details>
-
-            <details class="wb-settings-group wb-settings-advanced-section" data-settings-group="advanced" ${sectionKey === 'advanced' ? 'open' : groupOpen('advanced')}>
-                <summary><span>é«˜çº§ä¸ç»´æŠ¤</span><small>ç¡¬ç¡¬çš„ä¸œè¥¿â€¦â€¦æˆ‘å…ˆå‹åœ¨çªé‡Œé¢</small></summary>
-                <div class="wb-settings-group-body wb-advanced-settings-body wb-settings-subgroup-stack">
-                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-generation" ${subgroupOpen('advanced-generation')}>
-                        <summary><span>ç”Ÿæˆé™åˆ¶</span><small>Token ä¸å•æ¬¡ç­‰å¾…æ—¶é—´</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                            <div class="wb-setting-block">
-                                <label>å…¨å±€ Token ä¸Šé™</label>
-                                <div class="wb-option-row wb-option-row-four">
-                                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 0, 'è‡ªåŠ¨')}
-                                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 4000, '4K')}
-                                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 8000, '8K')}
-                                    ${settingButton('maxOutputTokens', settings.maxOutputTokens, 12000, '12K')}
-                                </div>
-                                <label class="wb-number-setting">
-                                    è‡ªå®šä¹‰ Token ä¸Šé™
-                                    <input type="number" min="0" step="500"
-                                        data-wb-setting="maxOutputTokens"
-                                        value="${escapeAttr(settings.maxOutputTokens)}">
-                                </label>
-                                <p class="wb-setting-explanation">0 å°±è®©æˆ‘è‡ªå·±ç®—ï½ä¸–ç•Œæ¨æ¼”ç”¨å…¨å±€é¢„ç®—ï¼Œå°ä»»åŠ¡ä¼šå„è‡ªæ”¶å£ï¼›æœåŠ¡ç«¯ä¸Šé™æ›´ä½æ—¶ä»¥æœåŠ¡ç«¯ä¸ºå‡†ã€‚</p>
-                            </div>
-
-                            <div class="wb-setting-block">
-                                <label>å…¨å±€æœ€é•¿ç­‰å¾…</label>
-                                <div class="wb-option-row wb-option-row-four">
-                                    ${settingButton('generationTimeoutMs', settings.generationTimeoutMs, 0, 'è‡ªåŠ¨')}
-                                    ${settingButton('generationTimeoutMs', settings.generationTimeoutMs, 60000, '60s')}
-                                    ${settingButton('generationTimeoutMs', settings.generationTimeoutMs, 120000, '120s')}
-                                    ${settingButton('generationTimeoutMs', settings.generationTimeoutMs, 180000, '180s')}
-                                </div>
-                                <label class="wb-number-setting">
-                                    è‡ªå®šä¹‰ç­‰å¾…ç§’æ•°
-                                    <input type="number" min="0" max="600" step="15"
-                                        data-wb-setting-seconds="generationTimeoutMs"
-                                        value="${escapeAttr(settings.generationTimeoutMs ? Math.round(settings.generationTimeoutMs / 1000) : 0)}">
-                                </label>
-                                <p class="wb-setting-explanation">0 å°±è®©æˆ‘è‡ªå·±çœ‹ç€åŠï½åªæ•°æ¨¡å‹çœŸæ­£ç”Ÿæˆçš„æ—¶é—´ï¼Œåˆ‡åå°ã€é™æµå†·å´å’Œæ’é˜Ÿéƒ½ä¸ç®—ã€‚</p>
-                            </div>
-
-                            <details class="wb-generation-module-overrides">
-                                <summary>æŒ‰æ¨¡å—å•ç‹¬è®¾ç½® <small>ç•™ 0 å°±ç»§æ‰¿å…¨å±€</small></summary>
-                                <div class="wb-generation-module-list">
-                                    ${generationModuleRow('simulation')}
-                                    ${generationModuleRow('observation')}
-                                    ${generationModuleRow('history')}
-                                    ${generationModuleRow('opinion')}
-                                </div>
-                            </details>
-
-                            <div class="wb-generation-defaults">
-                                <strong>è‡ªåŠ¨ç­‰å¾…å‚è€ƒ</strong>
-                                <span>ä¸–ç•Œæ¨æ¼” 180s Â· äººç‰©è§‚æµ‹ 120s Â· å†å²/è®°å¿† 300s Â· èˆ†æƒ…/é—²é€› 150s</span>
-                            </div>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-data" ${subgroupOpen('advanced-data')}>
-                        <summary><span>æ•°æ®å¤‡ä»½</span><small>æˆ‘å…ˆå¸®è¿™ä¸ªä¸–ç•Œç•™ä¸€ä»½ä¿é™©</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                            <div class="wb-setting-actions">
-                                <button type="button" data-wb-action="export-state">å¯¼å‡ºå½“å‰ä¸–ç•Œ</button>
-                                <button type="button" data-wb-action="import-state">å¯¼å…¥ä¸–ç•ŒçŠ¶æ€</button>
-                                <input class="wb-import-input" type="file" accept=".json,application/json">
-                            </div>
-                            <p>è¦æ¬å®¶ã€æµ‹è¯•æˆ–è€…å¤§æ”¹ä¹‹å‰ï¼Œå…ˆè®©æˆ‘æŠŠè¿™ä¸ªä¸–ç•Œè£…è¿›å°ç›’å­é‡Œç•™ä¸€ä»½å§ï½ä¸¢äº†ä¼šå¾ˆéš¾æ¡ã€‚</p>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-maintenance" ${subgroupOpen('advanced-maintenance')}>
-                        <summary><span>æ•°æ®ç»´æŠ¤</span><small>æ¸…ç¼“å­˜ / é‡ç½®å½“å‰èŠå¤©</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                            <div class="wb-maintenance-card">
-                                <div>
-                                    <strong>æ¸…ç†å½“å‰èŠå¤©ç¼“å­˜</strong>
-                                    <p>æˆ‘åªæ‰«æ‰ä¸´æ—¶ç¢å±‘ï½äººç‰©ã€è®°å¿†å’Œä¸–ç•ŒçŠ¶æ€ï¼Œä¸€çˆªéƒ½ä¸ç¢°ã€‚</p>
-                                </div>
-                                <button type="button" data-wb-action="clear-current-chat-cache">æ¸…ç†ç¼“å­˜</button>
-                            </div>
-                            <div class="wb-maintenance-card">
-                                <div>
-                                    <strong>è®©ç²ä¸ƒæ£€æŸ¥ä¸–ç•ŒçŠ¶æ€</strong>
-                                    <p>æˆ‘æ‹¿æ­£æ–‡å’Œæ˜ç¡®äº‹å®å†å¯¹ä¸€éã€‚åå°é”™äº†æˆ‘æ”¹ï¼Œå·²ç»å‘ç”Ÿçš„æ­£æ–‡ä¸ç¢°ã€‚</p>
-                                </div>
-                                <button type="button" data-wb-action="check-correct-world-state">æ£€æŸ¥çº é”™</button>
-                            </div>
-                            <div class="wb-maintenance-card is-danger">
-                                <div>
-                                    <strong>é‡ç½®å½“å‰èŠå¤©æ•°æ®</strong>
-                                    <p>è¿™æ¬¡æ˜¯çœŸçš„æŠŠè¿™åªç®±å­å€’ç©ºã€‚æ­£æ–‡å’Œ API / æ¨¡å‹é…ç½®æˆ‘ä¸ç¢°ã€‚</p>
-                                    <small>ä¸å¯æ’¤å›ï½è¦ç•™ç€å°±å…ˆå¤‡ä»½ï¼Œæ—§ä¸–ç•Œä¹Ÿä¸ä¼šå†ä»åºŠåº•ä¸‹è¯ˆå°¸ã€‚</small>
-                                </div>
-                                <button type="button" class="is-danger" data-wb-action="reset-current-chat-data">ä¸€é”®é‡ç½®</button>
-                            </div>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-tagfilter" ${subgroupOpen('advanced-tagfilter')}>
-                        <summary><span>æ­£æ–‡è¿‡æ»¤</span><small>å˜é‡å—ã€è„šæœ¬å—â€¦â€¦ç¡¬ç¡¬çš„ï¼Œä¸å¥½åƒã€‚æˆ‘åªæŠŠçœŸæ­£çš„å™äº‹å¼ç»™åå°ã€‚</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                    <div class="wb-setting-toggle">
-                        <div><strong>å¯ç”¨æ ‡ç­¾è¿‡æ»¤</strong><span>å…³æ‰ä»¥å HTML æ³¨é‡Šæˆ‘è¿˜æ˜¯ä¼šå…ˆæŒ‘å‡ºå»ï¼Œä¸åã€‚</span></div>
-                        <label class="wb-switch">
-                            <input type="checkbox" data-wb-setting="tagFilterEnabled"
-                                ${settings.tagFilterEnabled !== false ? 'checked' : ''}>
-                            <i></i>
-                        </label>
-                    </div>
-                    <div class="wb-setting-block">
-                        <div class="wb-narrative-filter-shortcuts">
-                            <label>åªè¯»å–æŸä¸ªæ­£æ–‡æ ‡ç­¾ï¼ˆå¯é€‰ï¼‰
-                                <input type="text" maxlength="80" data-wb-setting="narrativeIncludeTag"
-                                    value="${escapeAttr(settings.narrativeIncludeTag || '')}"
-                                    placeholder="ä¾‹å¦‚ narrativeï¼ˆä¸ç”¨å†™ &lt; &gt;ï¼‰" autocomplete="off" spellcheck="false">
-                                <small>æœ¬æ¡æœ‰è¿™ä¸ªæ ‡ç­¾æ—¶å°±åªå–æ ‡ç­¾é‡Œé¢ï¼›æ²¡æœ‰æ—¶ä¿ç•™åŸæ–‡ï¼Œä¸ä¼šä¸€å£åƒç©ºï½</small>
-                            </label>
-                            <label>é¢å¤–æ­£åˆ™æ’é™¤ï¼ˆå¯é€‰ï¼‰
-                                <textarea rows="3" maxlength="2200" data-wb-setting="narrativeRegexFilters"
-                                    placeholder="ä¸€è¡Œä¸€æ¡ï¼Œä¾‹å¦‚ï¼š&lt;UpdateVariable&gt;[\s\S]*?&lt;/UpdateVariable&gt;">${escapeHtml(settings.narrativeRegexFilters || '')}</textarea>
-                                <small>æœ€å¤š 8 æ¡ï½å˜é‡å—ã€çŠ¶æ€æ æˆ–é¢„è®¾é™„åŠ å†…å®¹éƒ½å¯ä»¥åœ¨è¿›åå°å‰å…ˆæ‘˜æ‰ã€‚</small>
-                            </label>
-                        </div>
-                        <p>HTML æ³¨é‡Š <code>&lt;!-- ... --&gt;</code> ä¼šæ•´å—æ‹¿æ‰ï½ä¸‹é¢è¿™äº›æˆå¯¹æ ‡ç­¾ä¹Ÿå¯ä»¥ç›´æ¥æ’é™¤ï¼›ä¸éœ€è¦æ‡‚æ­£åˆ™ä¹Ÿèƒ½ç”¨ (ï½¡â€¢Ì€á´—-)âœ§</p>
-                        <div class="wb-tag-filter-list">
-                            ${rules.map((rule, index) => `
-                                <div class="wb-tag-filter-rule" data-tag-filter-index="${index}">
-                                    <div class="wb-tag-filter-rule-head">
-                                        <strong>è§„åˆ™ ${index + 1}</strong>
-                                        <button type="button" class="wb-tag-filter-remove is-delete"
-                                            data-wb-action="remove-tag-filter-rule"
-                                            data-index="${index}">åˆ é™¤</button>
-                                    </div>
-                                    <label>å¼€å¤´æ ‡ç­¾ <span>ï¼ˆå¯ç©ºï¼‰</span>
-                                        <input type="text" maxlength="80"
-                                            data-wb-tag-filter-field="open" data-index="${index}"
-                                            value="${escapeAttr(rule.open || '')}"
-                                            placeholder="ä¾‹å¦‚ &lt;options&gt;"
-                                            autocomplete="off" spellcheck="false">
-                                    </label>
-                                    <label>ç»“å°¾æ ‡ç­¾ <span>ï¼ˆå¯ç©ºï¼‰</span>
-                                        <input type="text" maxlength="80"
-                                            data-wb-tag-filter-field="close" data-index="${index}"
-                                            value="${escapeAttr(rule.close || '')}"
-                                            placeholder="ä¾‹å¦‚ &lt;/options&gt;"
-                                            autocomplete="off" spellcheck="false">
-                                    </label>
-                                </div>
-                            `).join('')}
-                        </div>
-                        <div class="wb-tag-auto-tools">
-                            <div class="wb-tag-auto-head">
-                                <div><strong>è‡ªåŠ¨æå–å€™é€‰</strong><span>æˆ‘åªæŠŠå¯ç–‘æ ‡ç­¾æ‰’å‡ºæ¥ç»™ä½ çœ‹ï½ä¸ä¼šæ“…è‡ªå¡è¿›è§„åˆ™ã€‚</span></div>
-                                <div class="wb-tag-auto-actions">
-                                    <button type="button" data-wb-action="scan-tag-candidates" data-count="1">æ‰«ææœ€æ–°æ­£æ–‡</button>
-                                    <button type="button" data-wb-action="scan-tag-candidates" data-count="5">æ‰«ææœ€è¿‘ 5 æ¡</button>
-                                </div>
-                            </div>
-                            ${tagCandidates.length ? `
-                                <div class="wb-tag-candidate-list">
-                                    ${tagCandidates.map((item, index) => `
-                                        <label class="wb-tag-candidate ${item.broad ? 'is-risky' : ''} ${item.alreadyAdded ? 'is-added' : ''}">
-                                            <input type="checkbox" data-wb-tag-candidate-index="${index}"
-                                                ${item.recommended ? 'checked' : ''} ${item.alreadyAdded ? 'disabled' : ''}>
-                                            <span>
-                                                <strong>&lt;${escapeHtml(item.tagName)}&gt;${item.alreadyAdded ? ' Â· å·²æ·»åŠ ' : ''}</strong>
-                                                <small>${item.count} æ¬¡${item.broad ? ' Â· èŒƒå›´è¾ƒå®½ï¼Œå»ºè®®ç¡®è®¤åå†åŠ ' : ''}</small>
-                                                <code>${escapeHtml(item.open)} â€¦ ${escapeHtml(item.close)}</code>
-                                            </span>
-                                        </label>
-                                    `).join('')}
-                                </div>
-                                <button type="button" class="wb-tag-filter-add" data-wb-action="apply-tag-candidates">æ·»åŠ é€‰ä¸­å€™é€‰</button>
-                            ` : '<p class="wb-tag-auto-empty">ç‚¹å‡»æ‰«æåï¼Œæ’ä»¶ä¼šæŠŠç–‘ä¼¼æˆå¯¹æ ‡ç­¾åˆ—å‡ºæ¥ä¾›ä½ ç¡®è®¤ã€‚</p>'}
-                        </div>
-
-                        <button type="button" class="wb-tag-filter-add"
-                            data-wb-action="add-tag-filter-rule"
-                            ${rules.filter(rule => String(rule.open || '').trim() || String(rule.close || '').trim()).length >= 30 ? 'disabled' : ''}>
-                            ï¼‹ æ·»åŠ è§„åˆ™
-                        </button>
-                    </div>
-
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-recovery" ${subgroupOpen('advanced-recovery')}>
-                        <summary><span>å®‰å…¨æ¢å¤</span><small>${latestRecovery ? escapeHtml(latestRecovery.label) : 'æˆ‘æ›¿è¿™ä¸ªä¸–ç•Œç•™çš„ä¿é™©'}</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                            <div class="wb-maintenance-status">
-                                <strong>${latestRecovery ? escapeHtml(latestRecovery.label) : 'è¿˜æ²¡æœ‰æ¢å¤ç‚¹'}</strong>
-                                <span>${latestRecovery ? escapeHtml(formatLocalTimestamp(latestRecovery.createdAt)) : 'æ¯ä¸ªèŠå¤©æˆ‘åˆ†å¼€ç•™'}</span>
-                            </div>
-                            <p>${latestRecovery
-                                ? `å½“å‰ä¿å­˜ ${Math.max(1, Number(recovery.count) || 1)} ä¸ªæ¢å¤ç‚¹ï¼Œæ¢å¤åä»ä¼šå…ˆæ›¿ç°åœ¨çš„çŠ¶æ€ç•™ä¸€ä»½ä¿é™©ã€‚`
-                                : 'å‡çº§æ—§æ•°æ®ã€å¯¼å…¥ä¸–ç•ŒçŠ¶æ€æ—¶æˆ‘ä¼šå…ˆç•™ä¸€ä»½ï½ä½ ä¹Ÿå¯ä»¥ç°åœ¨å°±è®©æˆ‘å­˜ä¸ªä¿é™©ã€‚'}</p>
-                            <div class="wb-setting-actions">
-                                <button type="button" data-wb-action="create-recovery-point">ç«‹å³ä¿å­˜æ¢å¤ç‚¹</button>
-                                <button type="button" data-wb-action="restore-latest-recovery" ${latestRecovery ? '' : 'disabled'}>æ¢å¤æœ€è¿‘ä¿å­˜</button>
-                            </div>
-                        </div>
-                    </details>
-
-                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-diagnostics" ${subgroupOpen('advanced-diagnostics')}>
-                        <summary><span>æ•…éšœè¯Šæ–­</span><small>æˆ‘æŠŠæŠ“è™«éœ€è¦çš„ä¸œè¥¿å¼å‡ºæ¥</small></summary>
-                        <div class="wb-settings-subgroup-body">
-                            <p>æˆ‘åªæŠŠæŠ“è™«éœ€è¦çš„ç‰ˆæœ¬ã€è®¾å¤‡ã€æ¥å£æ¨¡å¼å’Œé”™è¯¯çŠ¶æ€å¼å‡ºæ¥ã€‚Keyã€æ¥å£åœ°å€ã€æ­£æ–‡å’Œè§’è‰²ç§å¯†è®¾å®šï¼Ÿé‚£äº›æˆ‘å‹ä½ï¼Œä¸å¾€å¤–å¼ã€‚</p>
-                            <div class="wb-setting-actions">
-                                <button type="button" data-wb-action="copy-diagnostics">æŠŠè¯Šæ–­å¼å‡ºæ¥</button>
-                                <button type="button" data-wb-action="preview-notice">çœ‹çœ‹æç¤ºæ ·å¼</button>
-                            </div>
-                        </div>
-                    </details>
-                </div>
-            </details>
-
-        </div>
-    `;
-}
-
-
-function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSubgroups = new Set(), worldbookUi = {}) {
-    const scopeMeta = {
-        now: { eyebrow: 'ç²ä¸ƒåœ¨çœ‹', title: 'æ­¤åˆ»è®¾ç½®' },
-        people: { eyebrow: 'ç²ä¸ƒåœ¨çœ‹', title: 'äººç‰©è®¾ç½®' },
-        currents: { eyebrow: 'ç²ä¸ƒåœ¨çœ‹', title: 'æš—æµè®¾ç½®' },
-        opinion: { eyebrow: 'ç²ä¸ƒåœ¨å¬', title: 'èˆ†æƒ…è®¾ç½®' },
-        memory: { eyebrow: 'ç²ä¸ƒåœ¨æ”¶æ‹¾', title: 'è®°å¿†è®¾ç½®' },
-    };
-    const scopeKey = Object.hasOwn(scopeMeta, scope) ? scope : 'now';
-    const scopeInfo = scopeMeta[scopeKey];
-    const clock = formatWorldCalendar(state);
-    const clockLabel = worldClockLabel(state, clock);
-    const memory = syncStatus?.memory || {};
-    const historyRunning = memory.phase === 'running';
-    const historyPercent = memory.total > 0
-        ? Math.min(100, Math.round((Number(memory.processed) || 0) / memory.total * 100))
-        : 0;
-    const worldbook = syncStatus?.worldbook || { books: [], entries: [], phase: 'idle' };
-    const worldbookBooks = Array.isArray(worldbook.books) ? worldbook.books : [];
-    const worldbookEntries = Array.isArray(worldbook.entries) ? worldbook.entries : [];
-    const worldbookQuery = String(worldbookUi.query || '').slice(0, 120);
-    const worldbookOnlyPeople = Boolean(worldbookUi.onlyPeople);
-    const worldbookOnlyEnabled = Boolean(worldbookUi.onlyEnabled);
-    const worldbookSelectedIds = worldbookUi.selectedIds instanceof Set
-        ? worldbookUi.selectedIds
-        : new Set(Array.isArray(worldbookUi.selectedIds) ? worldbookUi.selectedIds.map(String) : []);
-    const filteredWorldbookEntries = filterWorldbookEntries(worldbookEntries, {
-        query: worldbookQuery,
-        onlyPeople: worldbookOnlyPeople,
-        onlyEnabled: worldbookOnlyEnabled,
-    });
-    const worldbookSelectedCount = worldbookSelectedIds.size;
-    const apiProfiles = Array.isArray(settings.apiProfiles) ? settings.apiProfiles : [];
-    const apiModuleRoutes = settings.apiModuleRoutes && typeof settings.apiModuleRoutes === 'object'
-        ? settings.apiModuleRoutes
-        : {};
-    const routeOptions = (current = 'default') => [
-        `<option value="default" ${current === 'default' ? 'selected' : ''}>è·Ÿéšä¸–ç•ŒèƒŒé¢é»˜è®¤è¿æ¥</option>`,
-        `<option value="tavern" ${current === 'tavern' ? 'selected' : ''}>è·Ÿéšå½“å‰é…’é¦†</option>`,
-        ...apiProfiles.map(profile => {
-            const value = `profile:${profile.id}`;
-            return `<option value="${escapeAttr(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(profile.name)} Â· ${escapeHtml(profile.model || 'æœªé€‰æ¨¡å‹')}</option>`;
-        }),
-    ].join('');
-    const settingButton = (setting, current, id, label) => `
-        <button type="button" data-wb-action="setting-button"
-            data-setting="${setting}" data-value="${id}"
-            class="${String(current) === String(id) ? 'is-active' : ''}">${label}</button>
-    `;
-    const densityButton = (id, label) => settingButton('deliveryDensity', settings.deliveryDensity, id, label);
-    const explanation = (setting, value) => ({
-        deliveryDensity: {
-            restrained: 'æˆ‘å°‘å¾€é•œå¤´è¾¹å¼ä¸œè¥¿ï½åå°è¯¥æ´»çš„è¿˜æ˜¯ç…§æ ·æ´»ã€‚',
-            balanced: 'é‡è¦çš„æˆ‘å¼åˆ°é•œå¤´è¾¹ï¼Œä¸é‡è¦çš„å…ˆå‹çˆªçˆªä¸‹é¢ã€‚å—¯ï¼Œè¿™æ ·ä¸ä¹±ã€‚',
-            active: 'æˆ‘ä¼šæ›´å‹¤å¿«åœ°æŠŠå˜åŒ–å¼åˆ°é•œå¤´è¾¹ï½ä½†æ­£å¿™çš„æ—¶å€™æˆ‘ä¹Ÿä¸ä¼šç¡¬æ‰‘è¿›å»ã€‚',
-        },
-        autoSimulationMode: {
-            light: 'æˆ‘è¶´ç€è½»è½»çœ‹ï½åªç®¡çœŸæœ‰å¿…è¦çš„å˜åŒ–ï¼Œä¸åˆ°å¤„ä¹±è·‘ã€‚',
-            balanced: 'æˆ‘ä¼šæŒ¨ä¸ªçœ‹ä¸€çœ¼ï½è¯¥åŠ¨çš„è‡ªå·±åŠ¨ï¼Œæ²¡äº‹æˆ‘å°±ä¸æ‹¿çˆªå­ä¹±æ‹¨ã€‚',
-            deep: 'æˆ‘ä¼šè¹²ä¹…ä¸€ç‚¹ï¼ŒæŠŠé•œå¤´å¤–çš„äººå’Œå› æœéƒ½ç›¯ä»”ç»†ï½å¤æ‚ä¸–ç•Œç”¨è¿™ä¸ªã€‚',
-        },
-        timePolicy: {
-            world: 'æˆ‘å®ˆç€ä¸–ç•Œé’Ÿï½æ­£æ–‡çœŸè¯´æ¸…æ¥šå‡ ç‚¹ï¼Œæˆ‘å°±æŠŠå°çˆªå­æ‹¨è¿‡å»ã€‚',
-            explicit: 'çœŸçš„ç®—å¾—å‡ºæ¥æˆ‘æ‰æ‹¨ã€‚ç®—ä¸å‡†ï¼Ÿé‚£æˆ‘ä¸ç¢°ã€‚',
-            cautious: 'å¯ä»¥è®©æˆ‘çŒœä¸€ç‚¹ç‚¹ï½ä½†ä¸ç¡®å®šæˆ‘å°±æŠŠçˆªå­æ”¶å›æ¥ã€‚',
-            open: 'æ—…è¡Œã€ç­‰å¾…ã€å·¥ä½œè¿™ç§ä¸€çœ‹å°±ä¼šèŠ±æ—¶é—´çš„äº‹ï¼Œæˆ‘å°±é¡ºæ‰‹æŠŠé’Ÿå¾€å‰æ¨ã€‚',
-        },
-        publicOpinionRevealMode: {
-            observe: 'æˆ‘æŠŠå¤–é¢çš„é£å£°éƒ½å‹åœ¨è¿™ä¸ªè§’è½ï½ä½ æ¥çœ‹æˆ‘å†æ€ç»™ä½ ï¼Œä¸å¾€æ­£æ–‡å¼ã€‚',
-            relevant: 'çœŸå’Œçœ¼å‰è¿™æ®µå‰§æƒ…æœ‰å…³ç³»ï¼Œæˆ‘æ‰å¼è¿‡å»ä¸€ç‚¹ï½æ²¡å…³ç³»çš„æˆ‘ç»§ç»­å‹ç€ã€‚',
-        },
-        worldPulseActivity: {
-            quiet: 'ä¸–ç•Œè¿˜æ˜¯ä¼šåŠ¨ï½åªæ˜¯æˆ‘å°‘æŠ˜è…¾å…¬å…±å˜åŒ–ï¼Œè®©å¤–é¢å®‰é™ä¸€ç‚¹ã€‚',
-            natural: 'æˆ‘æŒ‰å¹³å¸¸èŠ‚å¥çœ‹ç€åŸå¸‚ã€ç»„ç»‡ã€å¤©æ°”å’Œç¤¾ä¼šï½è¯¥å˜çš„è‡ªå·±å˜ã€‚',
-            busy: 'æˆ‘ä¼šå¤šç•™æ„ä¸€ç‚¹é•œå¤´å¤–çš„åŠ¨é™ï½ä½†ä¸ä¼šæ‹¿é‡å¤§äº‹æ•…å’Œç¾éš¾ç¡¬å‡‘çƒ­é—¹ã€‚',
-        },
-    }[setting]?.[String(value)] || '');
-    const advancedOpen = id => openSubgroups.has(id) ? 'open' : '';
-    const sectionHeading = (title, note = '') => `
-        <div class="wb-flat-section-heading">
-            <div><strong>${escapeHtml(title)}</strong>${note ? `<span>${escapeHtml(note)}</span>` : ''}</div>
-        </div>
-    `;
-    const routeSetting = (key, title, note = '') => `
-        <div class="wb-setting-block wb-route-setting">
-            <label>${escapeHtml(title)}</label>
-            <select data-wb-api-route="${escapeAttr(key)}">${routeOptions(apiModuleRoutes[key] || 'default')}</select>
-            ${note ? `<p class="wb-setting-explanation">${escapeHtml(note)}</p>` : ''}
-        </div>
-    `;
-    const injectionStatusCard = (label, enabled, detail = '') => `
-        <div class="wb-module-visibility-card ${enabled ? 'is-on' : 'is-off'}">
-            <div>
-                <span>çˆªçˆªè¿™è¾¹è¦ä¸è¦é€’</span>
-                <strong>${escapeHtml(label)} Â· ${enabled ? 'æˆ‘ä¼šå¼è¿‡å»' : 'å…ˆå‹çˆªçˆªä¸‹é¢'}</strong>
-                ${detail ? `<small>${escapeHtml(detail)}</small>` : ''}
-            </div>
-            <button type="button" data-wb-action="open-global-settings-section" data-section="injection">å»ç¿»ä¸€ä¸‹</button>
-        </div>
-    `;
-    const worldBackground = String(state.world?.background || '').trim();
-    const worldBackgroundLength = worldBackground.length;
-
-    const nowHtml = `
-        ${injectionStatusCard(
-            'æ­¤åˆ» Â· ä¸–ç•Œæ—¶é—´ / èƒŒæ™¯',
-            settings.worldPromptInjection && settings.injectionTimeMode !== 'off' && settings.injectionWorldBackground !== false,
-            `æ—¶é—´ï¼š${settings.injectionTimeMode === 'full' ? 'å®Œæ•´' : settings.injectionTimeMode === 'anchor' ? 'æœ€å°é”šç‚¹' : 'å…³é—­'} Â· èƒŒæ™¯ï¼š${settings.injectionWorldBackground !== false ? 'å¼€' : 'å…³'}`,
-        )}
-        <div class="wb-flat-setting-list">
-            <div class="wb-setting-block">
-                <label>æ­£æ–‡è¯»å–èŒƒå›´</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('contextTurns', settings.contextTurns, 1, 'æœ€è¿‘ 1 è½®')}
-                    ${settingButton('contextTurns', settings.contextTurns, 3, 'æœ€è¿‘ 3 è½®')}
-                    ${settingButton('contextTurns', settings.contextTurns, 5, 'æœ€è¿‘ 5 è½®')}
-                    <button type="button" data-wb-action="setting-button" data-setting="contextTurns"
-                        data-value="${escapeAttr(settings.customContextTurns || 8)}"
-                        class="${![1, 3, 5].includes(Number(settings.contextTurns)) ? 'is-active' : ''}">è‡ªå®šä¹‰</button>
-                </div>
-                ${![1, 3, 5].includes(Number(settings.contextTurns)) ? `
-                    <label class="wb-number-setting wb-context-custom">è¯»å–æœ€è¿‘å‡ è½®
-                        <input type="number" min="1" max="30" step="1" data-wb-setting="contextTurns" value="${escapeAttr(settings.contextTurns)}">
-                    </label>` : ''}
-                <p class="wb-setting-explanation">${escapeHtml(
-                    [1, 3, 5].includes(Number(settings.contextTurns))
-                        ? ({1: 'æˆ‘åªçœ‹æœ€æ–°ä¸€è½®ï½è½»è½»çš„ï¼Œæœ€çœã€‚', 3: 'æˆ‘å¾€å›çœ‹ 3 è½®ï½æ—¥å¸¸å‰§æƒ…ä¸€èˆ¬å¤Ÿå•¦ã€‚', 5: 'æˆ‘å¾€å›çœ‹ 5 è½®ï½è¿ç»­æ€§å’Œæ¶ˆè€—æ¯”è¾ƒåˆšå¥½ã€‚'}[Number(settings.contextTurns)])
-                        : `æˆ‘ç°åœ¨ä¼šå¾€å›çœ‹ ${settings.contextTurns} è½®ï½é•¿äº‹ä»¶æ›´ç¨³ï¼Œä¸è¿‡ Token ä¹Ÿä¼šè·Ÿç€é•¿èƒ–ã€‚`
-                )}</p>
-            </div>
-            <details class="wb-setting-block wb-world-background-setting" data-settings-subgroup="now-world-background" ${advancedOpen('now-world-background')}>
-                <summary class="wb-world-background-heading">
-                    <strong>ä¸–ç•ŒèƒŒæ™¯è®¾å®š</strong>
-                    <span class="${worldBackground ? 'is-set' : ''}">${worldBackground ? `å·²è®¾å®š Â· ${worldBackgroundLength} å­—` : 'æœªè®¾å®š'}</span>
-                </summary>
-                <div class="wb-world-background-body">
-                    <div class="wb-world-background-preview ${worldBackground ? 'is-set' : 'is-empty'}">
-                        ${escapeHtml(worldBackground
-                            ? compactText(worldBackground, 150)
-                            : 'æŠŠè¿™ä¸ªä¸–ç•Œé•¿æœŸæˆç«‹çš„æ—¶ä»£ã€åœ°ç†ã€åŠ¿åŠ›ã€è§„åˆ™å’Œé‡è¦æ—¶é—´çº¿å†™ç»™æˆ‘ï½æˆ‘ä¼šä¸€ç›´æ‹¿å®ƒå½“åœ°åŸºã€‚')}
-                    </div>
-                    <button class="wb-world-background-action" type="button" data-wb-action="open-world-editor">
-                        ${worldBackground ? 'ç¼–è¾‘ä¸–ç•ŒèƒŒæ™¯' : 'å¼€å§‹è®¾å®šä¸–ç•ŒèƒŒæ™¯'}
-                    </button>
-                </div>
-            </details>
-            <div class="wb-setting-block">
-                <label>æ—¶é—´æ¨è¿›</label>
-                <div class="wb-option-row">
-                    ${settingButton('timePolicy', settings.timePolicy, 'world', 'ä¸–ç•Œé’Ÿ')}
-                    ${settingButton('timePolicy', settings.timePolicy, 'explicit', 'ä¸¥æ ¼')}
-                    ${settingButton('timePolicy', settings.timePolicy, 'cautious', 'å…‹åˆ¶')}
-                    ${settingButton('timePolicy', settings.timePolicy, 'open', 'å¼€æ”¾')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(explanation('timePolicy', settings.timePolicy))}</p>
-            </div>
-        </div>
-        ${sectionHeading('ä¸–ç•Œé’Ÿ', 'æ—¶é—´æˆ‘æ¥ç›¯ï½ä½ ä¹Ÿå¯ä»¥è‡ªå·±æ‹¨ä¸€æ‹¨')}
-        <form class="wb-clock-form wb-flat-clock-form" data-wb-form="clock">
-            <div class="wb-clock-form-heading"><div><label>ä¸»ä¸–ç•Œæ—¥å†</label><strong>${escapeHtml(clockLabel)}</strong></div><span>æ¯ä¸ªèŠå¤©æˆ‘åˆ†å¼€è®°</span></div>
-            <label class="wb-calendar-name-field">å†æ³•åç§°<input name="calendarName" maxlength="40" value="${escapeAttr(clock.calendarName)}" placeholder="ä¾‹å¦‚ï¼šå¸å›½å†"></label>
-            <div class="wb-calendar-date-fields">
-                <label><input name="year" type="number" min="1" max="999999" value="${clock.year}"> å¹´</label>
-                <label><input name="month" type="number" min="1" max="12" value="${clock.month}"> æœˆ</label>
-                <label><input name="day" type="number" min="1" max="31" value="${clock.dayOfMonth}"> æ—¥</label>
-            </div>
-            <div class="wb-clock-fields">
-                <label><input name="hour" type="number" min="0" max="23" value="${clock.hour}"> æ—¶</label>
-                <label><input name="minute" type="number" min="0" max="59" value="${clock.minute}"> åˆ†</label>
-                <button type="button" data-wb-action="sync-clock-from-story">ä¸æ­£æ–‡æ ¡å‡†</button>
-                <button type="submit" class="wb-clock-manual-save">æ‰‹åŠ¨è®¾å®š</button>
-            </div>
-            <p class="wb-clock-sync-note">æ­£æ–‡çœŸçš„è¯´æ¸…æ¥šæ—¶é—´ï¼Œæˆ‘ä¼šè‡ªå·±è·Ÿä¸Šï½å¦‚æœä½ æ¯”æˆ‘æ›´æ¸…æ¥šï¼Œä¹Ÿå¯ä»¥åœ¨è¿™é‡Œç›´æ¥å‘Šè¯‰æˆ‘ç°åœ¨å‡ ç‚¹ã€‚</p>
-            <div class="wb-time-actions">
-                <button type="button" data-wb-action="advance-clock" data-minutes="60">+ 1 å°æ—¶</button>
-                <button type="button" data-wb-action="advance-clock" data-minutes="360">+ 6 å°æ—¶</button>
-                <button type="button" data-wb-action="advance-clock" data-minutes="1440">+ 1 å¤©</button>
-            </div>
-        </form>
-    `;
-
-    const peopleHtml = `
-        ${injectionStatusCard(
-            'äººç‰© Â· å½“å‰çŠ¶æ€',
-            settings.worldPromptInjection && settings.injectionPeople !== false,
-            'ä¸å¼ç»™æ­£æ–‡çœ‹ä¹Ÿæ²¡å…³ç³»ï½ä»–ä»¬è¿˜æ˜¯ä¼šåœ¨èƒŒåç”Ÿæ´»ï¼Œæˆ‘ä¼šè®°ç€ã€‚',
-        )}
-        <div class="wb-person-group-life-note">
-            <span>ç¾¤ä½“ç”Ÿæ´» Â· é»˜è®¤ç”Ÿæ•ˆ</span>
-            <strong>åŒåœ°ã€åŒè¡Œã€åŒç»„ç»‡å’Œå…±åŒäº‹ä»¶ï¼Œæˆ‘ä¼šæ”¾åœ¨åŒä¸€è½®é‡Œå¯¹è´¦ï½</strong>
-            <small>çœŸæœ‰äº’åŠ¨å°±ç»™åŒæ–¹éƒ½ç•™ä¸‹ç»“æœï¼›æ²¡ç¢°é¢å°±å„è¿‡å„çš„ã€‚å®ƒå¤ç”¨ç°æœ‰äººç‰©åˆæ‰¹æ¨æ¼”ï¼Œä¸ä¼šä¸ºâ€œç¾¤ä½“æ„Ÿâ€å¤šå¼€ä¸€è½® APIã€‚</small>
-        </div>
-        <div class="wb-flat-setting-list">
-            <div class="wb-setting-block">
-                <label>åå° NPC é¢„ç®—</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 0, 'ä¸ä¸»åŠ¨æ¨æ¼”')}
-                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 2, 'æœ€å¤š 2 äºº')}
-                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 4, 'æœ€å¤š 4 äºº')}
-                    ${settingButton('backgroundNpcBudget', settings.backgroundNpcBudget, 8, 'æœ€å¤š 8 äºº')}
-                </div>
-                <label class="wb-number-setting">è‡ªå®šä¹‰å•è½®äººæ•°
-                    <input type="number" min="0" step="1" data-wb-setting="backgroundNpcBudget" value="${escapeAttr(settings.backgroundNpcBudget)}">
-                </label>
-                <p class="wb-setting-explanation">æƒ³ç›¯å¤šå°‘äººéƒ½å¯ä»¥è‡ªå·±å¡«ï½æ¨è 2ï½8 äººï¼Œå•è½®å°½é‡åˆ«è¶…è¿‡ 12 äººï¼›è¶Šå¤§è¶Šåƒ Tokenï¼Œä¹Ÿä¼šæ›´æ…¢ã€‚</p>
-            </div>
-            <div class="wb-setting-toggle">
-                <div><strong>å¼ºåŒ–åå°äººç‰©æ¨æ¼”</strong><span>å¼€ç€çš„è¯ï¼Œè¯¥ç»“ç®—çš„äººæˆ‘å°±é¡ºçˆªæè¿›è¿™è½®ä¸–ç•Œæ¨æ¼”ä¸€èµ·çœ‹ï½ä¸å•ç‹¬å†è·‘ä¸€è¶Ÿã€‚</span></div>
-                <label class="wb-switch"><input type="checkbox" data-wb-setting="enhancedBackgroundSimulation" ${settings.enhancedBackgroundSimulation ? 'checked' : ''}><i></i></label>
-            </div>
-            <div class="wb-setting-toggle">
-                <div><strong>è®°å½•ç©å®¶è§’è‰²</strong><span>å…³æ‰æˆ‘å°±ä¸å•ç‹¬ç»™ user ç«‹äººç‰©å°ç‰Œå­ï½ä½†æ­£æ–‡é‡ŒçœŸå‘ç”Ÿè¿‡çš„äº‹ï¼Œæˆ‘è®¤ã€‚ä¸èƒ½è£…æ²¡çœ‹è§ã€‚</span></div>
-                <label class="wb-switch"><input type="checkbox" data-wb-setting="recordPlayerCharacter" ${settings.recordPlayerCharacter !== false ? 'checked' : ''}><i></i></label>
-            </div>
-            ${routeSetting('observation', 'æˆ‘çœ‹äººç‰©æ—¶ä½¿ç”¨çš„è¿æ¥', 'è¿™é‡Œåªå‘Šè¯‰æˆ‘çœ‹äººç‰©æ—¶èµ°å“ªæ¡è·¯ï½Key å’Œåœ°å€è¿˜æ˜¯æ”¾åœ¨å…¨å±€è¿æ¥é‡Œã€‚')}
-        </div>
-        <details class="wb-settings-subgroup wb-module-advanced" data-settings-subgroup="people-worldbook" ${advancedOpen('people-worldbook')}>
-            <summary><span>ä¸–ç•Œä¹¦äººç‰©å¯¼å…¥</span><small>è¦æŠŠæ–°äººä»‹ç»ç»™æˆ‘æ—¶å†æ€å¼€ï½æˆ‘å…ˆé—»é—»æ˜¯è°ã€‚</small></summary>
-            <div class="wb-module-advanced-body">
-                <form class="wb-worldbook-import" data-wb-form="worldbook">
-                    <label>é€‰æ‹©ä¸–ç•Œä¹¦
-                        <select name="bookName" ${worldbookBooks.length ? '' : 'disabled'}>
-                            ${worldbookBooks.length
-                                ? worldbookBooks.map(book => `<option value="${escapeAttr(book)}" ${book === worldbook.bookName ? 'selected' : ''}>${escapeHtml(book)}</option>`).join('')
-                                : '<option value="">æˆ‘ç°åœ¨æ²¡æ‰¾åˆ°èƒ½è¯»çš„ä¸–ç•Œä¹¦</option>'}
-                        </select>
-                    </label>
-                    <div class="wb-worldbook-action-row">
-                        <button class="wb-primary-button wb-worldbook-smart-button" type="button" data-wb-action="smart-import-worldbook-people" ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
-                            ${worldbook.phase === 'running' ? 'æ­£åœ¨è¯»å–â€¦' : 'ä¸€é”®æ™ºèƒ½å¯¼å…¥äººç‰©'}
-                        </button>
-                        <button class="wb-worldbook-scan-button" type="button" data-wb-action="scan-worldbook" ${worldbook.phase === 'running' || !worldbookBooks.length ? 'disabled' : ''}>
-                            é«˜çº§æ‰‹åŠ¨æŒ‘é€‰
-                        </button>
-                    </div>
-                    <p class="wb-setting-explanation">MVUã€å˜é‡ã€è„šæœ¬è¿™äº›æˆ‘å…ˆç»•å¼€ã€‚äººç‰©å’ŒåŠ¿åŠ›æŒ¤åœ¨ä¸€å¼ çº¸ä¸Šï¼Ÿå””â€¦â€¦æˆ‘å…ˆæŠŠçœŸæ­£çš„äººå¼å‡ºæ¥ï¼Œä¸æŠŠä¸€æ•´ä¸ªç»„ç»‡å½“æˆäººã€‚</p>
-                    ${worldbook.message ? `<div class="wb-worldbook-status is-${escapeAttr(worldbook.phase)}">${escapeHtml(worldbook.message)}</div>` : ''}
-                    ${worldbookEntries.length ? `
-                        <div class="wb-worldbook-browser">
-                            <label class="wb-worldbook-search"><span>æœç´¢æ¡ç›®</span><input type="search" name="worldbookSearch" data-wb-worldbook-search value="${escapeAttr(worldbookQuery)}" placeholder="æœäººç‰©åã€æ¡ç›®åã€å…³é”®è¯æˆ–æ­£æ–‡"></label>
-                            <div class="wb-worldbook-filter-row">
-                                <label class="wb-worldbook-filter-chip ${worldbookOnlyPeople ? 'is-active' : ''}"><input type="checkbox" data-wb-worldbook-filter="people" ${worldbookOnlyPeople ? 'checked' : ''}><span>åªçœ‹ç–‘ä¼¼äººç‰©</span></label>
-                                <label class="wb-worldbook-filter-chip ${worldbookOnlyEnabled ? 'is-active' : ''}"><input type="checkbox" data-wb-worldbook-filter="enabled" ${worldbookOnlyEnabled ? 'checked' : ''}><span>åªçœ‹å¯ç”¨æ¡ç›®</span></label>
-                            </div>
-                            <div class="wb-worldbook-toolbar"><span>å€™é€‰ ${worldbookEntries.filter(entry => entry.importablePerson ?? entry.likelyPerson).length} äºº Â· å½“å‰ ${filteredWorldbookEntries.length} æ¡ Â· å·²é€‰ ${worldbookSelectedCount} äºº</span><div>
-                                <button type="button" data-wb-action="select-worldbook-visible" ${filteredWorldbookEntries.some(entry => entry.importablePerson ?? entry.likelyPerson) ? '' : 'disabled'}>å…¨é€‰å½“å‰äººç‰©</button>
-                                <button type="button" data-wb-action="clear-worldbook-visible" ${filteredWorldbookEntries.length ? '' : 'disabled'}>å–æ¶ˆå½“å‰</button>
-                            </div></div>
-                            <div class="wb-worldbook-entry-list">
-                                ${filteredWorldbookEntries.length ? filteredWorldbookEntries.map(entry => {
-                                    const importable = Boolean(entry.importablePerson ?? entry.likelyPerson);
-                                    const manuallySelectable = isWorldbookEntryManuallySelectable(entry);
-                                    const badge = entry.embeddedPerson
-                                        ? '<em>ä»æ··åˆæ¡ç›®æ‹†å‡º</em>'
-                                        : entry.smartAuto
-                                            ? '<em>äººç‰©</em>'
-                                            : importable
-                                                ? '<em>å»ºè®®ç¡®è®¤</em>'
-                                            : entry.technicalEntry
-                                                     ? '<em class="is-muted">æŠ€æœ¯ / MVU Â· å¯æ‰‹åŠ¨ç¡®è®¤</em>'
-                                             : entry.mixedSource
-                                                        ? '<em class="is-muted">æ··åˆè®¾å®š</em>'
-                                                        : '';
-                                    return `
-                                    <label class="wb-worldbook-entry ${entry.disabled ? 'is-disabled-entry' : ''} ${importable ? 'is-person-candidate' : ''} ${entry.embeddedPerson ? 'is-embedded-person' : ''}">
-                                        <input id="wb-worldbook-entry-${escapeAttr(entry.uid)}" type="checkbox" name="entryIds" data-wb-worldbook-entry-id="${escapeAttr(entry.uid)}" value="${escapeAttr(entry.uid)}" ${worldbookSelectedIds.has(String(entry.uid)) ? 'checked' : ''} ${manuallySelectable ? '' : 'disabled'}>
-                                        <span><span class="wb-worldbook-entry-heading"><strong>${escapeHtml(entry.parsedName || entry.name)}</strong>${badge}${entry.disabled ? '<em class="is-muted">å·²åœç”¨</em>' : ''}</span>
-                                            <small>${escapeHtml(entry.embeddedPerson && entry.sourceEntryName ? `æ¥è‡ªï¼š${entry.sourceEntryName}` : ((entry.keys || []).join('ã€') || `UID ${entry.sourceUid || entry.uid}`))}</small>
-                                            <p>${escapeHtml(entry.content.slice(0, 220))}${entry.content.length > 220 ? 'â€¦' : ''}</p>
-                                        </span>
-                                    </label>`;
-                                }).join('') : '<div class="wb-worldbook-empty">è¿™é‡Œæ²¡æ‰¾åˆ°åˆé€‚çš„æ¡ç›®ï½æ¢ä¸ªå…³é”®è¯æˆ–è€…æ¾ä¸€ç‚¹ç­›é€‰å†è®©æˆ‘æ‰¾æ‰¾ã€‚</div>'}
-                            </div>
-                            <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>${worldbookSelectedCount ? `å¯¼å…¥å·²é€‰äººç‰©ï¼ˆ${worldbookSelectedCount}ï¼‰` : 'è¯·é€‰æ‹©è¦å¯¼å…¥çš„äººç‰©'}</button>
-                        </div>` : ''}
-                </form>
-            </div>
-        </details>
-    `;
-
-    const currentsHtml = `
-        ${injectionStatusCard(
-            'æš—æµ Â· è¿›è¡Œä¸­äº‹ä»¶ / ä¸–ç•Œç¯å¢ƒ',
-            settings.worldPromptInjection && settings.injectionEvents !== false,
-            `å›å£°ï¼š${settings.worldPromptInjection && settings.injectionEchoes !== false ? 'æˆ‘ä¼šé€’' : 'æˆ‘å…ˆç•™ç€'} Â· ä¸–ç•Œäº‹å®ï¼š${settings.worldPromptInjection && settings.injectionFacts !== false ? 'æˆ‘ä¼šé€’' : 'æˆ‘å…ˆç•™ç€'}`,
-        )}
-        ${sectionHeading('ä¸–ç•Œè¿è¡Œ', 'é•œå¤´è½¬å¼€ä»¥åï¼Œæˆ‘è¿˜è¹²åœ¨é‚£è¾¹çœ‹ç€ï½')}
-        <div class="wb-flat-setting-list">
-            <div class="wb-module-runtime-summary">
-                <div><span>è‡ªåŠ¨è¿è¡Œ</span><strong>${settings.worldAutoEnabled ? 'æˆ‘ä¼šè‡ªå·±èµ·æ¥å·¡ä¸€åœˆ' : 'æˆ‘è¶´ç€ï¼Œç­‰ä½ æˆ³æˆ‘'}</strong></div>
-                <button type="button" data-wb-action="open-global-settings-section" data-section="common">å»å¸¸ç”¨è®¾ç½®</button>
-            </div>
-            <div class="wb-setting-block">
-                <label>ä¸–ç•Œè„‰æ</label>
-                <div class="wb-option-row">
-                    ${settingButton('worldPulseActivity', settings.worldPulseActivity, 'quiet', 'å®‰é™')}
-                    ${settingButton('worldPulseActivity', settings.worldPulseActivity, 'natural', 'è‡ªç„¶')}
-                    ${settingButton('worldPulseActivity', settings.worldPulseActivity, 'busy', 'çƒ­é—¹')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(explanation('worldPulseActivity', settings.worldPulseActivity))}</p>
-            </div>
-            <div class="wb-setting-block">
-                <label>ä¸–ç•Œè¿è½¬å¼ºåº¦</label>
-                <div class="wb-option-row">
-                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'light', 'è½»é‡')}
-                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'balanced', 'å‡è¡¡')}
-                    ${settingButton('autoSimulationMode', settings.autoSimulationMode, 'deep', 'æ·±å…¥')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(explanation('autoSimulationMode', settings.autoSimulationMode))}</p>
-            </div>
-            <div class="wb-setting-block">
-                <label>è‡ªåŠ¨è§¦å‘é¢‘ç‡</label>
-                <div class="wb-option-row wb-option-row-four">
-                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 1, 'æ¯è½®')}
-                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 2, 'æ¯ 2 è½®')}
-                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 3, 'æ¯ 3 è½®')}
-                    ${settingButton('autoSimulationInterval', settings.autoSimulationInterval, 5, 'æ¯ 5 è½®')}
-                </div>
-                <label class="wb-number-setting">è‡ªå®šä¹‰ç´¯è®¡è½®æ•°<input type="number" min="1" max="20" step="1" data-wb-setting="autoSimulationInterval" value="${escapeAttr(settings.autoSimulationInterval)}"></label>
-            </div>
-            <div class="wb-setting-toggle">
-                <div><strong>æœªæ¨æ¼”æ­£æ–‡æé†’</strong><span>å…³é—­ååªæŒ‰è®¾å®šé¢‘ç‡è‡ªåŠ¨è¿è¡Œï¼Œä¸ä¼šæ¯æ¬¡å›å¤éƒ½é—®è¦ä¸è¦æå‰è¡¥æ¨ï¼›çœŸæ­£å¤±è´¥ä»ä¼šæé†’ã€‚</span></div>
-                <label class="wb-switch"><input type="checkbox" data-wb-setting="pendingSimulationPromptEnabled" ${settings.pendingSimulationPromptEnabled ? 'checked' : ''}><i></i></label>
-            </div>
-            ${routeSetting('simulation', 'æˆ‘æ¨æ¼”ä¸–ç•Œæ—¶ä½¿ç”¨çš„è¿æ¥', 'å‘Šè¯‰æˆ‘ä»å“ªæ¡è·¯å‡ºå»æ¨æ¼”å°±è¡Œï½Key å’Œåœ°å€æˆ‘å›å…¨å±€é‚£ä¸ªæŠ½å±‰æ‰¾ã€‚')}
-        </div>
-        <details class="wb-settings-subgroup wb-module-advanced" data-settings-subgroup="currents-advanced" ${advancedOpen('currents-advanced')}>
-            <summary><span>é«˜çº§</span><small>è¿™é‡Œæ˜¯å¤±è´¥äº†ä»¥åæˆ‘è¯¥æ€ä¹ˆåŠ</small></summary>
-            <div class="wb-module-advanced-body wb-flat-setting-list">
-                <div class="wb-setting-block">
-                    <label>æ¨æ¼”å¤±è´¥åè¦ä¸è¦è®©æˆ‘å†è¯•</label>
-                    <div class="wb-option-row wb-option-row-four">
-                        ${settingButton('autoRetryCount', settings.autoRetryCount, 0, 'ä¸é‡è¯•')}
-                        ${settingButton('autoRetryCount', settings.autoRetryCount, 1, 'é‡è¯• 1 æ¬¡')}
-                        ${settingButton('autoRetryCount', settings.autoRetryCount, 2, 'é‡è¯• 2 æ¬¡')}
-                        ${settingButton('autoRetryCount', settings.autoRetryCount, 3, 'é‡è¯• 3 æ¬¡')}
-                    </div>
-                    <label class="wb-number-setting">æœ€å¤šå†è¯•å‡ æ¬¡<input type="number" min="0" max="5" step="1" data-wb-setting="autoRetryCount" value="${escapeAttr(settings.autoRetryCount)}"></label>
-                </div>
-                <label class="wb-custom-instruction">è‡ªå®šä¹‰æ¨æ¼”è¦æ±‚<textarea data-wb-setting="customSimulationInstruction" maxlength="1000" rows="3" placeholder="ä¾‹å¦‚ï¼šå°‘åˆ¶é€ æ–°äº‹ä»¶ï¼›å¤šçœ‹çœ‹å•†ä¼šå’Œæ¸¯å£ã€‚ç²ä¸ƒä¼šæŒ‰è¿™ä¸ªæ–¹å‘ç•™æ„ã€‚">${escapeHtml(settings.customSimulationInstruction)}</textarea></label>
-            </div>
-        </details>
-    `;
-
-    const opinionHtml = `
-        ${injectionStatusCard(
-            'èˆ†æƒ… Â· æ–°é—» / è®ºå›',
-            settings.worldPromptInjection && settings.injectionPublicOpinion !== false,
-            'å¤–é¢çš„é£å£°æˆ‘è¿˜æ˜¯ä¼šç»§ç»­å¬ï½è¿™é‡Œåªå‘Šè¯‰ä½ ï¼Œæˆ‘è¦ä¸è¦æŠŠå®ƒé€’ç»™æ­£æ–‡ã€‚',
-        )}
-        <div class="wb-flat-setting-list">
-            <div class="wb-setting-toggle">
-                <div>
-                    <strong>è‡ªåŠ¨æ›´æ–°èˆ†æƒ…</strong>
-                    <span>å¤–é¢çœŸæœ‰å€¼å¾—ä¼ çš„åŠ¨é™ï¼Œæˆ‘ä¼šè‡ªå·±ç«–è€³æœµå¬ï½å…³æ‰çš„è¯ï¼Œä½ æˆ³æˆ‘æˆ‘ä¹Ÿä¼šå»å¬ã€‚</span>
-                </div>
-                <label class="wb-switch">
-                    <input type="checkbox" data-wb-setting="publicOpinionAutoEnabled"
-                        ${settings.publicOpinionAutoEnabled ? 'checked' : ''}>
-                    <i></i>
-                </label>
-            </div>
-            <div class="wb-setting-block">
-                <label>è¦ä¸è¦è®©æˆ‘æŠŠé£å£°é€’è¿‘ä¸€ç‚¹</label>
-                <div class="wb-option-row">
-                    ${settingButton('publicOpinionRevealMode', settings.publicOpinionRevealMode, 'observe', 'ä»…è§‚å¯Ÿ')}
-                    ${settingButton('publicOpinionRevealMode', settings.publicOpinionRevealMode, 'relevant', 'ç›¸å…³æ—¶æ˜¾éœ²')}
-                </div>
-                <p class="wb-setting-explanation">${escapeHtml(explanation('publicOpinionRevealMode', settings.publicOpinionRevealMode))}</p>
-            </div>
-            ${routeSetting('opinion', 'æˆ‘å¬é£å£°æ—¶ä½¿ç”¨çš„è¿æ¥', 'å‘Šè¯‰æˆ‘ä»å“ªæ¡è·¯å‡ºå»å¬é£å£°å°±å¥½ï½æ¥å£æœ¬ä½“æˆ‘ä¸åœ¨è¿™é‡Œä¹±æ¬ã€‚')}
-        </div>
-        <p class="wb-flat-footnote">å…¬å¼€æ–°é—»ä¼šæŠŠçœŸå®å½±å“æ¥å›äººç‰©å’Œç¯å¢ƒï¼Œä¸è¿‡è¦å…ˆå¯¹ä¸Šä¸–ç•Œäº‹ä»¶ï¼Œå†é¡ºç€åœ°ç‚¹ã€å·¥ä½œã€ç»„ç»‡å’Œæ¶ˆæ¯æ¸ é“å½±å“è¯¥ç¢°åˆ°çš„äººï¼›è®ºå›ä¼ é—»ä»åªæ˜¯é£å£°ï¼Œæˆ‘ä¸ä¼šè®©å…¨ä¸–ç•Œçªç„¶ä¸€èµ·çŸ¥é“ï½</p>
-    `;
-
-    const memoryHtml = `
-        ${injectionStatusCard(
-            'è®°å¿† Â· é•¿æœŸè®°å¿†',
-            settings.worldPromptInjection && settings.injectionMemory !== false,
-            'è®°å¿†ç›’å­å½’è®°å¿†ç›’å­ï¼Œæ­£æ–‡å½’æ­£æ–‡ã€‚æˆ‘è¦ä¸è¦æ”¶æ‹¾ï¼Œå’Œè¦ä¸è¦å¼å‡ºå»ï¼Œæ˜¯ä¸¤å›äº‹ã€‚',
-        )}
-        <div class="wb-flat-setting-list">
-            <div class="wb-setting-toggle">
-                <div><strong>å¯ç”¨è®°å¿†ç³»ç»Ÿ</strong><span>å…³æ‰æˆ‘å°±å…ˆä¸å¾€è®°å¿†ç›’å­é‡Œå¡æ–°çº¸ç‰‡ï½å·²ç»æ”¾å¥½çš„æˆ‘å‹ç€ï¼Œä¸ä¸¢ã€‚</span></div>
-                <label class="wb-switch"><input type="checkbox" data-wb-setting="memorySystemEnabled" ${settings.memorySystemEnabled ? 'checked' : ''}><i></i></label>
-            </div>
-            ${routeSetting('history', 'æˆ‘æ•´ç†è®°å¿†æ—¶ä½¿ç”¨çš„è¿æ¥', 'è¿™é‡Œåªå‘Šè¯‰æˆ‘æ•´ç†è®°å¿†æ—¶èµ°å“ªæ¡è·¯ï½Key å’Œåœ°å€ä¸ç”¨å†å¡«ä¸€éã€‚')}
-        </div>
-        ${sectionHeading('ä¸­é€”æ¥å…¥', 'æˆ‘æ¥æ™šäº†ï¼Ÿæ²¡äº‹ã€‚æˆ‘å¯ä»¥ä»å‰é¢çš„èŠå¤©ä¸€è·¯é—»å›æ¥ï½')}
-        <div class="wb-history-settings wb-flat-history-settings wb-world-bootstrap-settings">
-            <div class="wb-history-heading">
-                <div>
-                    <label>æŠŠè¿‡å»æ¥æˆç°åœ¨</label>
-                    <strong>${escapeHtml(historyRunning && memory.kind === 'world-bootstrap'
-                        ? memory.message || 'æˆ‘æ­£åœ¨æŠŠå‰é¢çš„èŠå¤©ä¸€å±‚å±‚æ¡å›æ¥â€¦â€¦åˆ«è¸©ï¼Œæˆ‘åˆšæ’å¥½ã€‚'
-                        : 'æ—¶é—´ã€äººç‰©ã€äº‹å®ã€æ²¡èµ°å®Œçš„æš—æµå’Œè®°å¿†ï¼Œæˆ‘ä¸€èµ·å¼å›æ¥æ’å¥½')}</strong>
-                </div>
-                <span>${historyRunning && memory.kind === 'world-bootstrap' ? `${historyPercent}%` : 'å¯æ–­ç‚¹ç»­è·‘'}</span>
-            </div>
-            ${historyRunning && memory.kind === 'world-bootstrap'
-                ? `<div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>`
-                : ''}
-            <p>æ¯æ‰¹æ”¶å¥½éƒ½ä¼šç•™ä¸ªçˆªå°ï¼›åŠè·¯åœä¸‹ï¼Œä¸‹æ¬¡ä»çˆªå°ç»§ç»­ã€‚æ­£å¼ä¸–ç•Œä»ç­‰å…¨éƒ¨å®Œæˆæ‰ä¸€èµ·æ¥ä¸Šã€‚</p>
-            <button type="button" data-wb-action="bootstrap-history" ${historyRunning ? 'disabled' : ''}>è®©ç²ä¸ƒå›æº¯å½“å‰èŠå¤©</button>
-        </div>
-
-        ${sectionHeading('è®°å¿†æ•´ç†', 'è¿™é‡Œåªè®©æˆ‘æ•´ç†è®°å¿†ç›’å­ï½ä¸ä¼šé¡ºçˆªæŠŠæ•´ä¸ªä¸–ç•Œç¿»ä¸€é')}
-        <div class="wb-history-settings wb-flat-history-settings">
-            <div class="wb-history-heading"><div><label>é•¿æœŸè®°å¿†</label><strong>${escapeHtml(historyRunning && memory.kind !== 'world-bootstrap' ? memory.message || 'æˆ‘æ­£åœ¨æ”¶æ‹¾è®°å¿†ï½' : 'æˆ‘ä¼šè‡ªå·±æ”¶æ‹¾é•¿æœŸè®°å¿†ï½')}</strong></div>
-                <span>${historyRunning && memory.kind !== 'world-bootstrap' ? `${historyPercent}%` : (Number(memory.pendingAssistantResponses || 0) > 0 ? 'æœ‰æ–°çš„ä¸œè¥¿ç­‰æˆ‘æ”¶ï½' : 'æˆ‘å·²ç»è·Ÿä¸Šæ­£æ–‡å•¦ï½')}</span></div>
-            ${historyRunning && memory.kind !== 'world-bootstrap' ? `<div class="wb-history-progress"><i style="width:${historyPercent}%"></i></div>` : ''}
-            <p>é‡è¦äº‹å®ã€å…³ç³»ã€æ‰¿è¯ºã€æ²¡æ”¶å°¾çš„ä¼ç¬”ï¼Œæˆ‘ä¼šæŒ‘å‡ºæ¥å‹å¥½ã€‚ç¢å±‘å¤ªå¤šä¼šæŠŠç›’å­å¡çˆ†ï¼Œæˆ‘æ‰ä¸è¦ã€‚</p>
-            <div class="wb-memory-queue"><span>å¾…æ•´ç† ${Math.max(0, Number(memory.pendingAssistantResponses || 0))} æ¡æ­£æ–‡</span><strong>${settings.memoryAutoIndexInterval > 0 ? `è‡ªåŠ¨ Â· æ¯ ${settings.memoryAutoIndexInterval} è½®` : 'æ‰‹åŠ¨æ•´ç†'}</strong></div>
-            <label>æ•´ç†æ–¹å¼</label>
-            <div class="wb-option-row wb-option-row-four">
-                ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 0, 'æ‰‹åŠ¨')}
-                ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 5, 'æ¯ 5 è½®')}
-                ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 10, 'æ¯ 10 è½®')}
-                ${settingButton('memoryAutoIndexInterval', settings.memoryAutoIndexInterval, 20, 'æ¯ 20 è½®')}
-            </div>
-            <label class="wb-number-setting">è‡ªå®šä¹‰é—´éš”ï¼ˆè½®ï¼‰<input type="number" min="0" max="50" step="1" data-wb-setting="memoryAutoIndexInterval" value="${escapeAttr(settings.memoryAutoIndexInterval)}"></label>
-            <button type="button" data-wb-action="scan-history" ${historyRunning || !settings.memorySystemEnabled ? 'disabled' : ''}>è®©ç²ä¸ƒæ•´ç†è®°å¿†</button>
-        </div>
-    `;
-
-    const contentByScope = { now: nowHtml, people: peopleHtml, currents: currentsHtml, opinion: opinionHtml, memory: memoryHtml };
-    return `
-        <div class="wb-settings-popover wb-module-settings-popover wb-module-settings-${scopeKey}" role="dialog" aria-modal="true" aria-label="${escapeAttr(scopeInfo.title)}">
-            <div class="wb-popover-heading">
-                <div><span>${scopeInfo.eyebrow}</span><h3>${scopeInfo.title}</h3></div>
-                <button type="button" data-wb-action="toggle-module-settings" data-view="${scopeKey}" aria-label="å…³é—­è®¾ç½®">Ã—</button>
-            </div>
-            <div class="wb-module-settings-body">${contentByScope[scopeKey]}</div>
-        </div>
-    `;
-}
-
-function renderEventModal(state, editorId = '') {
-    const event = editorId
-        ? state.events.find(item => item.id === editorId) || null
-        : null;
-    const isEdit = Boolean(event);
-    const durationHours = Math.max(0, Number(event?.durationMinutes || 0) / 60);
-    const durationValue = Number.isInteger(durationHours)
-        ? String(durationHours)
-        : String(Number(durationHours.toFixed(2)));
-    const startedStamp = event
-        ? formatWorldCalendar(state, event.startedAt).stamp
-        : formatWorldCalendar(state).stamp;
-    return `
-        <div class="wb-drawer-scrim" data-wb-action="close-event-form">
-            <form class="wb-event-form" data-wb-form="event">
-                <div class="wb-form-heading">
-                    <div><span>${isEdit ? 'EDIT CURRENT' : 'NEW CURRENT'}</span><h3>${isEdit ? 'ä¿®æ”¹è¿™æ¡æš—æµ' : 'æ”¾å…¥ä¸€æ¡æš—æµ'}</h3></div>
-                    <button type="button" data-wb-action="close-event-form">Ã—</button>
-                </div>
-                <input type="hidden" name="id" value="${escapeAttr(event?.id || '')}">
-                <label>äº‹ä»¶åç§°<input name="title" required maxlength="140"
-                    value="${escapeAttr(event?.title || '')}" placeholder="ä¾‹å¦‚ï¼šä¿®å¤ä¸€å°æ—§é€šè®¯å™¨"></label>
-                <label>åœ°ç‚¹<input name="place" maxlength="140"
-                    value="${escapeAttr(event?.place || '')}" placeholder="å—å²¸ç»´ä¿®ç«™"></label>
-                <label>æ­£åœ¨å‘ç”Ÿä»€ä¹ˆ<textarea name="summary" maxlength="420" rows="3">${escapeHtml(event?.summary || '')}</textarea></label>
-                <label>é¢„è®¡ç»“æœ<textarea name="expectedResult" maxlength="420" rows="2">${escapeHtml(event?.expectedResult || event?.consequence || '')}</textarea></label>
-                ${isEdit ? `
-                    <div class="wb-form-grid">
-                        <label>å½“å‰çŠ¶æ€
-                            <select name="status">
-                                <option value="active" ${event?.status === 'active' ? 'selected' : ''}>å‘å±•ä¸­</option>
-                                <option value="waiting" ${event?.status === 'waiting' ? 'selected' : ''}>ç­‰å¾…æ¡ä»¶</option>
-                                <option value="ready" ${event?.status === 'ready' ? 'selected' : ''}>åˆ°æ—¶å¾…ç¡®è®¤</option>
-                                <option value="resolved" ${event?.status === 'resolved' ? 'selected' : ''}>å·²ç»“æŸ</option>
-                                <option value="cancelled" ${event?.status === 'cancelled' ? 'selected' : ''}>å·²å–æ¶ˆ</option>
-                                <option value="missed" ${event?.status === 'missed' ? 'selected' : ''}>å·²é”™è¿‡</option>
-                            </select>
-                        </label>
-                        <label>å®é™…ç»“æœï¼ˆå¯é€‰ï¼‰
-                            <textarea name="result" maxlength="620" rows="2" placeholder="åªå†™å·²ç»çœŸå®å½¢æˆçš„ç»“æœ">${escapeHtml(event?.result || '')}</textarea>
-                        </label>
-                    </div>
-                    <p class="wb-form-hint">æ‰‹åŠ¨çŠ¶æ€æ˜¯å½“å‰ä¸–ç•Œäº‹å®ï¼›æ ‡è®°ä¸ºå·²ç»“æŸ / å·²å–æ¶ˆ / å·²é”™è¿‡åï¼Œåå°æ¨æ¼”ä¸ä¼šæŠŠè¿™æ¡æ—§æš—æµå·å·æ”¹å›å‘å±•ä¸­ã€‚è‹¥åæ¥çœŸçš„å‡ºç°æ–°åæœï¼Œåº”ä½œä¸ºæ–°çš„æš—æµç»§ç»­ã€‚</p>
-                ` : ''}
-                <div class="wb-form-grid">
-                    <label>è®¡æ—¶æ–¹å¼
-                        <select name="clockMode">
-                            <option value="duration" ${event?.clockMode === 'duration' || !event ? 'selected' : ''}>è‡ªç„¶æµé€</option>
-                            <option value="active" ${event?.clockMode === 'active' ? 'selected' : ''}>æœ‰æ•ˆå·¥æ—¶</option>
-                            <option value="scheduled" ${event?.clockMode === 'scheduled' ? 'selected' : ''}>é¢„å®šæ—¶é—´</option>
-                            <option value="condition" ${event?.clockMode === 'condition' ? 'selected' : ''}>æ¡ä»¶ç­‰å¾…</option>
-                        </select>
-                    </label>
-                    <label>é¢„è®¡è€—æ—¶ï¼ˆå°æ—¶ï¼‰
-                        <input name="durationHours" type="number" min="0" step="0.5"
-                            value="${isEdit ? escapeAttr(durationValue) : '12'}">
-                    </label>
-                </div>
-                <label>å¯è§è¾¹ç•Œ
-                    <select name="visibility">
-                        <option value="hidden" ${event?.visibility === 'hidden' || !event ? 'selected' : ''}>è§’è‰²å°šä¸å¯çŸ¥</option>
-                        <option value="trace" ${event?.visibility === 'trace' ? 'selected' : ''}>å¯ç”±ç—•è¿¹å¯Ÿè§‰</option>
-                        <option value="known" ${event?.visibility === 'known' ? 'selected' : ''}>å¯ç»æ¶ˆæ¯è·çŸ¥</option>
-                        <option value="direct" ${event?.visibility === 'direct' ? 'selected' : ''}>å¯ä»¥ç›´æ¥æ„ŸçŸ¥</option>
-                    </select>
-                </label>
-                <div class="wb-form-note">
-                    ${isEdit
-                        ? `è¿™æ¡æš—æµä» ${escapeHtml(startedStamp)} å¼€å§‹ã€‚ä¿®æ”¹è®¡æ—¶æ–¹å¼æˆ–è€—æ—¶åï¼Œä¼šæ²¿ç”¨åŸå§‹å¼€å§‹æ—¶é—´é‡æ–°è®¡ç®—ï¼›åªæ”¹æ–‡å­—ä¸ä¼šæ”¹å˜å·²æœ‰è¿›åº¦ã€‚`
-                        : `ä» ${escapeHtml(formatWorldCalendar(state).stamp)} å¼€å§‹è®¡æ—¶ã€‚å›å¤è½®æ¬¡ä¸ä¼šå¢åŠ è¿›åº¦ã€‚`}
-                </div>
-                <button class="wb-primary-button" type="submit">${isEdit ? 'ä¿å­˜æš—æµä¿®æ”¹' : 'å¼€å§‹åœ¨åå°å‘å±•'}</button>
-            </form>
-        </div>
-    `;
-}
-
-function renderPersonDrawer(person, observerMode, worldMinute, {
-    canObserve = false,
-    observation = null,
-    busy = false,
-} = {}) {
-    if (!person) return '';
-    return `
-        <div class="wb-drawer-scrim" data-wb-action="close-person">
-            <div class="wb-person-drawer" role="dialog" aria-modal="true" aria-label="äººç‰©è¯¦æƒ…">
-                <button class="wb-drawer-close" type="button" data-wb-action="close-person">Ã—</button>
-                ${renderPersonAvatar(person, 'is-feature')}
-                <span class="wb-drawer-overline">LIVING TRACE</span>
-                <h3>${escapeHtml(person.name)}</h3>
-                <p class="wb-drawer-place">${escapeHtml(person.location)}</p>
-                <button class="wb-person-edit-button" type="button" data-wb-action="open-person-editor"
-                    data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}">ç¼–è¾‘äººç‰©å¡</button>
-                ${!person.isUser ? `
-                    <div class="wb-person-life-actions">
-                        <button type="button" class="is-catchup" data-wb-action="catch-up-person"
-                            data-person-id="${escapeAttr(person.id)}"
-                            ${busy || person.simulationEnabled === false ? 'disabled' : ''}
-                            title="ä¸æ¨è¿›ä¸–ç•Œæ—¶é—´ï¼Œåªè¡¥é½è¿™ä¸ªäººç‰©æˆªè‡³ç°åœ¨çš„åå°ç”Ÿæ´»çŠ¶æ€">
-                            ${busy ? 'æ­£åœ¨ç»“ç®—â€¦' : 'è¡¥ä¸€ä¸‹è¿‘å†µ'}
-                        </button>
-                        <button type="button" class="is-priority ${person.lifeTickPriority ? 'is-active' : ''}"
-                            data-wb-action="prioritize-person" data-person-id="${escapeAttr(person.id)}"
-                            data-enabled="${person.lifeTickPriority ? 'false' : 'true'}"
-                            aria-pressed="${person.lifeTickPriority ? 'true' : 'false'}"
-                            ${busy || person.simulationEnabled === false ? 'disabled' : ''}
-                            title="ä¸ç«‹åˆ»è°ƒç”¨ APIï¼ŒæŠŠå¥¹æ’åˆ°ä¸‹ä¸€è½®åå°äººç‰©ç»“ç®—å‰é¢">
-                            ${person.lifeTickPriority ? 'å·²æ’åˆ°å‰é¢' : 'ä¸‹ä¸€è½®ä¼˜å…ˆ'}
-                        </button>
-                    </div>
-                    ${person.simulationEnabled === false ? '<p class="wb-person-life-note">é•œå¤´å¤–æ¨æ¼”å·²å…³é—­</p>' : ''}
-                ` : ''}
-                <div class="wb-drawer-section"><span>æ­£åœ¨åš</span><strong>${escapeHtml(person.action)}</strong></div>
-                <div class="wb-drawer-section"><span>çŸ­æœŸæ„å›¾</span><strong>${escapeHtml(person.intent)}</strong></div>
-                ${person.longTermGoal ? `
-                    <div class="wb-drawer-section"><span>é•¿æœŸç›®æ ‡</span><strong>${escapeHtml(person.longTermGoal)}</strong></div>
-                ` : ''}
-                ${person.identityAnchor ? `
-                    <div class="wb-drawer-section is-character-anchor"><span>èº«ä»½é”šç‚¹</span><strong>${escapeHtml(person.identityAnchor)}</strong></div>
-                ` : ''}
-                ${person.appearanceProfile ? `
-                    <div class="wb-drawer-section is-character-anchor"><span>å¤–è²Œè®¾å®š</span><strong>${escapeHtml(person.appearanceProfile)}</strong></div>
-                ` : ''}
-                ${person.personalityAnchor ? `
-                    <div class="wb-drawer-section is-character-anchor"><span>äººæ ¼é”šç‚¹</span><strong>${escapeHtml(person.personalityAnchor)}</strong></div>
-                ` : ''}
-                ${person.backgroundProfile ? `
-                    <div class="wb-drawer-section is-character-anchor"><span>èƒŒæ™¯ä¸å…³ç³»</span><strong>${escapeHtml(person.backgroundProfile)}</strong></div>
-                ` : ''}
-                ${person.speakingStyle ? `
-                    <div class="wb-drawer-section is-character-anchor"><span>è¯´è¯ä¹ æƒ¯</span><strong>${escapeHtml(person.speakingStyle)}</strong></div>
-                ` : ''}
-                ${person.behaviorBoundaries ? `
-                    <div class="wb-drawer-section is-character-anchor"><span>è¡Œä¸ºè¾¹ç•Œ</span><strong>${escapeHtml(person.behaviorBoundaries)}</strong></div>
-                ` : ''}
-                ${person.worldbookRaw ? `
-                    <details class="wb-worldbook-source-profile">
-                        <summary><span>ä¸–ç•Œä¹¦åŸå§‹è®¾å®š</span><small>${String(person.worldbookRaw).length} å­— Â· ç‚¹å‡»æŸ¥çœ‹</small></summary>
-                        <pre>${escapeHtml(person.worldbookRaw)}</pre>
-                    </details>
-                ` : ''}
-                ${person.trace ? `
-                    <div class="wb-drawer-section"><span>æœ€è¿‘è½¨è¿¹</span><strong>${escapeHtml(person.trace)}</strong></div>
-                ` : ''}
-                ${observerMode === 'backstage'
-                    ? renderInnerVoice(person, worldMinute)
-                    : `
-                        <div class="wb-knowledge-boundary">
-                            <i></i><div><strong>çŸ¥è¯†è¾¹ç•Œ</strong><p>è§’è‰²æ‰€çŸ¥è§†è§’ä¸ä¼šè¯»å–å¥¹çš„å¹•åç‹¬ç™½ã€‚</p></div>
-                        </div>
-                    `}
-                <div class="wb-person-observation ${observation?.personId === person.id ? 'has-result' : ''}">
-                    ${observation?.personId === person.id ? `
-                        <article>
-                            <span>å¹•åè§‚æµ‹ Â· ${escapeHtml(formatWorldMinute(observation.worldMinute).time)}</span>
-                            <p>${escapeHtml(observation.text)}</p>
-                        </article>
-                    ` : ''}
-                    ${canObserve ? `
-                        <div class="wb-observation-primary">
-                            ${observation?.personId === person.id
-                                ? '<span>å·²ä¿å­˜åœ¨å½“å‰æ­£æ–‡ä¸ä¸–ç•ŒçŠ¶æ€ä¸‹</span>'
-                                : '<span>ä¸æ¨è¿›æ—¶é—´ï¼Œä¹Ÿä¸ä¼šç›´æ¥å†™å…¥æ­£æ–‡</span>'}
-                            <button type="button" data-wb-action="observe-person"
-                                data-person-id="${escapeAttr(person.id)}"
-                                data-force="${observation?.personId === person.id ? 'true' : 'false'}"
-                                ${busy ? 'disabled' : ''}>
-                                ${busy
-                                    ? 'æ­£åœ¨è§‚æµ‹â€¦â€¦'
-                                    : observation?.personId === person.id
-                                        ? 'é‡æ–°è§‚æµ‹'
-                                        : `çœ‹çœ‹ ${escapeHtml(person.name)} åœ¨åšä»€ä¹ˆ`}
-                            </button>
-                        </div>
-                    ` : `
-                        <p>${person.isUser
-                            ? 'ç©å®¶è§’è‰²ä¸ä½¿ç”¨äººç‰©å³æ—¶è§‚æµ‹ã€‚'
-                            : observerMode !== 'backstage'
-                                ? 'åˆ‡å›å¹•åè§†è§’åå¯ä»¥è§‚æµ‹äººç‰©ã€‚'
-                                : 'è¿™ä¸ªäººç‰©å½“å‰æ— æ³•è§‚æµ‹ã€‚'}</p>
-                    `}
-                </div>
-                <div class="wb-knowledge-boundary wb-observation-boundary ${observation?.queued ? 'is-enabled' : ''} ${observation?.revealState === 'delivered' ? 'is-delivered' : ''}">
-                    <i></i>
-                    <div>
-                        <strong>${observation?.revealState === 'delivered' ? 'å·²ç»æ˜¾éœ²' : 'è‡ªç„¶æ˜¾éœ²'}</strong>
-                        <p>${observation?.revealState === 'delivered'
-                            ? 'è¿™æ®µè§‚æµ‹å·²ç»è¢«åç»­æ­£æ–‡è‡ªç„¶æ‰¿æ¥ï¼›å…³é—­è§‚æµ‹çª—å£ä¸ä¼šåˆ é™¤å·²ç»ç”Ÿæˆçš„æ­£æ–‡ã€‚'
-                            : observation?.revealState === 'expired'
-                                ? 'æ­¤å‰æ²¡æœ‰é‡åˆ°åˆé€‚çš„æ˜¾éœ²æ—¶æœºï¼Œå·²åœæ­¢ç»§ç»­æä¾›ï¼›ä½ å¯ä»¥é‡æ–°å¼€å¯ã€‚'
-                                : observation?.queued
-                                    ? 'å·²å…è®¸ï¼šè¿™æ®µè§‚æµ‹ä¼šåœ¨åç»­è¯­å¢ƒåˆé€‚æ—¶ä½œä¸ºæ­£æ–‡å€™é€‰ï¼›ä¸ä¼šå¼ºè¡Œæ’å…¥ï¼Œä¹Ÿä¸ä¿è¯ç´§æ¥ä¸‹ä¸€è½®å‡ºç°ã€‚'
-                                    : 'é»˜è®¤å…³é—­ï¼šä»…ä¾›å¹•åè§‚çœ‹ï¼Œä¸è¿›å…¥æ­£æ–‡ã€ä¸æ¨è¿›æ—¶é—´ï¼Œä¹Ÿä¸ä¿®æ”¹è®°å¿†ã€‚'}</p>
-                    </div>
-                    ${observation?.personId === person.id ? `
-                        <button type="button" role="switch"
-                            aria-checked="${observation.queued || observation.revealState === 'delivered' ? 'true' : 'false'}"
-                            aria-label="å…è®¸è¿™æ®µè§‚æµ‹è‡ªç„¶æ˜¾éœ²"
-                            data-wb-action="queue-person-observation"
-                            data-person-id="${escapeAttr(person.id)}"
-                            ${observation.revealState === 'delivered' ? 'disabled' : ''}>
-                            <span></span>
-                        </button>
-                    ` : ''}
-                </div>
-            </div>
-        </div>
-    `;
-}
-
-export function sortEventsForDisplay(events, state, presentPeople = []) {
-    const now = Number(state?.clock?.absoluteMinute || 0);
-    const presentIds = new Set(presentPeople.map(person => String(person?.id || '')).filter(Boolean));
-    const presentNames = new Set(presentPeople.map(person => String(person?.name || '')).filter(Boolean));
-    const presentPlaces = new Set(presentPeople.map(person => String(person?.location || '')).filter(Boolean));
-    const score = event => {
-        let value = 0;
-        if (event?.delivery?.manualQueued) value += 100000;
-        const actors = new Set((event?.actors || []).map(String));
-        if ([...actors].some(actor => presentIds.has(actor) || presentNames.has(actor))) value += 24000;
-        if (presentPlaces.has(String(event?.place || ''))) value += 16000;
-        value += ({ direct: 6000, known: 4200, trace: 2600, hidden: 0 }[event?.visibility] || 0);
-        if (event?.status === 'active') value += 1800;
-        if (Number.isFinite(Number(event?.dueAt)) && now > 0) {
-            const remaining = Number(event.dueAt) - now;
-            if (remaining <= 60 && remaining >= 0) value += 7000;
-            else if (remaining <= 360 && remaining >= 0) value += 3500;
-        }
-        const age = Math.max(0, now - Number(event?.updatedAt || 0));
-        value += Math.max(0, 1440 - Math.min(1440, age));
-        return value;
-    };
-    return [...events].sort((a, b) => score(b) - score(a) || Number(b?.updatedAt || 0) - Number(a?.updatedAt || 0));
-}
-
-export function sortPeopleForDisplay(people, activeEvents, presentPersonIds = new Set(), worldMinute = 0) {
-    const activeActors = new Set();
-    for (const event of activeEvents || []) {
-        for (const actor of event?.actors || []) activeActors.add(String(actor));
-    }
-    const score = person => {
-        let value = 0;
-        if (presentPersonIds.has(String(person?.id || ''))) value += 100000;
-        if (activeActors.has(String(person?.id || '')) || activeActors.has(String(person?.name || ''))) value += 24000;
-        if (person?.simulationEnabled !== false) value += 1800;
-        value += Number(person?.relevance || 0) * 3200;
-        const age = Math.max(0, Number(worldMinute || 0) - Number(person?.updatedAt || 0));
-        value += Math.max(0, 1440 - Math.min(1440, age));
-        return value;
-    };
-    return [...people].sort((a, b) => score(b) - score(a) || String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN'));
-}
-
-
-
-const LINGQI_MASCOT_ASSETS = LINGQI_MASCOT_DATA_URLS;
-
-function lingqiMascotState(lingqi = {}, _activeNotes = [], pending = null, override = '') {
-    // æ¨¡å‹ç¡¬çŠ¶æ€æ°¸è¿œä¼˜å…ˆäºéšæœºå¾…æœº/ç‚¹å‡»ååº”ã€‚
-    if (lingqi.phase === 'running') return 'confused';
-    if (lingqi.phase === 'error') return 'hold';
-    if (Object.hasOwn(LINGQI_MASCOT_ASSETS, override)) return override;
-    if (Object.hasOwn(LINGQI_MASCOT_ASSETS, lingqi.mascotState)) return lingqi.mascotState;
-    if (pending) return 'note';
-    if (Array.isArray(lingqi.messages) && lingqi.messages.length) return 'watch';
-    return 'idle';
-}
-
-function lingqiMascotAssetState(state = 'idle') {
-    return Object.hasOwn(LINGQI_MASCOT_ASSETS, state) ? state : 'idle';
-}
-
-function lingqiSupportCategoryLabel(category = 'unknown') {
-    return {
-        usage: 'ä½¿ç”¨æ–¹å¼',
-        settings: 'è®¾ç½® / é…ç½®',
-        api: 'API / ä¸­è½¬',
-        task: 'åå°ä»»åŠ¡',
-        memory: 'è®°å¿†',
-        people: 'äººç‰©',
-        injection: 'æ­£æ–‡æ³¨å…¥',
-        opinion: 'èˆ†æƒ… / æ–°é—»',
-        worldbook: 'ä¸–ç•Œä¹¦å¯¼å…¥',
-        data: 'æ•°æ®ä¸€è‡´æ€§',
-        ui: 'ç•Œé¢ / äº¤äº’',
-        compatibility: 'å…¼å®¹æ€§',
-        performance: 'æ€§èƒ½ / é™æµ',
-        unknown: 'æš‚æœªå½’ç±»',
-    }[String(category || 'unknown')] || 'æš‚æœªå½’ç±»';
-}
-
-function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openReadableKeys = new Set()) {
-    const storedMessages = Array.isArray(lingqi.messages) ? lingqi.messages : [];
-    const messages = storedMessages.slice(-120);
-    const hiddenMessageCount = Math.max(0, storedMessages.length - messages.length);
-    const notes = Array.isArray(lingqi.notes) ? lingqi.notes : [];
-    const pending = lingqi.pendingProposal && typeof lingqi.pendingProposal === 'object'
-        ? lingqi.pendingProposal
-        : null;
-    const pendingAction = lingqi.pendingAction && typeof lingqi.pendingAction === 'object'
-        ? lingqi.pendingAction
-        : null;
-    const activeNotes = notes.filter(note => ['active', 'paused'].includes(note.status));
-    const archivedNotes = notes.filter(note => ['completed', 'expired'].includes(note.status)).slice(-4).reverse();
-    // Archived notes now live behind a collapsed box, so they should not keep
-    // the whole notes column stretched when there is no active paper on the board.
-    const notesEmpty = activeNotes.length === 0;
-    const lingqiBusy = lingqi.phase === 'running';
-    const mascotState = lingqiMascotState(lingqi, activeNotes, pending, mascotOverride);
-    const mascotAssetState = lingqiMascotAssetState(mascotState);
-    const mascotSrc = LINGQI_MASCOT_ASSETS[mascotAssetState] || LINGQI_MASCOT_ASSETS.idle;
-    const noteStatus = note => ({
-        active: '',
-        paused: 'å‹åœ¨çˆªçˆªä¸‹',
-        completed: 'åšåˆ°å•¦',
-        expired: 'æ”¶èµ·æ¥å•¦',
-        cancelled: 'æ­ä¸‹æ¥å•¦',
-    }[note.status] || '');
-    const readableOpenAttr = key => openReadableKeys?.has?.(key) ? ' open' : '';
-
-    return `
-        <div class="wb-lingqi-layout">
-            <div class="wb-lingqi-surface">
-                <div class="wb-lingqi-perch" aria-hidden="false">
-                    <button class="wb-lingqi-mascot is-${mascotState} is-asset-${mascotAssetState}" type="button"
-                        data-wb-action="lingqi-pet" data-mascot-state="${mascotState}"
-                        aria-label="ç¢°ç¢°ç²ä¸ƒ" title="${lingqiBusy ? 'ç²ä¸ƒæ­£åœ¨æƒ³â€¦â€¦' : 'ç¢°ç¢°ç²ä¸ƒ'}">
-                        <img src="${escapeAttr(mascotSrc)}" alt="" draggable="false">
-                    </button>
-                </div>
-
-                <section class="wb-lingqi-chat-card">
-                    <div class="wb-lingqi-chat-log ${messages.length ? '' : 'is-empty'}" aria-live="polite">
-                        ${hiddenMessageCount ? `
-                            <div class="wb-lingqi-history-fold-note">
-                                æ›´æ—©çš„ ${hiddenMessageCount} æ¡è¿˜æ”¶ç€ã€‚ç›´æ¥è·Ÿç²ä¸ƒè¯´è¦æ‰¾å“ªæ®µã€åˆ å“ªæ®µå°±è¡Œã€‚
-                            </div>
-                        ` : ''}
-                        ${messages.length ? messages.map(message => `
-                            <div class="wb-lingqi-message is-${message.role === 'user' ? 'user' : 'assistant'}">
-                                <p>${escapeHtml(message.text).replaceAll('\n', '<br>')}</p>
-                                ${message.role !== 'user' && message.planText ? `
-                                    <details class="wb-lingqi-readable"
-                                        data-lingqi-readable-key="${escapeAttr(`message:${message.id}`)}"${readableOpenAttr(`message:${message.id}`)}>
-                                        <summary aria-label="å±•å¼€å®é™…æ¨è¿›è®°å½•">âŒ„</summary>
-                                        <div>${escapeHtml(message.planText).replaceAll('\n', '<br>')}</div>
-                                    </details>
-                                ` : ''}
-                                ${message.role !== 'user' && message.needsAuthorHelp ? `
-                                    <div class="wb-lingqi-support-card">
-                                        <div class="wb-lingqi-support-head">
-                                            <span class="wb-lingqi-support-note-icon" aria-hidden="true"></span>
-                                            <strong>${escapeHtml(lingqiSupportCategoryLabel(message.supportTriage?.category))}</strong>
-                                        </div>
-                                        <p>${escapeHtml(
-                                            message.supportTriage?.summary
-                                            || message.supportReason
-                                            || 'ç°æœ‰çŠ¶æ€æš‚æ—¶è§£é‡Šä¸äº†è¿™ä¸ªé—®é¢˜ã€‚',
-                                        )}</p>
-                                        ${message.supportTriage?.checked?.length ? `
-                                            <small>ç²ä¸ƒæŸ¥è¿‡ï¼š${escapeHtml(message.supportTriage.checked.join('ï¼›'))}</small>
-                                        ` : ''}
-                                        <div class="wb-lingqi-support-row">
-                                            <button type="button" class="wb-lingqi-support-note"
-                                                data-wb-action="lingqi-copy-support-pack"
-                                                data-message-id="${escapeAttr(message.id)}"
-                                                title="æ¥è¿‡ç²ä¸ƒå†™ç»™å¦ˆå¦ˆçš„å°çº¸æ¡">
-                                                <span>æ¥è¿‡å°çº¸æ¡</span>
-                                            </button>
-                                        </div>
-                                    </div>
-                                ` : ''}
-                            </div>
-                        `).join('') : ''}
-                    </div>
-                    ${pending ? `
-                        <div class="wb-lingqi-proposal">
-                            <span class="wb-lingqi-tape" aria-hidden="true"></span>
-                            <p>${escapeHtml(pending.paperText)}</p>
-                            ${(pending.planText || pending.directive) ? `
-                                <details class="wb-lingqi-readable is-paper"
-                                    data-lingqi-readable-key="pending"${readableOpenAttr('pending')}>
-                                    <summary aria-label="å±•å¼€å®é™…æ¨è¿›è®°å½•">âŒ„</summary>
-                                    <div>${escapeHtml(pending.planText || pending.directive).replaceAll('\n', '<br>')}</div>
-                                </details>
-                            ` : ''}
-                            <div class="wb-lingqi-proposal-actions">
-                                <button type="button" data-wb-action="lingqi-confirm-note">å…ˆç•™ç€</button>
-                                <button type="button" data-wb-action="lingqi-dismiss-note">ä¸è¦äº†</button>
-                            </div>
-                        </div>
-                    ` : ''}
-                    ${pendingAction ? `
-                        <div class="wb-lingqi-action-confirm" role="alertdialog"
-                            aria-label="${escapeAttr(pendingAction.title || 'ç¡®è®¤ç²ä¸ƒä»£åŠ')}">
-                            <span class="wb-lingqi-action-kaomoji" aria-hidden="true">(^. .^)</span>
-                            <div>
-                                <strong>${escapeHtml(pendingAction.title || 'è¦è®©æˆ‘å»å¼„å—ï¼Ÿ')}</strong>
-                                <p>${escapeHtml(pendingAction.detail || 'è¿™ä¸ªåŠ¨ä½œä¼šè°ƒç”¨åå°æ¨¡å‹ã€‚')}</p>
-                                ${Array.isArray(pendingAction.previewLines) && pendingAction.previewLines.length ? `
-                                    <div class="wb-lingqi-action-preview">
-                                        ${pendingAction.previewLines.map(line => `<span>${escapeHtml(line)}</span>`).join('')}
-                                    </div>
-                                ` : ''}
-                                ${pendingAction.caution ? `<small>${escapeHtml(pendingAction.caution)}</small>` : ''}
-                            </div>
-                            <div class="wb-lingqi-action-confirm-buttons">
-                                <button type="button" data-wb-action="lingqi-dismiss-action">å…ˆä¸è¦</button>
-                                <button type="button" class="is-confirm" data-wb-action="lingqi-confirm-action">
-                                    ${escapeHtml(pendingAction.confirmLabel || 'ç‚¹å¤´')}
-                                </button>
-                            </div>
-                        </div>
-                    ` : ''}
-                    <form class="wb-lingqi-input" data-wb-form="lingqi-chat">
-                        <textarea name="text" rows="1" maxlength="3000" ${lingqiBusy ? 'disabled' : ''}
-                            placeholder="â€¦â€¦">${escapeHtml(draft)}</textarea>
-                        <button type="submit" aria-label="æˆ³" title="æˆ³" ${lingqiBusy ? 'disabled' : ''}>${lingqiBusy ? 'â€¦' : 'æˆ³'}</button>
-                    </form>
-                </section>
-
-                <section class="wb-lingqi-notes-card ${notesEmpty ? 'is-empty' : ''}">
-                <div class="wb-lingqi-notes-head">
-                    <div><span>ğŸ¾</span><strong>ç²ä¸ƒçš„å°çº¸æ¡</strong></div>
-                    ${activeNotes.length ? `<small>Ã— ${activeNotes.length}</small>` : ''}
-                </div>
-                <div class="wb-lingqi-notes-scroll">
-                <div class="wb-lingqi-note-board">
-                    ${activeNotes.length ? activeNotes.map((note, index) => `
-                        <article class="wb-lingqi-note is-${escapeAttr(note.status)} is-tone-${index % 4}" style="--wb-note-tilt:${index % 2 ? '0.8deg' : '-0.7deg'}">
-                            <span class="wb-lingqi-note-tape" aria-hidden="true"></span>
-                            <p>${escapeHtml(note.paperText)}</p>
-                            ${note.lastComment ? `<small>${escapeHtml(note.lastComment)}</small>` : ''}
-                            ${(note.planText || note.directive) ? `
-                                <details class="wb-lingqi-readable is-paper"
-                                    data-lingqi-readable-key="${escapeAttr(`note:${note.id}`)}"${readableOpenAttr(`note:${note.id}`)}>
-                                    <summary aria-label="å±•å¼€å®é™…æ¨è¿›è®°å½•">âŒ„</summary>
-                                    <div>${escapeHtml(note.planText || note.directive).replaceAll('\n', '<br>')}</div>
-                                </details>
-                            ` : ''}
-                            <div class="wb-lingqi-note-foot">
-                                ${noteStatus(note) ? `<em>${escapeHtml(noteStatus(note))}</em>` : ''}
-                                <div>
-                                    ${note.status === 'active' ? `
-                                        <button type="button" data-wb-action="lingqi-pause-note" data-note-id="${escapeAttr(note.id)}" title="å…ˆå‹åœ¨çˆªçˆªä¸‹é¢">å‹ä½</button>
-                                    ` : `
-                                        <button type="button" data-wb-action="lingqi-resume-note" data-note-id="${escapeAttr(note.id)}" title="é‡æ–°è´´å›æ¥">è´´å›æ¥</button>
-                                    `}
-                                    <button type="button" data-wb-action="lingqi-cancel-note" data-note-id="${escapeAttr(note.id)}">æ­æ‰</button>
-                                </div>
-                            </div>
-                        </article>
-                    `).join('') : `
-                        <div class="wb-lingqi-note-empty" aria-label="æš‚æ—¶æ²¡æœ‰å°çº¸æ¡">
-                            <span aria-hidden="true">â‚^. .^â‚âŸ†</span>
-                        </div>
-                    `}
-                </div>
-                ${archivedNotes.length ? `
-                    <details class="wb-lingqi-note-box"
-                        data-lingqi-readable-key="archive"${readableOpenAttr('archive')}>
-                        <summary>
-                            <strong>å°ç›’å­é‡Œ</strong>
-                            <span>${archivedNotes.length} å¼ æ”¶å¥½çš„çº¸æ¡</span>
-                            <i aria-hidden="true"></i>
-                        </summary>
-                        <div class="wb-lingqi-note-box-body">
-                            ${archivedNotes.map(note => `
-                                <div><span>${escapeHtml(noteStatus(note))}</span><p>${escapeHtml(note.paperText)}</p></div>
-                            `).join('')}
-                        </div>
-                    </details>
-                ` : ''}
-                </div>
-                </section>
-            </div>
-        </div>
-    `;
-}
-
-function renderNowView(state, observerMode, people, activeEvents, narrativeSync = {}) {
-    const clock = formatWorldCalendar(state);
-    const clockLabel = worldClockLabel(state, clock);
-    return `
-        <div class="wb-overview">
-            <section class="wb-world-card">
-                <div class="wb-world-card-copy">
-                    <div class="wb-world-card-heading-row">
-                        <span class="wb-section-kicker">WORLD STATE Â· ${escapeHtml(clockLabel)}</span>
-                        <button class="wb-card-action-button is-edit" type="button"
-                            data-wb-action="open-world-editor" aria-label="ç¼–è¾‘ä¸–ç•Œè®¾å®š">ç¼–è¾‘</button>
-                    </div>
-                    <h3>${escapeHtml(state.world.title)}</h3>
-                    <p>${escapeHtml(state.world.detail)}</p>
-                    ${state.world?.background
-                        ? '<span class="wb-section-kicker">WORLD BACKGROUND Â· å·²è®¾å®š</span>'
-                        : ''}
-                </div>
-                <div class="wb-world-pulse" aria-hidden="true">
-                    <i></i><i></i><span></span>
-                    <strong>${state.needsReconciliation ? 'å¾…æ ¡å‡†' : narrativeSync.needsSimulation ? 'å¾…æ¨æ¼”' : 'æŒç»­ä¸­'}</strong>
-                </div>
-            </section>
-
-            <div class="wb-overview-grid">
-                <section class="wb-overview-section">
-                    <div class="wb-section-heading">
-                        <div><span>æ­£åœ¨å½¢æˆ</span><h3>æš—æµ</h3></div>
-                        <button type="button" data-wb-action="set-view" data-view="currents">æŸ¥çœ‹å…¨éƒ¨ â†’</button>
-                    </div>
-                    <div class="wb-event-list is-compact">
-                        ${activeEvents.slice(0, 2).map(event => renderEventCard(event, state)).join('')
-                            || renderEmpty('æš—æµä»Šå¤©å¾ˆå®‰é™ï½', 'æ²¡æœ‰æ­£åœ¨å‘å±•çš„äº‹ä»¶ä¹Ÿæ²¡å…³ç³»ï¼Œäººç‰©ä»¬ç…§æ ·ä¼šè¿‡è‡ªå·±çš„æ—¥å­ (Ë˜Ï‰Ë˜)')}
-                    </div>
-                </section>
-
-                <section class="wb-overview-section">
-                    <div class="wb-section-heading">
-                        <div><span>æŒç»­ç”Ÿæ´»ä¸­</span><h3>äººç‰©è½¨è¿¹</h3></div>
-                        <button type="button" data-wb-action="set-view" data-view="people">æŸ¥çœ‹å…¨éƒ¨ â†’</button>
-                    </div>
-                    <div class="wb-person-list">
-                        ${people.slice(0, 3).map(person => renderPersonRow(
-                            person,
-                            observerMode,
-                            state.clock.absoluteMinute,
-                        )).join('') || renderEmpty('äººç‰©è½¨è¿¹è¿˜æ²¡å¼€å¼ ï½', 'è·‘ä¸€æ¬¡ä¸–ç•Œæ¨æ¼”ï¼Œå¥¹ä»¬å°±ä¼šæ…¢æ…¢ç•™ä¸‹è‡ªå·±çš„ç”Ÿæ´»ç—•è¿¹ã€‚')}
-                    </div>
-                </section>
-            </div>
-        </div>
-    `;
-}
-
-function renderSocialView(state, social = {}, settings = {}, {
-    draft = '',
-    groupOpen = false,
-    groupSelectedIds = new Set(),
-    page = 'messages',
-    searchQuery = '',
-} = {}) {
-    const people = (Array.isArray(state?.people) ? state.people : []).filter(person => !person?.isUser);
-    const peopleById = new Map(people.map(person => [String(person.id || ''), person]));
-    const allConversations = Array.isArray(social?.conversations) ? social.conversations : [];
-    const connections = Array.isArray(social?.connections) ? social.connections : [];
-    const connectionsByPersonId = new Map(connections.map(item => [String(item.personId || ''), item]));
-    const acceptedIds = new Set(connections.filter(item => item.status === 'accepted').map(item => String(item.personId || '')));
-    const conversations = allConversations.filter(conversation => (
-        conversation?.type === 'group'
-        || acceptedIds.has(String(conversation?.memberIds?.[0] || ''))
-    ));
-    const friends = people.filter(person => acceptedIds.has(String(person.id || '')));
-    const active = conversations.find(item => item.id === social.activeConversationId) || null;
-    const activeBusy = social.running === true
-        && (!social.conversationId || social.conversationId === active?.id);
-    const emptyMascot = '<div class="wb-social-empty-sticker" aria-hidden="true"><span>(^..^)</span></div>';
-    const conversationAvatar = conversation => {
-        if (conversation?.type === 'group') {
-            const members = (conversation.memberIds || [])
-                .map(id => peopleById.get(String(id)))
-                .filter(Boolean)
-                .slice(0, 3);
-            return `<span class="wb-social-group-avatar is-members" aria-hidden="true">${members.map(person => `<b>${escapeHtml(String(person.name || 'Â·').slice(0, 1))}</b>`).join('') || '<b>ç¾¤</b>'}</span>`;
-        }
-        const person = conversation?.memberIds
-            ?.map(id => peopleById.get(String(id)))
-            .find(Boolean);
-        return person
-            ? renderPersonAvatar(person, 'is-social')
-            : '<span class="wb-social-group-avatar is-direct" aria-hidden="true">Â·</span>';
-    };
-    const activeMembers = active?.memberIds
-        ?.map(id => peopleById.get(String(id)))
-        .filter(Boolean) || [];
-    const activePerson = active?.type === 'direct' ? activeMembers[0] : null;
-    const activeSubtitle = active?.type === 'group'
-        ? `${activeMembers.length} äººå°ç¾¤`
-        : (activePerson?.location || activePerson?.role || 'ç§èŠ');
-    const directConversationPersonIds = new Set(conversations
-        .filter(conversation => conversation?.type === 'direct')
-        .flatMap(conversation => conversation.memberIds || [])
-        .map(String));
-    const availableContacts = friends.filter(person => !directConversationPersonIds.has(String(person.id || '')));
-    const normalizedSearch = String(searchQuery || '').trim().toLocaleLowerCase();
-    const searchResults = normalizedSearch.length >= 2
-        ? people.filter(person => `${person.name || ''}\n${person.identityAnchor || ''}`.toLocaleLowerCase().includes(normalizedSearch)).slice(0, 12)
-        : [];
-    const suggestedPeople = connections
-        .filter(item => item.status === 'suggested')
-        .map(item => peopleById.get(String(item.personId || '')))
-        .filter(Boolean)
-        .slice(0, 8);
-    const incomingPeople = connections
-        .filter(item => item.status === 'incoming')
-        .map(item => peopleById.get(String(item.personId || '')))
-        .filter(Boolean);
-    const moments = (Array.isArray(social?.moments) ? social.moments : [])
-        .map(moment => ({ ...moment, person: peopleById.get(String(moment.personId || '')) }))
-        .filter(moment => moment.person && acceptedIds.has(String(moment.personId || '')))
-        .reverse();
-    const unreadNotices = (Array.isArray(social?.notices) ? social.notices : []).filter(item => !item?.readAt);
-    const hasUnreadMessages = unreadNotices.some(item => item.kind === 'message');
-    const hasUnreadContacts = unreadNotices.some(item => ['friend_request', 'friend_removed'].includes(item.kind));
-    const hasUnreadMoments = unreadNotices.some(item => item.kind === 'moment');
-    const messageAvatar = message => {
-        if (message?.senderId === 'user') {
-            return '<span class="wb-social-self-avatar" aria-hidden="true">æˆ‘</span>';
-        }
-        const person = peopleById.get(String(message?.senderId || ''))
-            || activeMembers.find(item => item.name === message?.senderName);
-        return person
-            ? renderPersonAvatar(person, 'is-social')
-            : '<span class="wb-social-group-avatar is-direct" aria-hidden="true">Â·</span>';
-    };
-    const messageTime = message => formatWorldMinute(Math.max(0, Number(message?.worldMinute) || 0)).time;
-    const emptyThread = friends.length
-        ? `<div class="wb-social-empty-thread is-large">
-            ${emptyMascot}
-            <strong>æƒ³æ‰¾è°è¯´è¯´è¯å‘€ï¼Ÿ</strong>
-            <button type="button" data-wb-action="social-toggle-group" ${friends.length < 2 ? 'disabled' : ''}>${friends.length < 2 ? 'éœ€è¦ä¸¤ä½å¥½å‹æ‰èƒ½å»ºç¾¤' : 'æ–°å»ºç¾¤èŠ'}</button>
-        </div>`
-        : people.length
-            ? `<div class="wb-social-empty-thread is-large is-first-use">
-                ${emptyMascot}
-                <strong>ç²ä¸ƒè¿˜æ²¡æ‰¾åˆ°æœ‹å‹å‘¢</strong>
-                <div class="wb-social-empty-actions"><button class="is-primary" type="button" data-wb-action="social-set-page" data-page="contacts">å»æ·»åŠ å¥½å‹</button></div>
-            </div>`
-        : `<div class="wb-social-empty-thread is-large is-first-use">
-            ${emptyMascot}
-            <strong>å…ˆè®©ç²ä¸ƒè®¤è¯†å‡ ä¸ªäººå§</strong>
-            <div class="wb-social-empty-actions">
-                <button class="is-primary" type="button" data-wb-action="social-import-people">è®©ç²ä¸ƒå»ä¸–ç•Œä¹¦æ‰¾æ‰¾</button>
-                <button type="button" data-wb-action="social-go-people">å»äººç‰©é¡µçœ‹çœ‹</button>
-            </div>
-        </div>`;
-    const messagesView = `
-        ${groupOpen ? `
-            <form class="wb-social-group-form" data-wb-form="social-group">
-                <label>ç¾¤å<input name="title" maxlength="120" placeholder="ä¸å¡«å°±ç”¨æˆå‘˜å"></label>
-                <div class="wb-social-group-people">
-                    ${friends.map(person => `<label><input type="checkbox" name="memberIds" value="${escapeAttr(person.id)}" ${groupSelectedIds.has(String(person.id || '')) ? 'checked' : ''}><span>${escapeHtml(person.name)}</span></label>`).join('') || '<span>è¿˜æ²¡æœ‰æœ‹å‹</span>'}
-                </div>
-                <button type="submit" ${friends.length < 2 ? 'disabled' : ''}>å»ºç¾¤</button>
-            </form>
-        ` : ''}
-        <div class="wb-social-layout">
-            <aside class="wb-social-sidebar">
-                <header class="wb-social-sidebar-head">
-                    <div><strong>æœ€è¿‘èŠè¿‡</strong>${conversations.length ? `<small>${conversations.length}</small>` : ''}</div>
-                    <button type="button" data-wb-action="social-toggle-group" ${friends.length < 2 ? 'disabled title="è‡³å°‘éœ€è¦ä¸¤ä½å¥½å‹"' : ''}><span aria-hidden="true">ï¼‹</span>${groupOpen ? 'æ”¶èµ·' : 'å°ç¾¤'}</button>
-                </header>
-                <div class="wb-social-sidebar-scroll">
-                    <div class="wb-social-conversations">
-                        ${conversations.map(conversation => {
-                            const last = conversation.rawMessages?.at(-1);
-                            return `<button type="button" class="${conversation.id === active?.id ? 'is-active' : ''}" data-wb-action="social-select-conversation" data-conversation-id="${escapeAttr(conversation.id)}">
-                                ${conversationAvatar(conversation)}<span><strong>${escapeHtml(conversation.title)}</strong><small>${escapeHtml(last?.text || 'è¿˜æ²¡æœ‰æ¶ˆæ¯')}</small></span>
-                            </button>`;
-                        }).join('')}
-                    </div>
-                    ${availableContacts.length ? `<div class="wb-social-section-title"><strong>ç²ä¸ƒå¯ä»¥å¸®ä½ ä¼ è¯</strong><small>${availableContacts.length}</small></div>
-                    <div class="wb-social-contacts">
-                        ${availableContacts.map(person => `<button type="button" data-wb-action="social-open-person" data-person-id="${escapeAttr(person.id)}">${renderPersonAvatar(person, 'is-social')}<span><strong>${escapeHtml(person.name)}</strong><small>${escapeHtml(person.location || 'æš‚æœªè®°å½•ä½ç½®')}</small></span></button>`).join('')}
-                    </div>` : ''}
-                </div>
-                <label class="wb-social-isolation-control" title="æ‰“å¼€åï¼Œæœ€è¿‘èŠå¤©ä¼šä½œä¸ºæœªç»“ç®—è®°å½•ç»™æ­£æ–‡å‚è€ƒ">
-                    <span><i></i><b>${settings.injectionSocial === true ? 'å¸¦è¿›æ­£æ–‡' : 'åªç•™åœ¨è¿™é‡Œ'}</b></span>
-                    <span class="wb-switch"><input type="checkbox" data-wb-setting="injectionSocial" ${settings.injectionSocial === true ? 'checked' : ''}><i></i></span>
-                </label>
-            </aside>
-            <main class="wb-social-thread">
-                ${active ? `
-                    <header>
-                        <div class="wb-social-thread-contact">${conversationAvatar(active)}<div><h3>${escapeHtml(active.title)}</h3><span>${escapeHtml(activeSubtitle)}</span></div></div>
-                        ${activeBusy ? '<span class="wb-social-thread-state"><i></i>æ­£åœ¨å›â€¦</span>' : ''}
-                    </header>
-                    <div class="wb-social-log" aria-live="polite">
-                        ${settings.injectionSocial === true ? '<p class="wb-social-context-banner">è¿™æ®µèŠå¤©ä¼šå¸¦è¿›æ­£æ–‡</p>' : ''}
-                        ${(active.rawMessages || []).map(message => `<article class="${message.senderId === 'user' ? 'is-user' : ''}">${messageAvatar(message)}<div class="wb-social-message-main"><span><b>${escapeHtml(message.senderName)}</b><time>${escapeHtml(messageTime(message))}</time></span><p>${escapeHtml(message.text)}</p></div></article>`).join('') || `<div class="wb-social-empty-thread is-conversation"><span class="wb-social-empty-monogram">${escapeHtml(active.title.slice(0, 1))}</span><strong>å’Œ ${escapeHtml(active.title)} è¯´ç‚¹ä»€ä¹ˆå§</strong></div>`}
-                    </div>
-                    ${active.lastError ? `<p class="wb-social-error">ä¸Šæ¬¡é”™è¯¯ï¼š${escapeHtml(active.lastError)}</p>` : ''}
-                    <button class="wb-social-cat-delivery" type="button"
-                        data-wb-action="social-request-reply"
-                        data-conversation-id="${escapeAttr(active.id)}"
-                        title="è°ƒç”¨ä¸€æ¬¡ APIï¼Œè®©è¿™æ¡ä¼šè¯ç°åœ¨å›ä¸€è½®"
-                        ${settings.socialInstantReply !== false || active?.rawMessages?.at(-1)?.senderId !== 'user' ? 'hidden' : ''}
-                        ${activeBusy ? 'disabled' : ''}><span aria-hidden="true">ğŸ¾</span> å°çŒ«ä¼ é€’</button>
-                    <form class="wb-social-compose" data-wb-form="social-message">
-                        <input type="hidden" name="conversationId" value="${escapeAttr(active.id)}">
-                        <textarea name="text" rows="1" maxlength="1600" placeholder="è®©ç²ä¸ƒæå¥è¯â€¦" ${activeBusy ? 'disabled' : ''}>${escapeHtml(draft)}</textarea>
-                        <button type="submit" ${activeBusy ? 'disabled' : ''}>${activeBusy ? 'ç²ä¸ƒåœ¨è·¯ä¸Šâ€¦' : 'é€’è¿‡å»'}</button>
-                    </form>
-                ` : emptyThread}
-            </main>
-        </div>`;
-
-    const friendCard = person => {
-        const connection = connectionsByPersonId.get(String(person.id || ''));
-        const requestBusy = social?.friendRequest?.running && social.friendRequest.personId === String(person.id || '');
-        const status = connection?.status || '';
-        const action = status === 'accepted'
-            ? `<div class="wb-social-friend-actions"><button type="button" data-wb-action="social-open-person" data-person-id="${escapeAttr(person.id)}">å‘æ¶ˆæ¯</button><button class="is-danger" type="button" data-wb-action="social-remove-friend" data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}">åˆ é™¤</button></div>`
-            : status === 'incoming'
-                ? `<div class="wb-social-friend-actions"><button class="is-primary" type="button" data-wb-action="social-respond-friend-request" data-person-id="${escapeAttr(person.id)}" data-accept="true">æ¥å—</button><button type="button" data-wb-action="social-respond-friend-request" data-person-id="${escapeAttr(person.id)}" data-accept="false">æ‹’ç»</button></div>`
-            : status === 'pending'
-                ? '<button type="button" disabled>ç­‰å¾…å¤„ç†</button>'
-                : `<form data-wb-form="social-friend-request"><input type="hidden" name="personId" value="${escapeAttr(person.id)}"><input name="message" maxlength="300" placeholder="${status === 'declined' ? 'é‡æ–°ç”³è¯·è¯´æ˜ï¼ˆå¯é€‰ï¼‰' : status === 'removed' ? 'é‡æ–°æ·»åŠ è¯´æ˜ï¼ˆå¯é€‰ï¼‰' : 'éªŒè¯æ¶ˆæ¯ï¼ˆå¯é€‰ï¼‰'}"><button type="submit" ${requestBusy ? 'disabled' : ''}>${requestBusy ? 'ç­‰å¾…ä¸­â€¦' : status === 'declined' || status === 'removed' ? 'é‡æ–°ç”³è¯·' : 'æ·»åŠ å¥½å‹'}</button></form>`;
-        const visibleReply = connection?.decisionReply
-            || (status === 'incoming' ? connection?.requestMessage : '')
-            || (status === 'removed' || status === 'declined' ? connection?.decisionReason : '')
-            || (status === 'suggested' ? connection?.evidence : '')
-            || (status === 'accepted' ? connection?.evidence : 'æŒ‰å§“åæŸ¥æ‰¾åˆ°çš„äººç‰©');
-        return `<article class="wb-social-friend-card">${renderPersonAvatar(person, 'is-social')}<div><strong>${escapeHtml(person.name)}</strong><span>${escapeHtml(person.identityAnchor || 'ä¸–ç•Œäººç‰©')}</span>${visibleReply ? `<small>${escapeHtml(visibleReply)}</small>` : ''}</div>${action}</article>`;
-    };
-    const contactsView = `
-        <div class="wb-social-directory">
-            <aside class="wb-social-friend-list">
-                <header><strong>å¥½å‹</strong><small>${friends.length}</small></header>
-                <div>${friends.map(person => `<article>${renderPersonAvatar(person, 'is-social')}<button type="button" data-wb-action="social-open-person" data-person-id="${escapeAttr(person.id)}"><span><strong>${escapeHtml(person.name)}</strong><small>${escapeHtml(connectionsByPersonId.get(String(person.id || ''))?.evidence || 'å·²ç»æ˜¯å¥½å‹å•¦')}</small></span></button><button class="wb-social-friend-remove" type="button" data-wb-action="social-remove-friend" data-person-id="${escapeAttr(person.id)}" data-person-name="${escapeAttr(person.name)}" title="åˆ é™¤å¥½å‹">Ã—</button></article>`).join('') || '<p>è¿˜æ²¡æœ‰å¥½å‹</p>'}</div>
-            </aside>
-            <main class="wb-social-add-friend">
-                <header><strong>ç²ä¸ƒå¸®ä½ æ‰¾æ‰¾ à¸…</strong></header>
-                <label class="wb-social-auto-control"><span><strong>è®©ç²ä¸ƒå¸®å¿™ç•™æ„æ–°åŠ¨é™</strong></span><span class="wb-switch"><input type="checkbox" data-wb-setting="socialAutoEnabled" ${settings.socialAutoEnabled !== false ? 'checked' : ''}><i></i></span></label>
-                <label class="wb-social-search"><span aria-hidden="true">âŒ•</span><input type="search" data-wb-social-search value="${escapeAttr(searchQuery)}" placeholder="å‘Šè¯‰ç²ä¸ƒåå­—â€¦" autocomplete="off"></label>
-                ${social?.friendRequest?.phase === 'error' ? `<p class="wb-social-request-error">${escapeHtml(social.friendRequest.error || social.friendRequest.message)}</p>` : ''}
-                <div class="wb-social-search-results">
-                    ${normalizedSearch.length >= 2
-                        ? (searchResults.map(friendCard).join('') || '<div class="wb-social-directory-empty">ç²ä¸ƒæ²¡æ‰¾åˆ°è¿™ä¸ªåå­—å‘€ã€‚</div>')
-                        : incomingPeople.length || suggestedPeople.length
-                            ? `${incomingPeople.length ? `<div class="wb-social-suggestion-title"><strong>æœ‰äººæ‰˜ç²ä¸ƒæ¥æ•²é—¨</strong><span>${incomingPeople.length}</span></div>${incomingPeople.map(friendCard).join('')}` : ''}${suggestedPeople.length ? `<div class="wb-social-suggestion-title"><strong>ç²ä¸ƒå¥½åƒè§è¿‡</strong></div>${suggestedPeople.map(friendCard).join('')}` : ''}`
-                            : '<div class="wb-social-directory-empty">å‘Šè¯‰ç²ä¸ƒåå­—ï¼Œç²ä¸ƒå»æ‰¾æ‰¾ã€‚</div>'}
-                </div>
-            </main>
-        </div>`;
-
-    const momentsView = `
-        <div class="wb-social-moments">
-            <header><div><h3>æœ‹å‹åœˆ</h3></div><button type="button" data-wb-action="social-refresh-moments" ${social?.momentsStatus?.running ? 'disabled' : ''}>${social?.momentsStatus?.running ? 'ç²ä¸ƒåœ¨å¤–é¢è½¬æ‚ â€¦' : 'è®©ç²ä¸ƒå»é€›é€›'}</button></header>
-            ${social?.momentsStatus?.phase === 'error' ? `<p class="wb-social-request-error">${escapeHtml(social.momentsStatus.error || social.momentsStatus.message)}</p>` : ''}
-            <div class="wb-social-moment-feed">
-                ${moments.map(moment => `<article class="wb-social-moment-card">
-                    ${renderPersonAvatar(moment.person, 'is-social')}
-                    <div class="wb-social-moment-body"><header><strong>${escapeHtml(moment.person.name)}</strong><time>${escapeHtml(formatWorldMinute(moment.worldMinute).time)}</time></header><p>${escapeHtml(moment.text)}</p>
-                    ${moment.imageUrl ? `<img src="${escapeAttr(moment.imageUrl)}" alt="${escapeAttr(moment.person.name)} å‘å¸ƒçš„æœ‹å‹åœˆé…å›¾" loading="lazy">` : ''}
-                    <footer><span>å¥½å‹å¯è§${moment.imageError ? ' Â· é…å›¾ç”Ÿæˆå¤±è´¥ï¼Œå·²ä¿ç•™æ–‡å­—' : ''}</span><button type="button" class="${moment.likedByUser ? 'is-active' : ''}" data-wb-action="social-toggle-moment-like" data-moment-id="${escapeAttr(moment.id)}">â™¡ ${Math.max(0, Number(moment.likes) || 0)}</button></footer></div>
-                </article>`).join('') || `<div class="wb-social-moments-empty">${emptyMascot}<strong>${friends.length ? 'ç²ä¸ƒè¿˜æ²¡å¬åˆ°æ–°é²œäº‹' : 'å…ˆè®©ç²ä¸ƒè®¤è¯†å‡ ä¸ªæœ‹å‹å§'}</strong></div>`}
-            </div>
-        </div>`;
-
-    return `
-        <section class="wb-social-shell is-page-${escapeAttr(page)}">
-            <nav class="wb-social-page-tabs" aria-label="é€šè®¯é¡µé¢">
-                <button type="button" class="${page === 'messages' ? 'is-active' : ''}" data-wb-action="social-set-page" data-page="messages"><i></i>æ¶ˆæ¯${hasUnreadMessages ? '<em></em>' : ''}</button>
-                <button type="button" class="${page === 'contacts' ? 'is-active' : ''}" data-wb-action="social-set-page" data-page="contacts"><i></i>å¥½å‹${hasUnreadContacts || connections.some(item => item.status === 'incoming') ? '<em></em>' : ''}</button>
-                <button type="button" class="${page === 'moments' ? 'is-active' : ''}" data-wb-action="social-set-page" data-page="moments"><i></i>æœ‹å‹åœˆ${hasUnreadMoments ? '<em></em>' : ''}</button>
-            </nav>
-            ${page === 'messages' ? `
-                <div class="wb-social-reply-toggle">
-                    <div>
-                        <strong>åŠæ—¶å›å¤</strong>
-                        <span>${settings.socialInstantReply !== false
-                            ? 'æ¯å‘ä¸€æ¡æ¶ˆæ¯å°±è°ƒç”¨ 1 æ¬¡ APIï¼Œé©¬ä¸Šç­‰ä¸€è½®å›å¤ã€‚'
-                            : 'å…ˆåªæŠŠæ¶ˆæ¯é€’å‡ºå»ï¼›æƒ³è®©å¯¹æ–¹ç°åœ¨å›æ—¶ï¼Œå†ç‚¹ã€Œå°çŒ«ä¼ é€’ã€ã€‚'}</span>
-                    </div>
-                    <label class="wb-switch" title="æ§åˆ¶ä½ ä¸»åŠ¨å‘æ¶ˆæ¯åæ˜¯å¦ç«‹åˆ»è¯·æ±‚äººç‰©å›å¤">
-                        <input type="checkbox" data-wb-setting="socialInstantReply"
-                            ${settings.socialInstantReply !== false ? 'checked' : ''}>
-                        <i></i>
-                    </label>
-                </div>
-            ` : ''}
-            <div class="wb-social-page-body">${page === 'contacts' ? contactsView : page === 'moments' ? momentsView : messagesView}</div>
-        </section>
-    `;
-}
-
-function renderPeopleView(state, observerMode, people, openFolds = new Set(), {
-    selectionMode = false,
-    selectedIds = new Set(),
-} = {}) {
-    const deletablePeople = people.filter(person => !person.locked && !person.isUser);
-    return `
-        <div class="wb-view-intro">
-            <div class="wb-memory-intro-actions wb-people-batch-actions">
-                <span>${selectionMode ? `å·²é€‰ ${selectedIds.size} äºº` : `${people.length} æ¡å¯è§‚æµ‹è½¨è¿¹`}</span>
-                ${selectionMode ? `
-                    <button type="button" data-wb-action="select-all-people" ${deletablePeople.length ? '' : 'disabled'}>å…¨é€‰å¯åˆ é™¤</button>
-                    <button type="button" data-wb-action="clear-people-selection" ${selectedIds.size ? '' : 'disabled'}>å–æ¶ˆé€‰æ‹©</button>
-                    <button class="is-danger" type="button" data-wb-action="delete-selected-people" ${selectedIds.size ? '' : 'disabled'}>åˆ é™¤é€‰ä¸­ Â· ${selectedIds.size}</button>
-                    <button type="button" data-wb-action="toggle-people-batch">é€€å‡ºæ‰¹é‡</button>
-                ` : `
-                    <button type="button" data-wb-action="toggle-people-batch" ${deletablePeople.length ? '' : 'disabled'}>æ‰¹é‡ç®¡ç†</button>
-                    <button type="button" data-wb-action="open-person-editor">ï¼‹ æ·»åŠ åå° NPC</button>
-                `}
-            </div>
-        </div>
-        <div class="wb-view-fold-head">
-            ${renderFoldToolbar('people:')}
-        </div>
-        <div class="wb-people-grid">
-            ${people.map(person => `
-                <div class="wb-person-batch-item ${selectionMode ? 'is-selecting' : ''} ${selectedIds.has(person.id) ? 'is-selected' : ''}">
-                    ${selectionMode ? `
-                        <label class="wb-person-batch-check ${person.locked || person.isUser ? 'is-disabled' : ''}">
-                            <input type="checkbox" data-wb-person-select value="${escapeAttr(person.id)}"
-                                ${selectedIds.has(person.id) ? 'checked' : ''}
-                                ${person.locked || person.isUser ? 'disabled' : ''}>
-                            <span>${person.isUser ? 'ç©å®¶è§’è‰²' : person.locked ? 'å·²é”å®š' : 'é€‰æ‹©'}</span>
-                        </label>
-                    ` : ''}
-                    ${renderPersonCard(
-                        person,
-                        observerMode,
-                        state.clock.absoluteMinute,
-                        openFolds,
-                    )}
-                </div>
-            `).join('') || renderEmpty(
-                observerMode === 'known' ? 'è§’è‰²ç›®å‰æ²¡æœ‰å¯ç¡®è®¤çš„äººç‰©è½¨è¿¹' : 'åå°äººç‰©å°šæœªå»ºç«‹',
-                observerMode === 'known' ? 'åˆ‡å›å¹•åè§†è§’å¯ä»¥æŸ¥çœ‹æœªçŸ¥è½¨è¿¹ã€‚' : 'å›å¤åè‡ªåŠ¨æ¨æ¼”æˆ–æ‰‹åŠ¨æ¨æ¼”ä¸€æ¬¡ã€‚',
-            )}
-        </div>
-    `;
-}
-
-function renderPersonEditorModal(state, editor) {
-    const editorId = String(editor?.id || '');
-    const editorName = String(editor?.name || '');
-    const person = state.people.find(item => (
-        item.id === editorId
-        && (!editorName || item.name === editorName)
-    )) || state.people.find(item => item.id === editorId) || null;
-    return `
-        <div class="wb-drawer-scrim" data-wb-action="close-person-editor">
-            <form class="wb-event-form wb-person-editor" data-wb-form="person">
-                <div class="wb-form-heading">
-                    <div><span>BACKSTAGE CAST</span><h3>${person ? 'ç¼–è¾‘åå°äººç‰©' : 'æ·»åŠ åå° NPC'}</h3></div>
-                    <button type="button" data-wb-action="close-person-editor">Ã—</button>
-                </div>
-                <input type="hidden" name="id" value="${escapeAttr(person?.id || '')}">
-                <input type="hidden" name="originalName" value="${escapeAttr(person?.name || '')}">
-                <div class="wb-person-avatar-editor">
-                    ${renderPersonAvatar(person || { name: 'Â·', monogram: 'Â·' }, 'is-large')}
-                    <div>
-                        <label class="wb-avatar-upload">æ¢ä¸ªå¤´åƒï½
-                            <input name="avatarFile" type="file" accept="image/*">
-                        </label>
-                        <small>ä¼šè‡ªåŠ¨è£æˆ 160Ã—160 çš„å°å¤´åƒä¿å­˜ï¼Œä¸ä¼šå¡è¿›æ¨¡å‹ä¸Šä¸‹æ–‡ (ï½¡â€¢Ì€á´—-)âœ§</small>
-                    </div>
-                    ${person?.avatarDataUrl ? `<button type="button" data-wb-action="clear-person-avatar"
-                        data-person-id="${escapeAttr(person.id)}">æ¢å¤æ–‡å­—å¤´åƒ</button>` : ''}
-                </div>
-                <label>å§“å<input name="name" required maxlength="80" value="${escapeAttr(person?.name || '')}"></label>
-                <label>å½“å‰ä½ç½®<input name="location" maxlength="160" value="${escapeAttr(person?.location || '')}"></label>
-                <label>æ­£åœ¨åš<textarea name="action" maxlength="280" rows="2">${escapeHtml(person?.action || '')}</textarea></label>
-                <label>çŸ­æœŸæ„å›¾<textarea name="intent" maxlength="320" rows="2">${escapeHtml(person?.intent || '')}</textarea></label>
-                <label>é•¿æœŸç›®æ ‡<textarea name="longTermGoal" maxlength="420" rows="3">${escapeHtml(person?.longTermGoal || '')}</textarea></label>
-                <label>å½“å‰å¹•åç‹¬ç™½<textarea name="innerVoice" maxlength="240" rows="3"
-                    placeholder="åªä¿®æ­£å¥¹ç°åœ¨è¿™ä¸€åˆ»åœ¨æƒ³ä»€ä¹ˆï½åç»­çŠ¶æ€çœŸçš„å˜åŒ–æ—¶ï¼ŒAI ä»ç„¶å¯ä»¥è‡ªç„¶æ›´æ–°ã€‚">${escapeHtml(person?.innerVoice || '')}</textarea>
-                    <small>è¿™æ˜¯å½“å‰å¿ƒå£°ï¼Œä¸æ˜¯æ°¸ä¹…äººè®¾é”ï½å†™æ­ªäº†å°±ç›´æ¥æ°å›æ¥ (ï½¡â€¢Ì€á´—-)âœ§</small>
-                </label>
-                <fieldset class="wb-character-anchor-fields">
-                    <legend><span>è§’è‰²çº¦æŸ</span><small>æ¨æ¼”ä¸å³æ—¶è§‚æµ‹éƒ½ä¼šéµå®ˆï¼ŒAI ä¸ä¼šè‡ªåŠ¨æ”¹å†™</small></legend>
-                    <label>è§’è‰²èº«ä»½é”šç‚¹<textarea name="identityAnchor" maxlength="500" rows="3"
-                        placeholder="ä¾‹å¦‚ï¼šç”·æ€§ï¼Œå¤–è¡¨åå¥³æ€§ï¼Œä½¿ç”¨â€œä»–â€å’Œç”·æ€§ç§°è°“ï¼›ç‹æ—äººå¤–ã€‚ä¹Ÿå¯å¡«å†™éäºŒå…ƒã€æ— æ€§åˆ«æˆ–è‡ªå®šä¹‰ç§°è°“ã€‚">${escapeHtml(person?.identityAnchor || '')}</textarea>
-                        <small>è‡ªç”±å¡«å†™æ€§åˆ«èº«ä»½ã€ç§°è°“/ä»£è¯ã€ç‰©ç§ã€å¹´é¾„é˜¶æ®µä¸ç¤¾ä¼šèº«ä»½ï¼›å¤–è²Œè¯·å•ç‹¬å†™åœ¨â€œå¤–è²Œè®¾å®šâ€ã€‚ä¸é™åˆ¶ä¸ºç”·å¥³äºŒé€‰ä¸€ã€‚</small>
-                    </label>
-                    <label>å¤–è²Œè®¾å®š<textarea name="appearanceProfile" maxlength="700" rows="3"
-                        placeholder="ä¾‹å¦‚ï¼šé»‘è‰²çŸ­å‘ï¼Œèº«é«˜185cmï¼Œå¸¸ç©¿æ·±è‰²è¡¬è¡«ã€‚">${escapeHtml(person?.appearanceProfile || '')}</textarea></label>
-                    <label>äººæ ¼é”šç‚¹<textarea name="personalityAnchor" maxlength="600" rows="3"
-                        placeholder="ä¾‹å¦‚ï¼šå¤–å†·å†…çƒ­ï¼Œè­¦æƒ•æƒå¨ï¼›é‡è§†æ‰¿è¯ºï¼Œä½†ä¸è½»æ˜“ç¤ºå¼±ã€‚">${escapeHtml(person?.personalityAnchor || '')}</textarea></label>
-                    <label>èƒŒæ™¯ä¸å…³ç³»<textarea name="backgroundProfile" maxlength="900" rows="4"
-                        placeholder="ä¾‹å¦‚ï¼šæˆé•¿ç»å†ã€å®¶åº­å…³ç³»ã€ç¤¾ä¼šå…³ç³»å’Œæ—¢æœ‰é‡è¦ç»å†ã€‚">${escapeHtml(person?.backgroundProfile || '')}</textarea></label>
-                    <label>è¯´è¯ä¹ æƒ¯<textarea name="speakingStyle" maxlength="360" rows="2"
-                        placeholder="ä¾‹å¦‚ï¼šå¥å­ç®€çŸ­ï¼Œå¾ˆå°‘ä½¿ç”¨æ„Ÿå¹å·ï¼›ç´§å¼ æ—¶ä¼šè½¬ç§»è¯é¢˜ã€‚">${escapeHtml(person?.speakingStyle || '')}</textarea></label>
-                    <label>è¡Œä¸ºè¾¹ç•Œ<textarea name="behaviorBoundaries" maxlength="500" rows="3"
-                        placeholder="ä¾‹å¦‚ï¼šä¸ä¼šæ— è¯æ®èƒŒå›åŒä¼´ï¼›ä¸æ›¿ç©å®¶åšå†³å®šï¼›ä¸çŸ¥é“çš„å¹•åä¿¡æ¯ä¸å¾—è¯´å‡ºå£ã€‚">${escapeHtml(person?.behaviorBoundaries || '')}</textarea></label>
-                </fieldset>
-                <div class="wb-form-grid">
-                    <label>çŸ¥è¯†è¾¹ç•Œ
-                        <select name="knowledge">
-                            <option value="backstage" ${person?.knowledge !== 'known' ? 'selected' : ''}>å¹•åæœªçŸ¥</option>
-                            <option value="known" ${person?.knowledge === 'known' ? 'selected' : ''}>è§’è‰²å¯çŸ¥</option>
-                        </select>
-                    </label>
-                    <label>é‡è¦ç¨‹åº¦
-                        <select name="relevance">
-                            <option value="1" ${Number(person?.relevance || 2) === 1 ? 'selected' : ''}>æ™®é€š</option>
-                            <option value="2" ${Number(person?.relevance || 2) === 2 ? 'selected' : ''}>é‡è¦</option>
-                            <option value="3" ${Number(person?.relevance || 2) === 3 ? 'selected' : ''}>æ ¸å¿ƒ</option>
-                        </select>
-                    </label>
-                </div>
-                <div class="wb-memory-editor-flags">
-                    <label><input name="simulationEnabled" type="checkbox"
-                        ${person?.simulationEnabled !== false ? 'checked' : ''}> å‚ä¸é•œå¤´å¤–æ¨æ¼”</label>
-                    <label><input name="locked" type="checkbox" ${person?.locked ? 'checked' : ''}> é”å®šæ ¸å¿ƒè®¾å®š</label>
-                </div>
-                <div class="wb-form-note">å…³é—­â€œå‚ä¸é•œå¤´å¤–æ¨æ¼”â€åï¼Œäººç‰©ä»ä¿å­˜åœ¨åå•é‡Œï¼›åªæœ‰æ­£æ–‡è®©å…¶å‡ºåœºæ—¶æ‰æ›´æ–°ã€‚</div>
-                <div class="wb-person-editor-actions">
-                    ${person ? `<button class="wb-person-delete-button" type="button" data-wb-action="delete-manual-person"
-                        data-person-id="${escapeAttr(person.id)}" ${person.locked ? 'disabled' : ''}>åˆ é™¤äººç‰©</button>` : ''}
-                    <button class="wb-primary-button" type="submit">${person ? 'ä¿å­˜äººç‰©å¡' : 'åŠ å…¥åå°åå•'}</button>
-                </div>
-            </form>
-        </div>
-    `;
-}
-
-function renderCurrentsView(state, activeEvents, openFolds = new Set(), settings = {}) {
-    return `
-        <div class="wb-view-intro">
-            <div class="wb-view-inline-actions">
-                <button class="wb-inline-add" type="button" data-wb-action="open-event-form">ï¼‹ æ”¾å…¥ä¸€æ¡æš—æµ</button>
-            </div>
-        </div>
-        <div class="wb-view-fold-head">
-            ${renderFoldToolbar('currents:')}
-        </div>
-        <div class="wb-event-list is-full">
-            ${activeEvents.map(event => renderEventCard(event, state, true, openFolds)).join('')
-                || renderEmpty('æš—æµæš‚æ—¶æ¸…ç©ºå•¦ï½', 'åˆ°æ—¶ã€å–æ¶ˆæˆ–é”™è¿‡çš„äº‹æƒ…ä¼šç¦»å¼€è¿™é‡Œï¼Œç»“æœä¼šä¹–ä¹–è½¬å»å›å£°ã€‚')}
-        </div>
-    `;
-}
-
-function renderEchoesView(state, outcomes, openFolds = new Set()) {
-    return `
-        <div class="wb-view-fold-head">
-            ${renderFoldToolbar('echoes:')}
-        </div>
-        <div class="wb-echo-timeline">
-            ${outcomes.map(event => renderOutcome(event, state, openFolds)).join('')
-                || renderEmpty('è¿˜æ²¡æœ‰å›å£°å‘¢ï½', 'åå°å‘ç”Ÿè¿‡çš„äº‹ï¼Œä¸ç­‰äºå·²ç»è¢«æ­£æ–‡çœ‹è§ã€‚ç­‰å®ƒçœŸæ­£å½¢æˆç»“æœå†æ¥è¿™é‡Œã€‚')}
-        </div>
-    `;
-}
-
-function publicOpinionClaimLabel(status) {
-    return {
-        fact: 'åŸºäºå…¬å¼€äº‹å®',
-        mixed: 'äº‹å®ä¸çŒœæµ‹æ··åˆ',
-        rumor: 'ä¼ é—» / æœªè¯å®',
-    }[status] || 'äº‹å®ä¸çŒœæµ‹æ··åˆ';
-}
-
-function publicOpinionConfidenceLabel(confidence) {
-    return confidence === 'high' ? 'è¾ƒé«˜å¯ä¿¡' : 'ä¿¡æ¯æœ‰é™';
-}
-
-function publicOpinionSourceTypeLabel(sourceType) {
-    return sourceType === 'official' ? 'ğŸ› å®˜æ–¹ / æƒå¨' : 'ğŸ—£ éå®˜æ–¹ / å°é“';
-}
-
-function renderPublicOpinionAudience(item) {
-    const audiences = Array.isArray(item?.audienceTags) ? item.audienceTags.filter(Boolean).slice(0, 5) : [];
-    if (!audiences.length && !item?.scope) return '';
-    return `
-        <div class="wb-opinion-audience">
-            ${item?.scope ? `<span class="wb-opinion-scope">${escapeHtml(item.scope)}</span>` : ''}
-            ${audiences.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}
-        </div>
-    `;
-}
-
-function publicOpinionGeneratedLabel(value) {
-    if (!value) return 'å°šæœªç”Ÿæˆ';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return 'æœ€è¿‘ä¸€æ¬¡å¿«ç…§';
-    return date.toLocaleString('zh-CN', {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-    });
-}
-
-function publicOpinionWorldTimeLabel(state, item) {
-    const minute = Number(item?.worldMinute);
-    if (!Number.isFinite(minute) || minute < 0) return '';
-    const calendar = formatWorldCalendar(state, minute);
-    return calendar?.stamp || formatWorldMinute(minute).stamp;
-}
-
-function renderPublicOpinionView(state, opinion = {}, mode = 'news', settings = {}) {
-    const news = Array.isArray(opinion.news) ? opinion.news : [];
-    const forums = Array.isArray(opinion.forums) ? opinion.forums : [];
-    const interactionBusy = Boolean(opinion.interactionBusy);
-    const sandboxInteractionBusy = Boolean(opinion.sandboxInteractionBusy);
-    const canonRunning = Boolean(
-        opinion.canonRunning
-        || interactionBusy
-        || opinion.phase === 'running'
-        || opinion.phase === 'queued'
-    );
-    const sandboxStatus = opinion.sandboxStatus && typeof opinion.sandboxStatus === 'object'
-        ? opinion.sandboxStatus
-        : { phase: 'idle', message: '', error: '' };
-    const sandboxRunning = Boolean(
-        opinion.sandboxRunning
-        || sandboxInteractionBusy
-        || sandboxStatus.phase === 'running'
-    );
-    const running = canonRunning || sandboxRunning;
-    const stale = Boolean(opinion.stale && opinion.generatedAt);
-    const lastWorldSweepMinute = Number(state?.worldPulse?.coverage?.lastSweepAt ?? -1);
-    const lastWorldSweepLabel = lastWorldSweepMinute >= 0
-        ? (formatWorldCalendar(state, lastWorldSweepMinute)?.stamp || formatWorldMinute(lastWorldSweepMinute).stamp)
-        : 'å°šæœªå·¡æŸ¥';
-    const recentWorldCoverageLabels = (Array.isArray(state?.worldPulse?.coverage?.entries)
-        ? state.worldPulse.coverage.entries
-        : [])
-        .slice(0, 3)
-        .map(item => String(item?.label || '').trim())
-        .filter(Boolean);
-    const relatedEvents = new Map((state.events || []).map(event => [event.id, event]));
-    const sandbox = opinion.sandbox && typeof opinion.sandbox === 'object' ? opinion.sandbox : { news: [], forums: [], generatedAt: '' };
-    const sandboxItems = [...(sandbox.news || []), ...(sandbox.forums || [])];
-    const activeMode = ['forum', 'sandbox'].includes(mode) ? mode : 'news';
-    const canonStatusMessage = (
-        interactionBusy && !['running', 'queued', 'error'].includes(opinion.phase)
-            ? 'æ­£åœ¨æ£€æŸ¥ä¸–ç•Œå˜åŒ–ï½'
-            : (opinion.error || opinion.message || '')
-    );
-    const sandboxStatusMessage = (
-        sandboxInteractionBusy && sandboxStatus.phase !== 'error'
-            ? 'æ­£åœ¨è¡—ä¸Šéšä¾¿é€›é€›ï½'
-            : (sandboxStatus.error || sandboxStatus.message || '')
-    );
-    const statusMessage = activeMode === 'sandbox'
-        ? sandboxStatusMessage
-        : canonStatusMessage;
-    const statusPhase = activeMode === 'sandbox'
-        ? (sandboxStatus.phase || (sandboxInteractionBusy ? 'running' : 'idle'))
-        : (opinion.phase || (interactionBusy ? 'running' : 'idle'));
-    const hasMainOpinion = news.length > 0 || forums.length > 0;
-    const hasSandboxOpinion = sandboxItems.length > 0;
-    const showStatusMessage = Boolean(
-        statusMessage
-        && (
-            statusPhase === 'error'
-            || activeMode !== 'sandbox'
-            || !hasSandboxOpinion
-            || sandboxRunning
-        )
-    );
-    const renderRelated = item => {
-        const event = relatedEvents.get(item.relatedEventId);
-        return event
-            ? `<span class="wb-opinion-related">æ¥æºäº‹ä»¶ Â· ${escapeHtml(event.title)}</span>`
-            : '';
-    };
-    return `
-        <div class="wb-opinion-toolbar" aria-busy="${running ? 'true' : 'false'}">
-            <div class="wb-opinion-summary">
-                <div class="wb-opinion-meta">
-                    <span>æ›´æ–°è‡³ Â· ${escapeHtml(publicOpinionGeneratedLabel(opinion.generatedAt))}</span>
-                    <span>é•œå¤´å¤–å·¡æŸ¥ Â· ${escapeHtml(lastWorldSweepLabel)}</span>
-                    ${recentWorldCoverageLabels.length
-                        ? `<span title="æœ€è¿‘è¢«ä¸–ç•Œæ¨æ¼”å®é™…æ£€æŸ¥è¿‡çš„èŒƒå›´">å·¡è¿‡ Â· ${recentWorldCoverageLabels.map(escapeHtml).join(' / ')}</span>`
-                        : ''}
-                    ${stale
-                        ? '<span class="is-stale">ä¸–ç•Œå¾€å‰èµ°å•¦ Â· åˆ·æ–°ä¸€ä¸‹æ›´å‡†</span>'
-                        : `<span>${settings.publicOpinionRevealMode === 'relevant' ? 'ç›¸å…³æ—¶å¯æ˜¾éœ²' : 'å®‰å¿ƒåƒç“œæ¨¡å¼'}</span>`}
-                </div>
-            </div>
-            <div class="wb-opinion-actions">
-                ${opinion.generatedAt ? `<button type="button" data-wb-action="clear-public-opinion" title="åªæ¸…ç©ºèˆ†æƒ…åˆ—è¡¨ï¼Œä¸åˆ é™¤ä¸–ç•Œäº‹å®æˆ–å·²ç»å‘ç”Ÿçš„å½±å“" ${canonRunning ? 'disabled' : ''}>æ¸…ç©ºåˆ—è¡¨</button>` : ''}
-                <button type="button" data-wb-action="generate-public-opinion-sandbox" ${sandboxRunning ? 'disabled' : ''}>${sandboxRunning ? 'æ­£åœ¨é—²é€›â€¦' : 'éšä¾¿é€›é€›ï½'}</button>
-                <button class="wb-inline-add" type="button" data-wb-action="generate-public-opinion" ${canonRunning ? 'disabled' : ''}
-                    title="ä¸–ç•Œæ—¶é—´èµ°å¤Ÿä¸‰å°æ—¶ã€é¦–æ¬¡å‡çº§æˆ–ä¾§é‡ç‚¹æ”¹å˜æ—¶ï¼Œæˆ‘ä¼šå…ˆå·¡ä¸€å°åœˆé•œå¤´å¤–å…¬å…±ä¸–ç•Œï¼›æ²¡æœ‰çœŸå®å˜åŒ–æ—¶ä¸ä¼šåªä¸ºæ¢æªè¾é‡å¤è¯·æ±‚">
-                    ${canonRunning ? 'æ­£åœ¨åˆ·æ–°â€¦' : (opinion.generatedAt ? 'å·¡ä¸€åœˆ' : 'ç”Ÿæˆå½“å‰èˆ†æƒ…')}
-                </button>
-            </div>
-        </div>
-        <div class="wb-opinion-tabs" role="tablist" aria-label="èˆ†æƒ…ç±»å‹">
-            <button type="button" role="tab" data-wb-action="set-public-opinion-mode" data-mode="news"
-                aria-selected="${activeMode === 'news'}" class="${activeMode === 'news' ? 'is-active' : ''}">ğŸ“° æ–°é—» <small>${news.length}</small></button>
-            <button type="button" role="tab" data-wb-action="set-public-opinion-mode" data-mode="forum"
-                aria-selected="${activeMode === 'forum'}" class="${activeMode === 'forum' ? 'is-active' : ''}">ğŸ’¬ è®ºå› <small>${forums.length}</small></button>
-            <button type="button" role="tab" data-wb-action="set-public-opinion-mode" data-mode="sandbox"
-                aria-selected="${activeMode === 'sandbox'}" class="${activeMode === 'sandbox' ? 'is-active' : ''}">ğŸ¿ é—²é€› <small>${sandboxItems.length}</small></button>
-        </div>
-        ${showStatusMessage ? `<div role="status" aria-live="polite" class="wb-opinion-status is-${escapeAttr(statusPhase)} ${hasMainOpinion || hasSandboxOpinion ? 'is-compact' : ''}">${escapeHtml(statusMessage)}</div>` : ''}
-        ${activeMode === 'news' ? `
-            <div class="wb-news-grid">
-                ${news.map(item => `
-                    <article class="wb-news-card">
-                        <div class="wb-news-card-top">
-                            <span>${escapeHtml(item.category || 'ä¸–ç•Œæ–°é—»')}${item.publishedAt && item.updatedAt && item.publishedAt !== item.updatedAt ? ' Â· åç»­' : ''}</span>
-                            <span class="wb-opinion-card-tools">
-                                <small>${'â—'.repeat(Math.max(1, Math.min(3, Number(item.heat) || 1)))}</small>
-                                <button type="button" class="wb-opinion-delete" data-wb-action="dismiss-public-opinion-item"
-                                    data-opinion-kind="news" data-item-id="${escapeAttr(item.id)}" title="ä»èˆ†æƒ…åˆ—è¡¨åˆ é™¤è¿™æ¡ï¼›ä¸ä¼šåˆ é™¤ä¸–ç•Œäº‹ä»¶">Ã—</button>
-                            </span>
-                        </div>
-                        <div class="wb-opinion-source-row">
-                            <span class="is-${escapeAttr(item.sourceType || 'official')}">${escapeHtml(publicOpinionSourceTypeLabel(item.sourceType))}</span>
-                        </div>
-                        <h3>${escapeHtml(item.headline)}</h3>
-                        <p>${escapeHtml(item.summary)}</p>
-                        ${renderPublicOpinionAudience(item)}
-                        <div class="wb-news-card-foot">
-                            <span>${escapeHtml(item.source || 'å…¬å¼€ä¿¡æ¯')} Â· ${escapeHtml(publicOpinionConfidenceLabel(item.confidence))}${item.worldSynced ? ' Â· ä¸–ç•Œäº‹ä»¶åŒæ­¥' : ''}${publicOpinionWorldTimeLabel(state, item) ? ` Â· ${escapeHtml(publicOpinionWorldTimeLabel(state, item))}` : ''}</span>
-                            ${renderRelated(item)}
-                        </div>
-                    </article>
-                `).join('') || renderEmpty('ä»Šå¤©çš„ä¸–ç•Œæœ‰ç‚¹å®‰é™ï½', 'è¿˜æ²¡æœ‰å€¼å¾—ä¸Šæ–°é—»çš„äº‹ï¼Œæˆ–è€…ä½ è¿˜æ²¡ç”Ÿæˆèˆ†æƒ…å¿«ç…§ (Ë˜â–¾Ë˜)')}
-            </div>
-        ` : activeMode === 'forum' ? `
-            <div class="wb-forum-list">
-                ${forums.map(item => `
-                    <article class="wb-forum-card">
-                        <div class="wb-forum-card-top">
-                            <span>${escapeHtml(item.board || 'é—²èŠ')}</span>
-                            <span class="wb-opinion-card-tools">
-                                <small class="is-${escapeAttr(item.claimStatus || 'mixed')}">${escapeHtml(publicOpinionClaimLabel(item.claimStatus))}</small>
-                                <button type="button" class="wb-opinion-delete" data-wb-action="dismiss-public-opinion-item"
-                                    data-opinion-kind="forum" data-item-id="${escapeAttr(item.id)}" title="ä»è®ºå›åˆ—è¡¨åˆ é™¤è¿™æ¡è®¨è®º">Ã—</button>
-                            </span>
-                        </div>
-                        <div class="wb-opinion-source-row">
-                            <span class="is-${escapeAttr(item.sourceType || 'unofficial')}">${escapeHtml(publicOpinionSourceTypeLabel(item.sourceType))}</span>
-                        </div>
-                        <h3>${escapeHtml(item.title)}</h3>
-                        <p>${escapeHtml(item.summary)}</p>
-                        ${renderPublicOpinionAudience(item)}
-                        <div class="wb-forum-heat"><span>çƒ­åº¦</span><strong>${'â—'.repeat(Math.max(1, Math.min(5, Number(item.heat) || 1)))}</strong></div>
-                        ${item.replies?.length ? `
-                            <details class="wb-forum-reply-fold">
-                                <summary>çœ‹çœ‹ ${item.replies.length} æ¡ä»£è¡¨å›å¤ï½</summary>
-                                <div class="wb-forum-replies">
-                                    ${item.replies.map(reply => `
-                                        <div><strong>${escapeHtml(reply.author)}</strong><p>${escapeHtml(reply.text)}</p></div>
-                                    `).join('')}
-                                </div>
-                            </details>
-                        ` : ''}
-                        <div class="wb-news-card-foot">
-                            <span>${publicOpinionWorldTimeLabel(state, item) ? escapeHtml(publicOpinionWorldTimeLabel(state, item)) : ''}</span>
-                            ${renderRelated(item)}
-                        </div>
-                    </article>
-                `).join('') || renderEmpty('è®ºå›ä»Šå¤©æ²¡åµèµ·æ¥ï½', 'æ²¡æœ‰é€‚åˆå…¬å¼€è®¨è®ºçš„äº‹ï¼Œæˆ–è€…ä½ è¿˜æ²¡ç”Ÿæˆèˆ†æƒ…å¿«ç…§ã€‚')}
-            </div>
-        ` : `
-            <div class="wb-opinion-sandbox">
-                <div class="wb-memory-fact-note"><strong>ğŸ¿ çº¯å¨±ä¹æ²™ç›’</strong> Â· ä¸‹é¢è¿™äº›åªæ˜¯â€œä¸–ç•Œé‡Œå¯èƒ½æœ‰äººåœ¨èŠä»€ä¹ˆâ€çš„éšæ‰‹å°æŠ¥ï¼Œä¸ç®—æ­£å²ï¼Œä¸ä¼šå†™è¿›äº‹ä»¶ã€è®°å¿†ã€NPCè®¤çŸ¥æˆ–æ­£æ–‡å› æœã€‚</div>
-                ${sandbox.generatedAt ? `<div class="wb-opinion-meta wb-opinion-meta-inline"><span>é—²é€›å¿«ç…§ Â· ${escapeHtml(publicOpinionGeneratedLabel(sandbox.generatedAt))}</span><button class="wb-opinion-meta-button" type="button" data-wb-action="clear-public-opinion-sandbox">æ”¶èµ·è¿™é”…ç“œ</button></div>` : ''}
-                <div class="wb-news-grid">
-                    ${(sandbox.news || []).map(item => `
-                        <article class="wb-news-card is-sandbox">
-                            <div class="wb-news-card-top"><span>${escapeHtml(item.category || 'é—²é€›æ–°é—»')}</span><small>NON-CANON</small></div>
-                            <h3>${escapeHtml(item.headline)}</h3>
-                            <p>${escapeHtml(item.summary)}</p>
-                            <div class="wb-news-card-foot"><span>${escapeHtml(item.source || 'ä¸–ç•Œé‡Œçš„æ™®é€šå…¬å¼€ä¿¡æ¯')}</span></div>
-                        </article>
-                    `).join('')}
-                </div>
-                <div class="wb-forum-list">
-                    ${(sandbox.forums || []).map(item => `
-                        <article class="wb-forum-card is-sandbox">
-                            <div class="wb-forum-card-top"><span>${escapeHtml(item.board || 'é—²èŠ')}</span><small>NON-CANON</small></div>
-                            <h3>${escapeHtml(item.title)}</h3>
-                            <p>${escapeHtml(item.summary)}</p>
-                            ${item.replies?.length ? `<details class="wb-forum-reply-fold"><summary>çœ‹çœ‹ ${item.replies.length} æ¡ä»£è¡¨å›å¤ï½</summary><div class="wb-forum-replies">${item.replies.map(reply => `<div><strong>${escapeHtml(reply.author)}</strong><p>${escapeHtml(reply.text)}</p></div>`).join('')}</div></details>` : ''}
-                        </article>
-                    `).join('')}
-                </div>
-                ${sandboxItems.length ? '' : renderEmpty('ä»Šå¤©è¿˜æ²¡éšä¾¿é€›ï½', 'ç‚¹ä¸€ä¸‹â€œéšä¾¿é€›é€›ï½â€ï¼ŒæŠ½ä¸€é”…å’Œä¸»çº¿æ— å…³çš„å°æ–°é—»å’Œè®ºå›æ°´å¸–ã€‚')}
-            </div>
-        `}
-    `;
-}
-
-function clueStatusLabel(status) {
-    return {
-        open: 'ç­‰å¾…å‘èŠ½',
-        developing: 'æ­£åœ¨å‘å±•',
-        echoed: 'æ­£åœ¨å‘å±•',
-        triggered: 'å·²ç»è§¦å‘',
-        resolved: 'å·²ç»å›æ”¶',
-        discarded: 'å·²ç»æ”¾ä¸‹',
-    }[status] || 'å°šæœªå‘¼åº”';
-}
-
-function memoryFactStatusLabel(status) {
-    return {
-        active: 'å½“å‰æœ‰æ•ˆ',
-        disputed: 'è¯´æ³•å†²çª',
-        superseded: 'å·²è¢«æ–°ç‰ˆæœ¬è¦†ç›–',
-        invalidated: 'å·²ç»å¤±æ•ˆ',
-    }[status] || 'å½“å‰æœ‰æ•ˆ';
-}
-
-function memoryConfidenceLabel(confidence) {
-    return {
-        high: 'æ˜ç¡®',
-        medium: 'è¾ƒå¯ä¿¡',
-        low: 'å¾…ç¡®è®¤',
-    }[confidence] || 'è¾ƒå¯ä¿¡';
-}
-
-function memoryItemMatches(item, query) {
-    const normalized = String(query || '').trim().toLocaleLowerCase();
-    if (!normalized) return true;
-    return [
-        item?.key,
-        item?.subject,
-        item?.predicate,
-        item?.value,
-        item?.title,
-        item?.text,
-        item?.summary,
-        ...(item?.people || []),
-        ...(item?.locations || []),
-        ...(item?.events || []),
-        ...(item?.tags || []),
-    ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalized);
-}
-
-function resolvePersonEntity(state, value, { allowSubjectPrefix = false } = {}) {
-    const raw = String(value || '').trim();
-    if (!raw) return null;
-    const token = raw.toLocaleLowerCase();
-    const people = state?.people || [];
-    const exact = people.find(item => (
-        String(item?.id || '').trim().toLocaleLowerCase() === token
-        || String(item?.name || '').trim().toLocaleLowerCase() === token
-    ));
-    if (exact) return exact;
-    if (!allowSubjectPrefix) return null;
-    return [...people]
-        .filter(item => String(item?.name || '').trim())
-        .sort((a, b) => String(b.name).length - String(a.name).length)
-        .find(item => {
-            const name = String(item.name).trim();
-            return raw.startsWith(`${name}çš„`)
-                || raw.startsWith(`${name}Â·`)
-                || raw.startsWith(`${name}ï¼š`)
-                || raw.startsWith(`${name}:`);
-        }) || null;
-}
-
-function resolvePersonDisplayName(state, value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    return resolvePersonEntity(state, raw)?.name || raw;
-}
-
-function memoryFactGroupDescriptor(fact, state) {
-    const linkedPerson = Array.isArray(fact?.people) && fact.people.length
-        ? resolvePersonEntity(state, fact.people[0])
-        : null;
-    const subjectPerson = linkedPerson || resolvePersonEntity(
-        state,
-        fact?.subject || fact?.key,
-        { allowSubjectPrefix: true },
-    );
-    if (subjectPerson) {
-        return {
-            key: `person:${subjectPerson.id || subjectPerson.name}`,
-            label: subjectPerson.name,
-        };
-    }
-    const label = String(fact?.subject || fact?.key || '').trim() || 'å…¶ä»–äº‹å®';
-    return { key: `fact:${label}`, label };
-}
-
-function memoryClueGroupDescriptor(clue) {
-    if (clue?.archived) return { key: 'clue:archived', label: 'å·²å½’æ¡£' };
-    if (['resolved', 'discarded'].includes(clue?.status)) {
-        return { key: 'clue:resolved', label: 'å·²ç»å›æ”¶ / æ”¾ä¸‹' };
-    }
-    if (clue?.status === 'triggered') return { key: 'clue:triggered', label: 'å·²ç»è§¦å‘' };
-    return { key: 'clue:active', label: 'ä»åœ¨å‘å±•' };
-}
-
-function memoryClueRelationMatches(clue, relationFilter = 'all', state = null) {
-    const filter = String(relationFilter || 'all');
-    if (filter === 'all') return true;
-    const separator = filter.indexOf(':');
-    if (separator < 0) return true;
-    const kind = filter.slice(0, separator);
-    const expected = filter.slice(separator + 1).trim().toLocaleLowerCase();
-    if (!expected) return true;
-    const values = kind === 'person'
-        ? (clue?.people || [])
-        : kind === 'location'
-            ? (clue?.locations || [])
-            : kind === 'event'
-                ? (clue?.events || [])
-                : [];
-    if (kind === 'person') {
-        return values.some(value => {
-            const raw = String(value || '').trim();
-            const person = resolvePersonEntity(state, raw);
-            return [raw, person?.id, person?.name]
-                .filter(Boolean)
-                .some(candidate => String(candidate).trim().toLocaleLowerCase() === expected);
-        });
-    }
-    if (kind === 'event') {
-        const events = [...(state?.events || []), ...(state?.archive || [])];
-        return values.some(value => {
-            const raw = String(value || '').trim();
-            const matched = events.find(event => (
-                String(event?.id || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
-                || String(event?.title || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
-            ));
-            return [raw, matched?.id, matched?.title]
-                .filter(Boolean)
-                .some(candidate => String(candidate).trim().toLocaleLowerCase() === expected);
-        });
-    }
-    return values.some(value => String(value || '').trim().toLocaleLowerCase() === expected);
-}
-
-function clueRelationMeta(clue, state) {
-    const events = [...(state?.events || []), ...(state?.archive || [])];
-    const people = [...new Set((clue?.people || []).map(value => resolvePersonDisplayName(state, value)).filter(Boolean))];
-    const locations = [...new Set((clue?.locations || []).map(value => String(value || '').trim()).filter(Boolean))];
-    const eventItems = [...new Set((clue?.events || []).map(value => {
-        const raw = String(value || '').trim();
-        const event = events.find(item => (
-            String(item?.id || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
-            || String(item?.title || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
-        ));
-        return event?.title || raw;
-    }).filter(Boolean))];
-    return { people, locations, events: eventItems };
-}
-
-
-function memorySummaryLevelMeta(summary) {
-    if (!summary?.hierarchyManaged) {
-        return { label: 'æ—§ç‰ˆç»å†', tone: 'legacy', description: 'ä»¥å‰ç•™ä¸‹çš„é˜¶æ®µç»å†ï½ç…§æ ·ä¼šå¥½å¥½è®°ç€ã€‚' };
-    }
-    const level = Math.max(0, Math.min(3, Number(summary?.level) || 0));
-    const meta = [
-        { label: 'è¿‘æœŸç‰‡æ®µ', tone: 'detail', description: 'ç¦»åŸæ­£æ–‡æœ€è¿‘çš„å°ç‰‡æ®µï½ç»†èŠ‚ä¼šæ¯”è¾ƒå¤šã€‚' },
-        { label: 'é˜¶æ®µå°ç»“', tone: 'stage', description: 'ä¸€å°æ®µå‰§æƒ…çš„é‡ç‚¹éƒ½æ”¶åœ¨è¿™é‡Œå•¦ï½' },
-        { label: 'ç« èŠ‚ç»å†', tone: 'chapter', description: 'æŠŠæ›´é•¿ä¸€æ®µç»å†æ”¶æˆé‡ç‚¹ï½æ–¹ä¾¿åé¢ç»§ç»­æ¥ä¸Šã€‚' },
-        { label: 'é•¿æœŸç»å†', tone: 'longterm', description: 'çœŸæ­£è·¨è¿‡å¾ˆä¹…è¿˜é‡è¦çš„å˜åŒ–ï¼Œä¼šä¹–ä¹–ç•™åœ¨è¿™é‡Œã€‚' },
-    ];
-    return meta[level];
-}
-
-function renderMemoryActions(kind, item, selectedKeys = new Set()) {
-    const selectionKey = `${kind}:${item.id}`;
-    return `
-        <div class="wb-memory-card-actions">
-            <label class="wb-memory-select">
-                <input type="checkbox" data-wb-memory-select
-                    data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
-                    ${selectedKeys.has(selectionKey) ? 'checked' : ''}
-                    ${item.locked ? 'disabled' : ''}>
-                <span>${item.locked ? 'å·²é”å®š' : 'é€‰æ‹©'}</span>
-            </label>
-            <button class="is-edit" type="button" data-wb-action="open-memory-editor"
-                data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
-                ${item.locked ? 'disabled' : ''}>ç¼–è¾‘</button>
-            <button type="button" data-wb-action="toggle-memory-flag"
-                data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
-                data-memory-field="important" class="is-important ${item.important ? 'is-active' : ''}">
-                ${item.important ? 'å·²æ ‡ä¸ºé‡è¦' : 'æ ‡ä¸ºé‡è¦'}
-            </button>
-            <button type="button" data-wb-action="toggle-memory-flag"
-                data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
-                data-memory-field="locked" class="is-lock ${item.locked ? 'is-active' : ''}">
-                ${item.locked ? 'å·²é”å®š' : 'é”å®š'}
-            </button>
-            <button class="is-delete" type="button" data-wb-action="delete-memory-item"
-                data-memory-kind="${kind}" data-memory-id="${escapeAttr(item.id)}"
-                ${item.locked ? 'disabled' : ''}>åˆ é™¤</button>
-        </div>
-    `;
-}
-
-function renderMemoryView(state, observerMode, {
-    query = '',
-    filter = 'active',
-    visibleCount = 12,
-    openFolds = new Set(),
-    selectedKeys = new Set(),
-    clueRelationFilter = 'all',
-} = {}) {
-    const memory = state.storyMemory || {
-        digest: null,
-        facts: [],
-        summaries: [],
-        clues: [],
-    };
-    const allFacts = [...(memory.facts || [])]
-        .filter(fact => observerMode === 'backstage' || fact.visibility !== 'hidden')
-        .sort((a, b) => (
-            Number(['active', 'disputed'].includes(b.status))
-            - Number(['active', 'disputed'].includes(a.status))
-            || Number(b.importance || 0) - Number(a.importance || 0)
-            || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
-        ));
-    const allClues = [...(memory.clues || [])]
-        .filter(clue => observerMode === 'backstage' || clue.visibility !== 'hidden')
-        .sort((a, b) => (
-            Number(Boolean(a.archived)) - Number(Boolean(b.archived))
-            || Number(['open', 'developing', 'echoed', 'triggered'].includes(b.status))
-            - Number(['open', 'developing', 'echoed', 'triggered'].includes(a.status))
-            || Number(b.importance || 0) - Number(a.importance || 0)
-            || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
-        ));
-    const allSummaries = observerMode === 'backstage'
-        ? [...(memory.summaries || [])].sort(
-            (a, b) => Number(b.endMessageId || 0) - Number(a.endMessageId || 0),
-        )
-        : [];
-    const summaryById = new Map(allSummaries.map(summary => [String(summary.id || ''), summary]));
-    const digest = observerMode === 'backstage' ? memory.digest : null;
-    const normalizedFilter = ['active', 'facts', 'clues', 'resolved-clues', 'archived-clues', 'episodes', 'all'].includes(filter)
-        ? filter
-        : 'active';
-    const maximum = Math.max(6, Number(visibleCount) || 12);
-    const facts = allFacts.filter(fact => (
-        memoryItemMatches(fact, query)
-        && (
-            normalizedFilter === 'all'
-            || normalizedFilter === 'facts'
-            || (normalizedFilter === 'active' && ['active', 'disputed'].includes(fact.status))
-        )
-    ));
-    const clues = allClues.filter(clue => (
-        memoryItemMatches(clue, query)
-        && memoryClueRelationMatches(clue, clueRelationFilter, state)
-        && (
-            normalizedFilter === 'all'
-            || (normalizedFilter === 'clues' && !clue.archived)
-            || (normalizedFilter === 'resolved-clues' && !clue.archived && ['resolved', 'discarded'].includes(clue.status))
-            || (normalizedFilter === 'archived-clues' && clue.archived)
-            || (
-                normalizedFilter === 'active'
-                && !clue.archived
-                && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)
-            )
-        )
-    ));
-    const summaries = allSummaries.filter(summary => (
-        memoryItemMatches(summary, query)
-        && ['all', 'episodes'].includes(normalizedFilter)
-    ));
-    const shownFacts = facts.slice(0, maximum);
-    const shownClues = clues.slice(0, maximum);
-    const shownSummaries = summaries.slice(0, maximum);
-    const factGroups = groupItems(shownFacts, fact => memoryFactGroupDescriptor(fact, state));
-    const clueGroups = groupItems(shownClues, clue => memoryClueGroupDescriptor(clue));
-    const resultCount = facts.length + clues.length + summaries.length;
-    const shownCount = shownFacts.length + shownClues.length + shownSummaries.length;
-    const hasMore = shownFacts.length < facts.length
-        || shownClues.length < clues.length
-        || shownSummaries.length < summaries.length;
-    const filterButton = (id, label) => `
-        <button type="button" data-wb-action="set-memory-filter" data-filter="${id}"
-            aria-pressed="${normalizedFilter === id}"
-            class="${normalizedFilter === id ? 'is-active' : ''}">${label}</button>
-    `;
-    const relationPeople = new Map();
-    const relationLocations = new Set();
-    const relationEvents = new Map();
-    const allWorldEvents = [...(state.events || []), ...(state.archive || [])];
-    for (const clue of allClues) {
-        for (const value of clue.people || []) {
-            const raw = String(value || '').trim();
-            if (!raw) continue;
-            const person = resolvePersonEntity(state, raw);
-            const key = String(person?.id || person?.name || raw);
-            relationPeople.set(key, person?.name || raw);
-        }
-        for (const value of clue.locations || []) {
-            const raw = String(value || '').trim();
-            if (raw) relationLocations.add(raw);
-        }
-        for (const value of clue.events || []) {
-            const raw = String(value || '').trim();
-            if (!raw) continue;
-            const event = allWorldEvents.find(item => (
-                String(item?.id || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
-                || String(item?.title || '').trim().toLocaleLowerCase() === raw.toLocaleLowerCase()
-            ));
-            const key = String(event?.id || event?.title || raw);
-            relationEvents.set(key, event?.title || raw);
-        }
-    }
-    const relationOption = (value, label) => (
-        `<option value="${escapeAttr(value)}" ${String(clueRelationFilter) === String(value) ? 'selected' : ''}>${escapeHtml(label)}</option>`
-    );
-    const clueRelationSelect = `
-        <label class="wb-clue-relation-filter">
-            <span>ä¼ç¬”å…³è”</span>
-            <select data-wb-clue-relation-filter>
-                ${relationOption('all', 'å…¨éƒ¨å…³è”')}
-                ${relationPeople.size ? `<optgroup label="äººç‰©">${[...relationPeople.entries()].map(([id, label]) => relationOption(`person:${id}`, label)).join('')}</optgroup>` : ''}
-                ${relationEvents.size ? `<optgroup label="äº‹ä»¶">${[...relationEvents.entries()].map(([id, label]) => relationOption(`event:${id}`, label)).join('')}</optgroup>` : ''}
-                ${relationLocations.size ? `<optgroup label="åœ°ç‚¹">${[...relationLocations].map(label => relationOption(`location:${label}`, label)).join('')}</optgroup>` : ''}
-            </select>
-        </label>
-    `;
-    const renderFactCard = (fact, groupLabel = '') => {
-        const subject = String(fact.subject || fact.key || '').trim();
-        const normalizedGroup = String(groupLabel || '').trim();
-        const duplicateSubject = normalizedGroup && subject === normalizedGroup;
-        return `
-        <article class="wb-memory-fact-card is-${escapeAttr(fact.status)}">
-            <div class="wb-memory-fact-meta">
-                <span>${escapeHtml(memoryFactStatusLabel(fact.status))}</span>
-                <span>${escapeHtml(memoryConfidenceLabel(fact.confidence))}</span>
-            </div>
-            ${!duplicateSubject && subject ? `<h4>${escapeHtml(subject)}</h4>` : ''}
-            ${fact.predicate ? `<small>${escapeHtml(fact.predicate)}</small>` : ''}
-            <p>${escapeHtml(fact.value)}</p>
-            ${fact.invalidationReason
-                ? `<div class="wb-memory-fact-note">${escapeHtml(fact.invalidationReason)}</div>`
-                : ''}
-            ${renderMemoryActions('fact', fact, selectedKeys)}
-        </article>
-    `;
-    };
-    const renderClueCard = clue => {
-        const relations = clueRelationMeta(clue, state);
-        return `
-        <article class="wb-clue-card is-${escapeAttr(clue.status)} ${clue.archived ? 'is-archived' : ''}">
-            <div class="wb-clue-meta">
-                <span>${escapeHtml(clue.archived ? 'å·²å½’æ¡£' : clueStatusLabel(clue.status))}</span>
-                ${!clue.archived && ['resolved', 'discarded'].includes(clue.status)
-                    ? `<button type="button" data-wb-action="set-clue-archive-state" data-clue-id="${escapeAttr(clue.id)}" data-archived="true" ${clue.locked ? 'disabled' : ''}>å½’æ¡£</button>`
-                    : ''}
-                ${clue.archived
-                    ? `<button type="button" data-wb-action="set-clue-archive-state" data-clue-id="${escapeAttr(clue.id)}" data-archived="false" ${clue.locked ? 'disabled' : ''}>ç§»å›å·²å›æ”¶</button>`
-                    : ''}
-            </div>
-            <h4>${escapeHtml(clue.title)}</h4>
-            <p>${escapeHtml(clue.text)}</p>
-            ${(relations.people.length || relations.events.length || relations.locations.length) ? `
-                <div class="wb-clue-relations">
-                    ${relations.people.map(value => `<span class="is-person">äººç‰© Â· ${escapeHtml(value)}</span>`).join('')}
-                    ${relations.events.map(value => `<span class="is-event">äº‹ä»¶ Â· ${escapeHtml(value)}</span>`).join('')}
-                    ${relations.locations.map(value => `<span class="is-location">åœ°ç‚¹ Â· ${escapeHtml(value)}</span>`).join('')}
-                </div>
-            ` : ''}
-            ${clue.sourceExcerpt ? `<blockquote>${escapeHtml(clue.sourceExcerpt)}</blockquote>` : ''}
-            ${clue.resolution ? `<div class="wb-clue-resolution">${escapeHtml(clue.resolution)}</div>` : ''}
-            ${clue.lifecycleReason && clue.lifecycleReason !== clue.resolution ? `<div class="wb-memory-fact-note">ä¸ºä»€ä¹ˆå˜æ›´ï¼š${escapeHtml(clue.lifecycleReason)}</div>` : ''}
-            ${renderMemoryActions('clue', clue, selectedKeys)}
-        </article>
-    `;
-    };
-    return `
-        <div class="wb-memory-shell">
-            <div class="wb-memory-toolbar">
-                <div class="wb-memory-toolbar-top">
-                    <span class="wb-memory-toolbar-summary">${allFacts.filter(fact => ['active', 'disputed'].includes(fact.status)).length} æ¡äº‹å® Â· ${allClues.filter(clue => !clue.archived && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)).length} æ¡è¿›è¡Œä¸­ä¼ç¬” Â· ${allClues.filter(clue => clue.archived).length} æ¡å½’æ¡£</span>
-                    <span class="wb-memory-intro-buttons">
-                        <button type="button" data-wb-action="open-memory-editor" data-memory-kind="fact">ï¼‹ æ–°å¢è®°å¿†</button>
-                        <button type="button" data-wb-action="open-memory-editor" data-memory-kind="clue">ï¼‹ æ–°å¢ä¼ç¬”</button>
-                    </span>
-                </div>
-                <div class="wb-memory-tools">
-                <div class="wb-memory-filters" aria-label="è®°å¿†ç­›é€‰">
-                    ${filterButton('active', 'è¿›è¡Œä¸­')}
-                    ${filterButton('facts', 'äº‹å®')}
-                    ${filterButton('clues', 'ä¼ç¬”')}
-                    ${filterButton('resolved-clues', 'å·²å›æ”¶')}
-                    ${filterButton('archived-clues', 'å·²å½’æ¡£')}
-                    ${filterButton('episodes', 'ç»å†')}
-                    ${filterButton('all', 'å…¨éƒ¨')}
-                </div>
-                ${clueRelationSelect}
-                <label class="wb-memory-search">
-                    <span>æœç´¢è®°å¿†</span>
-                    <input type="search" data-wb-memory-search maxlength="80"
-                        value="${escapeAttr(query)}" placeholder="äººç‰©ã€åœ°ç‚¹ã€ç‰©å“æˆ–å…³é”®è¯">
-                </label>
-                <small>${query ? `æ‰¾åˆ° ${resultCount} æ¡` : `${resultCount} æ¡`}</small>
-                ${observerMode === 'backstage' && resultCount ? `
-                    <div class="wb-memory-bulk-tools">
-                        <button type="button" data-wb-action="select-visible-memory"
-                            data-memory-items="${escapeAttr(JSON.stringify([
-                                ...shownFacts.filter(item => !item.locked).map(item => ({ kind: 'fact', id: item.id })),
-                                ...shownClues.filter(item => !item.locked).map(item => ({ kind: 'clue', id: item.id })),
-                                ...shownSummaries.filter(item => !item.locked).map(item => ({ kind: 'summary', id: item.id })),
-                            ]))}">é€‰æ‹©å½“å‰æ˜¾ç¤º</button>
-                        <button type="button" data-wb-action="clear-memory-selection"
-                            ${selectedKeys.size ? '' : 'disabled'}>å–æ¶ˆå…¨éƒ¨é€‰æ‹©</button>
-                        <button type="button" data-wb-action="bulk-delete-memory" data-wb-memory-selected-count
-                            ${selectedKeys.size ? '' : 'disabled'}>åˆ é™¤é€‰ä¸­${selectedKeys.size ? ` Â· ${selectedKeys.size}` : ''}</button>
-                        <button class="is-danger" type="button" data-wb-action="clear-filtered-memory">
-                            ${normalizedFilter === 'all' && !query ? 'æ¸…ç©ºå…¨éƒ¨æœªé”å®šè®°å¿†' : 'æ¸…ç©ºå½“å‰ç­›é€‰'}
-                        </button>
-                    </div>
-                ` : ''}
-                </div>
-            </div>
-            ${(memory.metabolismLog || []).length ? `
-                <details class="wb-fold wb-memory-digest" data-fold-key="memory:metabolism"
-                    ${foldOpenAttr(openFolds, 'memory:metabolism')}>
-                    <summary class="wb-memory-digest-summary">
-                        <span><strong>æœ€è¿‘æ”¶æ‹¾äº†ä»€ä¹ˆï½</strong></span>
-                        <span class="wb-fold-meta"><small>${Math.min(12, (memory.metabolismLog || []).length)} æ¡æœ€è¿‘å˜åŒ–</small><i class="wb-fold-chevron" aria-hidden="true"></i></span>
-                    </summary>
-                    <div class="wb-fold-body wb-memory-digest-body">
-                        ${(memory.metabolismLog || []).slice(-12).reverse().map(item => `<p><strong>${escapeHtml(item.kind === 'fact' ? 'äº‹å®' : item.kind === 'clue' ? 'ä¼ç¬”' : 'ç»å†')}</strong> Â· ${escapeHtml(item.action || 'æ›´æ–°')}<br><small>${escapeHtml(item.reason || 'å·²æŒ‰åç»­å†…å®¹æ•´ç†')}</small></p>`).join('')}
-                    </div>
-                </details>
-            ` : ''}
-            ${digest?.text ? `
-                <details class="wb-fold wb-memory-digest" data-fold-key="memory:digest"
-                    ${foldOpenAttr(openFolds, 'memory:digest')}>
-                    <summary class="wb-memory-digest-summary">
-                        <span><strong>é•¿æœŸæ‘˜è¦</strong></span>
-                        <span class="wb-fold-meta">
-                            <small>å·²ç»ä¹–ä¹–æ•´ç†å¥½å•¦ï½</small>
-                            <i class="wb-fold-chevron" aria-hidden="true"></i>
-                        </span>
-                    </summary>
-                    <div class="wb-fold-body wb-memory-digest-body">
-                        <p>${escapeHtml(digest.text)}</p>
-                    </div>
-                </details>
-            ` : ''}
-            ${resultCount === 0 ? renderEmpty(
-                query ? 'æ²¡æœ‰æ‰¾åˆ°åŒ¹é…çš„è®°å¿†' : 'è¿™ä¸ªåˆ†ç±»æš‚æ—¶æ˜¯ç©ºçš„',
-                query ? 'æ¢ä¸€ä¸ªäººç‰©ã€åœ°ç‚¹ã€ç‰©å“æˆ–å…³é”®è¯è¯•è¯•ã€‚' : 'æ–°çš„æ­£æ–‡æ•´ç†åä¼šè‡ªåŠ¨è¡¥å……ã€‚',
-            ) : `
-            <div class="wb-memory-layout">
-                <section class="wb-memory-section ${shownFacts.length ? '' : 'is-hidden'}">
-                    <div class="wb-section-heading wb-memory-heading-with-folds">
-                        <div><h3>é•¿æœŸäº‹å®</h3></div>
-                        ${renderFoldToolbar('memory:facts:')}
-                    </div>
-                    <div class="wb-memory-group-list">
-                        ${factGroups.map(group => {
-                            const foldKey = `memory:facts:${encodeURIComponent(group.key || group.label)}`;
-                            return `
-                                <details class="wb-fold wb-memory-group" data-fold-key="${escapeAttr(foldKey)}"
-                                    ${foldOpenAttr(openFolds, foldKey)}>
-                                    <summary class="wb-memory-group-summary">
-                                        <span>
-                                            <strong>${escapeHtml(group.label)}</strong>
-                                            <small>${group.items.length} æ¡é•¿æœŸäº‹å®</small>
-                                        </span>
-                                        <i class="wb-fold-chevron" aria-hidden="true"></i>
-                                    </summary>
-                                    <div class="wb-fold-body wb-memory-group-body">
-                                        ${group.items.map(item => renderFactCard(item, group.label)).join('')}
-                                    </div>
-                                </details>
-                            `;
-                        }).join('') || renderEmpty('è¿˜æ²¡æœ‰é•¿æœŸäº‹å®ï½', 'ä»¥åçœŸçš„é‡è¦ã€è¿˜ä¼šç”¨åˆ°çš„äº‹æƒ…ä¼šæ…¢æ…¢ç•™åœ¨è¿™é‡Œã€‚')}
-                    </div>
-                </section>
-                <section class="wb-memory-section ${shownClues.length ? '' : 'is-hidden'}">
-                    <div class="wb-section-heading wb-memory-heading-with-folds">
-                        <div><h3>ä¼ç¬”ç°¿</h3></div>
-                        ${renderFoldToolbar('memory:clues:')}
-                    </div>
-                    <div class="wb-memory-group-list">
-                        ${clueGroups.map(group => {
-                            const foldKey = `memory:clues:${encodeURIComponent(group.key || group.label)}`;
-                            return `
-                                <details class="wb-fold wb-memory-group" data-fold-key="${escapeAttr(foldKey)}"
-                                    ${foldOpenAttr(openFolds, foldKey)}>
-                                    <summary class="wb-memory-group-summary">
-                                        <span>
-                                            <strong>${escapeHtml(group.label)}</strong>
-                                            <small>${group.items.length} æ¡ç›¸å…³ä¼ç¬”</small>
-                                        </span>
-                                        <i class="wb-fold-chevron" aria-hidden="true"></i>
-                                    </summary>
-                                    <div class="wb-fold-body wb-memory-group-body">
-                                        ${group.items.map(renderClueCard).join('')}
-                                    </div>
-                                </details>
-                            `;
-                        }).join('') || renderEmpty('ä¼ç¬”ç°¿è¿˜æ˜¯ç©ºçš„ï½', 'ä»¥åæœ‰éœ€è¦æƒ¦è®°ç€å›æ”¶çš„çº¿ç´¢ï¼Œå®ƒä»¬ä¼šè‡ªå·±å†’å‡ºæ¥ã€‚')}
-                    </div>
-                </section>
-            </div>
-            <section class="wb-memory-summary-section ${shownSummaries.length ? '' : 'is-hidden'}">
-                <div class="wb-section-heading wb-memory-heading-with-folds">
-                    <div><h3>ç»å†</h3></div>
-                    ${renderFoldToolbar('memory:summary:')}
-                </div>
-                <div class="wb-summary-list">
-                    ${shownSummaries.map(summary => {
-                        const foldKey = `memory:summary:${summary.id || `${summary.startMessageId}-${summary.endMessageId}`}`;
-                        const levelMeta = memorySummaryLevelMeta(summary);
-                        const sourceSummaries = (summary.sourceSummaryIds || [])
-                            .map(id => summaryById.get(String(id)))
-                            .filter(Boolean);
-                        const parent = summary.parentId ? summaryById.get(String(summary.parentId)) : null;
-                        return `
-                            <details class="wb-fold wb-summary-card is-${escapeAttr(levelMeta.tone)}" data-fold-key="${escapeAttr(foldKey)}"
-                                ${foldOpenAttr(openFolds, foldKey)}>
-                                <summary class="wb-summary-card-summary">
-                                    <span><strong>${escapeHtml(summary.title)}</strong></span>
-                                    <i class="wb-fold-chevron" aria-hidden="true"></i>
-                                </summary>
-                                <div class="wb-fold-body wb-summary-card-body">
-                                    <p>${escapeHtml(summary.summary)}</p>
-                                    <details class="wb-memory-lineage">
-                                        <summary>è¿™æ®µè®°å¿†ä»å“ªæ¥ï½</summary>
-                                        <div>
-                                            <p>${escapeHtml(levelMeta.label)} Â· æ¶ˆæ¯ ${escapeHtml(summary.startMessageId)}â€”${escapeHtml(summary.endMessageId)}</p>
-                                            ${parent ? `<p>å·²ç»æ”¶è¿›ï¼š${escapeHtml(parent.title)}</p>` : ''}
-                                            ${sourceSummaries.length ? `<p>è¿˜æœ‰ ${sourceSummaries.length} æ¡æ›´ç»†çš„æ¥æºå¯ä»¥è¿½æº¯ï½</p>` : ''}
-                                        </div>
-                                    </details>
-                                    ${renderMemoryActions('summary', summary, selectedKeys)}
-                                </div>
-                            </details>
-                        `;
-                    }).join('') || renderEmpty(
-                        observerMode === 'backstage' ? 'è¿˜æ²¡æœ‰åˆ†å±‚ç»å†' : 'åˆ†å±‚ç»å†åªåœ¨å¹•åè§†è§’æ˜¾ç¤º',
-                        observerMode === 'backstage' ? 'æ­£æ–‡æ•´ç†åï¼Œé‡è¦ç»å†ä¼šæ…¢æ…¢å‡ºç°åœ¨è¿™é‡Œï½' : '',
-                    )}
-                </div>
-            </section>
-            `}
-            ${hasMore ? `
-                <button class="wb-memory-load-more" type="button" data-wb-action="load-more-memory">
-                    å†æ˜¾ç¤ºä¸€äº› Â· å½“å‰ ${shownCount}/${resultCount}
-                </button>
-            ` : ''}
-        </div>
-    `;
-}
-
-function renderMemoryEditorModal(state, editor) {
-    const requestedKind = ['fact', 'clue', 'summary'].includes(editor?.kind)
-        ? editor.kind
-        : 'fact';
-    const collection = requestedKind === 'fact'
-        ? state.storyMemory?.facts
-        : requestedKind === 'clue'
-            ? state.storyMemory?.clues
-            : state.storyMemory?.summaries;
-    const item = collection?.find(entry => entry.id === editor?.id) || null;
-    const title = requestedKind === 'fact' ? item?.subject : item?.title;
-    const relation = requestedKind === 'fact' ? item?.predicate : '';
-    const content = requestedKind === 'fact'
-        ? item?.value
-        : requestedKind === 'clue'
-            ? item?.text
-            : item?.summary;
-    const peopleText = requestedKind === 'clue' ? (item?.people || []).join('ã€') : '';
-    const locationsText = requestedKind === 'clue' ? (item?.locations || []).join('ã€') : '';
-    const eventsText = requestedKind === 'clue' ? (item?.events || []).join('ã€') : '';
-    return `
-        <div class="wb-drawer-scrim" data-wb-action="close-memory-editor">
-            <form class="wb-event-form wb-memory-editor" data-wb-form="memory">
-                <div class="wb-form-heading">
-                    <div><span>MEMORY DESK</span><h3>${item ? 'ç¼–è¾‘è®°å¿†' : 'æ‰‹åŠ¨æ–°å¢è®°å¿†'}</h3></div>
-                    <button type="button" data-wb-action="close-memory-editor">Ã—</button>
-                </div>
-                <input type="hidden" name="id" value="${escapeAttr(item?.id || '')}">
-                <label>è®°å¿†ç±»å‹
-                    <select name="kind" ${item ? 'disabled' : ''}>
-                        <option value="fact" ${requestedKind === 'fact' ? 'selected' : ''}>é•¿æœŸäº‹å®</option>
-                        <option value="clue" ${requestedKind === 'clue' ? 'selected' : ''}>ä¼ç¬”</option>
-                        <option value="summary" ${requestedKind === 'summary' ? 'selected' : ''}>é˜¶æ®µç»å†</option>
-                    </select>
-                    ${item ? `<input type="hidden" name="kind" value="${requestedKind}">` : ''}
-                </label>
-                <label>æ ‡é¢˜<input name="title" required maxlength="120"
-                    value="${escapeAttr(title || '')}" placeholder="äººç‰©ã€ç‰©å“ã€çº¦å®šæˆ–äº‹ä»¶"></label>
-                <label>å…³ç³»ï¼ˆé•¿æœŸäº‹å®å¯ç”¨ï¼‰<input name="relation" maxlength="100"
-                    value="${escapeAttr(relation || '')}" placeholder="ä¾‹å¦‚ï¼šç­”åº”ã€æŒæœ‰ã€çœŸå®èº«ä»½"></label>
-                <label>å†…å®¹<textarea name="content" required maxlength="1400" rows="5"
-                    placeholder="å†™ä¸‹éœ€è¦é•¿æœŸä¿ç•™çš„å‡†ç¡®å†…å®¹">${escapeHtml(content || '')}</textarea></label>
-                ${requestedKind === 'clue' ? `
-                    <div class="wb-memory-relation-editor">
-                        <label>å…³è”äººç‰©<input name="people" maxlength="500"
-                            value="${escapeAttr(peopleText)}" placeholder="å¯å¤šä¸ªï¼Œç”¨ã€æˆ–é€—å·åˆ†å¼€"></label>
-                        <label>å…³è”äº‹ä»¶<input name="events" maxlength="500"
-                            value="${escapeAttr(eventsText)}" placeholder="äº‹ä»¶åæˆ–äº‹ä»¶ IDï¼Œå¯å¤šä¸ª"></label>
-                        <label>å…³è”åœ°ç‚¹<input name="locations" maxlength="500"
-                            value="${escapeAttr(locationsText)}" placeholder="åœ°ç‚¹åï¼Œå¯å¤šä¸ª"></label>
-                    </div>
-                    <div class="wb-form-note">å…³è”åªæ˜¯æ–¹ä¾¿æ‰¾ä¼ç¬”ï¼Œä¸ä»£è¡¨å®ƒâ€œå±äºâ€æŸä¸ªäººã€‚è·¨äººç‰©ã€äº‹ä»¶ã€åœ°ç‚¹çš„çº¿ç´¢å¯ä»¥åŒæ—¶æŒ‚å¤šä¸ªå…³è”ã€‚</div>
-                ` : ''}
-                <div class="wb-memory-editor-flags">
-                    <label><input name="important" type="checkbox" ${item?.important ? 'checked' : ''}> æ ‡è®°ä¸ºé‡è¦</label>
-                    <label><input name="locked" type="checkbox" ${item?.locked ? 'checked' : ''}> ä¿å­˜åé”å®š</label>
-                </div>
-                <div class="wb-form-note">é”å®šåï¼Œè‡ªåŠ¨æ•´ç†ä¸ä¼šè¦†ç›–æˆ–åˆ é™¤è¿™æ¡è®°å¿†ï¼›éœ€è¦ä¿®æ”¹æ—¶å…ˆåœ¨å¡ç‰‡ä¸Šè§£é”ã€‚</div>
-                <button class="wb-primary-button" type="submit">${item ? 'ä¿å­˜ä¿®æ”¹' : 'åŠ å…¥è®°å¿†'}</button>
-            </form>
-        </div>
-    `;
-}
-
-function renderArchiveView(state, openFolds = new Set()) {
-    const archived = Array.isArray(state.archive) ? state.archive : [];
-    return `
-        <div class="wb-archive-ledger">
-            ${archived.map(entry => renderArchiveEntry(entry, state, 'archive', openFolds)).join('')
-                || renderEmpty('çºªäº‹ç°¿è¿˜æ˜¯ç©ºçš„ï½', 'è¿˜æ²¡æœ‰å“ªæ®µä¸–ç•Œå†å²æ‚„æ‚„é”™è¿‡é•œå¤´ (Ë˜Ï‰Ë˜)')}
-        </div>
-    `;
-}
-
-function renderWorldEditorModal(state) {
-    return `
-        <div class="wb-drawer-scrim" data-wb-action="close-world-editor">
-            <form class="wb-event-form wb-world-editor" data-wb-form="world">
-                <div class="wb-form-heading">
-                    <div><span>WORLD DESK</span><h3>ç¼–è¾‘ä¸–ç•Œè®¾å®š</h3></div>
-                    <button type="button" data-wb-action="close-world-editor">Ã—</button>
-                </div>
-                <label>ä¸–ç•Œæ ‡é¢˜
-                    <input name="title" required maxlength="140" value="${escapeAttr(state.world?.title || '')}">
-                </label>
-                <label>å½“å‰æ¦‚å†µ
-                    <textarea name="detail" required maxlength="900" rows="6">${escapeHtml(state.world?.detail || '')}</textarea>
-                </label>
-                <label>ä¸–ç•ŒèƒŒæ™¯è®¾å®š
-                    <textarea name="background" maxlength="5000" rows="12"
-                        placeholder="å†™è¿™ä¸ªä¸–ç•Œé•¿æœŸæˆç«‹çš„åŸºç¡€ï¼šæ—¶ä»£ä¸ç§‘æŠ€/é­”æ³•æ°´å¹³ã€åœ°ç†ä¸ä¸»è¦åŠ¿åŠ›ã€ç¤¾ä¼šè§„åˆ™ã€é‡è¦å†å²ã€åŸä½œæ—¶é—´çº¿é”šç‚¹â€¦â€¦">${escapeHtml(state.world?.background || '')}</textarea>
-                </label>
-                <div class="wb-form-note">
-                    è¿™é‡Œæ˜¯ä¸–ç•Œçš„â€œåœ°åŸºâ€ï½åå°äººç‰©ã€World Pulseã€å…¬å…±äº‹ä»¶å’Œæ­£æ–‡ä¸€è‡´æ€§éƒ½ä¼šå‚è€ƒå®ƒï¼›æ™®é€šæ¨æ¼”ä¸ä¼šè‡ªå·±æ”¹å†™ã€‚é€‚åˆå†™é•¿æœŸè§„åˆ™å’Œé‡è¦æ—¶é—´çº¿ï¼Œä¸ç”¨æŠŠæ•´å¼ è§’è‰²å¡éƒ½å¡è¿›æ¥ (ï½¡â€¢Ì€á´—-)âœ§
-                </div>
-                <button class="wb-primary-button" type="submit">ä¿å­˜ä¸–ç•Œè®¾å®š</button>
-            </form>
-        </div>
-    `;
-}
-
-function recordEditorData(state, editor) {
-    if (!editor) return null;
-    if (editor.kind === 'echo') {
-        const event = state.events.find(item => item.id === editor.id);
-        if (!event) return null;
-        return {
-            kind: 'echo',
-            id: event.id,
-            title: event.title || '',
-            text: event.result || event.expectedResult || event.consequence || '',
-            place: event.place || '',
-            visibility: event.visibility || 'hidden',
-            deliveryState: event.delivery?.state || 'none',
-        };
-    }
-    const entry = state.archive.find(item => item.id === editor.id);
-    if (!entry) return null;
-    return {
-        kind: 'archive',
-        id: entry.id,
-        title: entry.title || 'æœªå‘½åè®°å½•',
-        text: entry.result || entry.text || entry.consequence || entry.route || '',
-        place: '',
-        visibility: entry.visibility || 'hidden',
-        deliveryState: entry.deliveryState || entry.delivery?.state || 'none',
-    };
-}
-
-function renderRecordEditorModal(state, editor) {
-    const record = recordEditorData(state, editor);
-    if (!record) return '';
-    const isEcho = record.kind === 'echo';
-    return `
-        <div class="wb-drawer-scrim" data-wb-action="close-record-editor">
-            <form class="wb-event-form wb-record-editor" data-wb-form="record">
-                <div class="wb-form-heading">
-                    <div><span>${isEcho ? 'ECHO DESK' : 'ARCHIVE DESK'}</span><h3>${isEcho ? 'ç¼–è¾‘å›å£°' : 'ç¼–è¾‘çºªäº‹'}</h3></div>
-                    <button type="button" data-wb-action="close-record-editor">Ã—</button>
-                </div>
-                <input type="hidden" name="kind" value="${escapeAttr(record.kind)}">
-                <input type="hidden" name="id" value="${escapeAttr(record.id)}">
-                <label>æ ‡é¢˜
-                    <input name="title" required maxlength="140" value="${escapeAttr(record.title)}">
-                </label>
-                <label>${isEcho ? 'å½¢æˆçš„ç»“æœ' : 'çºªäº‹å†…å®¹'}
-                    <textarea name="text" required maxlength="900" rows="6">${escapeHtml(record.text)}</textarea>
-                </label>
-                ${isEcho ? `<label>åœ°ç‚¹
-                    <input name="place" maxlength="160" value="${escapeAttr(record.place)}">
-                </label>` : ''}
-                <div class="wb-form-grid">
-                    <label>å¯è§è¾¹ç•Œ
-                        <select name="visibility">
-                            <option value="hidden" ${record.visibility === 'hidden' ? 'selected' : ''}>å®Œå…¨å¹•å</option>
-                            <option value="trace" ${record.visibility === 'trace' ? 'selected' : ''}>ç•™ä¸‹ç—•è¿¹</option>
-                            <option value="known" ${record.visibility === 'known' ? 'selected' : ''}>è§’è‰²å¯çŸ¥</option>
-                            <option value="direct" ${record.visibility === 'direct' ? 'selected' : ''}>å¯ç›´æ¥æ˜¾éœ²</option>
-                        </select>
-                    </label>
-                    ${isEcho ? `<label>é€’äº¤çŠ¶æ€
-                        <select name="deliveryState">
-                            <option value="none" ${record.deliveryState === 'none' ? 'selected' : ''}>å°šæœªé€’äº¤</option>
-                            <option value="pending" ${record.deliveryState === 'pending' ? 'selected' : ''}>ç­‰å¾…æ˜¾éœ²</option>
-                            <option value="delivered" ${record.deliveryState === 'delivered' ? 'selected' : ''}>æ­£æ–‡å·²æ‰¿æ¥</option>
-                            <option value="expired" ${record.deliveryState === 'expired' ? 'selected' : ''}>æœªæ˜¾éœ²å½’æ¡£</option>
-                        </select>
-                    </label>` : ''}
-                </div>
-                <div class="wb-form-note">ä¿®æ”¹åªä¼šä¿®æ­£å½“å‰ä¸–ç•Œè®°å½•ï¼Œä¸ä¼šæ¨è¿›ä¸»ä¸–ç•Œæ—¶é—´ã€‚åˆ é™¤åˆ™å¯ä»¥ç”¨åº•éƒ¨æ’¤é”€æ¢å¤ã€‚</div>
-                <button class="wb-primary-button" type="submit">ä¿å­˜ä¿®æ”¹</button>
-            </form>
-        </div>
-    `;
-}
-
-function visualViewportBounds() {
-    const viewport = window.visualViewport;
-    const left = Math.max(0, Number(viewport?.offsetLeft || 0));
-    const top = Math.max(0, Number(viewport?.offsetTop || 0));
-    const width = Math.max(0, Number(viewport?.width || window.innerWidth || 0));
-    const height = Math.max(0, Number(viewport?.height || window.innerHeight || 0));
-    return { left, top, width, height, right: left + width, bottom: top + height };
-}
-
-function responsiveOrbSize(
-    viewportWidth = window.innerWidth,
-    viewportHeight = window.innerHeight,
-) {
-    const shortestSide = Math.min(viewportWidth, viewportHeight);
-    if (shortestSide > 680) return 52;
-    return Math.round(Math.max(34, Math.min(38, shortestSide * 0.09)));
-}
-
-function clampOrbPosition(position) {
-    if (
-        !position
-        || !Number.isFinite(Number(position.x))
-        || !Number.isFinite(Number(position.y))
-        || typeof window === 'undefined'
-    ) {
-        return null;
-    }
-    const viewport = visualViewportBounds();
-    const size = responsiveOrbSize(viewport.width, viewport.height);
-    const margin = 10;
-    const minX = viewport.left + margin;
-    const minY = viewport.top + margin;
-    const maxX = Math.max(minX, viewport.right - size - margin);
-    const maxY = Math.max(minY, viewport.bottom - size - margin);
-    return {
-        x: Math.min(maxX, Math.max(minX, Number(position.x))),
-        y: Math.min(maxY, Math.max(minY, Number(position.y))),
-        size,
-    };
-}
-
-function orbInlineStyles(position) {
-    const placed = clampOrbPosition(position);
-    if (!placed) return { orb: '', caption: '' };
-    const captionWidth = 210;
-    const captionX = placed.x > captionWidth + 28
-        ? placed.x - captionWidth - 10
-        : placed.x + placed.size + 10;
-    return {
-        orb: `left:${Math.round(placed.x)}px;top:${Math.round(placed.y)}px;right:auto;bottom:auto;`,
-        caption: `left:${Math.round(Math.max(8, Math.min(window.innerWidth - captionWidth - 8, captionX)))}px;top:${Math.round(placed.y + 5)}px;right:auto;bottom:auto;`,
-    };
-}
-
-function defaultVisibleOrbPosition(side = 'right') {
-    const viewport = visualViewportBounds();
-    const size = responsiveOrbSize(viewport.width, viewport.height);
-    const margin = 12;
-    return {
-        x: side === 'left'
-            ? viewport.left + margin
-            : viewport.right - size - margin,
-        y: Math.max(viewport.top + margin, viewport.bottom - size - 24),
-        size,
-    };
-}
-
-function nearestOrbEdgeSide(position) {
-    const placed = clampOrbPosition(position);
-    if (!placed) return 'right';
-    const viewport = visualViewportBounds();
-    return placed.x + placed.size / 2 < viewport.left + viewport.width / 2 ? 'left' : 'right';
-}
-
-function halfDockOrbPosition(position, side = 'right') {
-    const viewport = visualViewportBounds();
-    const placed = clampOrbPosition(position) || defaultVisibleOrbPosition(side);
-    const size = placed.size || responsiveOrbSize(viewport.width, viewport.height);
-    const y = Math.min(
-        Math.max(viewport.top + 8, placed.y),
-        Math.max(viewport.top + 8, viewport.bottom - size - 8),
-    );
-    // Put the orb centre exactly on the viewport edge: half visible, half outside.
-    const x = side === 'left'
-        ? viewport.left - size / 2
-        : viewport.right - size / 2;
-    return { x, y, size };
-}
-
-function halfDockOrbInlineStyle(position, side = 'right') {
-    const placed = halfDockOrbPosition(position, side);
-    return `left:${Math.round(placed.x)}px;top:${Math.round(placed.y)}px;right:auto;bottom:auto;`;
-}
-
-export function createWorldBackstageUI({
-    getState,
-    getSettings,
-    getSyncStatus = () => ({ phase: 'idle', message: 'å°šæœªè¿›è¡Œä¸–ç•Œæ¨æ¼”' }),
-    getTavernProfiles = () => [],
-    onAction,
-    pluginVersion = '',
-}) {
-    const root = document.createElement('div');
-    root.id = 'world-backstage-root';
-    document.body.appendChild(root);
-
-    function syncVisualViewportInsets() {
-        const viewport = window.visualViewport;
-        const viewportWidth = Number(viewport?.width || window.innerWidth || 0);
-        const viewportHeight = Number(viewport?.height || window.innerHeight || 0);
-        const offsetLeft = Math.max(0, Number(viewport?.offsetLeft || 0));
-        const offsetTop = Math.max(0, Number(viewport?.offsetTop || 0));
-        const right = Math.max(0, Number(window.innerWidth || 0) - viewportWidth - offsetLeft);
-        root.style.setProperty('--wb-visual-inset-top', `${Math.round(offsetTop)}px`);
-        root.style.setProperty('--wb-visual-inset-right', `${Math.round(right)}px`);
-        root.style.setProperty('--wb-visual-inset-left', `${Math.round(offsetLeft)}px`);
-        root.style.setProperty('--wb-visual-width', `${Math.round(viewportWidth)}px`);
-        root.style.setProperty('--wb-visual-height', `${Math.round(viewportHeight)}px`);
-    }
-    syncVisualViewportInsets();
-
-    function ensureMounted() {
-        if (!root.isConnected) document.body.appendChild(root);
-        syncVisualViewportInsets();
-        const settings = getSettings();
-        const orb = root.querySelector('.wb-world-orb');
-        if (settings.orbEnabled !== false) {
-            if (settings.orbPosition && orb) {
-                positionOrbFromSettings(settings);
-            }
-            if (!orb) render();
-        } else if (orb) {
-            render();
-        }
-        const latestRevision = Math.max(0, Number(getState()?.revision) || 0);
-        if (latestRevision !== renderedRevision) render();
-        return root.isConnected;
-    }
-
-    let activeView = 'now';
-    let renderedView = activeView;
-    let observerMode = 'backstage';
-    let isOpen = false;
-    let settingsOpen = false;
-    let settingsSection = 'common';
-    let moduleSettingsView = '';
-    let eventFormOpen = false;
-    let eventEditorId = '';
-    let selectedPersonId = null;
-    let personObservation = null;
-    let busy = false;
-    let toast = '';
-    let toastTimer = null;
-    let closeTimer = null;
-    let closing = false;
-    let panelEntrancePending = false;
-    let publicOpinionMode = 'news';
-    let lingqiDraft = '';
-    let lingqiMascotOverride = '';
-    let lingqiMascotTimer = null;
-    let lingqiChatScrollState = { top: 0, atBottom: true, initialized: false };
-    let lingqiNotesScrollTop = 0;
-    let lingqiReadableOpenKeys = new Set();
-    let lingqiPetCount = 0;
-    let lingqiPetWindowAt = 0;
-    let socialDraft = '';
-    let socialGroupOpen = false;
-    let socialGroupSelectedIds = new Set();
-    let socialChatScrollState = { top: 0, atBottom: true, initialized: false };
-    let socialPage = 'messages';
-    let socialSearchQuery = '';
-    let socialSearchTimer = null;
-    let socialNoticeTimer = null;
-    let socialNoticeVisibleId = '';
-    const socialNoticeShownIds = new Set();
-
-    function currentLingqiMascotState(override = '') {
-        const latest = getSyncStatus()?.lingqi || {};
-        const notes = Array.isArray(latest.notes) ? latest.notes : [];
-        const activeNotes = notes.filter(note => ['active', 'paused'].includes(note.status));
-        const pending = latest.pendingProposal && typeof latest.pendingProposal === 'object'
-            ? latest.pendingProposal
-            : null;
-        return lingqiMascotState(latest, activeNotes, pending, override);
-    }
-
-    function applyLingqiMascotPose(state = '') {
-        if (!isOpen || activeView !== 'lingqi') return false;
-        const mascot = root.querySelector('.wb-lingqi-mascot');
-        if (!mascot) return false;
-
-        const nextState = lingqiMascotAssetState(state || currentLingqiMascotState());
-        const image = mascot.querySelector('img');
-        const busyNow = getSyncStatus()?.lingqi?.phase === 'running';
-
-        for (const mascotState of Object.keys(LINGQI_MASCOT_ASSETS)) {
-            mascot.classList.remove(`is-${mascotState}`, `is-asset-${mascotState}`);
-        }
-        mascot.classList.add(`is-${nextState}`, `is-asset-${nextState}`);
-        mascot.dataset.mascotState = nextState;
-        mascot.title = busyNow ? 'ç²ä¸ƒæ­£åœ¨æƒ³â€¦â€¦' : 'ç¢°ç¢°ç²ä¸ƒ';
-        if (image) {
-            image.src = LINGQI_MASCOT_ASSETS[nextState] || LINGQI_MASCOT_ASSETS.idle;
-        }
-        return true;
-    }
-
-    function showLingqiMascotReaction(state, duration = 1200) {
-        lingqiMascotOverride = state;
-        window.clearTimeout(lingqiMascotTimer);
-        // Explicit user interaction may create one short reaction, but afterwards
-        // Lingqi always returns to the pose chosen by the latest reply/state.
-        applyLingqiMascotPose(currentLingqiMascotState(lingqiMascotOverride));
-        lingqiMascotTimer = window.setTimeout(() => {
-            lingqiMascotOverride = '';
-            applyLingqiMascotPose(currentLingqiMascotState());
-        }, duration);
-    }
-    let publicOpinionActionBusy = false;
-    let publicOpinionSandboxActionBusy = false;
-    let memorySearchTimer = null;
-    let memoryFilter = 'active';
-    let memoryClueRelationFilter = 'all';
-    let memoryQuery = '';
-    let memoryVisibleCount = 12;
-    let memorySelectedKeys = new Set();
-    let peopleSelectionMode = false;
-    let peopleSelectedIds = new Set();
-    let memoryEditor = null;
-    let personEditor = null;
-    let worldEditorOpen = false;
-    let recordEditor = null;
-    let settingsScrollTop = 0;
-    let openSettingsGroups = new Set();
-    let openSettingsSubgroups = new Set();
-    let openContentFolds = new Set();
-    const viewFoldStates = new Map();
-    let eventFormDraft = null;
-    let clockFormDraft = null;
-    let apiFormDraft = null;
-    let tagFilterDraftRules = null; // null = use settings; array may include empty draft cards
-    let tagFilterCandidates = [];
-    let worldbookQuery = '';
-    let worldbookOnlyPeople = false;
-    let worldbookOnlyEnabled = false;
-    let worldbookSelectedIds = new Set();
-    let worldbookListScrollTop = 0;
-    let worldbookSearchTimer = null;
-    let skipApiDraftCapture = false;
-    let skipTagFilterDraftCapture = false;
-    const viewScrollTop = new Map();
-    let orbDrag = null;
-    let suppressOrbClick = false;
-    let renderedRevision = Math.max(0, Number(getState()?.revision) || 0);
-    let lastSeenRevision = renderedRevision;
-    let dismissedNarrativePromptKey = '';
-    let freshOpenCheckFrame = 0;
-
-    function notify(message, tone = 'normal') {
-        toast = String(message || '');
-        root.dataset.toastTone = tone;
-        window.clearTimeout(toastTimer);
-        toastTimer = window.setTimeout(() => {
-            toast = '';
-            render();
-        }, tone === 'error' ? 7600 : 5200);
-        render();
-    }
-
-    function readApiForm(form) {
-        const data = Object.fromEntries(new FormData(form).entries());
-        apiFormDraft = { ...data };
-        return data;
-    }
-
-    function apiSettingsFromDraft(data) {
-        const replacementKey = String(data.customApiCredential || '').trim();
-        return {
-            customApiUrl: data.customApiUrl,
-            customApiKey: replacementKey || getSettings().customApiKey,
-            customApiModel: data.customApiModel,
-            customApiTransport: data.customApiTransport,
-        };
-    }
-
-    function apiRequestFromDraft(data, { requireModel = true } = {}) {
-        const settings = getSettings();
-        const profileId = String(data.profileId || '').trim();
-        const existingProfile = (settings.apiProfiles || []).find(item => item.id === profileId);
-        const key = String(data.customApiCredential || '').trim()
-            || existingProfile?.key
-            || (!profileId ? settings.customApiKey : '');
-        const model = String(data.customApiModel || '').trim();
-        if (!key) throw new Error('è¿™ä¸ªæ¥å£è¿˜ç¼º API Key å“¦ï½');
-        if (requireModel && !model) throw new Error('å…ˆé€‰ä¸ªæ¨¡å‹å†æµ‹è¯•å§ï½');
-        return {
-            url: data.customApiUrl,
-            key,
-            model,
-            transport: data.customApiTransport,
-            label: String(data.profileName || existingProfile?.name || 'è¿™ä¸ªæ¥å£').trim() || 'è¿™ä¸ªæ¥å£',
-        };
-    }
-
-    function forgetApiKeyDraft(data) {
-        apiFormDraft = { ...data, customApiCredential: '' };
-        skipApiDraftCapture = true;
-    }
-
-    async function invokeAction(action, payload = {}) {
-        try {
-            const result = await onAction(action, payload);
-            return result === undefined ? true : result;
-        } catch (error) {
-            const message = String(error?.message || error || 'æœªçŸ¥é”™è¯¯');
-            console.warn('[ä¸–ç•ŒèƒŒé¢] ç•Œé¢æ“ä½œæ²¡æœ‰å®Œæˆ', error);
-            notify(`æ“ä½œæ²¡æœ‰å®Œæˆï¼š${message}`, 'error');
-            return false;
-        }
-    }
-
-    function visibleTagFilterRules(settings) {
-        if (Array.isArray(tagFilterDraftRules)) return tagFilterDraftRules;
-        return Array.isArray(settings.tagFilterRules)
-            ? settings.tagFilterRules.map(rule => ({ open: rule.open, close: rule.close }))
-            : [];
-    }
-
-    async function persistTagFilterRules(rules) {
-        const persisted = rules
-            .map(rule => ({
-                open: String(rule.open || '').trim().slice(0, 80),
-                close: String(rule.close || '').trim().slice(0, 80),
-            }))
-            .filter(rule => rule.open || rule.close)
-            .slice(0, 30);
-        tagFilterDraftRules = rules.map(rule => ({
-            open: String(rule.open || ''),
-            close: String(rule.close || ''),
-        }));
-        skipTagFilterDraftCapture = true;
-        await invokeAction('update-settings', { tagFilterRules: persisted });
-    }
-
-    function setBusy(value) {
-        busy = Boolean(value);
-        render();
-    }
-
-    function open() {
-        window.clearTimeout(closeTimer);
-        closing = false;
-        panelEntrancePending = !isOpen;
-        isOpen = true;
-        render();
-        window.cancelAnimationFrame?.(freshOpenCheckFrame);
-        freshOpenCheckFrame = window.requestAnimationFrame?.(() => {
-            freshOpenCheckFrame = 0;
-            const latestRevision = Math.max(0, Number(getState()?.revision) || 0);
-            if (latestRevision !== renderedRevision) render();
-        }) || 0;
-    }
-
-    function openEvent(eventId = '') {
-        const id = String(eventId || '');
-        activeView = 'currents';
-        open();
-        window.requestAnimationFrame?.(() => {
-            const safeId = globalThis.CSS?.escape?.(`currents:${id}`) || `currents:${id}`.replace(/["\\]/g, '\\$&');
-            const card = root.querySelector(`[data-fold-key="${safeId}"]`);
-            if (card instanceof HTMLDetailsElement) card.open = true;
-            card?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
-            card?.animate?.([
-                { boxShadow: '0 0 0 0 rgba(121,111,174,0)' },
-                { boxShadow: '0 0 0 4px rgba(121,111,174,.18)' },
-                { boxShadow: '0 0 0 0 rgba(121,111,174,0)' },
-            ], { duration: 900, easing: 'ease-out' });
-        });
-    }
-
-    function close() {
-        if (!isOpen || closing) return;
-        closing = true;
-        root.querySelector('.wb-panel-scrim')?.classList.add('is-closing');
-        const closeDelay = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-            ? 0
-            : 145;
-        closeTimer = window.setTimeout(() => {
-            isOpen = false;
-            closing = false;
-            settingsOpen = false;
-            eventFormOpen = false;
-            eventEditorId = '';
-            eventFormDraft = null;
-            clockFormDraft = null;
-            tagFilterDraftRules = null;
-            memoryEditor = null;
-            memorySelectedKeys = new Set();
-            personEditor = null;
-            worldEditorOpen = false;
-            recordEditor = null;
-            selectedPersonId = null;
-            personObservation = null;
-            render();
-        }, closeDelay);
-    }
-
-    function resetContext() {
-        eventFormOpen = false;
-        eventEditorId = '';
-        eventFormDraft = null;
-        clockFormDraft = null;
-        selectedPersonId = null;
-        personObservation = null;
-        personEditor = null;
-        memoryEditor = null;
-        memorySelectedKeys = new Set();
-        peopleSelectionMode = false;
-        peopleSelectedIds = new Set();
-        memoryQuery = '';
-        memoryFilter = 'active';
-        memoryClueRelationFilter = 'all';
-        memoryVisibleCount = 12;
-        worldEditorOpen = false;
-        recordEditor = null;
-        worldbookSelectedIds = new Set();
-        worldbookQuery = '';
-        worldbookListScrollTop = 0;
-        lingqiDraft = '';
-        lingqiChatScrollState = { top: 0, atBottom: true, initialized: false };
-        lingqiNotesScrollTop = 0;
-        lingqiReadableOpenKeys = new Set();
-        viewFoldStates.clear();
-        viewScrollTop.clear();
-        openContentFolds = new Set();
-        render();
-    }
-
-    function render() {
-        const viewChanged = activeView !== renderedView;
-        const animatePanelEntrance = Boolean(isOpen && panelEntrancePending);
-        const previousContent = root.querySelector('.wb-view-content');
-        if (previousContent) viewScrollTop.set(renderedView, previousContent.scrollTop);
-
-        // Full UI renders can still happen for real data/status changes. Preserve every
-        // user-controlled Lingqi <details> fold across those legitimate rebuilds.
-        const previousLingqiReadables = root.querySelectorAll(
-            'details[data-lingqi-readable-key]',
-        );
-        for (const detail of previousLingqiReadables) {
-            const key = String(detail.dataset.lingqiReadableKey || '');
-            if (!key) continue;
-            if (detail.open) lingqiReadableOpenKeys.add(key);
-            else lingqiReadableOpenKeys.delete(key);
-        }
-
-        const previousContentFolds = root.querySelectorAll('.wb-fold[data-fold-key]');
-        if (previousContentFolds.length) {
-            viewFoldStates.set(renderedView, new Set(
-                [...previousContentFolds]
-                    .filter(item => item.open)
-                    .map(item => item.dataset.foldKey)
-                    .filter(Boolean),
-            ));
-        }
-        openContentFolds = new Set(viewFoldStates.get(activeView) || []);
-        const previousSettings = root.querySelector('.wb-settings-popover');
-        if (previousSettings) settingsScrollTop = previousSettings.scrollTop;
-        const previousWorldbookList = root.querySelector('.wb-worldbook-entry-list');
-        if (previousWorldbookList) worldbookListScrollTop = previousWorldbookList.scrollTop;
-        const previousSettingGroups = root.querySelectorAll('.wb-settings-group[data-settings-group]');
-        if (previousSettingGroups.length) {
-            openSettingsGroups = new Set(
-                [...previousSettingGroups]
-                    .filter(group => group.open)
-                    .map(group => group.dataset.settingsGroup),
-            );
-        }
-        const previousSettingSubgroups = root.querySelectorAll('[data-settings-subgroup]');
-        if (previousSettingSubgroups.length) {
-            openSettingsSubgroups = new Set(
-                [...previousSettingSubgroups]
-                    .filter(group => group.open)
-                    .map(group => group.dataset.settingsSubgroup),
-            );
-        }
-        const previousEventForm = root.querySelector('[data-wb-form="event"]');
-        if (previousEventForm && eventFormOpen) {
-            eventFormDraft = Object.fromEntries(new FormData(previousEventForm).entries());
-        }
-        const previousClockForm = root.querySelector('[data-wb-form="clock"]');
-        if (previousClockForm && (settingsOpen || moduleSettingsView)) {
-            clockFormDraft = Object.fromEntries(new FormData(previousClockForm).entries());
-        }
-        const previousApiForm = root.querySelector('[data-wb-form="api"]');
-        if (previousApiForm && !skipApiDraftCapture) {
-            readApiForm(previousApiForm);
-        }
-        const previousLingqiInput = root.querySelector('[data-wb-form="lingqi-chat"] textarea[name="text"]');
-        if (previousLingqiInput) lingqiDraft = previousLingqiInput.value;
-        const previousSocialInput = root.querySelector('[data-wb-form="social-message"] textarea[name="text"]');
-        if (previousSocialInput) socialDraft = previousSocialInput.value;
-        const previousSocialChat = root.querySelector('.wb-social-log');
-        if (previousSocialChat) {
-            const bottomGap = previousSocialChat.scrollHeight
-                - previousSocialChat.scrollTop
-                - previousSocialChat.clientHeight;
-            socialChatScrollState = {
-                top: previousSocialChat.scrollTop,
-                atBottom: bottomGap <= 28,
-                initialized: true,
-            };
-        }
-        const previousSocialGroup = root.querySelector('[data-wb-form="social-group"]');
-        if (previousSocialGroup) {
-            socialGroupSelectedIds = new Set(
-                [...previousSocialGroup.querySelectorAll('input[name="memberIds"]:checked')]
-                    .map(input => String(input.value || ''))
-                    .filter(Boolean),
-            );
-        }
-
-        const previousLingqiChat = root.querySelector('.wb-lingqi-chat-log');
-        if (previousLingqiChat) {
-            const bottomGap = previousLingqiChat.scrollHeight
-                - previousLingqiChat.scrollTop
-                - previousLingqiChat.clientHeight;
-            lingqiChatScrollState = {
-                top: previousLingqiChat.scrollTop,
-                atBottom: bottomGap <= 28,
-                initialized: true,
-            };
-        }
-        const previousLingqiNotes = root.querySelector('.wb-lingqi-notes-scroll');
-        if (previousLingqiNotes) lingqiNotesScrollTop = previousLingqiNotes.scrollTop;
-
-        skipApiDraftCapture = false;
-        if (settingsOpen && !skipTagFilterDraftCapture) {
-            const previousTagFilterRules = root.querySelectorAll('.wb-tag-filter-rule');
-            if (previousTagFilterRules.length) {
-                tagFilterDraftRules = [...previousTagFilterRules].map(card => ({
-                    open: String(card.querySelector('[data-wb-tag-filter-field="open"]')?.value || ''),
-                    close: String(card.querySelector('[data-wb-tag-filter-field="close"]')?.value || ''),
-                }));
-            }
-        }
-        skipTagFilterDraftCapture = false;
-        const previousFocus = root.contains(document.activeElement)
-            ? {
-                id: document.activeElement.id || '',
-                name: document.activeElement.getAttribute?.('name') || '',
-                selectionStart: document.activeElement.selectionStart,
-                selectionEnd: document.activeElement.selectionEnd,
-            }
-            : null;
-
-        const state = getState();
-        const settings = getSettings();
-        const syncStatus = getSyncStatus();
-        const tavernProfilesRaw = settingsOpen ? getTavernProfiles?.() : [];
-        const tavernProfiles = Array.isArray(tavernProfilesRaw) ? tavernProfilesRaw : [];
-        const canCancelSimulation = Boolean(syncStatus.canCancelSimulation);
-        const manualSimulationQueued = Boolean(syncStatus.manualSimulationQueued);
-        const canCancelBackgroundTask = Boolean(syncStatus.canCancelBackgroundTask);
-        const activeBackgroundTasks = Array.isArray(syncStatus.activeBackgroundTasks)
-            ? syncStatus.activeBackgroundTasks
-            : [];
-        const memoryPhase = syncStatus.memory?.phase;
-        if (['running', 'error'].includes(memoryPhase)) {
-            openSettingsGroups.add('memory');
-            openSettingsSubgroups.add('memory-history');
-        }
-        const memoryTakesFocus = ['running', 'error'].includes(memoryPhase);
-        const displayPhase = memoryTakesFocus ? memoryPhase : syncStatus.phase;
-        const displayPhaseLabel = memoryTakesFocus
-            ? (memoryPhase === 'error' ? 'è®°å¿†å¤±è´¥' : 'æ•´ç†è®°å¿†ä¸­')
-            : `${syncPhaseLabel(syncStatus.phase)}${syncStatus.queue?.waitingTurns > 0
-                ? ` Â· å¾… ${syncStatus.queue.waitingTurns} è½®`
-                : ''}`;
-        const theme = themeFor(state, settings);
-        const clock = formatWorldCalendar(state);
-        const clockAnchored = Boolean(state.clock?.anchored);
-        const clockLabel = worldClockLabel(state, clock);
-        const orbStyles = orbInlineStyles(settings.orbPosition);
-        const currentView = VIEWS.find(view => view.id === activeView) || VIEWS[0];
-        const userName = String(syncStatus.userName || '').toLocaleLowerCase();
-        const displayPeople = state.people
-            .map(person => {
-                const isUser = Boolean(
-                    person.isUser
-                    || (userName && person.name?.toLocaleLowerCase() === userName)
-                );
-                return { ...person, isUser, innerVoice: isUser ? '' : person.innerVoice };
-            })
-            .filter(person => settings.recordPlayerCharacter !== false || !person.isUser);
-        const candidatePeople = observerMode === 'backstage'
-            ? displayPeople
-            : displayPeople.filter(person => person.knowledge === 'known');
-        const visibleEvents = observerMode === 'backstage'
-            ? state.events
-            : state.events.filter(event => event.visibility !== 'hidden');
-        const presentPersonIds = new Set(syncStatus.presentPersonIds || []);
-        const presentPeople = candidatePeople.filter(person => presentPersonIds.has(person.id));
-        const activeEvents = sortEventsForDisplay(visibleEvents.filter(isActiveEvent), state, presentPeople);
-        const visiblePeople = sortPeopleForDisplay(
-            candidatePeople,
-            activeEvents,
-            presentPersonIds,
-            state.clock?.absoluteMinute,
-        );
-        const outcomes = visibleEvents
-            .filter(event => (event.status === 'ready' || isTerminalEvent(event)) && event.delivery?.state !== 'expired')
-            .sort((a, b) => echoOutcomeMinute(b) - echoOutcomeMinute(a));
-        const person = displayPeople.find(item => item.id === selectedPersonId);
-        const canObservePerson = Boolean(
-            person
-            && observerMode === 'backstage'
-            && !person.isUser
-        );
-        const pendingDeliveries = state.events.filter(event => event.delivery?.state === 'pending').length;
-        const narrativeSync = syncStatus.narrative || {};
-        const narrativeNeedsSimulation = Boolean(narrativeSync.needsSimulation);
-        const orbProcessing = (
-            ['queued', 'running', 'cancelling'].includes(syncStatus.phase)
-            || syncStatus.memory?.phase === 'running'
-        );
-        const stateRevision = Math.max(0, Number(state.revision) || 0);
-        const unreadWorldRevision = !isOpen && stateRevision > lastSeenRevision;
-        const narrativePromptVisible = Boolean(
-            narrativeNeedsSimulation
-            && (settings.pendingSimulationPromptEnabled || syncStatus.phase === 'error')
-        );
-        const narrativeNeedsAttention = Boolean(
-            narrativePromptVisible
-            || syncStatus.editDecision?.available
-            || syncStatus.phase === 'error'
-            || memoryPhase === 'error'
-        );
-        const worldHasUnreadUpdate = Boolean(
-            !narrativeNeedsAttention
-            && (unreadWorldRevision || pendingDeliveries)
-        );
-        const needsAttention = narrativeNeedsAttention || worldHasUnreadUpdate;
-        const narrativePromptKey = narrativeNeedsSimulation
-            ? `${String(narrativeSync.sourceKey || narrativeSync.latestMessageId || 'latest')}:${syncStatus.phase === 'error' ? 'error' : 'pending'}`
-            : '';
-        const captionCanSimulate = Boolean(
-            narrativePromptVisible
-            && !isOpen
-            && !orbProcessing
-            && settings.enabled
-            && settings.worldSimulationEnabled
-            && narrativePromptKey !== dismissedNarrativePromptKey
-        );
-        const captionText = memoryPhase === 'error'
-            ? syncStatus.memory?.message || 'è®°å¿†æ•´ç†åˆšåˆšç»Šäº†ä¸€ä¸‹ QAQï¼Œç‚¹å¼€çœ‹çœ‹åŸå› ï½'
-            : memoryPhase === 'running'
-                ? syncStatus.memory.message || 'è®°å¿†æ­£åœ¨æ‚„æ‚„æ”¶æ‹¾ä¸­ï½ (ï½¡â€¢Ì€á´—-)âœ§'
-                : orbProcessing
-                    ? syncStatus.message || 'é•œå¤´å¤–çš„ä¸–ç•Œæ­£åœ¨æ‚„æ‚„è¿è½¬ä¸­â€¦ ( â€¢Ì€ Ï‰ â€¢Ì )âœ§'
-                    : syncStatus.phase === 'error'
-                        ? 'å””ï¼Œè¿™è½®æ­£æ–‡è¿˜æ²¡æ¨æ¼”æˆåŠŸ QAQï¼Œå¯ä»¥åœ¨è¿™é‡Œé‡è¯•ï½'
-                        : narrativePromptVisible
-                            ? `${Math.max(1, Number(narrativeSync.pendingTurns) || 1)} è½®æ–°æ­£æ–‡è¿˜æ²¡æ¨æ¼”ï¼Œè¦ç°åœ¨è¿½ä¸Šå—ï¼Ÿ`
-                            : pendingDeliveries > 0
-                                ? `${pendingDeliveries} æ¡å˜åŒ–æ­£æ…¢æ…¢é è¿‘é•œå¤´ï½`
-                                : unreadWorldRevision
-                                    ? 'ä¸–ç•Œåˆšåˆšæœ‰äº†æ–°å˜åŒ–ï¼Œç‚¹å¼€çœ‹çœ‹å§ï½ (ï½¡â€¢Ì€á´—-)âœ§'
-                                    : 'é•œå¤´ä¹‹å¤–æš‚æ—¶å®‰å®‰é™é™çš„ï½ (Ë˜Ï‰Ë˜)';
-        const orbEdgeSide = nearestOrbEdgeSide(settings.orbPosition);
-        const orbEdgeHidden = Boolean(settings.orbEdgeHide && !isOpen);
-        const renderedOrbStyle = orbEdgeHidden
-            ? halfDockOrbInlineStyle(settings.orbPosition, orbEdgeSide)
-            : orbStyles.orb;
-        const socialNotices = (Array.isArray(syncStatus.social?.notices) ? syncStatus.social.notices : [])
-            .filter(item => !item?.readAt)
-            .reverse();
-        if (socialNoticeVisibleId && !socialNotices.some(item => item.id === socialNoticeVisibleId)) {
-            socialNoticeVisibleId = '';
-            window.clearTimeout(socialNoticeTimer);
-            socialNoticeTimer = null;
-        }
-        const newestSocialNotice = socialNotices[0] || null;
-        if (!socialNoticeVisibleId && newestSocialNotice && !socialNoticeShownIds.has(newestSocialNotice.id)) {
-            socialNoticeVisibleId = newestSocialNotice.id;
-            socialNotices.forEach(item => socialNoticeShownIds.add(item.id));
-            window.clearTimeout(socialNoticeTimer);
-            socialNoticeTimer = window.setTimeout(() => {
-                if (socialNoticeVisibleId === newestSocialNotice.id) {
-                    socialNoticeVisibleId = '';
-                    socialNoticeTimer = null;
-                    render();
-                }
-            }, 6000);
-        }
-        const socialNotice = socialNotices.find(item => item.id === socialNoticeVisibleId) || null;
-        const socialNoticePerson = socialNotice
-            ? state.people.find(item => String(item?.id || '') === String(socialNotice.personId || ''))
-            : null;
-        const socialNoticePage = socialNotice?.kind === 'message'
-            ? 'messages'
-            : socialNotice?.kind === 'moment'
-                ? 'moments'
-                : 'contacts';
-        const socialNoticeLabel = socialNotice?.kind === 'message'
-            ? 'æ–°æ¶ˆæ¯'
-            : socialNotice?.kind === 'friend_request'
-                ? 'å¥½å‹ç”³è¯·'
-                : socialNotice?.kind === 'friend_removed'
-                    ? 'å…³ç³»å˜åŒ–'
-                    : 'æ–°åŠ¨æ€';
-
-        let content = '';
-        if (activeView === 'now') content = renderNowView(state, observerMode, visiblePeople, activeEvents, narrativeSync);
-        if (activeView === 'lingqi') content = renderLingqiView(
-            syncStatus.lingqi || {},
-            lingqiDraft,
-            lingqiMascotOverride,
-            lingqiReadableOpenKeys,
-        );
-        if (activeView === 'social') content = renderSocialView(state, syncStatus.social || {}, settings, {
-            draft: socialDraft,
-            groupOpen: socialGroupOpen,
-            groupSelectedIds: socialGroupSelectedIds,
-            page: socialPage,
-            searchQuery: socialSearchQuery,
-        });
-        if (activeView === 'people') {
-            const validPeopleIds = new Set(state.people.map(person => person.id));
-            peopleSelectedIds = new Set([...peopleSelectedIds].filter(id => validPeopleIds.has(id)));
-            content = renderPeopleView(state, observerMode, visiblePeople, openContentFolds, {
-                selectionMode: peopleSelectionMode,
-                selectedIds: peopleSelectedIds,
-            });
-        }
-        if (activeView === 'currents') content = renderCurrentsView(state, activeEvents, openContentFolds, settings);
-        if (activeView === 'echoes') content = renderEchoesView(state, outcomes, openContentFolds);
-        if (activeView === 'opinion') content = renderPublicOpinionView(
-            state,
-            {
-                ...(syncStatus.publicOpinion || {}),
-                interactionBusy: publicOpinionActionBusy,
-                sandboxInteractionBusy: publicOpinionSandboxActionBusy,
-            },
-            publicOpinionMode,
-            settings,
-        );
-        if (activeView === 'memory') content = renderMemoryView(state, observerMode, {
-            query: memoryQuery,
-            filter: memoryFilter,
-            visibleCount: memoryVisibleCount,
-            openFolds: openContentFolds,
-            selectedKeys: memorySelectedKeys,
-            clueRelationFilter: memoryClueRelationFilter,
-        });
-        if (activeView === 'archive') content = renderArchiveView(state, openContentFolds);
-
-        root.className = `wb-root theme-${theme} wb-size-${settings.uiScale} ${settings.enabled ? 'is-enabled' : 'is-disabled'}`;
-        root.innerHTML = `
-            ${settings.orbEnabled !== false ? `
-            <button class="wb-world-orb ${isOpen ? 'is-open' : ''} ${orbProcessing ? 'is-processing' : ''} ${settings.orbPosition ? 'has-custom-position' : ''} ${orbEdgeHidden ? `is-edge-hidden is-edge-${orbEdgeSide}` : ''}" type="button"
-                style="${renderedOrbStyle}" data-wb-action="toggle-panel"
-                aria-label="${isOpen ? 'æ”¶èµ·ä¸–ç•ŒèƒŒé¢' : 'æ‰“å¼€ä¸–ç•ŒèƒŒé¢'}">
-                <span class="wb-orb-halo"></span>
-                <span class="wb-orb-ring ring-one"></span>
-                <span class="wb-orb-ring ring-two"></span>
-                <span class="wb-orb-core"></span>
-                ${narrativeNeedsAttention
-                    ? '<i class="wb-orb-notice" aria-hidden="true"></i>'
-                    : worldHasUnreadUpdate
-                        ? '<i class="wb-orb-update" aria-hidden="true"></i>'
-                        : ''}
-            </button>
-            <div class="wb-orb-caption ${!isOpen && needsAttention && !orbEdgeHidden ? 'is-visible' : ''} ${captionCanSimulate ? 'has-action' : ''}"
-                style="${orbStyles.caption}" role="${captionCanSimulate ? 'dialog' : 'status'}" aria-live="polite"
-                ${captionCanSimulate ? 'aria-label="å‘ç°æœªæ¨æ¼”æ­£æ–‡"' : ''}>
-                <div class="wb-orb-caption-copy">
-                    <strong>ä¸–ç•ŒèƒŒé¢</strong>
-                    <span>${escapeHtml(captionText)}</span>
-                </div>
-                ${captionCanSimulate ? `
-                    <div class="wb-orb-caption-actions">
-                        <button type="button" class="wb-orb-caption-later" data-wb-action="dismiss-narrative-prompt"
-                            data-prompt-key="${escapeAttr(narrativePromptKey)}">ç¨å</button>
-                        <button type="button" class="wb-orb-caption-sync" data-wb-action="manual-sync">
-                            ${syncStatus.phase === 'error' ? 'é‡æ–°æ¨æ¼”' : 'æ¨æ¼”'}
-                        </button>
-                    </div>
-                ` : ''}
-            </div>
-            ` : ''}
-
-            ${isOpen ? `
-                <div class="wb-panel-scrim ${animatePanelEntrance ? 'is-opening' : ''}" data-wb-action="close-panel">
-                    <section class="wb-window" role="dialog" aria-modal="true" aria-label="ä¸–ç•ŒèƒŒé¢">
-                        <header class="wb-window-header">
-                            <div class="wb-brand">
-                                ${renderBrandMark()}
-                                <div>
-                            <span class="wb-brand-line"><h1>ä¸–ç•ŒèƒŒé¢</h1><i>${escapeHtml(pluginDisplayVersion(pluginVersion))}</i></span>
-                                    <p>é•œå¤´ä¹‹å¤–ï¼Œä¸–ç•Œä»åœ¨ç»§ç»­</p>
-                                </div>
-                            </div>
-                            <time class="wb-mobile-clock-time"
-                                ${clockAnchored ? `datetime="${escapeAttr(
-                                    `${clock.year}-${String(clock.month).padStart(2, '0')}-${String(clock.dayOfMonth).padStart(2, '0')}T${clock.time}`,
-                                )}"` : ''}
-                                aria-label="${clockAnchored ? `ä¸»ä¸–ç•Œæ—¶é—´ ${escapeAttr(clock.time)}` : 'ä¸»ä¸–ç•Œæ—¶é—´å°šæœªæ ¡å‡†'}">
-                                ${clockAnchored ? escapeHtml(clock.time) : '--:--'}
-                            </time>
-                            <div class="wb-header-center">
-                                <time class="wb-world-calendar" ${clockAnchored ? `datetime="${escapeAttr(
-                                    `${clock.year}-${String(clock.month).padStart(2, '0')}-${String(clock.dayOfMonth).padStart(2, '0')}T${clock.time}`,
-                                )}"` : ''} aria-label="${escapeAttr(clockLabel)}">
-                                    ${clockAnchored ? `
-                                        <span class="wb-calendar-page" aria-hidden="true">
-                                            <small>${escapeHtml(`${clock.month}æœˆ`)}</small>
-                                            <strong>${escapeHtml(String(clock.dayOfMonth).padStart(2, '0'))}</strong>
-                                        </span>
-                                        <span class="wb-calendar-copy">
-                                            <small>${escapeHtml(`${state.world.name} Â· ${clock.calendarName}`)}</small>
-                                            <strong>${escapeHtml(`${clock.year} å¹´ ${clock.month} æœˆ`)}</strong>
-                                            <em>${escapeHtml(clock.time)}</em>
-                                        </span>
-                                    ` : `
-                                        <span class="wb-calendar-page" aria-hidden="true">
-                                            <small>æ—¶é—´</small>
-                                            <strong>Â·Â·</strong>
-                                        </span>
-                                        <span class="wb-calendar-copy">
-                                            <small>${escapeHtml(`${state.world.name} Â· ä¸»ä¸–ç•Œé’Ÿ`)}</small>
-                                            <strong>ç­‰å¾…é¦–æ¬¡æ ¡å‡†</strong>
-                                            <em>æ¨æ¼”åå»ºç«‹</em>
-                                        </span>
-                                    `}
-                                </time>
-                                <span class="wb-live-status is-${escapeAttr(displayPhase)}">
-                                    <i></i>${escapeHtml(displayPhaseLabel)}
-                                </span>
-                            </div>
-                            <div class="wb-header-actions">
-                                <button type="button" class="wb-round-action" data-wb-action="cycle-theme"
-                                    aria-label="åˆ‡æ¢æ—¥é—´/å¤œé—´"><span class="wb-theme-glyph"></span></button>
-                                <button type="button" class="wb-round-action ${settingsOpen ? 'is-active' : ''}"
-                                    data-wb-action="toggle-settings" aria-label="å…¨å±€è®¾ç½®">
-                                    <span class="wb-settings-glyph"></span>
-                                </button>
-                                <button type="button" class="wb-round-action" data-wb-action="toggle-panel"
-                                    aria-label="æ”¶èµ·">â€”</button>
-                            </div>
-                        </header>
-
-                        <div class="wb-window-body">
-                            <nav class="wb-side-nav">
-                                ${VIEWS.map(view => `
-                                    <button type="button" data-wb-action="set-view" data-view="${view.id}"
-                                        aria-current="${activeView === view.id ? 'page' : 'false'}"
-                                        class="${activeView === view.id ? 'is-active' : ''}">
-                                        <i></i><span><small>${view.eyebrow}</small><strong>${view.label}</strong></span>
-                                    </button>
-                                `).join('')}
-                                <button class="wb-side-sync wb-sim-action ${canCancelSimulation ? 'is-cancel' : manualSimulationQueued ? 'is-queued' : ''}"
-                                    type="button" data-wb-action="${canCancelSimulation ? 'cancel-simulation' : 'manual-sync'}"
-                                    ${manualSimulationQueued ? 'disabled' : ''}
-                                    title="${canCancelSimulation
-                                        ? 'åªåœæ­¢å½“å‰ä¸–ç•Œæ¨æ¼”ï¼Œä¸å½±å“å…¶ä»–åå°ä»»åŠ¡'
-                                        : manualSimulationQueued
-                                            ? 'å·²æ’é˜Ÿï¼›ä¼šåœ¨å½“å‰åå°ä»»åŠ¡å®‰å…¨ç»“æŸåè‡ªåŠ¨å¼€å§‹'
-                                            : busy
-                                                ? 'å½“å‰æœ‰åå°ä»»åŠ¡åœ¨è¿è¡Œï¼›ç‚¹å‡»åå®‰å…¨æ’é˜Ÿï¼Œä¸ä¼šå¹¶å‘å†™ä¸–ç•ŒçŠ¶æ€'
-                                                : 'æ¨æ¼”æœ€æ–°æ­£æ–‡'}">
-                                    <i aria-hidden="true"></i><span>${canCancelSimulation ? 'åœæ­¢æ¨æ¼”' : manualSimulationQueued ? 'æ¨æ¼”å·²æ’é˜Ÿ' : 'æ¨æ¼”ä¸–ç•Œ'}</span>
-                                </button>
-                            </nav>
-
-                            <div class="wb-content-column ${activeView === 'lingqi' ? 'is-lingqi-column' : ''} ${activeView === 'social' ? 'is-social-column' : ''}">
-                                <div class="wb-view-header">
-                                    <div><span>${currentView.eyebrow}</span><h2>${currentView.label}</h2></div>
-                                    <div class="wb-view-header-tools">
-                                        ${activeView === 'opinion' ? `
-                                            <div class="wb-public-readonly-badge wb-public-mode-badge ${settings.publicOpinionRevealMode === 'relevant' ? 'is-relevant' : 'is-observe'}"
-                                                aria-live="polite" title="å½“å‰èˆ†æƒ…æ˜¾éœ²æ¨¡å¼">
-                                                <i></i>${settings.publicOpinionRevealMode === 'relevant' ? 'ç›¸å…³æ—¶æ˜¾éœ²' : 'ä»…è§‚å¯Ÿ'}
-                                            </div>
-                                        ` : activeView === 'lingqi' ? `
-                                            <div class="wb-lingqi-header-badge" aria-label="ç²ä¸ƒ">â‚^. .^â‚âŸ†</div>
-                                        ` : activeView === 'social' ? `
-                                            <div class="wb-social-header-badge" aria-label="å†…ç½®é€šè®¯">ä¼šè¯ç‹¬ç«‹å±‚</div>
-                                        ` : `
-                                            <div class="wb-observer-switch">
-                                                <button type="button" data-wb-action="set-observer" data-mode="backstage"
-                                                    aria-pressed="${observerMode === 'backstage'}"
-                                                    class="${observerMode === 'backstage' ? 'is-active' : ''}">å¹•åè§†è§’</button>
-                                                <button type="button" data-wb-action="set-observer" data-mode="known"
-                                                    aria-pressed="${observerMode === 'known'}"
-                                                    class="${observerMode === 'known' ? 'is-active' : ''}">è§’è‰²æ‰€çŸ¥</button>
-                                            </div>
-                                        `}
-                                        ${['now', 'people', 'currents', 'opinion', 'memory'].includes(activeView) ? `
-                                            <button type="button"
-                                                class="wb-view-settings-action ${moduleSettingsView === activeView ? 'is-active' : ''}"
-                                                data-wb-action="toggle-module-settings" data-view="${activeView}"
-                                                aria-label="${escapeAttr(currentView.label)}è®¾ç½®" title="${escapeAttr(currentView.label)}è®¾ç½®">
-                                                <span class="wb-settings-glyph" aria-hidden="true"></span>
-                                            </button>
-                                        ` : ''}
-                                    </div>
-                                </div>
-                                ${renderSyncStrip(syncStatus)}
-                                <div class="wb-view-content ${activeView === 'lingqi' ? 'is-lingqi-view' : ''} ${activeView === 'social' ? 'is-social-view' : ''} ${viewChanged ? 'is-entering' : ''}">${content}</div>
-                                <footer class="wb-window-footer">
-                                    <div class="wb-footer-world-meta">
-                                        <span>ä¸»ä¸–ç•Œ ${escapeHtml(clockLabel)}</span><i></i>
-                                        <span>AIå›å¤ï¼šç”±ä¸–ç•Œé’Ÿç»“ç®—å®é™…è€—æ—¶</span><i></i>
-                                        <span>ç‹¬ç™½ï¼šä»…å¹•åå¯è§</span>
-                                    </div>
-                                    <div class="wb-footer-task-controls">
-                                        <button class="wb-sim-action wb-footer-sim-mobile ${canCancelSimulation ? 'is-cancel' : manualSimulationQueued ? 'is-queued' : ''}"
-                                            type="button" data-wb-action="${canCancelSimulation ? 'cancel-simulation' : 'manual-sync'}"
-                                            ${manualSimulationQueued ? 'disabled' : ''}
-                                            title="${canCancelSimulation
-                                                ? 'åªåœæ­¢å½“å‰ä¸–ç•Œæ¨æ¼”ï¼Œä¸å½±å“å…¶ä»–åå°ä»»åŠ¡'
-                                                : manualSimulationQueued
-                                                    ? 'å·²æ’é˜Ÿï¼›ä¼šåœ¨å½“å‰åå°ä»»åŠ¡å®‰å…¨ç»“æŸåè‡ªåŠ¨å¼€å§‹'
-                                                    : busy
-                                                        ? 'å½“å‰æœ‰åå°ä»»åŠ¡åœ¨è¿è¡Œï¼›ç‚¹å‡»åå®‰å…¨æ’é˜Ÿï¼Œä¸ä¼šå¹¶å‘å†™ä¸–ç•ŒçŠ¶æ€'
-                                                        : 'æ¨æ¼”æœ€æ–°æ­£æ–‡'}">
-                                            <i aria-hidden="true"></i>
-                                            <span>${canCancelSimulation ? 'åœæ­¢æ¨æ¼”' : manualSimulationQueued ? 'æ¨æ¼”å·²æ’é˜Ÿ' : 'æ¨æ¼”ä¸–ç•Œ'}</span>
-                                        </button>
-                                        <button class="wb-sim-action wb-global-stop ${canCancelBackgroundTask ? 'is-cancel' : ''}" type="button"
-                                            data-wb-action="cancel-background-tasks"
-                                            ${canCancelBackgroundTask ? '' : 'disabled'}
-                                            title="${canCancelBackgroundTask
-                                                ? `æ­£åœ¨è¿è¡Œï¼š${escapeAttr(activeBackgroundTasks.join('ã€'))}ã€‚ç‚¹å‡»åœæ­¢å…¨éƒ¨åå°ä»»åŠ¡`
-                                                : 'å½“å‰æ²¡æœ‰æ­£åœ¨è¿è¡Œæˆ–æ’é˜Ÿçš„åå°ä»»åŠ¡'}">
-                                            <i aria-hidden="true"></i><span>åœæ­¢å…¨éƒ¨åå°ä»»åŠ¡</span>
-                                        </button>
-                                    </div>
-                                </footer>
-                            </div>
-                        </div>
-
-                    </section>
-                    ${settingsOpen ? `
-                        <div class="wb-settings-layer">
-                            ${renderSettings(
-                                state,
-                                settings,
-                                syncStatus,
-                                openSettingsGroups,
-                                openSettingsSubgroups,
-                                apiFormDraft,
-                                visibleTagFilterRules(settings),
-                                tagFilterCandidates,
-                                {
-                                    query: worldbookQuery,
-                                    onlyPeople: worldbookOnlyPeople,
-                                    onlyEnabled: worldbookOnlyEnabled,
-                                    selectedIds: worldbookSelectedIds,
-                                },
-                                tavernProfiles,
-                                settingsSection,
-                            )}
-                        </div>
-                    ` : ''}
-                    ${moduleSettingsView ? `
-                        <div class="wb-settings-layer wb-module-settings-layer">
-                            ${renderModuleSettings(
-                                state,
-                                settings,
-                                syncStatus,
-                                moduleSettingsView,
-                                openSettingsSubgroups,
-                                {
-                                    query: worldbookQuery,
-                                    onlyPeople: worldbookOnlyPeople,
-                                    onlyEnabled: worldbookOnlyEnabled,
-                                    selectedIds: worldbookSelectedIds,
-                                },
-                            )}
-                        </div>
-                    ` : ''}
-                </div>
-            ` : ''}
-
-            ${eventFormOpen ? renderEventModal(state, eventEditorId) : ''}
-            ${memoryEditor ? renderMemoryEditorModal(state, memoryEditor) : ''}
-            ${personEditor ? renderPersonEditorModal(state, personEditor) : ''}
-            ${worldEditorOpen ? renderWorldEditorModal(state) : ''}
-            ${recordEditor ? renderRecordEditorModal(state, recordEditor) : ''}
-            ${person ? renderPersonDrawer(person, observerMode, state.clock.absoluteMinute, {
-                canObserve: canObservePerson,
-                observation: personObservation,
-                busy,
-            }) : ''}
-            ${syncStatus.editDecision?.available ? `
-                <div class="wb-edit-choice" role="alertdialog" aria-modal="false"
-                    aria-labelledby="wb-edit-choice-title" aria-describedby="wb-edit-choice-detail">
-                    <span class="wb-edit-choice-face" aria-hidden="true">${escapeHtml(TOAST_FACES.warning)}</span>
-                    <div class="wb-edit-choice-copy">
-                        <strong id="wb-edit-choice-title">æ£€æµ‹åˆ°å·²æ¨æ¼”æ­£æ–‡è¢«ä¿®æ”¹</strong>
-                        <p id="wb-edit-choice-detail">å‰§æƒ…ã€æ—¶é—´æˆ–äººç‰©è¡ŒåŠ¨æœ‰å˜åŒ–æ—¶å»ºè®®é‡æ¨ï¼›è‹¥åªä¿®æ­£é”™å­—ã€æ ‡ç‚¹æˆ–æªè¾ï¼Œå¯ä»¥ä¿ç•™åŸæ¨æ¼”ã€‚</p>
-                    </div>
-                    <div class="wb-edit-choice-actions">
-                        <button type="button" class="is-rerun" data-wb-action="resolve-message-edit" data-mode="rerun">æŒ‰ä¿®æ”¹åæ­£æ–‡é‡æ¨</button>
-                        <button type="button" data-wb-action="resolve-message-edit" data-mode="keep">ä¿ç•™åŸæ¨æ¼”</button>
-                    </div>
-                </div>
-            ` : ''}
-            ${settings.enabled && socialNotice ? `
-                <aside class="wb-social-notice" role="status" aria-live="polite">
-                    <button class="wb-social-notice-main" type="button" data-wb-action="social-open-notice"
-                        data-notice-id="${escapeAttr(socialNotice.id)}"
-                        data-page="${escapeAttr(socialNoticePage)}"
-                        data-conversation-id="${escapeAttr(socialNotice.conversationId || '')}">
-                        ${socialNoticePerson ? renderPersonAvatar(socialNoticePerson, 'is-social') : '<span class="wb-social-notice-avatar">è®¯</span>'}
-                        <span><small>${escapeHtml(socialNoticeLabel)}${socialNotices.length > 1 ? ` Â· å¦æœ‰ ${socialNotices.length - 1} æ¡` : ''}</small><strong>${escapeHtml(socialNoticePerson?.name || 'ä¸–ç•ŒèƒŒé¢é€šè®¯')}</strong><em>${escapeHtml(socialNotice.text || 'ç‚¹å¼€æŸ¥çœ‹')}</em></span>
-                    </button>
-                    <button class="wb-social-notice-close" type="button" data-wb-action="social-dismiss-notice" data-notice-id="${escapeAttr(socialNotice.id)}" aria-label="ç¨åå†çœ‹">Ã—</button>
-                </aside>
-            ` : ''}
-            ${toast ? `
-                <div class="wb-toast" role="${root.dataset.toastTone === 'error' ? 'alert' : 'status'}" aria-live="polite">
-                    <span aria-hidden="true">${escapeHtml(TOAST_FACES[root.dataset.toastTone] || TOAST_FACES.info)}</span>
-                    <div><strong>${escapeHtml(TOAST_LABELS[root.dataset.toastTone] || TOAST_LABELS.info)}</strong><p>${escapeHtml(toast)}</p></div>
-                </div>
-            ` : ''}
-            ${syncStatus.manualUndo?.available ? `
-                <div class="wb-undo-toast" role="status">
-                    <span>${escapeHtml(syncStatus.manualUndo.label)}</span>
-                    <button type="button" data-wb-action="undo-manual">æ’¤é”€</button>
-                </div>
-            ` : ''}
-        `;
-        panelEntrancePending = false;
-
-        const currentContent = root.querySelector('.wb-view-content');
-        if (currentContent) {
-            // A module switch is a new reading context. Reusing another visit's
-            // scroll offset made the first row look clipped beneath the status bar.
-            currentContent.scrollTop = viewChanged ? 0 : (viewScrollTop.get(activeView) || 0);
-        }
-        const currentLingqiChat = root.querySelector('.wb-lingqi-chat-log');
-        if (currentLingqiChat) {
-            if (!lingqiChatScrollState.initialized || lingqiChatScrollState.atBottom) {
-                currentLingqiChat.scrollTop = currentLingqiChat.scrollHeight;
-            } else {
-                currentLingqiChat.scrollTop = Math.min(
-                    lingqiChatScrollState.top,
-                    Math.max(0, currentLingqiChat.scrollHeight - currentLingqiChat.clientHeight),
-                );
-            }
-            lingqiChatScrollState = {
-                top: currentLingqiChat.scrollTop,
-                atBottom: (
-                    currentLingqiChat.scrollHeight
-                    - currentLingqiChat.scrollTop
-                    - currentLingqiChat.clientHeight
-                ) <= 28,
-                initialized: true,
-            };
-        }
-        const currentLingqiNotes = root.querySelector('.wb-lingqi-notes-scroll');
-        if (currentLingqiNotes) {
-            currentLingqiNotes.scrollTop = Math.min(
-                lingqiNotesScrollTop,
-                Math.max(0, currentLingqiNotes.scrollHeight - currentLingqiNotes.clientHeight),
-            );
-        }
-        const currentSettings = root.querySelector('.wb-settings-popover');
-        if (currentSettings) currentSettings.scrollTop = settingsScrollTop;
-        const currentWorldbookList = root.querySelector('.wb-worldbook-entry-list');
-        if (currentWorldbookList) {
-            currentWorldbookList.scrollTop = Math.min(
-                worldbookListScrollTop,
-                Math.max(0, currentWorldbookList.scrollHeight - currentWorldbookList.clientHeight),
-            );
-        }
-        const currentSocialChat = root.querySelector('.wb-social-log');
-        if (currentSocialChat) {
-            if (!socialChatScrollState.initialized || socialChatScrollState.atBottom) {
-                currentSocialChat.scrollTop = currentSocialChat.scrollHeight;
-            } else {
-                currentSocialChat.scrollTop = Math.min(
-                    socialChatScrollState.top,
-                    Math.max(0, currentSocialChat.scrollHeight - currentSocialChat.clientHeight),
-                );
-            }
-            socialChatScrollState = {
-                top: currentSocialChat.scrollTop,
-                atBottom: (
-                    currentSocialChat.scrollHeight
-                    - currentSocialChat.scrollTop
-                    - currentSocialChat.clientHeight
-                ) <= 28,
-                initialized: true,
-            };
-        }
-        const currentEventForm = root.querySelector('[data-wb-form="event"]');
-        if (currentEventForm && eventFormDraft) {
-            for (const [name, value] of Object.entries(eventFormDraft)) {
-                const field = currentEventForm.elements.namedItem(name);
-                if (field && 'value' in field) field.value = value;
-            }
-        }
-        const currentClockForm = root.querySelector('[data-wb-form="clock"]');
-        if (currentClockForm && clockFormDraft) {
-            for (const [name, value] of Object.entries(clockFormDraft)) {
-                const field = currentClockForm.elements.namedItem(name);
-                if (field && 'value' in field) field.value = value;
-            }
-        }
-        if (previousFocus) {
-            const selector = previousFocus.id
-                ? `#${globalThis.CSS?.escape?.(previousFocus.id) || previousFocus.id}`
-                : previousFocus.name
-                    ? `[name="${globalThis.CSS?.escape?.(previousFocus.name) || previousFocus.name}"]`
-                    : '';
-            const field = selector ? root.querySelector(selector) : null;
-            if (field) {
-                field.focus({ preventScroll: true });
-                if (
-                    typeof field.setSelectionRange === 'function'
-                    && Number.isInteger(previousFocus.selectionStart)
-                ) {
-                    field.setSelectionRange(previousFocus.selectionStart, previousFocus.selectionEnd);
-                }
-            }
-        }
-        renderedView = activeView;
-        renderedRevision = stateRevision;
-        if (isOpen) lastSeenRevision = Math.max(lastSeenRevision, stateRevision);
-    }
-
-    function positionOrbElements(x, y) {
-        const placed = clampOrbPosition({ x, y });
-        if (!placed) return null;
-        const orb = root.querySelector('.wb-world-orb');
-        const caption = root.querySelector('.wb-orb-caption');
-        if (orb) {
-            orb.style.left = `${placed.x}px`;
-            orb.style.top = `${placed.y}px`;
-            orb.style.right = 'auto';
-            orb.style.bottom = 'auto';
-        }
-        if (caption) {
-            const captionWidth = 238;
-            const captionX = placed.x > captionWidth + 28
-                ? placed.x - captionWidth - 10
-                : placed.x + placed.size + 10;
-            caption.style.left = `${Math.max(8, Math.min(window.innerWidth - captionWidth - 8, captionX))}px`;
-            caption.style.top = `${placed.y + 5}px`;
-            caption.style.right = 'auto';
-            caption.style.bottom = 'auto';
-        }
-        return placed;
-    }
-
-    function positionOrbFromSettings(settings = getSettings()) {
-        const position = settings?.orbPosition;
-        if (!position) return null;
-        if (settings.orbEdgeHide && !isOpen) {
-            const orb = root.querySelector('.wb-world-orb');
-            if (!orb) return null;
-            const placed = halfDockOrbPosition(position, nearestOrbEdgeSide(position));
-            orb.style.left = `${placed.x}px`;
-            orb.style.top = `${placed.y}px`;
-            orb.style.right = 'auto';
-            orb.style.bottom = 'auto';
-            return placed;
-        }
-        return positionOrbElements(position.x, position.y);
-    }
-
-    root.addEventListener('pointerdown', event => {
-        const orb = event.target.closest('.wb-world-orb');
-        if (!orb || event.button !== 0) return;
-        if (orb.classList.contains('is-edge-hidden')) {
-            const side = orb.classList.contains('is-edge-left') ? 'left' : 'right';
-            orb.classList.remove('is-edge-hidden', 'is-edge-left', 'is-edge-right');
-            const saved = getSettings().orbPosition;
-            const visible = saved || defaultVisibleOrbPosition(side);
-            positionOrbElements(visible.x, visible.y);
-        }
-        const rect = orb.getBoundingClientRect();
-        orb.style.setProperty('left', `${rect.left}px`, 'important');
-        orb.style.setProperty('top', `${rect.top}px`, 'important');
-        orb.style.setProperty('right', 'auto', 'important');
-        orb.style.setProperty('bottom', 'auto', 'important');
-        orb.classList.add('has-custom-position');
-        orbDrag = {
-            pointerId: event.pointerId,
-            startX: event.clientX,
-            startY: event.clientY,
-            originX: rect.left,
-            originY: rect.top,
-            moved: false,
-            x: rect.left,
-            y: rect.top,
-        };
-        orb.setPointerCapture?.(event.pointerId);
-        orb.classList.add('is-dragging');
-    });
-
-    root.addEventListener('pointermove', event => {
-        if (!orbDrag || event.pointerId !== orbDrag.pointerId) return;
-        const deltaX = event.clientX - orbDrag.startX;
-        const deltaY = event.clientY - orbDrag.startY;
-        if (Math.hypot(deltaX, deltaY) > 5) orbDrag.moved = true;
-        if (!orbDrag.moved) return;
-        const placed = positionOrbElements(orbDrag.originX + deltaX, orbDrag.originY + deltaY);
-        if (placed) {
-            orbDrag.x = placed.x;
-            orbDrag.y = placed.y;
-        }
-        event.preventDefault();
-    });
-
-    const finishOrbDrag = async event => {
-        if (!orbDrag || event.pointerId !== orbDrag.pointerId) return;
-        const orb = root.querySelector('.wb-world-orb');
-        orb?.classList.remove('is-dragging');
-        orb?.releasePointerCapture?.(event.pointerId);
-        const completed = orbDrag;
-        orbDrag = null;
-        if (!completed.moved) return;
-
-        const viewport = visualViewportBounds();
-        const orbSize = responsiveOrbSize(viewport.width, viewport.height);
-        const margin = 12;
-        const snappedX = completed.x + orbSize / 2 < viewport.left + viewport.width / 2
-            ? viewport.left + margin
-            : viewport.right - orbSize - margin;
-        const placed = positionOrbElements(snappedX, completed.y);
-        suppressOrbClick = true;
-        window.setTimeout(() => {
-            suppressOrbClick = false;
-        }, 260);
-        if (placed) {
-            await invokeAction('update-settings', {
-                orbPosition: { x: placed.x, y: placed.y },
-            });
-        }
-    };
-    root.addEventListener('pointerup', finishOrbDrag);
-    root.addEventListener('pointercancel', finishOrbDrag);
-
-    root.addEventListener('click', async event => {
-        const target = event.target.closest('[data-wb-action]');
-        if (!target) return;
-        if (
-            target.classList.contains('wb-drawer-scrim')
-            && event.target.closest('.wb-event-form, .wb-person-drawer')
-        ) {
-            return;
-        }
-        const action = target.dataset.wbAction;
-
-        if (action === 'close-panel') {
-            if (event.target === target) close();
-            return;
-        }
-        if (action === 'toggle-panel') {
-            if (target.classList.contains('wb-world-orb') && suppressOrbClick) {
-                suppressOrbClick = false;
-                event.preventDefault();
-                return;
-            }
-            isOpen ? close() : open();
-            return;
-        }
-        if (action === 'dismiss-narrative-prompt') {
-            dismissedNarrativePromptKey = String(target.dataset.promptKey || '');
-            render();
-            return;
-        }
-        if (action === 'set-view') {
-            const nextView = target.dataset.view || 'now';
-            if (activeView === 'memory' && nextView !== 'memory') memorySelectedKeys = new Set();
-            if (nextView !== 'lingqi') {
-                lingqiMascotOverride = '';
-                window.clearTimeout(lingqiMascotTimer);
-            }
-            activeView = nextView;
-            moduleSettingsView = '';
-            render();
-            return;
-        }
-        if (action === 'lingqi-pet') {
-            const now = Date.now();
-            if (now - lingqiPetWindowAt < 1800) lingqiPetCount += 1;
-            else lingqiPetCount = 1;
-            lingqiPetWindowAt = now;
-
-            const nextState = lingqiPetCount >= 4
-                ? 'hold'
-                : lingqiPetCount === 3
-                    ? 'happy'
-                    : 'watch';
-            showLingqiMascotReaction(nextState, nextState === 'hold' ? 1550 : 1050);
-            if (lingqiPetCount >= 4) lingqiPetCount = 0;
-            return;
-        }
-
-        if (action === 'lingqi-copy-support-pack') {
-            const copied = await invokeAction('lingqi-copy-support-pack', {
-                messageId: target.dataset.messageId || '',
-            });
-            if (copied) showLingqiMascotReaction('watch', 900);
-            return;
-        }
-
-        if (action === 'lingqi-confirm-note') {
-            const completed = await invokeAction('lingqi-confirm-note');
-            if (completed) {
-                notify('à¸…  è´´ä½äº†', 'success');
-                showLingqiMascotReaction('happy', 1250);
-            } else {
-                render();
-            }
-            return;
-        }
-        if (action === 'lingqi-dismiss-note') {
-            await invokeAction('lingqi-dismiss-note');
-            showLingqiMascotReaction('hold', 900);
-            return;
-        }
-        if (action === 'lingqi-pause-note') {
-            await invokeAction('lingqi-pause-note', { noteId: target.dataset.noteId || '' });
-            showLingqiMascotReaction('hold', 1000);
-            return;
-        }
-        if (action === 'lingqi-resume-note') {
-            await invokeAction('lingqi-resume-note', { noteId: target.dataset.noteId || '' });
-            showLingqiMascotReaction('note', 900);
-            return;
-        }
-        if (action === 'lingqi-cancel-note') {
-            await invokeAction('lingqi-cancel-note', { noteId: target.dataset.noteId || '' });
-            showLingqiMascotReaction('hold', 900);
-            return;
-        }
-
-        if (action === 'open-world-editor') {
-            worldEditorOpen = true;
-            render();
-            return;
-        }
-        if (action === 'close-world-editor') {
-            worldEditorOpen = false;
-            render();
-            return;
-        }
-        if (action === 'open-record-editor') {
-            recordEditor = {
-                kind: target.dataset.recordKind === 'archive' ? 'archive' : 'echo',
-                id: target.dataset.recordId || '',
-            };
-            render();
-            return;
-        }
-        if (action === 'close-record-editor') {
-            recordEditor = null;
-            render();
-            return;
-        }
-        if (action === 'delete-record') {
-            const kind = target.dataset.recordKind === 'archive' ? 'archive' : 'echo';
-            const confirmed = globalThis.confirm?.(`(ãƒ»_ãƒ»;)  ç¡®å®šåˆ é™¤è¿™æ¡${kind === 'echo' ? 'å›å£°' : 'çºªäº‹'}å—ï¼Ÿåˆ é™¤åå¯ä»¥ç”¨åº•éƒ¨æ’¤é”€æ¢å¤ã€‚`);
-            if (confirmed === false) return;
-            const completed = await invokeAction('delete-record', {
-                kind,
-                id: target.dataset.recordId || '',
-            });
-            if (completed && recordEditor?.id === (target.dataset.recordId || '')) recordEditor = null;
-            render();
-            return;
-        }
-        if (action === 'expand-folds' || action === 'collapse-folds') {
-            const prefix = target.dataset.foldPrefix || '';
-            const shouldOpen = action === 'expand-folds';
-            [...root.querySelectorAll('.wb-fold[data-fold-key]')]
-                .filter(item => !prefix || String(item.dataset.foldKey || '').startsWith(prefix))
-                .forEach(item => {
-                    item.open = shouldOpen;
-                    const key = item.dataset.foldKey;
-                    if (!key) return;
-                    if (shouldOpen) openContentFolds.add(key);
-                    else openContentFolds.delete(key);
-                });
-            return;
-        }
-        if (action === 'set-memory-filter') {
-            memoryFilter = target.dataset.filter || 'active';
-            memoryVisibleCount = 12;
-            memorySelectedKeys = new Set();
-            render();
-            return;
-        }
-        if (action === 'open-memory-editor') {
-            memoryEditor = {
-                kind: target.dataset.memoryKind || 'fact',
-                id: target.dataset.memoryId || '',
-            };
-            render();
-            return;
-        }
-        if (action === 'close-memory-editor') {
-            memoryEditor = null;
-            render();
-            return;
-        }
-        if (action === 'set-clue-archive-state') {
-            const archived = target.dataset.archived === 'true';
-            const completed = await invokeAction('set-clue-archive-state', {
-                id: target.dataset.clueId || '',
-                archived,
-            });
-            if (completed !== false && archived && memoryFilter === 'resolved-clues') {
-                memorySelectedKeys = new Set();
-            }
-            render();
-            return;
-        }
-        if (action === 'toggle-memory-flag') {
-            await invokeAction('toggle-memory-flag', {
-                kind: target.dataset.memoryKind || 'fact',
-                id: target.dataset.memoryId || '',
-                field: target.dataset.memoryField || 'important',
-            });
-            render();
-            return;
-        }
-        if (action === 'select-visible-memory') {
-            let items = [];
-            try {
-                items = JSON.parse(target.dataset.memoryItems || '[]');
-            } catch {
-                items = [];
-            }
-            memorySelectedKeys = new Set(
-                items.map(item => `${item.kind}:${item.id}`),
-            );
-            render();
-            return;
-        }
-        if (action === 'clear-memory-selection') {
-            memorySelectedKeys = new Set();
-            render();
-            return;
-        }
-        if (action === 'bulk-delete-memory') {
-            const items = [...memorySelectedKeys].map(key => {
-                const separator = key.indexOf(':');
-                return {
-                    kind: separator >= 0 ? key.slice(0, separator) : 'fact',
-                    id: separator >= 0 ? key.slice(separator + 1) : key,
-                };
-            });
-            if (!items.length) return;
-            const confirmed = globalThis.confirm?.(
-                `(ãƒ»_ãƒ»;)  ç¡®å®šåˆ é™¤é€‰ä¸­çš„ ${items.length} æ¡è®°å¿†å—ï¼Ÿ\nåˆ é™¤å‰ä¼šè‡ªåŠ¨å»ºç«‹æ¢å¤ç‚¹ï¼Œé”å®šè®°å¿†ä¸ä¼šè¢«åˆ ã€‚`,
-            );
-            if (confirmed === false) return;
-            const completed = await invokeAction('bulk-delete-memory', { items });
-            if (completed !== false) memorySelectedKeys = new Set();
-            render();
-            return;
-        }
-        if (action === 'clear-filtered-memory') {
-            const state = getState();
-            const memory = state.storyMemory || { facts: [], clues: [], summaries: [] };
-            const normalizedFilter = ['active', 'facts', 'clues', 'resolved-clues', 'archived-clues', 'episodes', 'all'].includes(memoryFilter)
-                ? memoryFilter
-                : 'active';
-            const visibleFact = fact => (
-                (observerMode === 'backstage' || fact.visibility !== 'hidden')
-                && !fact.locked
-                && memoryItemMatches(fact, memoryQuery)
-                && (
-                    normalizedFilter === 'all'
-                    || normalizedFilter === 'facts'
-                    || (normalizedFilter === 'active' && ['active', 'disputed'].includes(fact.status))
-                )
-            );
-            const visibleClue = clue => (
-                (observerMode === 'backstage' || clue.visibility !== 'hidden')
-                && !clue.locked
-                && memoryItemMatches(clue, memoryQuery)
-                && memoryClueRelationMatches(clue, memoryClueRelationFilter, state)
-                && (
-                    normalizedFilter === 'all'
-                    || (normalizedFilter === 'clues' && !clue.archived)
-                    || (normalizedFilter === 'resolved-clues' && !clue.archived && ['resolved', 'discarded'].includes(clue.status))
-                    || (normalizedFilter === 'archived-clues' && clue.archived)
-                    || (
-                        normalizedFilter === 'active'
-                        && !clue.archived
-                        && ['open', 'developing', 'echoed', 'triggered'].includes(clue.status)
-                    )
-                )
-            );
-            const visibleSummary = summary => (
-                observerMode === 'backstage'
-                && !summary.locked
-                && memoryItemMatches(summary, memoryQuery)
-                && ['all', 'episodes'].includes(normalizedFilter)
-            );
-            const items = [
-                ...(memory.facts || []).filter(visibleFact).map(item => ({ kind: 'fact', id: item.id })),
-                ...(memory.clues || []).filter(visibleClue).map(item => ({ kind: 'clue', id: item.id })),
-                ...(memory.summaries || []).filter(visibleSummary).map(item => ({ kind: 'summary', id: item.id })),
-            ];
-            if (!items.length) {
-                notify('è¿™ä¸ªç­›é€‰é‡Œæ²¡æœ‰å¯åˆ é™¤çš„æœªé”å®šè®°å¿†ï½', 'info');
-                return;
-            }
-            const confirmed = globalThis.confirm?.(
-                `(ãƒ»_ãƒ»;)  å°†æ¸…ç†å½“å‰èŒƒå›´å†… ${items.length} æ¡æœªé”å®šè®°å¿†ã€‚\né”å®šè®°å¿†ä¼šä¿ç•™ï¼Œæ¸…ç†å‰ä¼šè‡ªåŠ¨å»ºç«‹æ¢å¤ç‚¹ã€‚`,
-            );
-            if (confirmed === false) return;
-            const completed = await invokeAction('bulk-delete-memory', { items });
-            if (completed !== false) memorySelectedKeys = new Set();
-            render();
-            return;
-        }
-
-        if (action === 'delete-memory-item') {
-            const confirmed = globalThis.confirm?.('(ãƒ»_ãƒ»;)  ç¡®å®šåˆ é™¤è¿™æ¡è®°å¿†å—ï¼Ÿæ­¤æ“ä½œå¯ä»¥ç”¨åº•éƒ¨æ’¤é”€æ¢å¤ã€‚');
-            if (confirmed === false) return;
-            await invokeAction('delete-memory-item', {
-                kind: target.dataset.memoryKind || 'fact',
-                id: target.dataset.memoryId || '',
-            });
-            render();
-            return;
-        }
-        if (action === 'load-more-memory') {
-            memoryVisibleCount += 12;
-            render();
-            return;
-        }
-        if (action === 'toggle-settings') {
-            const opening = !settingsOpen;
-            settingsOpen = opening;
-            if (opening) {
-                moduleSettingsView = '';
-                if (!['common', 'injection', 'connection', 'advanced'].includes(settingsSection)) {
-                    settingsSection = 'common';
-                }
-                openSettingsGroups = new Set();
-                openSettingsSubgroups = new Set();
-                settingsScrollTop = 0;
-            } else {
-                clockFormDraft = null;
-                tagFilterDraftRules = null;
-                tagFilterCandidates = [];
-            }
-            render();
-            return;
-        }
-        if (action === 'settings-section') {
-            const requested = String(target.dataset.section || 'common');
-            settingsSection = ['common', 'injection', 'connection', 'advanced'].includes(requested)
-                ? requested
-                : 'common';
-            settingsScrollTop = 0;
-            render();
-            return;
-        }
-        if (action === 'open-global-settings-section') {
-            const requested = String(target.dataset.section || 'common');
-            settingsSection = ['common', 'injection', 'connection', 'advanced'].includes(requested)
-                ? requested
-                : 'common';
-            moduleSettingsView = '';
-            settingsOpen = true;
-            openSettingsGroups = new Set();
-            openSettingsSubgroups = new Set();
-            settingsScrollTop = 0;
-            render();
-            return;
-        }
-        if (action === 'toggle-module-settings') {
-            const requestedView = target.dataset.view || moduleSettingsView || activeView;
-            const opening = moduleSettingsView !== requestedView;
-            moduleSettingsView = opening ? requestedView : '';
-            if (opening) {
-                settingsOpen = false;
-                settingsScrollTop = 0;
-                // æ¿å—è®¾ç½®å·²ç»æ˜¯æ‰å¹³ç»“æ„ï½ä¸å†ä¸ºäº†æ—§æ€»è®¾ç½®å±‚çº§é¢„å±•å¼€ä¸€å †å¥—å¨ƒã€‚
-                openSettingsGroups = new Set();
-                openSettingsSubgroups = new Set();
-            } else {
-                clockFormDraft = null;
-            }
-            render();
-            return;
-        }
-        if (action === 'add-tag-filter-rule') {
-            const settings = getSettings();
-            const current = visibleTagFilterRules(settings);
-            tagFilterDraftRules = [...current, { open: '', close: '' }];
-            skipTagFilterDraftCapture = true;
-            render();
-            return;
-        }
-        if (action === 'remove-tag-filter-rule') {
-            const index = Number(target.dataset.index);
-            const settings = getSettings();
-            const current = visibleTagFilterRules(settings).filter((_, i) => i !== index);
-            skipTagFilterDraftCapture = true;
-            await persistTagFilterRules(current);
-            render();
-            return;
-        }
-        if (action === 'scan-tag-candidates') {
-            const result = await invokeAction('scan-tag-candidates', {
-                count: Number(target.dataset.count) || 1,
-            });
-            tagFilterCandidates = Array.isArray(result) ? result : [];
-            openSettingsGroups.add('advanced');
-            openSettingsSubgroups.add('advanced-tagfilter');
-            render();
-            return;
-        }
-        if (action === 'apply-tag-candidates') {
-            const settings = getSettings();
-            const current = visibleTagFilterRules(settings).map(rule => ({ ...rule }));
-            const selected = [...root.querySelectorAll('[data-wb-tag-candidate-index]:checked')]
-                .map(input => tagFilterCandidates[Number(input.dataset.wbTagCandidateIndex)])
-                .filter(Boolean)
-                .filter(item => !item.alreadyAdded);
-            const seen = new Set(current.map(rule => `${String(rule.open || '').trim()}\u0000${String(rule.close || '').trim()}`));
-            let added = 0;
-            for (const item of selected) {
-                const key = `${item.open}\u0000${item.close}`;
-                if (seen.has(key) || current.length >= 30) continue;
-                current.push({ open: item.open, close: item.close });
-                seen.add(key);
-                added += 1;
-            }
-            await persistTagFilterRules(current);
-            tagFilterCandidates = tagFilterCandidates.map(item => ({
-                ...item,
-                alreadyAdded: item.alreadyAdded || seen.has(`${item.open}\u0000${item.close}`),
-                recommended: false,
-            }));
-            notify(added ? `å·²åŠ å…¥ ${added} æ¡è¿‡æ»¤è§„åˆ™ã€‚` : 'æ²¡æœ‰æ–°çš„å€™é€‰éœ€è¦åŠ å…¥ã€‚', added ? 'success' : 'info');
-            render();
-            return;
-        }
-        if (action === 'set-public-opinion-mode') {
-            publicOpinionMode = ['forum', 'sandbox'].includes(target.dataset.mode) ? target.dataset.mode : 'news';
-            render();
-            return;
-        }
-        if (action === 'generate-public-opinion') {
-            if (publicOpinionActionBusy) return;
-            publicOpinionActionBusy = true;
-            render();
-            try {
-                const result = await invokeAction('generate-public-opinion');
-                if (result) {
-                    notify('ä¸–ç•Œèˆ†æƒ…æ£€æŸ¥å®Œæˆï½', 'success');
-                }
-            } finally {
-                publicOpinionActionBusy = false;
-                render();
-            }
-            return;
-        }
-        if (action === 'generate-public-opinion-sandbox') {
-            if (publicOpinionSandboxActionBusy) return;
-            publicOpinionSandboxActionBusy = true;
-            render();
-            try {
-                const result = await invokeAction('generate-public-opinion-sandbox');
-                if (result) {
-                    publicOpinionMode = 'sandbox';
-                    notify('éšä¾¿é€›åˆ°ä¸€é”…æ–°é²œç“œï½æ”¾å¿ƒï¼Œè¿™äº›ä¸ç®—æ­£å² `(â‰§â–½â‰¦)`', 'success');
-                }
-            } finally {
-                publicOpinionSandboxActionBusy = false;
-                render();
-            }
-            return;
-        }
-        if (action === 'clear-public-opinion-sandbox') {
-            await invokeAction('clear-public-opinion-sandbox');
-            render();
-            return;
-        }
-        if (action === 'clear-public-opinion') {
-            const confirmed = globalThis.confirm?.('(ãƒ»_ãƒ»;)  æ¸…ç©ºå½“å‰èˆ†æƒ…å¿«ç…§å—ï¼Ÿä¸–ç•ŒçŠ¶æ€ä¸ä¼šå—åˆ°å½±å“ã€‚');
-            if (confirmed === false) return;
-            await invokeAction('clear-public-opinion');
-            render();
-            return;
-        }
-        if (action === 'dismiss-public-opinion-item') {
-            await invokeAction('dismiss-public-opinion-item', {
-                kind: target.dataset.opinionKind === 'forum' ? 'forum' : 'news',
-                itemId: target.dataset.itemId || '',
-            });
-            render();
-            return;
-        }
-        if (action === 'set-observer') {
-            observerMode = target.dataset.mode === 'known' ? 'known' : 'backstage';
-            selectedPersonId = null;
-            render();
-            return;
-        }
-        if (action === 'select-person') {
-            if (selectedPersonId !== (target.dataset.personId || null)) {
-                personObservation = null;
-            }
-            selectedPersonId = target.dataset.personId || null;
-            if (selectedPersonId) {
-                personObservation = await invokeAction('get-person-observation', {
-                    personId: selectedPersonId,
-                }) || null;
-            }
-            render();
-            return;
-        }
-        if (action === 'close-person') {
-            selectedPersonId = null;
-            personObservation = null;
-            render();
-            return;
-        }
-        if (action === 'open-person-editor') {
-            personEditor = { id: target.dataset.personId || '', name: target.dataset.personName || '' };
-            selectedPersonId = null;
-            personObservation = null;
-            render();
-            return;
-        }
-        if (action === 'social-toggle-group') {
-            socialGroupOpen = !socialGroupOpen;
-            if (!socialGroupOpen) socialGroupSelectedIds = new Set();
-            render();
-            return;
-        }
-        if (action === 'social-open-notice') {
-            const page = String(target.dataset.page || 'contacts');
-            const conversationId = String(target.dataset.conversationId || '');
-            socialNoticeVisibleId = '';
-            window.clearTimeout(socialNoticeTimer);
-            socialNoticeTimer = null;
-            target.closest('.wb-social-notice')?.remove();
-            await invokeAction('social-read-notice', { noticeId: target.dataset.noticeId || '' });
-            if (conversationId) {
-                await invokeAction('social-select-conversation', { conversationId });
-            }
-            activeView = 'social';
-            socialPage = ['messages', 'contacts', 'moments'].includes(page) ? page : 'contacts';
-            socialChatScrollState = { top: 0, atBottom: true, initialized: false };
-            open();
-            return;
-        }
-        if (action === 'social-dismiss-notice') {
-            socialNoticeVisibleId = '';
-            window.clearTimeout(socialNoticeTimer);
-            socialNoticeTimer = null;
-            target.closest('.wb-social-notice')?.remove();
-            await invokeAction('social-read-notice', { noticeId: target.dataset.noticeId || '' });
-            render();
-            return;
-        }
-        if (action === 'social-set-page') {
-            const nextPage = String(target.dataset.page || 'messages');
-            socialPage = ['messages', 'contacts', 'moments'].includes(nextPage) ? nextPage : 'messages';
-            socialGroupOpen = false;
-            render();
-            return;
-        }
-        if (action === 'social-go-people') {
-            activeView = 'people';
-            moduleSettingsView = '';
-            render();
-            return;
-        }
-        if (action === 'social-import-people') {
-            activeView = 'people';
-            settingsOpen = false;
-            moduleSettingsView = 'people';
-            openSettingsSubgroups = new Set(['people-worldbook']);
-            settingsScrollTop = 0;
-            render();
-            return;
-        }
-        if (action === 'social-open-person') {
-            const completed = await invokeAction('social-open-person', {
-                personId: target.dataset.personId || '',
-            });
-            if (completed) {
-                activeView = 'social';
-                socialPage = 'messages';
-                selectedPersonId = null;
-                socialDraft = '';
-                socialChatScrollState = { top: 0, atBottom: true, initialized: false };
-            }
-            render();
-            return;
-        }
-        if (action === 'social-respond-friend-request') {
-            const accept = target.dataset.accept === 'true';
-            if (!accept) {
-                const confirmed = globalThis.confirm?.('(ãƒ»_ãƒ»;)  è¦æ‹’ç»è¿™æ¡å¥½å‹ç”³è¯·å—ï¼Ÿå¯¹æ–¹ä¼šä¿ç•™è‡ªå·±çš„ååº”ï¼Œä½†ä¸ä¼šè¿›å…¥é€šè®¯å½•ã€‚');
-                if (confirmed === false) return;
-            }
-            const result = await invokeAction('social-respond-friend-request', {
-                personId: target.dataset.personId || '',
-                accept,
-            });
-            if (result) notify(accept ? `å·²æ¥å— ${result.personName} çš„å¥½å‹ç”³è¯·ã€‚` : `å·²æ‹’ç» ${result.personName} çš„å¥½å‹ç”³è¯·ã€‚`, accept ? 'success' : 'info');
-            render();
-            return;
-        }
-        if (action === 'social-remove-friend') {
-            const personName = String(target.dataset.personName || 'è¿™ä½å¥½å‹');
-            const confirmed = globalThis.confirm?.(
-                `(ãƒ»_ãƒ»;)  ç¡®å®šåˆ é™¤ ${personName} å—ï¼Ÿ\nç§èŠè®°å½•ä¼šä¿ç•™ï¼Œä½†ä¸èƒ½ç»§ç»­å‘é€ï¼›å…±åŒç¾¤èŠä¸ä¼šè‡ªåŠ¨é€€å‡ºã€‚ä¹‹åä»å¯é‡æ–°ç”³è¯·å¥½å‹ã€‚`,
-            );
-            if (confirmed === false) return;
-            const result = await invokeAction('social-remove-friend', { personId: target.dataset.personId || '' });
-            if (result) notify(`å·²ä»é€šè®¯å½•åˆ é™¤ ${result.personName}ã€‚`, 'info');
-            render();
-            return;
-        }
-        if (action === 'social-refresh-moments') {
-            const result = await invokeAction('social-refresh-moments');
-            if (result && typeof result === 'object') {
-                notify(result.postCount
-                    ? `æœ‹å‹åœˆæ–°å¢ ${result.postCount} æ¡åŠ¨æ€${result.imageCount ? 'ï¼Œæœ‰ 1 æ¡é…å›¾' : ''}ã€‚`
-                    : 'è¿™æ¬¡æ²¡æœ‰å¥½å‹æƒ³å‘åŠ¨æ€ã€‚', result.postCount ? 'success' : 'info');
-            }
-            render();
-            return;
-        }
-        if (action === 'social-toggle-moment-like') {
-            await invokeAction('social-toggle-moment-like', { momentId: target.dataset.momentId || '' });
-            render();
-            return;
-        }
-        if (action === 'social-request-reply') {
-            const conversationId = String(target.dataset.conversationId || '');
-            if (!conversationId) return;
-            await invokeAction('social-request-reply', { conversationId });
-            render();
-            return;
-        }
-        if (action === 'social-select-conversation') {
-            await invokeAction('social-select-conversation', {
-                conversationId: target.dataset.conversationId || '',
-            });
-            socialDraft = '';
-            socialChatScrollState = { top: 0, atBottom: true, initialized: false };
-            render();
-            return;
-        }
-        if (action === 'toggle-people-batch') {
-            peopleSelectionMode = !peopleSelectionMode;
-            peopleSelectedIds = new Set();
-            render();
-            return;
-        }
-        if (action === 'select-all-people') {
-            peopleSelectedIds = new Set(
-                [...root.querySelectorAll('[data-wb-person-select]:not(:disabled)')]
-                    .map(input => String(input.value || ''))
-                    .filter(Boolean),
-            );
-            render();
-            return;
-        }
-        if (action === 'clear-people-selection') {
-            peopleSelectedIds = new Set();
-            render();
-            return;
-        }
-        if (action === 'delete-selected-people') {
-            const ids = [...peopleSelectedIds];
-            const selected = getState().people.filter(person => ids.includes(person.id));
-            if (!selected.length) return;
-            const preview = selected.slice(0, 10).map(person => `â€¢ ${person.name}`).join('\n');
-            const remainder = selected.length > 10 ? `\nâ€¦â€¦å¦æœ‰ ${selected.length - 10} äºº` : '';
-            const confirmed = globalThis.confirm?.(
-                `(ãƒ»_ãƒ»;)  ç¡®å®šæ‰¹é‡åˆ é™¤è¿™ ${selected.length} ä¸ªäººç‰©å—ï¼Ÿ\n\n${preview}${remainder}\n\nä¼šä¸€å¹¶æ¸…æ‰è¿™äº›äººç‰©çš„å³æ—¶è§‚æµ‹ç¼“å­˜ï¼›ä¸ä¼šåˆ é™¤èŠå¤©æ­£æ–‡æˆ–æ­£å¼ä¸–ç•Œè®°å¿†ã€‚åˆ é™¤åä»å¯ç”¨åº•éƒ¨â€œæ’¤é”€â€æ¢å¤ã€‚`,
-            );
-            if (confirmed === false) return;
-            const completed = await invokeAction('delete-manual-people', { ids });
-            if (completed) {
-                peopleSelectedIds = new Set();
-                peopleSelectionMode = false;
-            }
-            render();
-            return;
-        }
-        if (action === 'close-person-editor') {
-            personEditor = null;
-            render();
-            return;
-        }
-        if (action === 'clear-person-avatar') {
-            const completed = await invokeAction('clear-person-avatar', {
-                id: target.dataset.personId || '',
-            });
-            if (completed) notify('å¤´åƒæ”¶èµ·æ¥å•¦ï½åˆå˜å›æ–‡å­—å¤´åƒäº† (ï½¡â€¢Ì€á´—-)âœ§', 'success');
-            render();
-            return;
-        }
-        if (action === 'delete-manual-person') {
-            const confirmed = globalThis.confirm?.('(ãƒ»_ãƒ»;)  ç¡®å®šä»åå°äººç‰©åå•ä¸­åˆ é™¤è¿™ä¸ª NPC å—ï¼Ÿ');
-            if (confirmed === false) return;
-            const completed = await invokeAction('delete-manual-person', {
-                id: target.dataset.personId || '',
-            });
-            if (completed) personEditor = null;
-            render();
-            return;
-        }
-        if (action === 'open-event-form') {
-            eventEditorId = '';
-            eventFormDraft = null;
-            eventFormOpen = true;
-            render();
-            return;
-        }
-        if (action === 'open-terminal-person') {
-            const completed = await invokeAction('social-open-person', {
-                personId: target.dataset.personId || '',
-            });
-            if (completed) {
-                activeView = 'social';
-                selectedPersonId = null;
-                socialDraft = '';
-                socialChatScrollState = { top: 0, atBottom: true, initialized: false };
-                render();
-            }
-            return;
-        }
-        if (action === 'open-terminal-event') {
-            globalThis.worldTerminalHost?.openEventDiscussion?.(target.dataset.eventId || '');
-            return;
-        }
-        if (action === 'open-event-editor') {
-            eventEditorId = target.dataset.eventId || '';
-            eventFormDraft = null;
-            eventFormOpen = Boolean(eventEditorId);
-            render();
-            return;
-        }
-        if (action === 'delete-event') {
-            const eventId = target.dataset.eventId || '';
-            const confirmed = globalThis.confirm?.('(ãƒ»_ãƒ»;)  ç¡®å®šåˆ é™¤è¿™æ¡æš—æµå—ï¼Ÿåˆ é™¤åå¯ä»¥ç”¨åº•éƒ¨æ’¤é”€æ¢å¤ã€‚');
-            if (confirmed === false) return;
-            const completed = await invokeAction('delete-event', { eventId });
-            if (completed && eventEditorId === eventId) {
-                eventEditorId = '';
-                eventFormOpen = false;
-                eventFormDraft = null;
-            }
-            render();
-            return;
-        }
-        if (action === 'close-event-form') {
-            eventEditorId = '';
-            eventFormDraft = null;
-            eventFormOpen = false;
-            render();
-            return;
-        }
-        if (action === 'setting-button') {
-            const setting = target.dataset.setting;
-            const value = target.dataset.value;
-            await invokeAction('update-settings', {
-                [setting]: value,
-            });
-            render();
-            // é€‰æ‹©â€œç‹¬ç«‹æ¥å£â€åç«‹å³å±•å¼€å¡«å†™åŒºï¼Œæ¢å¤ä¸€é”®è¿›å…¥é…ç½®çš„å¡«å†™ä½“éªŒã€‚
-            // ç”¨æˆ·ä¹‹åä»å¯æ‰‹åŠ¨æ”¶èµ·ï¼›æ™®é€šé‡æ¸²æŸ“ä¸ä¼šå¼ºåˆ¶å†æ¬¡å±•å¼€ã€‚
-            if (setting === 'apiMode' && value === 'tavern-profile') {
-                settingsSection = 'connection';
-                openSettingsGroups.add('connection');
-                render();
-                window.setTimeout(() => {
-                    root.querySelector('[data-wb-tavern-profile-select]')?.focus();
-                }, 0);
-            }
-            if (setting === 'apiMode' && value === 'custom') {
-                settingsSection = 'connection';
-                window.setTimeout(() => {
-                    const connectionGroup = root.querySelector('.wb-settings-group[data-settings-group="connection"]');
-                    const customGroup = root.querySelector('.wb-settings-subgroup[data-settings-subgroup="connection-custom"]');
-                    if (connectionGroup) connectionGroup.open = true;
-                    if (customGroup) customGroup.open = true;
-                    openSettingsGroups.add('connection');
-                    openSettingsSubgroups.add('connection-custom');
-                    const form = root.querySelector('[data-wb-form="api"]');
-                    if (!form) return;
-                    const url = form.elements?.customApiUrl;
-                    const key = form.elements?.customApiCredential;
-                    const model = form.elements?.customApiModel;
-                    if (!String(url?.value || '').trim()) url?.focus();
-                    else if (!getSettings().customApiKey && !String(key?.value || '').trim()) key?.focus();
-                    else if (!String(model?.value || '').trim()) model?.focus();
-                }, 0);
-            }
-            return;
-        }
-        if (action === 'cycle-theme') {
-            const settings = getSettings();
-            const state = getState();
-            // é¡¶æ å¿«æ·é”®åªåšâ€œæ—¥é—´ â†” å¤œé—´â€ç›´åˆ‡ï¼›è‡ªåŠ¨æ¨¡å¼ä»å¯åœ¨è®¾ç½®é¡µé€‰æ‹©ã€‚
-            // æ—§é€»è¾‘ä¼šç»è¿‡ autoï¼Œè‹¥ auto æ°å¥½è§£ææˆå½“å‰ä¸»é¢˜ï¼Œè§†è§‰ä¸ŠåƒæŒ‰é’®å¤±çµã€‚
-            const currentTheme = themeFor(state, settings);
-            const next = currentTheme === 'day' ? 'night' : 'day';
-            await invokeAction('update-settings', { theme: next });
-            render();
-            return;
-        }
-        if (action === 'sync-clock-from-story') {
-            clockFormDraft = null;
-            await invokeAction('sync-clock-from-story');
-            render();
-            return;
-        }
-        if (action === 'advance-clock') {
-            clockFormDraft = null;
-            await invokeAction('advance-clock', { minutes: Number(target.dataset.minutes) || 0 });
-            render();
-            return;
-        }
-        if (action === 'smart-import-worldbook-people') {
-            const form = target.closest('[data-wb-form="worldbook"]');
-            worldbookSelectedIds = new Set();
-            worldbookListScrollTop = 0;
-            const result = await invokeAction('smart-import-worldbook-people', {
-                bookName: form?.elements?.bookName?.value || '',
-            });
-            if (result && typeof result === 'object') {
-                const imported = Number(result.created || 0) + Number(result.updated || 0);
-                if (result.needsReview) {
-                    worldbookOnlyPeople = true;
-                    notify(`è‡ªåŠ¨å¯¼å…¥æ²¡æœ‰è´¸ç„¶ä¸‹æ‰‹ï½è¿˜æœ‰ ${Number(result.reviewCount) || 0} ä¸ªäººç‰©å€™é€‰éœ€è¦ä½ ç¡®è®¤ã€‚`, 'info');
-                } else {
-                    const tail = Number(result.reviewCount) > 0
-                        ? `ï¼Œå¦æœ‰ ${result.reviewCount} ä¸ªä¸å¤ªç¡®å®šçš„å€™é€‰ç•™åœ¨ä¸‹é¢`
-                        : '';
-                    notify(`ä¸–ç•Œä¹¦äººç‰©å¯¼å…¥å®Œæˆï¼šå¤„ç† ${imported} äºº${tail}ã€‚`, 'success');
-                    worldbookOnlyPeople = Number(result.reviewCount) > 0;
-                }
-            }
-            render();
-            return;
-        }
-        if (action === 'scan-worldbook') {
-            const form = target.closest('[data-wb-form="worldbook"]');
-            worldbookSelectedIds = new Set();
-            worldbookListScrollTop = 0;
-            const result = await invokeAction('scan-worldbook', {
-                bookName: form?.elements?.bookName?.value || '',
-            });
-            // é«˜çº§æ‰‹åŠ¨æŒ‘é€‰å¿…é¡»å…ˆå±•ç¤ºå®Œæ•´æ¡ç›®ã€‚æ—§é€»è¾‘è‡ªåŠ¨åˆ‡åˆ°â€œåªçœ‹ç–‘ä¼¼äººç‰©â€ï¼Œ
-            // ä¸€æ—¦è¯†åˆ«æ¼äººï¼Œç”¨æˆ·è¿æ¼æ‰çš„æ¡ç›®éƒ½çœ‹ä¸åˆ°ï¼Œæ›´ä¸å¯èƒ½æ‰‹åŠ¨çº æ­£ã€‚
-            if (result && Array.isArray(result.entries)) worldbookOnlyPeople = false;
-            render();
-            return;
-        }
-        if (action === 'select-worldbook-visible' || action === 'clear-worldbook-visible') {
-            const entries = Array.isArray(getSyncStatus()?.worldbook?.entries)
-                ? getSyncStatus().worldbook.entries
-                : [];
-            const visible = filterWorldbookEntries(entries, {
-                query: worldbookQuery,
-                onlyPeople: worldbookOnlyPeople,
-                onlyEnabled: worldbookOnlyEnabled,
-            });
-            const next = new Set(worldbookSelectedIds);
-            for (const entry of visible) {
-                if (action === 'select-worldbook-visible') {
-                    if (entry.importablePerson ?? entry.likelyPerson) next.add(String(entry.uid));
-                } else {
-                    next.delete(String(entry.uid));
-                }
-            }
-            worldbookSelectedIds = next;
-            render();
-            return;
-        }
-        if (action === 'toggle-event-delivery') {
-            await invokeAction('toggle-event-delivery', {
-                eventId: target.dataset.eventId || '',
-            });
-            render();
-            return;
-        }
-        if (action === 'import-state') {
-            root.querySelector('.wb-import-input')?.click();
-            return;
-        }
-        if (action === 'catch-up-person') {
-            await invokeAction('catch-up-person', {
-                personId: target.dataset.personId || '',
-            });
-            render();
-            return;
-        }
-        if (action === 'prioritize-person') {
-            await invokeAction('prioritize-person', {
-                personId: target.dataset.personId || '',
-                enabled: target.dataset.enabled !== 'false',
-            });
-            render();
-            return;
-        }
-        if (action === 'observe-person') {
-            const result = await invokeAction('observe-person', {
-                personId: target.dataset.personId || '',
-                force: target.dataset.force === 'true',
-            });
-            if (result && typeof result === 'object' && result.text) {
-                personObservation = result;
-            }
-            render();
-            return;
-        }
-        if (action === 'queue-person-observation') {
-            const result = await invokeAction('queue-person-observation', {
-                personId: target.dataset.personId || '',
-            });
-            if (result && typeof result === 'object') personObservation = result;
-            render();
-            return;
-        }
-        if (action === 'resolve-message-edit') {
-            await invokeAction('resolve-message-edit', {
-                mode: target.dataset.mode === 'keep' ? 'keep' : 'rerun',
-            });
-            render();
-            return;
-        }
-        if (action === 'save-api-profile-from-form') {
-            const form = target.closest('[data-wb-form="api"]');
-            if (!form) return;
-            const urlField = form.elements?.customApiUrl;
-            const modelField = form.elements?.customApiModel;
-            if (urlField && !urlField.checkValidity()) {
-                urlField.reportValidity();
-                return;
-            }
-            if (modelField && !String(modelField.value || '').trim()) {
-                modelField.focus();
-                notify('å…ˆé€‰ä¸ªæ¨¡å‹å†ä¿å­˜æ–¹æ¡ˆå§ï½', 'error');
-                return;
-            }
-            const data = readApiForm(form);
-            const profileId = String(data.profileId || '').trim();
-            const existingProfile = (getSettings().apiProfiles || []).find(item => item.id === profileId);
-            const key = String(data.customApiCredential || '').trim()
-                || existingProfile?.key
-                || (!profileId ? getSettings().customApiKey : '');
-            if (!key) {
-                notify('è¿™ä¸ªæ–¹æ¡ˆè¿˜ç¼º API Key å“¦ï½', 'error');
-                form.elements?.customApiCredential?.focus();
-                return;
-            }
-            const name = String(data.profileName || '').trim()
-                || String(data.customApiModel || '').trim()
-                || 'æˆ‘çš„ç‹¬ç«‹ API';
-            const completed = await invokeAction('save-api-profile', {
-                id: profileId,
-                name,
-                url: data.customApiUrl,
-                key: String(data.customApiCredential || '').trim(),
-                model: data.customApiModel,
-                transport: data.customApiTransport,
-            });
-            if (completed) {
-                forgetApiKeyDraft(data);
-                openSettingsSubgroups.add('connection-profiles');
-            }
-            render();
-            return;
-        }
-        if (action === 'edit-api-profile') {
-            const profileId = String(target.dataset.profileId || '');
-            const profile = (getSettings().apiProfiles || []).find(item => item.id === profileId);
-            if (!profile) {
-                notify('è¿™ä¸ª API æ–¹æ¡ˆå¥½åƒå·²ç»ä¸åœ¨å•¦ï½', 'error');
-                return;
-            }
-            apiFormDraft = {
-                profileId: profile.id,
-                profileName: profile.name || '',
-                customApiUrl: profile.url || '',
-                customApiCredential: '',
-                customApiModel: profile.model || '',
-                customApiTransport: profile.transport || 'proxy',
-            };
-            skipApiDraftCapture = true;
-            settingsSection = 'connection';
-            openSettingsGroups.add('connection');
-            openSettingsSubgroups.add('connection-custom');
-            render();
-            window.setTimeout(() => {
-                const group = root.querySelector('.wb-settings-group[data-settings-group="connection"]');
-                const subgroup = root.querySelector('.wb-settings-subgroup[data-settings-subgroup="connection-custom"]');
-                if (group) group.open = true;
-                if (subgroup) subgroup.open = true;
-                root.querySelector('[data-wb-form="api"] [name="profileName"]')?.focus();
-            }, 0);
-            return;
-        }
-        if (action === 'test-api-profile') {
-            await invokeAction('test-api-profile', { profileId: target.dataset.profileId || '' });
-            render();
-            return;
-        }
-        if (action === 'pull-api-profile-models') {
-            const profileId = String(target.dataset.profileId || '');
-            const profile = (getSettings().apiProfiles || []).find(item => item.id === profileId);
-            if (profile) {
-                apiFormDraft = {
-                    profileId: profile.id,
-                    profileName: profile.name || '',
-                    customApiUrl: profile.url || '',
-                    customApiCredential: '',
-                    customApiModel: profile.model || '',
-                    customApiTransport: profile.transport || 'proxy',
-                };
-                skipApiDraftCapture = true;
-                settingsSection = 'connection';
-                openSettingsGroups.add('connection');
-                openSettingsSubgroups.add('connection-custom');
-            }
-            await invokeAction('pull-api-profile-models', { profileId });
-            render();
-            window.setTimeout(() => {
-                const picker = root.querySelector('[data-wb-api-model-picker]');
-                picker?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
-                picker?.focus();
-            }, 0);
-            return;
-        }
-        if (action === 'duplicate-api-profile') {
-            await invokeAction('duplicate-api-profile', { profileId: target.dataset.profileId || '' });
-            openSettingsSubgroups.add('connection-profiles');
-            render();
-            return;
-        }
-        if (action === 'delete-api-profile') {
-            const settings = getSettings();
-            const profile = (settings.apiProfiles || []).find(item => item.id === String(target.dataset.profileId || ''));
-            const confirmed = globalThis.confirm?.(`(ãƒ»_ãƒ»;)  è¦åˆ æ‰ API æ–¹æ¡ˆâ€œ${profile?.name || 'è¿™ä¸ªæ–¹æ¡ˆ'}â€å—ï¼Ÿ\nä½¿ç”¨å®ƒçš„æ¨¡å—ä¼šè‡ªåŠ¨é€€å›â€œè·Ÿéšé»˜è®¤â€ã€‚`);
-            if (confirmed === false) return;
-            await invokeAction('delete-api-profile', { profileId: target.dataset.profileId || '' });
-            render();
-            return;
-        }
-        if (action === 'test-api') {
-            const form = target.closest('[data-wb-form="api"]');
-            if (!form) return;
-            const urlField = form.elements?.customApiUrl;
-            const modelField = form.elements?.customApiModel;
-            if (urlField && !urlField.checkValidity()) {
-                urlField.reportValidity();
-                return;
-            }
-            if (modelField && !String(modelField.value || '').trim()) {
-                modelField.focus();
-                notify('å…ˆé€‰ä¸ªæ¨¡å‹å†æµ‹è¯•å§ï½', 'error');
-                return;
-            }
-            const data = readApiForm(form);
-            let request;
-            try {
-                request = apiRequestFromDraft(data, { requireModel: true });
-            } catch (error) {
-                notify(String(error?.message || error), 'error');
-                return;
-            }
-            await invokeAction('test-api-draft', request);
-            render();
-            return;
-        }
-        if (action === 'pull-api-models') {
-            const form = target.closest('[data-wb-form="api"]');
-            if (!form) return;
-            // æ‹‰æ¨¡å‹åªè¯»å–å½“å‰è‰ç¨¿ï¼Œä¸å†å·å·æ”¹é»˜è®¤ç‹¬ç«‹æ¥å£ã€‚ç¼–è¾‘å·²ä¿å­˜æ–¹æ¡ˆæ—¶ï¼Œ
-            // Key ç•™ç©ºä¼šå®‰å…¨æ²¿ç”¨è¯¥æ–¹æ¡ˆè‡ªå·±çš„ Keyï¼Œè€Œä¸æ˜¯ä¸²åˆ°é»˜è®¤é…ç½®ã€‚
-            const urlField = form.elements?.customApiUrl;
-            const keyField = form.elements?.customApiCredential;
-            if (urlField && !urlField.checkValidity()) {
-                urlField.reportValidity();
-                return;
-            }
-            const data = readApiForm(form);
-            let request;
-            try {
-                request = apiRequestFromDraft(data, { requireModel: false });
-            } catch (error) {
-                notify(String(error?.message || error), 'error');
-                keyField?.focus();
-                return;
-            }
-            const models = await invokeAction('pull-api-draft-models', request);
-            if (Array.isArray(models) && models.length === 1 && !String(form.elements?.customApiModel?.value || '').trim()) {
-                form.elements.customApiModel.value = models[0];
-                readApiForm(form);
-                notify(`åªæ‰¾åˆ°ä¸€ä¸ªæ¨¡å‹ï¼Œå·²ç»æ›¿ä½ é€‰å¥½ï¼š${models[0]}`, 'success');
-            }
-            render();
-            window.setTimeout(() => {
-                root.querySelector('[data-wb-api-model-picker]')?.focus();
-            }, 0);
-            return;
-        }
-        if (action === 'reset-api-draft') {
-            apiFormDraft = {
-                customApiUrl: '',
-                customApiCredential: '',
-                customApiModel: '',
-                customApiTransport: getSettings().customApiTransport,
-                profileName: '',
-                profileId: '',
-            };
-            skipApiDraftCapture = true;
-            render();
-            window.setTimeout(() => {
-                root.querySelector('[data-wb-form="api"] [name="customApiUrl"]')?.focus();
-            }, 0);
-            return;
-        }
-        if (action === 'toggle-api-key-visibility') {
-            const field = target.closest('.wb-api-secret-field')?.querySelector('.wb-secret-input');
-            if (!field) return;
-            const visible = field.classList.toggle('is-visible');
-            target.setAttribute('aria-pressed', String(visible));
-            target.textContent = visible ? 'éšè—' : 'æ˜¾ç¤º';
-            field.focus();
-            return;
-        }
-
-        if (action === 'clear-current-chat-cache') {
-            const completed = await invokeAction('clear-current-chat-cache');
-            if (completed) {
-                personObservation = null;
-                worldbookSelectedIds = new Set();
-                notify('å½“å‰èŠå¤©çš„å¯é‡å»ºç¼“å­˜å·²ç»æ¸…å¹²å‡€å•¦ï½ä¸–ç•Œæ•°æ®å’Œ API éƒ½æ²¡åŠ¨ã€‚', 'success');
-            }
-            render();
-            return;
-        }
-
-        if (action === 'check-correct-world-state') {
-            const result = await invokeAction('check-correct-world-state');
-            if (result) {
-                const corrected = Number(result.applied?.length || 0);
-                const removed = Number(result.removedEventIds?.length || 0);
-                const skipped = Number(result.skipped || 0);
-                notify(
-                    corrected || removed
-                        ? `æ£€æŸ¥å®Œæˆï¼šä¿®æ­£ ${corrected} é¡¹${removed ? `ï¼Œæ’¤é”€ ${removed} æ¡æœªå‘ç”Ÿæ´¾ç”Ÿ` : ''}ã€‚`
-                        : skipped
-                            ? `æ£€æŸ¥å®Œæˆï¼š${skipped} é¡¹æ²¡æœ‰è¶³å¤Ÿè¯æ®ï¼Œå·²ç»ä¿å®ˆè·³è¿‡ï¼Œæ²¡æœ‰ä¹±æ”¹ã€‚`
-                            : 'æ£€æŸ¥å®Œæˆï¼šæ²¡æœ‰å‘ç°éœ€è¦ä¿®æ­£çš„æ˜ç¡®çŸ›ç›¾ã€‚',
-                    corrected || removed ? 'success' : 'info',
-                );
-            }
-            render();
-            return;
-        }
-
-        if (action === 'reset-current-chat-data') {
-            const first = globalThis.confirm?.(
-                'ç¡®å®šè¦é‡ç½®â€œå½“å‰èŠå¤©â€çš„å…¨éƒ¨ä¸–ç•ŒèƒŒé¢æ•°æ®å—ï¼Ÿ\n\n'
-                + 'ä¼šæ¸…é™¤äººç‰©ã€äº‹ä»¶ã€æš—æµã€å›å£°ã€è®°å¿†ã€èˆ†æƒ…ã€è§‚æµ‹ã€æ¢å¤ç‚¹ä¸åˆ†æ”¯å¿«ç…§ã€‚\n'
-                + 'èŠå¤©æ­£æ–‡å’Œ API / æ¨¡å‹é…ç½®ä¸ä¼šè¢«åˆ é™¤ã€‚',
-            );
-            if (first === false) return;
-            const second = globalThis.confirm?.(
-                'æœ€åç¡®è®¤ï¼šè¿™æ¬¡é‡ç½®ä¸ä¼šåˆ›å»ºæ¢å¤ç‚¹ï¼Œæ—§ä¸–ç•Œæ•°æ®å°†ä¸èƒ½ä»ä¸–ç•ŒèƒŒé¢æ¢å¤ã€‚\n\nç¡®å®šç»§ç»­å—ï¼Ÿ',
-            );
-            if (second === false) return;
-
-            const result = await invokeAction('reset-current-chat-data');
-            if (result) {
-                selectedPersonId = null;
-                personObservation = null;
-                memorySelectedKeys = new Set();
-                memoryEditor = null;
-                personEditor = null;
-                recordEditor = null;
-                eventFormOpen = false;
-                eventEditorId = '';
-                worldEditorOpen = false;
-                worldbookSelectedIds = new Set();
-                worldbookQuery = '';
-                worldbookOnlyPeople = false;
-                worldbookOnlyEnabled = false;
-                notify(
-                    `å½“å‰èŠå¤©å·²ç»é‡ç½®ä¸ºç©ºç™½ä¸–ç•Œ${Number(result.removedSnapshots) > 0 ? `ï¼Œå¹¶æ¸…æ‰ ${result.removedSnapshots} ä»½æ—§åˆ†æ”¯å¿«ç…§` : ''}ã€‚API é…ç½®å’ŒèŠå¤©æ­£æ–‡éƒ½ä¿ç•™ã€‚`,
-                    'success',
-                );
-            }
-            render();
-            return;
-        }
-
-        await invokeAction(action, {});
-        render();
-    });
-
-    root.addEventListener('change', async event => {
-        const apiForm = event.target.closest?.('[data-wb-form="api"]');
-        if (apiForm) {
-            if (event.target.matches?.('[data-wb-api-model-picker]')) {
-                const model = String(event.target.value || '').trim();
-                const modelField = apiForm.elements?.customApiModel;
-                if (model && modelField) {
-                    modelField.value = model;
-                    readApiForm(apiForm);
-                    notify(`æ¨¡å‹å·²é€‰ï¼š${model}`, 'success');
-                }
-                return;
-            }
-            readApiForm(apiForm);
-            return;
-        }
-        if (action === 'test-image-api') {
-            const form = target.closest('[data-wb-form="image-api"]');
-            if (!form) return;
-            const confirmed = globalThis.confirm?.('(ãƒ»_ãƒ»;)  æµ‹è¯•ä¼šçœŸçš„ç”Ÿæˆä¸€å¼  512Ã—512 å›¾ç‰‡ï¼Œå¯èƒ½äº§ç”Ÿä¸€æ¬¡ API è´¹ç”¨ã€‚ç»§ç»­å—ï¼Ÿ');
-            if (confirmed === false) return;
-            const data = Object.fromEntries(new FormData(form).entries());
-            const key = String(data.imageApiCredential || '').trim() || getSettings().imageApiKey;
-            if (!String(data.imageApiUrl || '').trim() || !key || !String(data.imageApiModel || '').trim()) {
-                notify('å…ˆæŠŠç”Ÿå›¾åœ°å€ã€Key å’Œæ¨¡å‹å¡«å®Œæ•´ã€‚', 'error');
-                return;
-            }
-            const completed = await invokeAction('test-image-api', {
-                imageApiUrl: data.imageApiUrl,
-                imageApiKey: key,
-                imageApiModel: data.imageApiModel,
-            });
-            if (completed) notify('æµ‹è¯•å›¾ç”ŸæˆæˆåŠŸï¼Œæ¥å£å¯ä»¥ç”¨ã€‚', 'success');
-            return;
-        }
-
-        if (event.target.matches?.('[data-wb-person-select]')) {
-            const id = String(event.target.value || '');
-            const next = new Set(peopleSelectedIds);
-            if (event.target.checked) next.add(id);
-            else next.delete(id);
-            peopleSelectedIds = next;
-            render();
-            return;
-        }
-
-        if (event.target.matches?.('[data-wb-clue-relation-filter]')) {
-            memoryClueRelationFilter = String(event.target.value || 'all');
-            memoryVisibleCount = 12;
-            memorySelectedKeys = new Set();
-            render();
-            return;
-        }
-
-        if (event.target.matches?.('[data-wb-memory-select]')) {
-            const kind = String(event.target.dataset.memoryKind || 'fact');
-            const id = String(event.target.dataset.memoryId || '');
-            const key = `${kind}:${id}`;
-            const next = new Set(memorySelectedKeys);
-            if (event.target.checked) next.add(key);
-            else next.delete(key);
-            memorySelectedKeys = next;
-            const deleteButton = root.querySelector('[data-wb-memory-selected-count]');
-            if (deleteButton) {
-                deleteButton.disabled = memorySelectedKeys.size === 0;
-                deleteButton.textContent = `åˆ é™¤é€‰ä¸­${memorySelectedKeys.size ? ` Â· ${memorySelectedKeys.size}` : ''}`;
-            }
-            const clearButton = root.querySelector('[data-wb-action="clear-memory-selection"]');
-            if (clearButton) clearButton.disabled = memorySelectedKeys.size === 0;
-            return;
-        }
-
-        if (event.target.matches?.('[data-wb-worldbook-entry-id]')) {
-            const uid = String(event.target.dataset.wbWorldbookEntryId || '');
-            const next = new Set(worldbookSelectedIds);
-            if (event.target.checked) next.add(uid);
-            else next.delete(uid);
-            worldbookSelectedIds = next;
-            render();
-            return;
-        }
-        const worldbookFilter = event.target.dataset?.wbWorldbookFilter;
-        if (worldbookFilter === 'people' || worldbookFilter === 'enabled') {
-            if (worldbookFilter === 'people') worldbookOnlyPeople = Boolean(event.target.checked);
-            if (worldbookFilter === 'enabled') worldbookOnlyEnabled = Boolean(event.target.checked);
-            render();
-            return;
-        }
-
-        if (event.target.matches?.('[data-wb-tavern-profile-select]')) {
-            await invokeAction('update-settings', {
-                tavernApiProfileId: String(event.target.value || ''),
-            });
-            notify(event.target.value ? 'é…’é¦†æ–¹æ¡ˆç‰Œç‰Œè®°ä½å•¦ï½' : 'å…ˆä¸ç»‘é…’é¦†æ–¹æ¡ˆäº†ï½', event.target.value ? 'success' : 'info');
-            render();
-            return;
-        }
-
-        const apiRouteKey = event.target.dataset?.wbApiRoute;
-        if (apiRouteKey && ['simulation', 'observation', 'history', 'opinion'].includes(apiRouteKey)) {
-            const settings = getSettings();
-            const routes = {
-                ...(settings.apiModuleRoutes || {}),
-                [apiRouteKey]: String(event.target.value || 'default'),
-            };
-            await invokeAction('update-settings', { apiModuleRoutes: routes });
-            notify('è¿™å—çš„ API è·¯çº¿è®°å¥½å•¦ï½', 'success');
-            render();
-            return;
-        }
-
-        const tagField = event.target.dataset?.wbTagFilterField;
-        if (tagField === 'open' || tagField === 'close') {
-            const index = Number(event.target.dataset.index);
-            const settings = getSettings();
-            const current = visibleTagFilterRules(settings).map(rule => ({ ...rule }));
-            if (!current[index]) return;
-            current[index] = {
-                ...current[index],
-                [tagField]: String(event.target.value || '').slice(0, 80),
-            };
-            await persistTagFilterRules(current);
-            render();
-            return;
-        }
-
-        const settingSeconds = event.target.dataset.wbSettingSeconds;
-        if (settingSeconds) {
-            const seconds = Math.max(0, Number(event.target.value) || 0);
-            await invokeAction('update-settings', {
-                [settingSeconds]: seconds > 0 ? Math.round(seconds * 1000) : 0,
-            });
-            render();
-            return;
-        }
-
-        const generationLimitField = event.target.dataset.wbGenerationLimit;
-        const generationLimitModule = event.target.dataset.module;
-        if (
-            generationLimitField
-            && ['simulation', 'observation', 'history', 'opinion'].includes(generationLimitModule)
-        ) {
-            const settings = getSettings();
-            const current = settings.generationModuleLimits && typeof settings.generationModuleLimits === 'object'
-                ? settings.generationModuleLimits
-                : {};
-            const moduleLimit = {
-                ...(current[generationLimitModule] || { maxTokens: 0, timeoutMs: 0 }),
-            };
-            if (generationLimitField === 'maxTokens') {
-                moduleLimit.maxTokens = Math.max(0, Number.parseInt(event.target.value, 10) || 0);
-            } else if (generationLimitField === 'timeoutSeconds') {
-                const seconds = Math.max(0, Number(event.target.value) || 0);
-                moduleLimit.timeoutMs = seconds > 0 ? Math.round(seconds * 1000) : 0;
-            } else {
-                return;
-            }
-            await invokeAction('update-settings', {
-                generationModuleLimits: {
-                    ...current,
-                    [generationLimitModule]: moduleLimit,
-                },
-            });
-            render();
-            return;
-        }
-
-        const setting = event.target.dataset.wbSetting;
-        if (setting) {
-            const value = event.target.type === 'checkbox'
-                ? event.target.checked
-                : event.target.value;
-            await invokeAction('update-settings', { [setting]: value });
-            render();
-            return;
-        }
-
-        if (event.target.classList.contains('wb-import-input')) {
-            const file = event.target.files?.[0];
-            if (!file) return;
-            await invokeAction('import-state-data', {
-                name: file.name,
-                text: await file.text(),
-            });
-            event.target.value = '';
-            render();
-        }
-    });
-
-    root.addEventListener('input', event => {
-        if (event.target.matches?.('[data-wb-form="social-message"] textarea[name="text"]')) {
-            socialDraft = String(event.target.value || '').slice(0, 1600);
-            return;
-        }
-        if (event.target.matches?.('[data-wb-social-search]')) {
-            socialSearchQuery = String(event.target.value || '').slice(0, 80);
-            window.clearTimeout(socialSearchTimer);
-            socialSearchTimer = window.setTimeout(render, 120);
-            return;
-        }
-        const apiForm = event.target.closest?.('[data-wb-form="api"]');
-        if (apiForm) {
-            readApiForm(apiForm);
-            return;
-        }
-
-        if (event.target.matches?.('[data-wb-worldbook-search]')) {
-            worldbookQuery = String(event.target.value || '').slice(0, 120);
-            window.clearTimeout(worldbookSearchTimer);
-            worldbookSearchTimer = window.setTimeout(render, 100);
-            return;
-        }
-        if (!event.target.matches?.('[data-wb-memory-search]')) return;
-        const nextMemoryQuery = String(event.target.value || '').slice(0, 80);
-        if (nextMemoryQuery !== memoryQuery) memorySelectedKeys = new Set();
-        memoryQuery = nextMemoryQuery;
-        memoryVisibleCount = 12;
-        window.clearTimeout(memorySearchTimer);
-        memorySearchTimer = window.setTimeout(render, 120);
-    });
-
-    root.addEventListener('submit', async event => {
-        const form = event.target.closest('[data-wb-form]');
-        if (!form) return;
-        event.preventDefault();
-        const data = Object.fromEntries(new FormData(form).entries());
-
-        if (form.dataset.wbForm === 'lingqi-chat') {
-            const text = String(data.text || '').trim();
-            if (!text) return;
-            if (form.elements.text) form.elements.text.value = '';
-            lingqiDraft = '';
-            const completed = await invokeAction('lingqi-send-message', { text });
-            if (completed === false) lingqiDraft = text;
-        }
-        if (form.dataset.wbForm === 'social-message') {
-            const text = String(data.text || '').trim();
-            const conversationId = String(data.conversationId || '').trim();
-            if (!text || !conversationId) return;
-            socialDraft = '';
-            if (form.elements.text) form.elements.text.value = '';
-            const completed = await invokeAction('social-send-message', { conversationId, text });
-            if (completed === false) socialDraft = text;
-        }
-        if (form.dataset.wbForm === 'social-group') {
-            const memberIds = new FormData(form).getAll('memberIds').map(String).filter(Boolean);
-            socialGroupSelectedIds = new Set(memberIds);
-            const completed = await invokeAction('social-create-group', {
-                title: String(data.title || ''),
-                memberIds,
-            });
-            if (completed) {
-                socialGroupOpen = false;
-                socialGroupSelectedIds = new Set();
-                socialDraft = '';
-            }
-        }
-        if (form.dataset.wbForm === 'social-friend-request') {
-            const personId = String(data.personId || '').trim();
-            if (!personId) return;
-            const result = await invokeAction('social-request-friend', {
-                personId,
-                message: String(data.message || '').trim(),
-            });
-            if (result && typeof result === 'object') {
-                const visible = result.reply ? `ï¼š${result.reply}` : '';
-                notify(
-                    result.decision === 'accepted'
-                        ? `${result.personName} é€šè¿‡äº†å¥½å‹ç”³è¯·${visible}`
-                        : result.decision === 'declined'
-                            ? `${result.personName} æ²¡æœ‰é€šè¿‡ç”³è¯·${visible}`
-                            : `${result.personName} æš‚æ—¶æ²¡æœ‰å¤„ç†ç”³è¯·${visible}`,
-                    result.decision === 'accepted' ? 'success' : 'info',
-                );
-            }
-            render();
-        }
-        if (form.dataset.wbForm === 'clock') {
-            clockFormDraft = { ...data };
-            const completed = await invokeAction('set-clock', data);
-            if (completed) clockFormDraft = null;
-        }
-        if (form.dataset.wbForm === 'api') {
-            apiFormDraft = { ...data };
-            const completed = await invokeAction('update-settings', apiSettingsFromDraft(data));
-            if (completed) {
-                forgetApiKeyDraft(data);
-                notify('ç‹¬ç«‹æ¥å£å­˜å¥½å•¦ï½æ—§ Key è¿˜æ˜¯ä¸ä¼šå·å·å›å¡«å“¦ã€‚', 'success');
-            }
-        }
-        if (form.dataset.wbForm === 'image-api') {
-            const replacementKey = String(data.imageApiCredential || '').trim();
-            const enabled = Boolean(form.elements.imageApiEnabled?.checked);
-            const patch = {
-                imageApiEnabled: enabled,
-                imageApiUrl: String(data.imageApiUrl || '').trim(),
-                imageApiKey: replacementKey || getSettings().imageApiKey,
-                imageApiModel: String(data.imageApiModel || '').trim(),
-                imageApiSize: String(data.imageApiSize || '1024x1024'),
-            };
-            if (enabled && (!patch.imageApiUrl || !patch.imageApiKey || !patch.imageApiModel)) {
-                notify('è¦å¼€å¯ç”Ÿå›¾ï¼Œåœ°å€ã€Key å’Œæ¨¡å‹éƒ½å¾—å¡«å®Œæ•´ã€‚', 'error');
-            } else {
-                const completed = await invokeAction('update-settings', patch);
-                if (completed) {
-                    form.elements.imageApiCredential.value = '';
-                    notify(enabled ? 'æœ‹å‹åœˆç”Ÿå›¾æ¥å£å·²å¼€å¯ã€‚' : 'ç”Ÿå›¾é…ç½®å·²ä¿å­˜ï¼Œç›®å‰ä¿æŒå…³é—­ã€‚', 'success');
-                }
-            }
-        }
-        if (form.dataset.wbForm === 'world') {
-            const completed = await invokeAction('save-world-summary', {
-                title: data.title || '',
-                detail: data.detail || '',
-                background: data.background || '',
-            });
-            if (completed) worldEditorOpen = false;
-        }
-        if (form.dataset.wbForm === 'record') {
-            const completed = await invokeAction('save-record', {
-                kind: data.kind || 'echo',
-                id: data.id || '',
-                title: data.title || '',
-                text: data.text || '',
-                place: data.place || '',
-                visibility: data.visibility || 'hidden',
-                deliveryState: data.deliveryState || 'none',
-            });
-            if (completed) recordEditor = null;
-        }
-        if (form.dataset.wbForm === 'event') {
-            const completed = await invokeAction(data.id ? 'update-event' : 'add-event', data);
-            if (completed) {
-                eventFormOpen = false;
-                eventEditorId = '';
-                eventFormDraft = null;
-            }
-        }
-        if (form.dataset.wbForm === 'memory') {
-            const parseRelationList = value => [...new Set(
-                String(value || '')
-                    .split(/[ã€,ï¼Œ;ï¼›\n]+/)
-                    .map(item => item.trim())
-                    .filter(Boolean),
-            )];
-            const completed = await invokeAction('save-memory-item', {
-                id: data.id || '',
-                kind: data.kind || 'fact',
-                title: data.title || '',
-                relation: data.relation || '',
-                content: data.content || '',
-                people: parseRelationList(data.people),
-                events: parseRelationList(data.events),
-                locations: parseRelationList(data.locations),
-                important: form.elements.important?.checked || false,
-                locked: form.elements.locked?.checked || false,
-            });
-            if (completed) memoryEditor = null;
-        }
-        if (form.dataset.wbForm === 'person') {
-            const avatarFile = form.elements.avatarFile?.files?.[0] || null;
-            let avatarDataUrl = null;
-            if (avatarFile) {
-                notify('æ­£åœ¨æŠŠå¤´åƒç¼©æˆå°å°ä¸€åªï½', 'info');
-                try {
-                    avatarDataUrl = await readPersonAvatarFile(avatarFile);
-                } catch (error) {
-                    notify(String(error?.message || error || 'å¤´åƒæ²¡æœ‰å¤„ç†æˆåŠŸï½'), 'error');
-                    return;
-                }
-            }
-            const completed = await invokeAction('save-manual-person', {
-                id: data.id || '',
-                originalName: data.originalName || '',
-                name: data.name || '',
-                avatarDataUrl,
-                location: data.location || '',
-                action: data.action || '',
-                intent: data.intent || '',
-                longTermGoal: data.longTermGoal || '',
-                innerVoice: data.innerVoice || '',
-                identityAnchor: data.identityAnchor || '',
-                personalityAnchor: data.personalityAnchor || '',
-                appearanceProfile: data.appearanceProfile || '',
-                backgroundProfile: data.backgroundProfile || '',
-                speakingStyle: data.speakingStyle || '',
-                behaviorBoundaries: data.behaviorBoundaries || '',
-                knowledge: data.knowledge || 'backstage',
-                relevance: data.relevance || 2,
-                simulationEnabled: form.elements.simulationEnabled?.checked || false,
-                locked: form.elements.locked?.checked || false,
-            });
-            if (completed) personEditor = null;
-        }
-        if (form.dataset.wbForm === 'worldbook') {
-            const formData = new FormData(form);
-            const completed = await invokeAction('import-worldbook-people', {
-                bookName: String(formData.get('bookName') || ''),
-                entryIds: [...worldbookSelectedIds],
-            });
-            if (completed) worldbookSelectedIds = new Set();
-        }
-        render();
-    });
-
-    const onKeydown = event => {
-        const lingqiTextarea = event.target.matches?.('[data-wb-form="lingqi-chat"] textarea[name="text"]')
-            ? event.target
-            : null;
-        if (
-            lingqiTextarea
-            && event.key === 'Enter'
-            && !event.shiftKey
-            && !event.ctrlKey
-            && !event.altKey
-            && !event.metaKey
-            && !event.isComposing
-            && event.keyCode !== 229
-        ) {
-            event.preventDefault();
-            lingqiTextarea.form?.requestSubmit();
-            return;
-        }
-        if (
-            ['Enter', ' '].includes(event.key)
-            && event.target.matches?.('[role="button"][data-wb-action]')
-        ) {
-            event.preventDefault();
-            event.target.click();
-            return;
-        }
-        if (event.key !== 'Escape') return;
-        if (recordEditor) recordEditor = null;
-        else if (worldEditorOpen) worldEditorOpen = false;
-        else if (selectedPersonId) selectedPersonId = null;
-        else if (eventFormOpen) {
-            eventFormOpen = false;
-            eventEditorId = '';
-            eventFormDraft = null;
-        }
-        else if (moduleSettingsView) {
-            moduleSettingsView = '';
-            clockFormDraft = null;
-        }
-        else if (settingsOpen) {
-            settingsOpen = false;
-            clockFormDraft = null;
-            tagFilterDraftRules = null;
-        }
-        else if (isOpen) {
-            close();
-            return;
-        }
-        render();
-    };
-    const onResize = () => {
-        syncVisualViewportInsets();
-        positionOrbFromSettings();
-    };
-    const selfHealTimer = window.setInterval(ensureMounted, 1800);
-    const onPageVisible = () => ensureMounted();
-    document.addEventListener('keydown', onKeydown);
-    document.addEventListener('visibilitychange', onPageVisible);
-    window.addEventListener('focus', onPageVisible);
-    window.addEventListener('pageshow', onPageVisible);
-    window.addEventListener('resize', onResize);
-    window.visualViewport?.addEventListener('resize', onResize);
-    window.visualViewport?.addEventListener('scroll', onResize);
-
-    render();
-    return {
-        render,
-        ensureMounted,
-        notify,
-        setBusy,
-        open,
-        openEvent,
-        close,
-        resetContext,
-        destroy() {
-            window.clearTimeout(toastTimer);
-            window.clearTimeout(memorySearchTimer);
-            window.clearTimeout(closeTimer);
-            window.clearTimeout(lingqiMascotTimer);
-            window.clearTimeout(socialNoticeTimer);
-            window.cancelAnimationFrame?.(freshOpenCheckFrame);
-            window.clearInterval(selfHealTimer);
-            document.removeEventListener('keydown', onKeydown);
-            document.removeEventListener('visibilitychange', onPageVisible);
-            window.removeEventListener('focus', onPageVisible);
-            window.removeEventListener('pageshow', onPageVisible);
-            window.removeEventListener('resize', onResize);
-            window.visualViewport?.removeEventListener('resize', onResize);
-            window.visualViewport?.removeEventListener('scroll', onResize);
-            root.remove();
-        },
-    };
-}
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×}ß¤èµ©hºÚn¶X§zÍZ[\ÜÈS‘ÔRWÓPTĞÓÕÑUWÕT“ÈHœ›ÛH	Ë‹Û[™ÜZKX\ÜÙ]ËšœÉÎÃBš[\ÜÃBˆ]™[›ÙÜ™\ÜËBˆ›Ü›X]\˜][Û‹Bˆ›Ü›X]ÛÜ›Ø[[™\‹Bˆ›Ü›X]ÛÜ›Z[]KBˆ\ĞXİ]™Q]™[Bˆ\Õ\›Z[˜[]™[BŸHœ›ÛH	Ë‹ØÛÜ™KšœÉÎÃBš[\ÜÈš[\•ÛÜ››ÛÚÑ[šY\Ë\ÕÛÜ››ÛÚÑ[SX[X[TÙ[XİX›HHœ›ÛH	Ë‹İÛÜ››ÛÚËšœÉÎÂƒB˜ÛÛœİĞ—ÔS‘SÔÕP’SUWÒS•H	Ù›ÛËÌ‰ÎÃBƒB˜ÛÛœİ’QUÔÈHÂˆÈYˆ	Û›İÉËX™[ˆ	ù«i9b.ÉË^YXœ›İÎˆ	Ó“ÕÉÈKˆÈYˆ	Û[™ÜZIËX™[ˆ	ùã¬¹. ÉË^YXœ›İÎˆ	ÓS‘ÔRIÈKˆÈYˆ	ÜÛØÚX[	ËX™[ˆ	ú`&º+«ÉË^YXœ›İÎˆ	ÔÓĞÒPS	ÈKˆÈYˆ	Ü[ÜIËX™[ˆ	ù.®¹âjIË^YXœ›İÎˆ	ÔSÔIÈKˆÈYˆ	Øİ\œ™[ÉËX™[ˆ	ù¦¥ù­`IË^YXœ›İÎˆ	ĞÕT”‘S•ÉÈKBˆÈYˆ	ÙXÚÙ\ÉËX™[ˆ	ùfç¹hì	Ë^YXœ›İÎˆ	ÑPÒÑTÉÈKBˆÈYˆ	ÛÜ[š[Û‰ËX™[ˆ	ú"!¹ áIË^YXœ›İÎˆ	ÔP“PÉÈKBˆÈYˆ	ÛY[[ÜIËX™[ˆ	ú+¬9oá‰Ë^YXœ›İÎˆ	ÓQSSÔ–IÈKBˆÈYˆ	Ø\˜Ú]™IËX™[ˆ	ùîª¹.¢ÉË^YXœ›İÎˆ	ĞTÒU‘IÈKB—NÃBƒB˜ÛÛœİĞTÕÑPÑTÈHÃBˆİXØÙ\ÜÎˆ	Ê;ïhx (³ 8m%ËJx§)ÉËBˆ\ŞNˆ	Ê8 (³ 3âH8 (³ H
+IËBˆ[™›Îˆ	Ê8 (¸m%ø (ˆ
+IËBˆ›Ü›X[ˆ	Ê8 (¸m%ø (ˆ
+IËBˆØ\›š[™Îˆ	Ê8àî×øàîÎÊIËBˆ\œ›Üˆ	Ê;ï&ø ,¸£$˜
+IËBŸNÃBƒB˜ÛÛœİĞTÕÓP‘SÈHÃBˆİXØÙ\ÜÎˆ	ùioyei‰ËBˆ\ŞNˆ	ù«hùg*9bª¹b¦ÉËBˆ[™›Îˆ	ùl#ù£ä9é.‰ËBˆ›Ü›X[ˆ	ùl#ù£ä9é.‰ËBˆØ\›š[™Îˆ	ùëby. 9."ÉËBˆ\œ›Üˆ	ùaîºeëºh¦9.¡‰ËBŸNÃBƒB™[˜İ[Ûˆ\ØØ\R[
+˜[YJHÃBˆ™]\›ˆİš[™Ê˜[YHÏÈ	ÉÊCBˆœ™\XÙP[
+	É‰Ë	É˜[\ÉÊCBˆœ™\XÙP[
+	Ï	Ë	É›ÉÊCBˆœ™\XÙP[
+	Ï‰Ë	É™İÉÊCBˆœ™\XÙP[
+	È‰Ë	Éœ][İÉÊCBˆœ™\XÙP[
+‰È‹	ÉˆÌÎNÉÊNÃBŸCBƒB™[˜İ[Ûˆ\ØØ\P]Š˜[YJHÃBˆ™]\›ˆ\ØØ\R[
+˜[YJKœ™\XÙP[
+	Ø	Ë	ÉˆÌMÉÊNÃBŸCBƒBƒB™[˜İ[Ûˆ›ÛÜ[]ŠÜ[‘›ÛËÙ^KY˜][Ü[ˆH˜[ÙJHÃBˆÛÛœİ\ÓÜ[ˆHÜ[‘›ÛÈ[œİ[˜Ù[ÙˆÙ]ÈÜ[‘›ÛËš\ÊÙ^JHˆY˜][Ü[ÃBˆ™]\›ˆ\ÓÜ[ˆÈ	ÛÜ[‰Èˆ	ÉÎÃBŸCBƒB™[˜İ[Ûˆ™[™\‘›ÛÛÛ˜\Š™Yš^
+HÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹Y›Û]ÛÛ˜\ˆˆ\šXK[X™[H¹¢¦9cè9£©ùb-ˆƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™^[™Y›ÛÈˆ]KY›Û\™Yš^H‰Ù\ØØ\P]Š™Yš^
+_H¹aj:`ê9leyo Ø]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛÛ\ÙKY›ÛÈˆ]KY›Û\™Yš^H‰Ù\ØØ\P]Š™Yš^
+_H¹aj:`ê9¥-º-mÏØ]ÛƒBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[ÛˆÛÛ\Xİ^
+˜[YKX^[][HH
+HÃBˆÛÛœİ^Hİš[™Ê˜[YH	ÉÊKœ™\XÙJ×ÊËÙË	È	ÊKš[J
+NÃBˆYˆ
+^›[™İHX^[][JH™]\›ˆ^ÃBˆ™]\›ˆ	İ^œÛXÙJX]›X^
+KX^[][HHJJKš[Q[™
+
+_x )˜ÃBŸCBƒB™[˜İ[Ûˆ›Ü›X[^™QÜ›İ\X™[
+˜[YK˜[˜XÚÈH	ùam¹.å‰ÊHÃBˆÛÛœİX™[Hİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆ™]\›ˆX™[˜[˜XÚÎÃBŸCBƒB™[˜İ[ÛˆÜ›İ\][\Ê][\ËÙ]Ü›İ\
+HÃBˆÛÛœİÜ›İ\ÈH™]ÈX\
+
+NÃBˆ›Üˆ
+ÛÛœİ][HÙˆ][\ÊHÃBˆÛÛœİ\ØÜš\ÜˆHÙ]Ü›İ\
+][JNÃBˆÛÛœİ˜]ÓX™[H\[Ùˆ\ØÜš\ÜˆOOH	ÛØš™Xİ	È	‰ˆ\ØÜš\ÜƒBˆÈ\ØÜš\Ü‹›X™[Bˆˆ\ØÜš\ÜÃBˆÛÛœİX™[H›Ü›X[^™QÜ›İ\X™[
+˜]ÓX™[
+NÃBˆÛÛœİ˜]ÒÙ^HH\[Ùˆ\ØÜš\ÜˆOOH	ÛØš™Xİ	È	‰ˆ\ØÜš\ÜƒBˆÈ\ØÜš\Ü‹šÙ^CBˆˆX™[ÃBˆÛÛœİÙ^HH›Ü›X[^™QÜ›İ\X™[
+˜]ÒÙ^KX™[
+KÓØØ[SİÙ\Ø\ÙJ
+NÃBˆYˆ
+YÜ›İ\Ëš\ÊÙ^JJHÜ›İ\ËœÙ]
+Ù^KÈÙ^KX™[][\Îˆ×HJNÃBˆÜ›İ\Ë™Ù]
+Ù^JKš][\Ëœ\Ú
+][JNÃBˆCBˆ™]\›ˆË‹‹™Ü›İ\Ë˜[Y\Ê
+WNÃBŸCB™[˜İ[Ûˆ›Ü›X]ØØ[[Y\İ[\
+˜[YJHÃBˆÛÛœİ]HH™]È]Jİš[™Ê˜[YH	ÉÊJNÃBˆYˆ
+S[X™\‹š\Ñš[š]J]K™Ù][YJ
+JJH™]\›ˆ	ù¥íºeí9§*¹çéIÎÃBˆ™]\›ˆ]KÓØØ[Tİš[™Ê	ŞšPÓ‰ËÃBˆ[Ûˆ	Û[Y\šXÉËBˆ^Nˆ	Û[Y\šXÉËBˆİ\ˆ	Ì‹YYÚ]	ËBˆZ[]Nˆ	Ì‹YYÚ]	ËBˆJNÃBŸCBƒB™[˜İ[ÛˆÛÜ›ÛØÚÓX™[
+İ]KÛØÚÈH›Ü›X]ÛÜ›Ø[[™\Šİ]JJHÃBˆ™]\›ˆİ]K˜ÛØÚÏË˜[˜ÚÜ™YÈÛØÚËœİ[\ˆ	ùo¡y.ã¹«hù¥¡ùnî¹êâù¥íºeí:e&¹à®IÎÃBŸCBƒBƒB™[˜İ[ÛˆYÚ[”™[X\ÙTİYÙJ™\œÚ[ÛˆH	ÉÊHÃBˆÛÛœİ^Hİš[™Ê™\œÚ[Ûˆ	ÉÊNÃBˆYˆ
+Ë\˜×‹ÚK\İ
+^
+JH™]\›ˆ	ù`&z`"yâb	ÎÃBˆYˆ
+ËX[_]—‹ÚK\İ
+^
+JH™]\›ˆ	ù­bú+åyâb	ÎÃBˆ™]\›ˆ	ù«hùo#ùâb	ÎÃBŸCBƒB™[˜İ[ÛˆYÚ[‘\Ü^U™\œÚ[ÛŠ™\œÚ[ÛˆH	ÉÊHÂˆÛÛœİ^Hİš[™Ê™\œÚ[Ûˆ	ÉÊNÂˆYˆ
+×Œ——
+ÊÎ‹_	
+KÚK\İ
+^
+JH™]\›ˆ	ùl#ùã*ùâbŒ‹	ÎÂˆYˆ
+×Œ—Œ×ŒX[W—
+ÉÚK\İ
+^
+JH™]\›ˆ	ùl#ùã*ùâbŒ‹ŒÈ0­È9/dúj£9âb	ÎÂˆYˆ
+×Œ—Œ——
+ÉÚK\İ
+^
+JH™]\›ˆ	ùl#ùã*ùâbŒ‹Œ‰ÎÃBˆ™]\›ˆ	ÜYÚ[”™[X\ÙTİYÙJ^
+_H	İ^	ÌKŒKŒ	ßXÃBŸCBƒB™[˜İ[Ûˆ[YQ›ÜŠİ]KÙ][™ÜÊHÃBˆYˆ
+Ù][™ÜË[YHOOH	Ù^IÈÙ][™ÜË[YHOOH	ÛšYÚ	ÊH™]\›ˆÙ][™ÜË[YNÃBˆÛÛœİİ\ˆH›Ü›X]ÛÜ›Z[]Jİ]K˜ÛØÚË˜XœÛÛ]SZ[]JKšİ\ÃBˆ™]\›ˆİ\ˆHˆ	‰ˆİ\ˆNÈ	Ù^IÈˆ	ÛšYÚ	ÎÃBŸCBƒB™[˜İ[Ûˆ]™[İ]\ÓX™[
+]™[
+HÃBˆ™]\›ˆÃBˆXİ]™Nˆ	ùcäyley.+IËBˆØZ][™Îˆ	ùëbyo¡y§hy.í‰ËBˆ™XYNˆ	ùb,9¥í¹o¡yèkº+©	ËBˆ™\ÛÛ™Yˆ	ùmì¹îäù§gÉËBˆØ[˜Ù[Yˆ	ùmì¹îãùcå¹­¢	ËBˆZ\ÜÙYˆ	ùmì¹îãúe&z/áÉËBˆVÙ]™[œİ]\×H]™[œİ]\ÎÃBŸCBƒB™[˜İ[Ûˆš\ÚXš[]SX™[
+˜[YJHÃBˆ™]\›ˆÃBˆY[ˆ	ú)äº"l¹l&¹.#ycëùçéIËBˆ˜XÙNˆ	ùcëùå,yååz/îykçú)âIËBˆÛ›İÛˆ	ùcëùîãù­¢9 kú#­ùçéIËBˆ\™Xİˆ	ùcëù.éyæí9£©y¡'ùçéIËBˆVİ˜[YWH	ú)äº"l¹l&¹.#ycëùçéIÎÃBŸCBƒB™[˜İ[Ûˆ[]™\SX™[
+]™[
+HÃBˆYˆ
+]™[œİ]\ÈOOH	Ü™XYIÊH™]\›ˆ	ùb,9¥í¹o¡yd#¹cì9èkº+©	ÎÃBˆ™]\›ˆÃBˆ›Û™Nˆ	ùcê¹g*9d#¹cì9å'ù¥b	ËBˆ[™[™Îˆ	ùëbyo¡z!ê¹á-¹¦/ºg,‰ËBˆ[]™\™Yˆ	ùmì¹å,y«hù¥¡ù¢où£©IËBˆ^\™Yˆ	ù§*¹¦/ºg,»ï#:/k9aiyîª¹.¢ÉËBˆVÙ]™[™[]™\OËœİ]WH	ùcê¹g*9d#¹cì9å'ù¥b	ÎÃBŸCBƒB™[˜İ[ÛˆÛØÚÓ[ÙSX™[
+˜[YJHÃBˆ™]\›ˆÃBˆ\˜][Ûˆ	ú!ê¹á-¹­`z`'IËBˆXİ]™Nˆ	ù§"y¥b9méy¥í‰ËBˆØÚY[Yˆ	úh¡9k¦¹¥íºeí	ËBˆÛÛ™][Ûˆ	ù§hy.í¹ëbyo¡IËBˆVİ˜[YWH	ú!ê¹á-¹­`z`'IÎÃBŸCBƒB™[˜İ[Ûˆ™[™\œ˜[™X\šÊ
+HÃBˆ™]\›ˆBˆÜ[ˆÛ\ÜÏHØ‹Xœ˜[™[X\šÈˆ\šXKZY[HYHƒBˆHÛ\ÜÏHØ‹[Ü˜š]Ø‹[Ü˜š]XHÚOƒBˆHÛ\ÜÏHØ‹[Ü˜š]Ø‹[Ü˜š]XˆÚOƒBˆHÛ\ÜÏHØ‹Xœ˜[™XÛÜ™HÚOƒBˆÜÜ[ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\‘[\JX™[]Z[H	ÉÊHÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹Y[\HƒBˆÜ[ˆÛ\ÜÏHØ‹Y[\KY^YHÜÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+X™[
+_OÜİ›Û™ÏƒBˆ	Ù]Z[È‰Ù\ØØ\R[
+]Z[
+_OÜ˜ˆ	ÉßCBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\”\œÛÛ]˜]\Š\œÛÛ‹Ú^™HH	ÉÊHÃBˆÛÛœİÛ\H\œÛÛË›[Û›ÙÜ˜[H\œÛÛË›˜[YOËœÛXÙJJH	ğ­ÉÎÃBˆÛÛœİ]˜]\ˆHİš[™Ê\œÛÛË˜]˜]\‘]U\›	ÉÊNÃBˆÛÛœİ[XYÙHH×™]Nš[XYÙWÊÎœ™ßœYßÙXœÚYŠNØ˜\ÙMÚK\İ
+]˜]\ŠCBˆÈ[YÈÜ˜ÏH‰Ù\ØØ\P]Š]˜]\Š_Hˆ[HˆˆØY[™ÏH›^H˜Bˆˆ\ØØ\R[
+Û\
+NÃBˆ™]\›ˆBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹X]˜]\ˆ	ÜÚ^™_HƒBˆ	Ú[XYÙ_CBˆOÚOƒBˆÜÜ[ƒBˆÃBŸCBƒB˜\Ş[˜È[˜İ[Ûˆ™XY\œÛÛ]˜]\‘š[Jš[JHÃBˆYˆ
+Yš[JH™]\›ˆ	ÉÎÃBˆYˆ
+Tİš[™Êš[K\H	ÉÊKœİ\ÕÚ]
+	Ú[XYÙKÉÊJH›İÈ™]È\œ›ÜŠ	ú/æy.*¹¥¡ù.í¹ç"ú-mù§iy.#y¦+ùfï¹âaùdé»ïg‰ÊNÃBˆYˆ
+[X™\Šš[KœÚ^™H
+Hˆ
+ˆL
+ˆL
+H›İÈ™]È\œ›ÜŠ	ùi-9`ãùi*¹i)ùei»ïg¹ab:`"y. 9o(Pˆ9.éya¡yæ¡9fï¹âaùd)øà ‰ÊNÃBƒBˆÛÛœİÛİ\˜ÙHH]ØZ]™]È›ÛZ\ÙJ
+™\ÛÛ™K™Z™Xİ
+HOˆÃBˆÛÛœİ™XY\ˆH™]Èš[T™XY\Š
+NÃBˆ™XY\‹›Û›ØYH
+
+HOˆ™\ÛÛ™Jİš[™Ê™XY\‹œ™\İ[	ÉÊJNÃBˆ™XY\‹›Û™\œ›ÜˆH
+
+HOˆ™Z™Xİ
+™]È\œ›ÜŠ	ùi-9`ãù¬¨y§"z+îù¢$9b§ûï#9a£y£h¹. 9o(:+åz+åyd)ûïg‰ÊJNÃBˆ™XY\‹œ™XY\Ñ]UT“
+š[JNÃBˆJNÃBˆÛÛœİ[XYÙHH]ØZ]™]È›ÛZ\ÙJ
+™\ÛÛ™K™Z™Xİ
+HOˆÃBˆÛÛœİ›ÙHH™]È[XYÙJ
+NÃBˆ›ÙK›Û›ØYH
+
+HOˆ™\ÛÛ™J›ÙJNÃBˆ›ÙK›Û™\œ›ÜˆH
+
+HOˆ™Z™Xİ
+™]È\œ›ÜŠ	ú/æyo(9fï¹âaù­cú)â9fj9¬¨y§"z+©9aî¹§i{ï#9cëù.éy£h¹¢$‘ÈÈ”ÈÈÙX”:+åz+å{ïg‰ÊJNÃBˆ›ÙKœÜ˜ÈHÛİ\˜ÙNÃBˆJNÃBƒBˆÛÛœİÚYHHX]›X^
+KX]›Z[Š[XYÙK›˜]\˜[ÚY[XYÙKÚY[XYÙK›˜]\˜[ZYÚ[XYÙKšZYÚ
+JNÃBˆÛÛœİŞHX]›X^
+
+
+[XYÙK›˜]\˜[ÚY[XYÙKÚY
+HHÚYJHÈŠNÃBˆÛÛœİŞHHX]›X^
+
+
+[XYÙK›˜]\˜[ZYÚ[XYÙKšZYÚ
+HHÚYJHÈŠNÃBˆÛÛœİØ[˜\ÈHØİ[Y[˜Ü™X]Q[[Y[
+	ØØ[˜\ÉÊNÃBˆØ[˜\ËÚYHMŒÃBˆØ[˜\ËšZYÚHMŒÃBˆÛÛœİÛÛ^HØ[˜\Ë™Ù]ÛÛ^
+	Ì™	ËÈ[Nˆ˜[ÙHJNÃBˆYˆ
+XÛÛ^
+H›İÈ™]È\œ›ÜŠ	ùodùbcy­cú)â9fj9¬¨y¬åyi!9ä!¹i-9`ãùfï¹âaøà ‰ÊNÃBˆÛÛ^™˜]Ò[XYÙJ[XYÙKŞŞKÚYKÚYKMŒMŒ
+NÃBˆ]™\İ[HØ[˜\ËÑ]UT“
+	Ú[XYÙKİÙXœ	ËÎ
+NÃBˆYˆ
+\™\İ[œİ\ÕÚ]
+	Ù]Nš[XYÙKİÙXœ	ÊJH™\İ[HØ[˜\ËÑ]UT“
+	Ú[XYÙKÚœYÉËÎ
+NÃBˆYˆ
+™\İ[›[™İˆN
+H™\İ[HØ[˜\ËÑ]UT“
+	Ú[XYÙKÚœYÉËŒŠNÃBˆYˆ
+™\İ[›[™İˆN
+H›İÈ™]È\œ›ÜŠ	ùi-9`ãùc¢ùï*yd#º/æ9¦+ù§"yà®yi*¹i)ûïg¹£h¹. 9o(9ë 9cey. 9à®yæ¡9fïº+åz+åyd)øà ‰ÊNÃBˆ™]\›ˆ™\İ[ÃBŸCBƒB™^Ü[˜İ[Ûˆ™[™\’[›™\•›ÚXÙJ\œÛÛ‹ÛÜ›Z[]KÛÛ\XİH˜[ÙJHÃBˆYˆ
+\\œÛÛ‹š[›™\•›ÚXÙJH™]\›ˆ	ÉÎÃBˆ™]\›ˆBˆ›ØÚÜ][İHÛ\ÜÏHØ‹Z[›™\‹]›ÚXÙH	ØÛÛ\XİÈ	Ú\ËXÛÛ\Xİ	Èˆ	ÉßHƒBˆ¸ '	Ù\ØØ\R[
+\œÛÛ‹š[›™\•›ÚXÙJ_x 'OÜƒBˆØ›ØÚÜ][İOƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\”\œÛÛ”›İÊ\œÛÛ‹ØœÙ\™\“[ÙKÛÜ›Z[]JHÃBˆ™]\›ˆBˆ\XÛHÛ\ÜÏHØ‹\\œÛÛ‹\›İÈˆ›ÛOH˜]ÛˆˆXš[™^HŒƒBˆ]K]Ø‹XXİ[ÛHœÙ[Xİ\\œÛÛˆˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_HƒBˆ	Ü™[™\”\œÛÛ]˜]\Š\œÛÛŠ_CBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹\›İË[XZ[ˆƒBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹[˜[YK[[™HƒBˆİ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹›˜[YJ_OÜİ›Û™ÏƒBˆÛX[‰Ù\ØØ\R[
+\œÛÛ‹›ØØ][ÛŠ_OÜÛX[ƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹XXİ[Ûˆ‰Ù\ØØ\R[
+\œÛÛ‹˜Xİ[ÛŠ_OÜÜ[ƒBˆ	ÛØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈÈ™[™\’[›™\•›ÚXÙJ\œÛÛ‹ÛÜ›Z[]KYJHˆ	ÉßCBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹\›İËX\œ›İÈ¸¡¥ÏÜÜ[ƒBˆØ\XÛOƒBˆÃBŸCBƒB™^Ü[˜İ[Ûˆ™[™\”\œÛÛØ\™
+\œÛÛ‹ØœÙ\™\“[ÙKÛÜ›Z[]KÜ[‘›ÛÈH™]ÈÙ]
+
+JHÃBˆÛÛœİ›ÛÙ^HH[ÜN‰Ü\œÛÛ‹šYXÃBˆ™]\›ˆBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹\\œÛÛ‹XØ\™ˆ]KY›ÛZÙ^OH‰Ù\ØØ\P]Š›ÛÙ^J_HƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË›ÛÙ^J_OƒBˆİ[[X\HÛ\ÜÏHØ‹\\œÛÛ‹XØ\™\İ[[X\HƒBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹\İ[[X\K[XZ[ˆƒBˆ	Ü™[™\”\œÛÛ]˜]\Š\œÛÛ‹	Ú\Ë[\™ÙIÊ_CBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹\İ[[X\KXÛÜHƒBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹\İ[[X\KZXY[™ÈƒBˆİ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹›˜[YJ_OÜİ›Û™ÏƒBˆÛX[‰Ù\ØØ\R[
+\œÛÛ‹›ØØ][ÛŠ_OÜÛX[ƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹\İ[[X\KXXİ[Ûˆ‰Ù\ØØ\R[
+ÛÛ\Xİ^
+\œÛÛ‹˜Xİ[Û‹ÌŠH	ù¦ ¹¥í¹¬¨y§"y¥¬9æ¡9bª9/g8à ‰Ê_OÜÜ[ƒBˆÜÜ[ƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹Y›Û[Y]HƒBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹\Ú[K\İ]H	Ü\œÛÛ‹œÚ[][][Û‘[˜X›YOOH˜[ÙHÈ	Ú\Ë\ÛY\[™ÉÈˆ	ÉßHƒBˆ	Ü\œÛÛ‹œÚ[][][Û‘[˜X›YOOH˜[ÙHÈ	ùd#¹cì9/$yç(	Èˆ	ùd#¹cì9­.ùbª	ßCBˆÜÜ[ƒBˆHÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOƒBˆÜÜ[ƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹\\œÛÛ‹XØ\™X›ÙHƒBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹]™XY\ËXİ\œ™[XXİ[ÛˆƒBˆÛX[¹«hùg*9`fÜÛX[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹˜Xİ[Ûˆ	ù¦ ¹¥í¹¬¨y§"y¥¬9æ¡9bª9/g8à ‰Ê_OÜİ›Û™ÏƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹]™XYƒBˆÛX[¹çëy§'ù¡#ùfïÜÛX[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹š[[	ù¦ ¹¥è9¦#¹èk¹çëy§'ù¡#ùfï¸à ‰Ê_OÜİ›Û™ÏƒBˆÜÜ[ƒBˆ	Ü\œÛÛ‹›Û™Õ\›QÛØ[ÈBˆÜ[ˆÛ\ÜÏHØ‹\\œÛÛ‹]™XY\Ë[Û™Ë]\›HƒBˆÛX[ºeoù§'ùæë¹¨!ÏÜÛX[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹›Û™Õ\›QÛØ[
+_OÜİ›Û™ÏƒBˆÜÜ[ƒBˆˆ	ÉßCBˆ	ÛØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÃBˆÈ™[™\’[›™\•›ÚXÙJ\œÛÛ‹ÛÜ›Z[]JCBˆˆ	ÏÜ[ˆÛ\ÜÏHØ‹ZÛ›İÛ‹X›İ[™\H¹neyd#¹âë9æoymìºf¤:%ãÏÜÜ[‰ßCBˆ]ˆÛ\ÜÏHØ‹\\œÛÛ‹XØ\™XXİ[ÛœÈ‚ˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\Ë\š[X\Hˆ\OH˜]Ûˆ‚ˆ]K]Ø‹XXİ[ÛHœÙ[Xİ\\œÛÛˆˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_H¹§éyç"ù.®¹âjz+é¹ áOØ]Û‚ˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\Ë]\›Z[˜[ˆ\OH˜]Ûˆ‚ˆ]K]Ø‹XXİ[ÛH›Ü[‹]\›Z[˜[\\œÛÛˆˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_Hº e9ìîÈOØ]Û‚ˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\ËYY]ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹\\œÛÛ‹YY]Üˆ‚ˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_Hˆ]K\\œÛÛ‹[˜[YOH‰Ù\ØØ\P]Š\œÛÛ‹›˜[YJ_H¹ï%º/¤OØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\”›ÙÜ™\ÜÊ]™[İ]KÚYHH˜[ÙJHÃBˆÛÛœİ›ÙÜ™\ÜÈH]™[›ÙÜ™\ÜÊ]™[İ]K˜ÛØÚË˜XœÛÛ]SZ[]JNÃBˆÛÛœİİ\YH›Ü›X]ÛÜ›Ø[[™\Šİ]K]™[œİ\Y]
+NÃBˆÛÛœİYHH[X™\‹š\Ñš[š]J[X™\Š]™[™YP]
+JCBˆÈ›Ü›X]ÛÜ›Ø[[™\Šİ]K]™[™YP]
+CBˆˆ[ÃBˆÛÛœİ™[XZ[š[™ÈH›ÙÜ™\ÜËœ™[XZ[š[™ÈOOH[BˆÈ›ÙÜ™\ÜËœ\ÙCBˆˆ›ÙÜ™\ÜËœ™[XZ[š[™ÈOOHBˆÈ]™[İ]\ÓX™[
+]™[
+CBˆˆ9bjy/fH	Ù›Ü›X]\˜][ÛŠ›ÙÜ™\ÜËœ™[XZ[š[™Ê_XÃBƒBˆYˆ
+›ÙÜ™\ÜËœ\˜Ù[OOH[
+HÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹XÛÛ™][Û‹\›ÙÜ™\ÜÈƒBˆÜ[‰Ù\ØØ\R[
+ÛØÚÓ[ÙSX™[
+]™[˜ÛØÚÓ[ÙJJ_OÜÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+›ÙÜ™\ÜËœ\ÙJ_OÜİ›Û™ÏƒBˆÙ]ƒBˆÃBˆCBƒBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹][YK\›ÙÜ™\ÜÈ	İÚYHÈ	Ú\Ë]ÚYIÈˆ	ÉßHƒBˆ	İÚYHÈBˆ]ˆÛ\ÜÏHØ‹][YK\›ÙÜ™\ÜËXÛÜHƒBˆÜ[‰Ù\ØØ\R[
+İ\Yœİ[\
+_OÜÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+ÛØÚÓ[ÙSX™[
+]™[˜ÛØÚÓ[ÙJJ_OÜİ›Û™ÏƒBˆÜ[‰ÙYHÈ\ØØ\R[
+YKœİ[\
+Hˆ	ùk£9¢$9¥íºeí9o¡yèkº+©	ßOÜÜ[ƒBˆÙ]ƒBˆˆ	ÉßCBˆÜ[ˆÛ\ÜÏHØ‹][YK]˜XÚÈƒBˆHİ[OHÚY‰Ü›ÙÜ™\ÜËœ\˜Ù[IHÚOƒBˆˆİ[OH›Y‰Ü›ÙÜ™\ÜËœ\˜Ù[IHØƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹][YKY›ÛİƒBˆÛX[‰Ù\ØØ\R[
+›ÙÜ™\ÜËœ\ÙJ_OÜÛX[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+™[XZ[š[™Ê_OÜİ›Û™ÏƒBˆÜÜ[ƒBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\‘]™[Ø\™
+]™[İ]KÚYHH˜[ÙKÜ[‘›ÛÈH™]ÈÙ]
+
+JHÃBˆYˆ
+]ÚYJHÃBˆ™]\›ˆBˆ\XÛHÛ\ÜÏHØ‹Y]™[XØ\™ƒBˆ]ˆÛ\ÜÏHØ‹Y]™[]Ü[™HƒBˆÜ[ˆÛ\ÜÏHØ‹\\ÙH\ÙKIÙ\ØØ\P]Š]™[œİ]\Ê_H‰Ù\ØØ\R[
+]™[İ]\ÓX™[
+]™[
+J_OÜÜ[ƒBˆÜ[‰Ù\ØØ\R[
+]™[œXÙJ_OÜÜ[ƒBˆÙ]ƒBˆÏ‰Ù\ØØ\R[
+]™[]J_OÚÏƒBˆ‰Ù\ØØ\R[
+]™[œİ[[X\H]™[˜ÛÛœÙ\]Y[˜ÙH	ù.¢ù.í¹.ãyg*9oh¹¢$8à ‰Ê_OÜƒBˆ	Ü™[™\”›ÙÜ™\ÜÊ]™[İ]K˜[ÙJ_CBˆ]ˆÛ\ÜÏHØ‹\›İ]HƒBˆOÚOƒBˆ	Ù\ØØ\R[
+š\ÚXš[]SX™[
+]™[š\ÚXš[]JJ_CBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y]™[XØ\™XXİ[ÛœÈ‚ˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\Ë]\›Z[˜[ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹]\›Z[˜[Y]™[‚ˆ]KY]™[ZYH‰Ù\ØØ\P]Š]™[šY
+_H¹ç"ùç"ùi)ùk­¹g*:+í9.à9.bØ]Û‚ˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\Ë\š[X\HØ‹Y]™[Y[]™\K]ÙÙÛH	Ù]™[™[]™\OË›X[X[]Y]YYÈ	Ú\Ë\]Y]YY	Èˆ	ÉßH‚ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛKY]™[Y[]™\HƒBˆ]KY]™[ZYH‰Ù\ØØ\P]Š]™[šY
+_HƒBˆ	Ù]™[š\ÚXš[]HOOH	ÚY[‰ÈÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ	Ù]™[™[]™\OË›X[X[]Y]YYÈ	ø§$È9."ù. :/k¹¦/ºg,‰Èˆ	ù."ù. :/k¹¦/ºg,‰ßCBˆØ]ÛƒBˆÙ]ƒBˆØ\XÛOƒBˆÃBˆCBƒBˆÛÛœİ›ÙÜ™\ÜÈH]™[›ÙÜ™\ÜÊ]™[İ]K˜ÛØÚË˜XœÛÛ]SZ[]JNÃBˆÛÛœİ™[XZ[š[™ÈH›ÙÜ™\ÜËœ™[XZ[š[™ÈOOH[BˆÈ›ÙÜ™\ÜËœ\ÙCBˆˆ›ÙÜ™\ÜËœ™[XZ[š[™ÈOOHBˆÈ]™[İ]\ÓX™[
+]™[
+CBˆˆ9bjy/fH	Ù›Ü›X]\˜][ÛŠ›ÙÜ™\ÜËœ™[XZ[š[™Ê_XÃBˆÛÛœİ›ÛÙ^HHİ\œ™[Î‰Ù]™[šYXÃBˆ™]\›ˆBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹Y]™[XØ\™\Ë]ÚYHˆ]KY›ÛZÙ^OH‰Ù\ØØ\P]Š›ÛÙ^J_HƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË›ÛÙ^J_OƒBˆİ[[X\HÛ\ÜÏHØ‹Y]™[\İ[[X\HƒBˆÜ[ˆÛ\ÜÏHØ‹Y]™[\İ[[X\KXÛÜHƒBˆÜ[ˆÛ\ÜÏHØ‹Y]™[]Ü[™HƒBˆÜ[ˆÛ\ÜÏHØ‹\\ÙH\ÙKIÙ\ØØ\P]Š]™[œİ]\Ê_H‰Ù\ØØ\R[
+]™[İ]\ÓX™[
+]™[
+J_OÜÜ[ƒBˆÜ[‰Ù\ØØ\R[
+]™[œXÙJ_OÜÜ[ƒBˆÜÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+]™[]J_OÜİ›Û™ÏƒBˆÛX[‰Ù\ØØ\R[
+ÛÛ\Xİ^
+]™[œİ[[X\H]™[˜ÛÛœÙ\]Y[˜ÙH	ù.¢ù.í¹.ãyg*9oh¹¢$8à ‰ËL
+J_OÜÛX[ƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹Y›Û[Y]HƒBˆÜ[ˆÛ\ÜÏHØ‹Y›Û\İ]\È‰Ù\ØØ\R[
+™[XZ[š[™Ê_OÜÜ[ƒBˆHÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOƒBˆÜÜ[ƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹Y]™[XØ\™X›ÙHƒBˆ‰Ù\ØØ\R[
+]™[œİ[[X\H]™[˜ÛÛœÙ\]Y[˜ÙH	ù.¢ù.í¹.ãyg*9oh¹¢$8à ‰Ê_OÜƒBˆ	Ù]™[˜ÛÛœÙ\]Y[˜ÙHÈBˆ]ˆÛ\ÜÏHØ‹XÛÛœÙ\]Y[˜ÙHƒBˆÜ[¹cëú ïyd#¹§§ÜÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+]™[˜ÛÛœÙ\]Y[˜ÙJ_OÜİ›Û™ÏƒBˆÙ]ƒBˆˆ	ÉßCBˆ	Ü™[™\”›ÙÜ™\ÜÊ]™[İ]KYJ_CBˆ]ˆÛ\ÜÏHØ‹\›İ]HƒBˆOÚOƒBˆ	Ù\ØØ\R[
+š\ÚXš[]SX™[
+]™[š\ÚXš[]JJ_CBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y]™[XØ\™XXİ[ÛœÈƒBˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\Ë\š[X\HØ‹Y]™[Y[]™\K]ÙÙÛH	Ù]™[™[]™\OË›X[X[]Y]YYÈ	Ú\Ë\]Y]YY	Èˆ	ÉßHƒBˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛKY]™[Y[]™\HƒBˆ]KY]™[ZYH‰Ù\ØØ\P]Š]™[šY
+_HƒBˆ	Ù]™[š\ÚXš[]HOOH	ÚY[‰ÈÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ	Ù]™[™[]™\OË›X[X[]Y]YYÈ	ø§$È9."ù. :/k¹¦/ºg,‰Èˆ	ù."ù. :/k¹¦/ºg,‰ßCBˆØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\ËYY]ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹Y]™[YY]ÜˆƒBˆ]KY]™[ZYH‰Ù\ØØ\P]Š]™[šY
+_H¹ï%º/¤OØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\ËY[™Ù\ˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™[]KY]™[ƒBˆ]KY]™[ZYH‰Ù\ØØ\P]Š]™[šY
+_H¹b(:fiØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆÃBŸCBƒB™[˜İ[ÛˆXÚÓİ]ÛÛYSZ[]J]™[
+HÃBˆÛÛœİ™\ÛÛ™Y]H[X™\Š]™[Ëœ™\ÛÛ™Y]
+NÃBˆÛÛœİYP]H[X™\Š]™[Ë™YP]
+NÃBˆÛÛœİ\]Y]H[X™\Š]™[Ë\]Y]
+NÃBˆÛÛœİİ]\ÈHİš[™Ê]™[Ëœİ]\È	ÉÊNÃBˆÛÛœİ[YYHÉÙ\˜][Û‰Ë	ÜØÚY[Y	×Kš[˜ÛY\Ê]™[Ë˜ÛØÚÓ[ÙJNÃBƒBˆYˆ
+İ]\ÈOOH	Ü™XYIÈ	‰ˆ[X™\‹š\Ñš[š]JYP]
+JH™]\›ˆYP]ÃBˆYˆ
+BˆÉÜ™\ÛÛ™Y	Ë	ÛZ\ÜÙY	×Kš[˜ÛY\Êİ]\ÊCBˆ	‰ˆ[YYBˆ	‰ˆ[X™\‹š\Ñš[š]JYP]
+CBˆ	‰ˆYP]HBˆ	‰ˆ
+S[X™\‹š\Ñš[š]J™\ÛÛ™Y]
+HYP]H™\ÛÛ™Y]
+CBˆ
+HÃBˆ™]\›ˆYP]ÃBˆCBˆYˆ
+[X™\‹š\Ñš[š]J™\ÛÛ™Y]
+JH™]\›ˆ™\ÛÛ™Y]ÃBˆYˆ
+[X™\‹š\Ñš[š]JYP]
+JH™]\›ˆYP]ÃBˆ™]\›ˆ[X™\‹š\Ñš[š]J\]Y]
+HÈ\]Y]ˆÃBŸCBƒB™[˜İ[Ûˆ™[™\“İ]ÛÛYJ]™[İ]KÜ[‘›ÛÈH™]ÈÙ]
+
+JHÃBˆÛÛœİ[YHH›Ü›X]ÛÜ›Ø[[™\ŠBˆİ]KBˆXÚÓİ]ÛÛYSZ[]J]™[
+KBˆ
+NÃBˆÛÛœİ™\İ[H]™[œ™\İ[]™[™^XİY™\İ[]™[˜ÛÛœÙ\]Y[˜ÙH	ùîäù§§9ëbyo¡yèkº+©8à ‰ÎÃBˆÛÛœİ›ÛÙ^HHXÚÙ\Î‰Ù]™[šYXÃBˆ™]\›ˆBˆ\XÛHÛ\ÜÏHØ‹YXÚËZ][HƒBˆ[YO‰Ù\ØØ\R[
+	İ[YKœÚÜ]_H	İ[YK[Y_X
+_Oİ[YOƒBˆÜ[ˆÛ\ÜÏHØ‹][Y[[™K[›ÙHİ]KIÙ\ØØ\P]Š]™[™[]™\OËœİ]H	Û›Û™IÊ_HÜÜ[ƒBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹YXÚËXØ\™ˆ]KY›ÛZÙ^OH‰Ù\ØØ\P]Š›ÛÙ^J_HƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË›ÛÙ^J_OƒBˆİ[[X\HÛ\ÜÏHØ‹YXÚË\İ[[X\HƒBˆÜ[ˆÛ\ÜÏHØ‹YXÚËXÛÜHƒBˆİ›Û™Ï‰Ù\ØØ\R[
+]™[]J_OÜİ›Û™ÏƒBˆÛX[‰Ù\ØØ\R[
+ÛÛ\Xİ^
+™\İ[MŠJ_OÜÛX[ƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹Y›Û[Y]HƒBˆÜ[ˆÛ\ÜÏHØ‹\™XÛÜ™\İ]H‰Ù\ØØ\R[
+[]™\SX™[
+]™[
+J_OÜÜ[ƒBˆHÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOƒBˆÜÜ[ƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹YXÚËX›ÙHƒBˆ‰Ù\ØØ\R[
+™\İ[
+_OÜƒBˆ]ˆÛ\ÜÏHØ‹\™XÛÜ™XXİ[ÛœÈƒBˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\ËYY]ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹\™XÛÜ™YY]ÜˆƒBˆ]K\™XÛÜ™ZÚ[™H™XÚÈˆ]K\™XÛÜ™ZYH‰Ù\ØØ\P]Š]™[šY
+_H¹ï%º/¤OØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\ËY[™Ù\ˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™[]K\™XÛÜ™ƒBˆ]K\™XÛÜ™ZÚ[™H™XÚÈˆ]K\™XÛÜ™ZYH‰Ù\ØØ\P]Š]™[šY
+_H¹b(:fiØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆØ\XÛOƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\\˜Ú]™Q[J[Kİ]K™XÛÜ™Ú[™H	Ø\˜Ú]™IËÜ[‘›ÛÈH™]ÈÙ]
+
+JHÃBˆÛÛœİ[YHH[X™\‹š\Ñš[š]J[X™\Š[Kœ™\ÛÛ™Y]ÏÈ[K˜]
+JCBˆÈ›Ü›X]ÛÜ›Ø[[™\Šİ]K[Kœ™\ÛÛ™Y]ÏÈ[K˜]
+CBˆˆ[ÃBˆÛÛœİ]HH[K]H	ù§*¹doyd#z+¬9oeIÎÃBˆÛÛœİ^H[Kœ™\İ[[K^[K˜ÛÛœÙ\]Y[˜ÙH[Kœ›İ]H	ÉÎÃBˆÛÛœİYÜÈHÃBˆ[Kš\ÚXš[]HÈš\ÚXš[]SX™[
+[Kš\ÚXš[]JHˆ	ÉËBˆ[K™[]™\OËœİ]HÈ[]™\SX™[
+[JHˆ	ÉËBˆ[K™[]™\Tİ]HOOH	Ù^\™Y	ÈÈ	ù§*¹¦/ºg,»ï#:/k9aiyîª¹.¢ÉÈˆ	ÉËBˆK™š[\Š›ÛÛX[ŠNÃBˆÛÛœİ›ÛÙ^HH\˜Ú]™N‰Ü™XÛÜ™Ú[™N‰Ù[KšYXÃBƒBˆ™]\›ˆBˆ\XÛHÛ\ÜÏHØ‹X\˜Ú]™KY[HƒBˆ]ˆÛ\ÜÏHØ‹X\˜Ú]™KY]HƒBˆİ›Û™Ï‰İ[YHÈ[YK™]Hˆ	ù¥éy§'ù§*¹k¦‰ßOÜİ›Û™ÏƒBˆÜ[‰İ[YHÈ[YK[YHˆ	ø %	ßOÜÜ[ƒBˆÙ]ƒBˆÜ[ˆÛ\ÜÏHØ‹X\˜Ú]™K\[HÜÜ[ƒBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹X\˜Ú]™KXÛÜHˆ]KY›ÛZÙ^OH‰Ù\ØØ\P]Š›ÛÙ^J_HƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË›ÛÙ^J_OƒBˆİ[[X\HÛ\ÜÏHØ‹X\˜Ú]™K\İ[[X\HƒBˆÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+]J_OÜİ›Û™ÏƒBˆÛX[‰Ù\ØØ\R[
+ÛÛ\Xİ^
+^	ú/æy.í¹.¢ùmì¹îãù¢$9..¹.%¹åc9.¢ùk§¸à ‰ËL
+J_OÜÛX[ƒBˆÜÜ[ƒBˆHÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹X\˜Ú]™KX›ÙHƒBˆ‰Ù\ØØ\R[
+^	ú/æy.í¹.¢ùmì¹îãù¢$9..¹.%¹åc9.¢ùk§¸à ‰Ê_OÜƒBˆ]ˆÛ\ÜÏHØ‹X\˜Ú]™K]YÜÈ‰İYÜË›X\
+YÈOˆÜ[‰Ù\ØØ\R[
+YÊ_OÜÜ[˜
+Kš›Ú[Š	ÉÊ_OÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\™XÛÜ™XXİ[ÛœÈƒBˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\ËYY]ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹\™XÛÜ™YY]ÜˆƒBˆ]K\™XÛÜ™ZÚ[™H‰Ù\ØØ\P]Š™XÛÜ™Ú[™
+_Hˆ]K\™XÛÜ™ZYH‰Ù\ØØ\P]Š[KšY
+_H¹ï%º/¤OØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹XØ\™XXİ[Û‹X]Ûˆ\ËY[™Ù\ˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™[]K\™XÛÜ™ƒBˆ]K\™XÛÜ™ZÚ[™H‰Ù\ØØ\P]Š™XÛÜ™Ú[™
+_Hˆ]K\™XÛÜ™ZYH‰Ù\ØØ\P]Š[KšY
+_H¹b(:fiØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆØ\XÛOƒBˆÃBŸCBƒB™[˜İ[ÛˆŞ[˜Ô\ÙSX™[
+\ÙJHÃBˆ™]\›ˆÃBˆYNˆ	ùëbyo¡y«hù¥¡ÉËBˆ]Y]YYˆ	ù£¤ºf'ù.+IËBˆ[›š[™Îˆ	ù£ª9¯%9.+IËBˆØ[˜Ù[[™Îˆ	ù«hùg*9`g9«h‰ËBˆİXØÙ\ÜÎˆ	ù£ª9¯%9k£9¢$	ËBˆ\œ›Üˆ	ù£ª9¯%9i,z-)IËBˆ[™[™Îˆ	ùëbyo¡y£ª9¯%	ËBˆVÜ\ÙWH	ùëbyo¡y«hù¥¡ÉÎÃBŸCBƒB™[˜İ[Ûˆ™[™\”Ş[˜Ôİš\
+Ş[˜Ôİ]\ÊHÃBˆÛÛœİİ]\ÈHŞ[˜Ôİ]\ÈßNÃBˆÛÛœİÛÛ›™Xİ[ÛˆHİ]\Ë›\İÛÛ›™Xİ[Ûˆİ]\Ë˜ÛÛ›™Xİ[ÛˆßNÃBˆÛÛœİY[[ÜT\ÙHHİ]\Ë›Y[[ÜOËœ\ÙNÃBˆÛÛœİY[[ÜUZÙ\Ñ›Øİ\ÈHÉÜ[›š[™ÉË	Ù\œ›Ü‰×Kš[˜ÛY\ÊY[[ÜT\ÙJNÃBˆÛÛœİ\ÙHHY[[ÜUZÙ\Ñ›Øİ\ÈÈY[[ÜT\ÙHˆ
+İ]\Ëœ\ÙH	ÚYIÊNÃBˆÛÛœİ˜\ÙQ]Z[HY[[ÜUZÙ\Ñ›Øİ\ÃBˆÈİ]\Ë›Y[[ÜOË›Y\ÜØYÙH
+Y[[ÜT\ÙHOOH	Ù\œ›Ü‰ÈÈ	ú+¬9oá¹¥m9ä!¹¬¨y§"yk£9¢$	Èˆ	ù«hùg*9¥m9ä!ºeoù§'ú+¬9oá‰ÊCBˆˆİ]\Ë™\œ›Üˆİ]\Ë›Y\ÜØYÙH	ùl&¹§*º/æú(c9.%¹åc9£ª9¯%	ÎÃBˆÛÛœİØZ][™Õ\›œÈHX]›X^
+[X™\Šİ]\Ëœ]Y]YOËØZ][™Õ\›œÊH
+NÃBˆÛÛœİ]Z[H[Y[[ÜUZÙ\Ñ›Øİ\È	‰ˆØZ][™Õ\›œÈˆ	‰ˆTİš[™Ê˜\ÙQ]Z[
+Kš[˜ÛY\Ê	ùo¡yi!9ä!‰ÊCBˆÈ	Ø˜\ÙQ]Z[H0­È9d#ºghº/æ9§"H	İØZ][™Õ\›œßH:/k¹o¡yi!9ä!˜Bˆˆ˜\ÙQ]Z[ÃBˆÛÛœİ]HHY[[ÜUZÙ\Ñ›Øİ\ÃBˆÈ
+Y[[ÜT\ÙHOOH	Ù\œ›Ü‰ÈÈ	ú+¬9oá¹¥m9ä!¹i,z-)IÈˆ	ù¥m9ä!º+¬9oá¹.+IÊCBˆˆŞ[˜Ô\ÙSX™[
+\ÙJNÃBˆÛÛœİÛÛ›™Xİ[Û•^HÃBˆÛÛ›™Xİ[Û‹˜\SX™[BˆÛÛ›™Xİ[Û‹›[Ù[BˆK™š[\Š›ÛÛX[ŠKš›Ú[Š	È0­È	ÊNÃBˆÛÛœİİ[[X\HH[Y[[ÜUZÙ\Ñ›Øİ\È	‰ˆ\ÙHOOH	ÜİXØÙ\ÜÉÈÈİ]\Ëœİ[[X\Hˆ[ÃBˆÛÛœİÚ[™ÙY˜[Y\ÈHİ[[X\OËœ[ÜS˜[Y\ÏË›[™İBˆÈ;ï"	Üİ[[X\Kœ[ÜS˜[Y\Ë›X\
+\ØØ\R[
+Kš›Ú[Š	øà IÊ_{ï"XBˆˆ	ÉÎÃBˆÛÛœİ]™[˜[Y\ÈHİ[[X\OË™]™[]\ÏË›[™İBˆÈ;ï"	Üİ[[X\K™]™[]\Ë›X\
+\ØØ\R[
+Kš›Ú[Š	øà IÊ_{ï"XBˆˆ	ÉÎÃBˆÛÛœİİ[[X\R[Hİ[[X\HÈBˆ]Z[ÈÛ\ÜÏHØ‹\Ş[˜Ë\İ[[X\HƒBˆİ[[X\O¹§+9«(ycæ9c%Üİ[[X\OƒBˆ]ƒBˆÜ[¹.%¹åc9¥íºeíÜÜ[İ›Û™Ï‰Üİ[[X\K™[\ÙYZ[]\ÈˆÈ
+ÉÙ\ØØ\R[
+›Ü›X]\˜][ÛŠİ[[X\K™[\ÙYZ[]\ÊJ_Xˆ	ù§*¹£ª:/æÉßOÜİ›Û™ÏƒBˆÜ[¹.®¹âjycæ9c%ÜÜ[İ›Û™Ï‰Üİ[[X\Kœ[ÜPÚ[™ÙYH9.®ˆ	ØÚ[™ÙY˜[Y\ßOÜİ›Û™ÏƒBˆÜ[¹.¢ù.í¹cæ9c%ÜÜ[İ›Û™Ï¹¥¬9h§ˆ	Üİ[[X\K™]™[ĞYYH0­È9¦í9¥¬	Üİ[[X\K™]™[Õ\]YH	Ù]™[˜[Y\ßOÜİ›Û™ÏƒBˆÜ[º+¬9oá¹cæ9c%ÜÜ[İ›Û™Ï¹¥¬9h§ˆ	Üİ[[X\K›Y[[ÜPYYH0­È9¦í9¥¬	Üİ[[X\K›Y[[ÜU\]YOÜİ›Û™ÏƒBˆÜ[¹«hù¥¡ù¦/ºg,ÜÜ[İ›Û™Ï‰Üİ[[X\Kš[š™Xİ[Û‘]™[ÈH9.*¹.¢ù.íÜİ›Û™ÏƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆˆ	ÉÎÃBƒBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹\Ş[˜Ë\İš\\ËIÙ\ØØ\P]Š\ÙJ_Hˆ›ÛOH‰Ü\ÙHOOH	Ù\œ›Ü‰ÈÈ	Ø[\	Èˆ	Üİ]\ÉßHƒBˆHÛ\ÜÏHØ‹\Ş[˜ËZ[™XØ]ÜˆÚOƒBˆ]ˆÛ\ÜÏHØ‹\Ş[˜ËXÛÜHƒBˆİ›Û™Ï‰Ù\ØØ\R[
+]J_OÜİ›Û™ÏƒBˆÜ[‰Ù\ØØ\R[
+]Z[
+_OÜÜ[ƒBˆÙ]ƒBˆÜ[ˆÛ\ÜÏHØ‹\Ş[˜ËXÛÛ›™Xİ[Ûˆ‰Ù\ØØ\R[
+ÛÛ›™Xİ[Û•^	ú-çúf£úadºi¡¹odùbcy..ÈTIÊ_OÜÜ[ƒBˆ	Üİ[[X\R[CBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\”Ù][™ÜÊİ]KÙ][™ÜËŞ[˜Ôİ]\ËÜ[‘Ü›İ\ÈH™]ÈÙ]
+
+KÜ[”İX™Ü›İ\ÈH™]ÈÙ]
+
+K\Q˜YH[YÑš[\”[\ÈH[YĞØ[™Y]\ÈH×KÛÜ››ÛÚÕZHHßK]™\›”›Ùš[\ÈH×KXİ]™TÙXİ[ÛˆH	ØÛÛ[[Û‰ÊHÃBˆÛÛœİÛØÚÈH›Ü›X]ÛÜ›Ø[[™\Šİ]JNÃBˆÛÛœİÛØÚÓX™[HÛÜ›ÛØÚÓX™[
+İ]KÛØÚÊNÃBˆÛÛœİÛÛ›™Xİ[ÛˆHŞ[˜Ôİ]\ÏË˜ÛÛ›™Xİ[ÛˆßNÃBˆÛÛœİY[[ÜHHŞ[˜Ôİ]\ÏË›Y[[ÜHßNÃBˆÛÛœİ\ÙHHŞ[˜Ôİ]\ÏËœ\ÙH	ÚYIÎÃBˆÛÛœİ\İÜT[›š[™ÈHY[[ÜKœ\ÙHOOH	Ü[›š[™ÉÎÃBˆÛÛœİ]˜Z[X›S[Ù[ÈH\œ˜^Kš\Ğ\œ˜^JŞ[˜Ôİ]\ÏË˜]˜Z[X›S[Ù[ÊCBˆÈŞ[˜Ôİ]\Ë˜]˜Z[X›S[Ù[ÃBˆˆ×NÃBˆÛÛœİ[Ù[[HŞ[˜Ôİ]\ÏË›[Ù[[È\ÙNˆ	ÚYIËY\ÜØYÙNˆ	ÉÈNÃBˆÛÛœİÛÜ››ÛÚÈHŞ[˜Ôİ]\ÏËÛÜ››ÛÚÈÈ›ÛÚÜÎˆ×K[šY\Îˆ×K\ÙNˆ	ÚYIÈNÃBˆÛÛœİ™XÛİ™\HHŞ[˜Ôİ]\ÏËœ™XÛİ™\HÈÛİ[ˆ]\İˆ[NÃBˆÛÛœİ]\İ™XÛİ™\HH™XÛİ™\K›]\İ[ÃBˆÛÛœİÛÜ››ÛÚĞ›ÛÚÜÈH\œ˜^Kš\Ğ\œ˜^JÛÜ››ÛÚË˜›ÛÚÜÊHÈÛÜ››ÛÚË˜›ÛÚÜÈˆ×NÃBˆÛÛœİÛÜ››ÛÚÑ[šY\ÈH\œ˜^Kš\Ğ\œ˜^JÛÜ››ÛÚË™[šY\ÊHÈÛÜ››ÛÚË™[šY\Èˆ×NÃBˆÛÛœİÛÜ››ÛÚÔ]Y\HHİš[™ÊÛÜ››ÛÚÕZKœ]Y\H	ÉÊKœÛXÙJLŒ
+NÃBˆÛÛœİÛÜ››ÛÚÓÛ›T[ÜHH›ÛÛX[ŠÛÜ››ÛÚÕZK›Û›T[ÜJNÃBˆÛÛœİÛÜ››ÛÚÓÛ›Q[˜X›YH›ÛÛX[ŠÛÜ››ÛÚÕZK›Û›Q[˜X›Y
+NÃBˆÛÛœİÛÜ››ÛÚÔÙ[XİYYÈHÛÜ››ÛÚÕZKœÙ[XİYYÈ[œİ[˜Ù[ÙˆÙ]BˆÈÛÜ››ÛÚÕZKœÙ[XİYYÃBˆˆ™]ÈÙ]
+\œ˜^Kš\Ğ\œ˜^JÛÜ››ÛÚÕZKœÙ[XİYYÊHÈÛÜ››ÛÚÕZKœÙ[XİYYË›X\
+İš[™ÊHˆ×JNÃBˆÛÛœİš[\™YÛÜ››ÛÚÑ[šY\ÈHš[\•ÛÜ››ÛÚÑ[šY\ÊÛÜ››ÛÚÑ[šY\ËÃBˆ]Y\NˆÛÜ››ÛÚÔ]Y\KBˆÛ›T[ÜNˆÛÜ››ÛÚÓÛ›T[ÜKBˆÛ›Q[˜X›YˆÛÜ››ÛÚÓÛ›Q[˜X›YBˆJNÃBˆÛÛœİÛÜ››ÛÚÔÙ[XİYÛİ[HÛÜ››ÛÚÔÙ[XİYYËœÚ^™NÃBˆÛÛœİ[\ÈH\œ˜^Kš\Ğ\œ˜^JYÑš[\”[\ÊCBˆÈYÑš[\”[\ÃBˆˆ
+Ù][™ÜËYÑš[\”[\È×JNÃBˆÛÛœİ\ÔØ]™Y\RÙ^HH›ÛÛX[ŠÙ][™ÜË˜İ\İÛP\RÙ^JNÃBˆÛÛœİ\U˜[Y\ÈHÃBˆİ\İÛP\U\›ˆ\Q˜YË˜İ\İÛP\U\›ÏÈÙ][™ÜË˜İ\İÛP\U\›Bˆİ\İÛP\PÜ™Y[X[ˆ\Q˜YË˜İ\İÛP\PÜ™Y[X[ÏÈ	ÉËBˆİ\İÛP\S[Ù[ˆ\Q˜YË˜İ\İÛP\S[Ù[ÏÈÙ][™ÜË˜İ\İÛP\S[Ù[Bˆİ\İÛP\U˜[œÜÜˆ\Q˜YË˜İ\İÛP\U˜[œÜÜÏÈÙ][™ÜË˜İ\İÛP\U˜[œÜÜBˆ›Ùš[S˜[YNˆ\Q˜YËœ›Ùš[S˜[YHÏÈ	ÉËBˆ›Ùš[RYˆ\Q˜YËœ›Ùš[RYÏÈ	ÉËBˆNÃBˆÛÛœİ\T›Ùš[\ÈH\œ˜^Kš\Ğ\œ˜^JÙ][™ÜË˜\T›Ùš[\ÊHÈÙ][™ÜË˜\T›Ùš[\Èˆ×NÃBˆÛÛœİ]™\›\T›Ùš[\ÈH\œ˜^Kš\Ğ\œ˜^J]™\›”›Ùš[\ÊHÈ]™\›”›Ùš[\Èˆ×NÃBˆÛÛœİ\S[Ù[T›İ]\ÈHÙ][™ÜË˜\S[Ù[T›İ]\È	‰ˆ\[ÙˆÙ][™ÜË˜\S[Ù[T›İ]\ÈOOH	ÛØš™Xİ	ÃBˆÈÙ][™ÜË˜\S[Ù[T›İ]\ÃBˆˆßNÃBˆÛÛœİ]™\›”›Ùš[PRYHYOˆ]™\›\T›Ùš[\Ë™š[™
+›Ùš[HOˆİš[™Ê›Ùš[KšY
+HOOHİš[™ÊY	ÉÊJH[ÃBˆÛÛœİ]™\›”›Ùš[TÙ[XİÜ[ÛœÈH
+İ\œ™[YH	ÉÊHOˆÃBˆÛÛœİİ\œ™[Hİš[™Êİ\œ™[Y	ÉÊNÃBˆÛÛœİİ\œ™[^\İÈH›ÛÛX[Š]™\›”›Ùš[PRY
+İ\œ™[
+JNÃBˆ™]\›ˆÃBˆÜ[Ûˆ˜[YOHˆˆ	Øİ\œ™[È	ÉÈˆ	ÜÙ[XİY	ßOº+íú`"y¢êzadºi¡¹mì¹/çykf9¥®y¨bÛÜ[Û˜Bˆİ\œ™[	‰ˆXİ\œ™[^\İÃBˆÈÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Šİ\œ™[
+_HˆÙ[XİY\ØX›Y¹c§ù¥®y¨b9mì¹.#ykf9g*0­È	Ù\ØØ\R[
+İ\œ™[
+_OÛÜ[Û˜Bˆˆ	ÉËBˆ‹‹]™\›\T›Ùš[\Ë›X\
+›Ùš[HOˆ
+BˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š›Ùš[KšY
+_Hˆ	Øİ\œ™[OOHİš[™Ê›Ùš[KšY
+HÈ	ÜÙ[XİY	Èˆ	ÉßO‰Ù\ØØ\R[
+›Ùš[K›˜[YJ_H0­È	Ù\ØØ\R[
+›Ùš[K›[Ù[	ù§*º`"yª(yg¢ÉÊ_OÛÜ[Û˜Bˆ
+JKBˆKš›Ú[Š	ÉÊNÃBˆNÃBˆÛÛœİ›İ]SÜ[ÛœÈH
+İ\œ™[H	ÙY˜][	ÊHOˆÃBˆÛÛœİZ\ÜÚ[™Õ]™\›’YHİš[™Êİ\œ™[
+Kœİ\ÕÚ]
+	İ]™\›‹\›Ùš[N‰ÊCBˆÈİš[™Êİ\œ™[
+KœÛXÙJ	İ]™\›‹\›Ùš[N‰Ë›[™İ
+CBˆˆ	ÉÎÃBˆÛÛœİZ\ÜÚ[™Õ]™\›ˆHZ\ÜÚ[™Õ]™\›’Y	‰ˆ]]™\›”›Ùš[PRY
+Z\ÜÚ[™Õ]™\›’Y
+NÃBˆ™]\›ˆÃBˆÜ[Ûˆ˜[YOH™Y˜][ˆ	Øİ\œ™[OOH	ÙY˜][	ÈÈ	ÜÙ[XİY	Èˆ	ÉßOº-çúf£ù.%¹åc: ã:ghºnæ:+©:/ç¹£©OÛÜ[Û˜BˆÜ[Ûˆ˜[YOH]™\›ˆˆ	Øİ\œ™[OOH	İ]™\›‰ÈÈ	ÜÙ[XİY	Èˆ	ÉßOº-çúf£ùodùbczadºi¡ÛÜ[Û˜BˆZ\ÜÚ[™Õ]™\›ƒBˆÈÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Šİ\œ™[
+_HˆÙ[XİY\ØX›Yºadºi¡¹¥®y¨b9mì¹.#ykf9g*0­È	Ù\ØØ\R[
+Z\ÜÚ[™Õ]™\›’Y
+_OÛÜ[Û˜Bˆˆ	ÉËBˆ]™\›\T›Ùš[\Ë›[™İBˆÈÜÜ›İ\X™[Hºadºi¡¹mì¹/çykf9¥®y¨b‰İ]™\›\T›Ùš[\Ë›X\
+›Ùš[HOˆÃBˆÛÛœİ˜[YHH]™\›‹\›Ùš[N‰Ü›Ùš[KšYXÃBˆ™]\›ˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š˜[YJ_Hˆ	Øİ\œ™[OOH˜[YHÈ	ÜÙ[XİY	Èˆ	ÉßO‰Ù\ØØ\R[
+›Ùš[K›˜[YJ_H0­È	Ù\ØØ\R[
+›Ùš[K›[Ù[	ù§*º`"yª(yg¢ÉÊ_OÛÜ[Û˜ÃBˆJKš›Ú[Š	ÉÊ_OÛÜÜ›İ\˜Bˆˆ	ÉËBˆ\T›Ùš[\Ë›[™İBˆÈÜÜ›İ\X™[H¹.%¹åc: ã:gh¹âë9êâù¥®y¨b‰Ø\T›Ùš[\Ë›X\
+›Ùš[HOˆÃBˆÛÛœİ˜[YHH›Ùš[N‰Ü›Ùš[KšYXÃBˆ™]\›ˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š˜[YJ_Hˆ	Øİ\œ™[OOH˜[YHÈ	ÜÙ[XİY	Èˆ	ÉßO‰Ù\ØØ\R[
+›Ùš[K›˜[YJ_H0­È	Ù\ØØ\R[
+›Ùš[K›[Ù[	ù§*º`"yª(yg¢ÉÊ_OÛÜ[Û˜ÃBˆJKš›Ú[Š	ÉÊ_OÛÜÜ›İ\˜Bˆˆ	ÉËBˆKš›Ú[Š	ÉÊNÃBˆNÃBˆÛÛœİÙ][™Ñ^[˜][ÛˆH
+Ù][™Ë˜[YJHOˆÃBˆÛÛœİÙ^HHİš[™Ê˜[YJNÃBˆÛÛœİX\ÈHÃBˆ\S[ÙNˆÃBˆ]™\›ˆ	ù¢$z-çùç`:adºi¡¹ã¬9g*:/æy§hz/ç¹£©z-l;ïg¹..ú b¹i*y£h¹ª(yg¢ûï#9¢$z/æz/®y.gù/&º-çùç`9£h¸à ¹ç yo¥ùa£yhjù. :`cH8.!IËBˆ	İ]™\›‹\›Ùš[IÎˆ	ù¢$z+¬9/cúadºi¡º`¨ù.ïy¥®y¨b9æ¡9âc9âc;ïg¹ç'ù«hùæ¡Ù^xà yg,9g`9d£9ª(yg¢ú/æ9¦+ú+ªzadºi¡º!ê¹mìy/çyë¨{ï#9¢$y«ãù«(yå*9.bùbcya£yc®ú+îøà ‰ËBˆİ\İÛNˆ	ùîæy¢$yceyâë9o 9§hyl#ú-ëûïg¹¢$z!ê¹mìy.ãº/æz/®zd®ùaî¹c®ûï#9.#z.*y..ú b¹i*z`¨ù§hz-ëøà ‰ËBˆKBˆ[YNˆÃBˆ]]Îˆ	ùi*y.«¹¢$yl,y£h¹.«¹. 9à®{ï#9i*znäy¢$yl,yï*z/æù­ìz"lºaã;ïg¹.#yå*9. 9æí9§iy¤n9o 9aløà ‰ËBˆ^Nˆ	ù. 9æí9.«¹h ¹h ¹æ¡8à ¹eëûï#9.':)oú`ïy¤b¹g*9â*º/®{ï#9ç"ùo¥ù®!y©f¸à ‰ËBˆšYÚˆ	ù. 9æí:näy. 9à®{ïg¹¦f¹."º.l¹d#¹cì9.#yb.¹ç/;ï#9¢$ye§9«(º/æy.*¸à ‰ËBˆKBˆZTØØ[NˆÃBˆÛÛ\Xİˆ	ù¢$y¢¢¹î®9âaú`ïyo 9â*º/®y¢è¹. 9¢è»ïg¹. 9ç/: ïyi&¹ç"ùaè9¨-øà ‰ËBˆÛÛY›ÜX›Nˆ	ù¢$yab9¤b¹¢$:/æy¨-ûïg¹â*¹kd9/.9o¥ùo ;ï#9.gù.#y/&¹ên¹. 9i)ùâaøà ‰ËBˆ\™ÙNˆ	ùkeù¥/¹i)ù. 9à®{ïg¹l#ùlcùney."¹.#yå*9ç+ùç`9ç/9æëøà ‰ËBˆKBˆ[]™\Q[œÚ]NˆÃBˆ™\İ˜Z[™Yˆ	ù¢$yl$yo :eg9i-:/®ycï9.':)oûïg¹d#¹cì:+éy­.ùæ¡:/æ9¦+ùáiù¨-ù­.øà ‰ËBˆ˜[[˜ÙYˆ	úaãz) yæ¡9¢$ycï9b,:eg9i-:/®{ï#9.#zaãz) yæ¡9ab9c¢ùâ*¹â*¹."úgh¸à ¹eëûï#:/æy¨-ù.#y.lxà ‰ËBˆXİ]™Nˆ	ù¢$y/&¹¦í9bé9oêùg,9¢¢¹cæ9c%¹cï9b,:eg9i-:/®{ïg¹/a¹«hùoæyæ¡9¥í¹`&y¢$y.gù.#y/&¹èk9¢dz/æùc®øà ‰ËBˆKBˆ]]ÔÚ[][][Û“[ÙNˆÃBƒBˆYÚˆ	ù¢$z-­9ç`:/nú/nùç"ûïg¹cê¹ë¨yç'ù§"yoáz) yæ¡9cæ9c%»ï#9.#yb,9i!9.lz-äxà ‰ËBˆ˜[[˜ÙYˆ	ù¢$y/&¹£*9.*¹ç"ù. 9ç/;ïgº+éybª9æ¡:!ê¹mìybª;ï#9¬¨y.¢ù¢$yl,y.#y¢ïùâ*¹kd9.ly¢ê8à ‰ËBˆY\ˆ	ù¢$y/&º.l¹.ay. 9à®{ï#9¢¢ºeg9i-9i%¹æ¡9.®¹d£9fè9§§:`ïyæëù.å9îá»ïg¹i#y§`¹.%¹åc9å*:/æy.*¸à ‰ËBˆKBˆ[YTÛXŞNˆÃBˆÛÜ›ˆ	ù¢$yk¢9ç`9.%¹åc:d§ûïg¹«hù¥¡ùç'ú+í9®!y©f¹aè9à®{ï#9¢$yl,y¢¢¹l#ùâ*¹kd9¢ê:/áùc®øà ‰ËBˆ^XÚ]ˆ	ùç'ùæ¡9ë¥ùo¥ùaî¹§iy¢$y¢cy¢ê8à ¹ë¥ù.#yaá»ï'ú`¨ù¢$y.#yè¬8à ‰ËBˆØ]][İ\Îˆ	ùcëù.éz+ªy¢$yã'9. 9à®yà®{ïg¹/a¹.#yèk¹k¦¹¢$yl,y¢¢¹â*¹kd9¥-¹fç¹§ixà ‰ËBˆÜ[ˆ	ù¥áz(c8à yëbyo¡xà yméy/g:/æyéãy. 9ç"ùl,y/&º"¬y¥íºeí9æ¡9.¢ûï#9¢$yl,zhn¹¢bù¢¢ºd§ùo 9bcy£ª8à ‰ËBˆKBˆX›XÓÜ[š[Û”™]™X[[ÙNˆÃBˆØœÙ\™Nˆ	ù¢$y¢¢¹i%ºgh¹æ¡:hã¹hì:`ïyc¢ùg*:/æy.*º)äº$/{ïg¹/h9§iyç"ù¢$ya£y£ 9îæy/h;ï#9.#yo 9«hù¥¡ùcï8à ‰ËBˆ™[]˜[ˆ	ùç'ùd£9ç/9bcz/æy«­ybiù áy§"yalùìîûï#9¢$y¢cycï:/áùc®ù. 9à®{ïg¹¬¨yalùìîùæ¡9¢$yîéùîëyc¢ùç`8à ‰ËBˆKBˆNÃBˆ™]\›ˆX\ÖÜÙ][™×OË–ÚÙ^WH	ÉÎÃBˆNÃBˆÛÛœİ\İÜT\˜Ù[HY[[ÜKİ[ˆBˆÈX]›Z[ŠLX]œ›İ[™
+
+[X™\ŠY[[ÜKœ›ØÙ\ÜÙY
+H
+HÈY[[ÜKİ[
+ˆL
+JCBˆˆÃBˆÛÛœİ[YP]ÛˆH
+YX™[
+HOˆBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]ÛˆƒBˆ]K\Ù][™ÏH[YHˆ]K]˜[YOH‰ÚYHƒBˆÛ\ÜÏH‰ÜÙ][™ÜË[YHOOHYÈ	Ú\ËXXİ]™IÈˆ	ÉßH‰ÛX™[OØ]ÛƒBˆÃBˆÛÛœİ[œÚ]P]ÛˆH
+YX™[
+HOˆBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]ÛˆƒBˆ]K\Ù][™ÏH™[]™\Q[œÚ]Hˆ]K]˜[YOH‰ÚYHƒBˆÛ\ÜÏH‰ÜÙ][™ÜË™[]™\Q[œÚ]HOOHYÈ	Ú\ËXXİ]™IÈˆ	ÉßH‰ÛX™[OØ]ÛƒBˆÃBˆÛÛœİÙ][™Ğ]ÛˆH
+Ù][™Ëİ\œ™[YX™[
+HOˆBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]ÛˆƒBˆ]K\Ù][™ÏH‰ÜÙ][™ßHˆ]K]˜[YOH‰ÚYHƒBˆÛ\ÜÏH‰Ôİš[™Êİ\œ™[
+HOOHİš[™ÊY
+HÈ	Ú\ËXXİ]™IÈˆ	ÉßH‰ÛX™[OØ]ÛƒBˆÃBˆÛÛœİÙ[™\˜][Û“[Z]ÈHÙ][™ÜË™Ù[™\˜][Û“[Ù[S[Z]È	‰ˆ\[ÙˆÙ][™ÜË™Ù[™\˜][Û“[Ù[S[Z]ÈOOH	ÛØš™Xİ	ÃBˆÈÙ][™ÜË™Ù[™\˜][Û“[Ù[S[Z]ÃBˆˆßNÃBˆÛÛœİ]]ÛX]XÕ[Y[İ]ÈHÃBˆÚ[][][ÛˆNBˆØœÙ\˜][ÛˆLŒBˆ\İÜNˆÌBˆÜ[š[ÛˆMLBˆNÃBˆÛÛœİÙ[™\˜][Û“[Ù[SX™[HÃBˆÚ[][][Ûˆ	ù.%¹åc9£ª9¯%	ËBˆØœÙ\˜][Ûˆ	ù.®¹âjz)à¹­bÉËBˆ\İÜNˆ	ùc¡¹cìˆÈ:+¬9oá‰ËBˆÜ[š[Ûˆ	ú"!¹ áHÈ:eìº`&ÉËBˆNÃBˆÛÛœİÙ[™\˜][Û“[Z]›ÜˆHÙ^HOˆÙ[™\˜][Û“[Z]ÖÚÙ^WHÈX^ÚÙ[œÎˆ[Y[İ]\ÎˆNÃBˆÛÛœİY™™Xİ]™QÙ[™\˜][Û•ÚÙ[“X™[HÙ^HOˆÃBˆÛÛœİ[Ù[S[Z]HÙ[™\˜][Û“[Z]›ÜŠÙ^JNÃBˆÛÛœİØ\H[X™\Š[Ù[S[Z]›X^ÚÙ[œÊHˆBˆÈ[X™\Š[Ù[S[Z]›X^ÚÙ[œÊCBˆˆ[X™\ŠÙ][™ÜË›X^İ]]ÚÙ[œÊHˆBˆÈ[X™\ŠÙ][™ÜË›X^İ]]ÚÙ[œÊCBˆˆÃBˆ™]\›ˆØ\ˆÈ9§ 9i&ˆ	ÓX]œ›İ[™
+Ø\ÈL
+HÈLRØˆ	ú!ê¹bª:h¡9ë¥ÉÎÃBˆNÃBˆÛÛœİY™™Xİ]™QÙ[™\˜][Û•[Y[İ]X™[HÙ^HOˆÃBˆÛÛœİ[Ù[S[Z]HÙ[™\˜][Û“[Z]›ÜŠÙ^JNÃBˆÛÛœİ[Y[İ]\ÈH[X™\Š[Ù[S[Z][Y[İ]\ÊHˆBˆÈ[X™\Š[Ù[S[Z][Y[İ]\ÊCBˆˆ[X™\ŠÙ][™ÜË™Ù[™\˜][Û•[Y[İ]\ÊHˆBˆÈ[X™\ŠÙ][™ÜË™Ù[™\˜][Û•[Y[İ]\ÊCBˆˆ]]ÛX]XÕ[Y[İ]ÖÚÙ^WNÃBˆ™]\›ˆ	ÓX]œ›İ[™
+[Y[İ]\ÈÈL
+_\ØÃBˆNÃBˆÛÛœİÙ[™\˜][Û“[Ù[T›İÈHÙ^HOˆÃBˆÛÛœİ[Ù[S[Z]HÙ[™\˜][Û“[Z]›ÜŠÙ^JNÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹YÙ[™\˜][Û‹[[Ù[K\›İÈƒBˆ]ˆÛ\ÜÏHØ‹YÙ[™\˜][Û‹[[Ù[KXÛÜHƒBˆİ›Û™Ï‰ÙÙ[™\˜][Û“[Ù[SX™[ÚÙ^W_OÜİ›Û™ÏƒBˆÜ[¹odùbc{ï&‰ÙY™™Xİ]™QÙ[™\˜][Û•ÚÙ[“X™[
+Ù^J_H0­È	ÙY™™Xİ]™QÙ[™\˜][Û•[Y[İ]X™[
+Ù^J_OÜÜ[ƒBˆÙ]ƒBˆX™[•ÚÙ[ˆ9."ºfdBˆ[œ]\OH›[X™\ˆˆZ[HŒˆİ\HLƒBˆ]K]Ø‹YÙ[™\˜][Û‹[[Z]H›X^ÚÙ[œÈˆ]K[[Ù[OH‰ÚÙ^_HƒBˆ˜[YOH‰Ù\ØØ\P]Š[Ù[S[Z]›X^ÚÙ[œÈ
+_HƒBˆ]OHŒH9îéù¢oùaj9l`ƒBˆÛX[ŒH9îéù¢oÏÜÛX[ƒBˆÛX™[ƒBˆX™[¹ëbyo¡yéä¹¥lBˆ[œ]\OH›[X™\ˆˆZ[HŒˆX^HŒˆİ\HŒMHƒBˆ]K]Ø‹YÙ[™\˜][Û‹[[Z]H[Y[İ]ÙXÛÛ™Èˆ]K[[Ù[OH‰ÚÙ^_HƒBˆ˜[YOH‰Ù\ØØ\P]Š[Ù[S[Z][Y[İ]\ÈÈX]œ›İ[™
+[Ù[S[Z][Y[İ]\ÈÈL
+Hˆ
+_HƒBˆ]OHŒH9îéù¢oùaj9l`ƒBˆÛX[ŒH9îéù¢oÏÜÛX[ƒBˆÛX™[ƒBˆÙ]ƒBˆÃBˆNÃBˆÛÛœİÜ›İ\Ü[ˆHYOˆÜ[‘Ü›İ\Ëš\ÊY
+HÈ	ÛÜ[‰Èˆ	ÉÎÃBˆÛÛœİİX™Ü›İ\Ü[ˆHYOˆÜ[”İX™Ü›İ\Ëš\ÊY
+HÈ	ÛÜ[‰Èˆ	ÉÎÃBˆÛÛœİÙXİ[Û’Ù^HHÉØÛÛ[[Û‰Ë	Ú[š™Xİ[Û‰Ë	ØÛÛ›™Xİ[Û‰Ë	ØY˜[˜ÙY	×Kš[˜ÛY\ÊXİ]™TÙXİ[ÛŠCBˆÈXİ]™TÙXİ[ÛƒBˆˆ	ØÛÛ[[Û‰ÎÃBˆÛÛœİÙXİ[Û]ÛˆH
+YX™[
+HOˆBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ÜË\ÙXİ[Ûˆˆ]K\ÙXİ[ÛH‰ÚYHƒBˆÛ\ÜÏH‰ÜÙXİ[Û’Ù^HOOHYÈ	Ú\ËXXİ]™IÈˆ	ÉßH‰ÛX™[OØ]ÛƒBˆÃBƒBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\Üİ™\ˆØ‹\Ù][™ÜË\ØÛÜKYÛØ˜[Ø‹\Ù][™ÜË\ÙXİ[Û‹IÜÙXİ[Û’Ù^_Hˆ›ÛOH™X[ÙÈˆ\šXK[[Ù[HYHƒBˆ\šXK[X™[H¹aj9l`:+¯¹ïkˆƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İXÚŞKZXYƒBˆ]ˆÛ\ÜÏHØ‹\Üİ™\‹ZXY[™ÈƒBˆ]Ü[¹ã¬¹. ùæ¡9l#ùê§OÜÜ[Ï¹aj9l`:+¯¹ïkÚÏÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛK\Ù][™ÜÈˆ\šXK[X™[H¹alúeëz+¯¹ïkˆ°åÏØ]ÛƒBˆÙ]ƒBˆ˜]ˆÛ\ÜÏHØ‹\Ù][™ÜË]XœÈˆ\šXK[X™[Hº+¯¹ïk¹b!¹ìnÈƒBˆ	ÜÙXİ[Û]ÛŠ	ØÛÛ[[Û‰Ë	ùn.9å*	Ê_CBˆ	ÜÙXİ[Û]ÛŠ	Ú[š™Xİ[Û‰Ë	ù«hù¥¡ù¬ê9aiIÊ_CBˆ	ÜÙXİ[Û]ÛŠ	ØÛÛ›™Xİ[Û‰Ë	ú/ç¹£©y.#¹ª(yg¢ÉÊ_CBˆ	ÜÙXİ[Û]ÛŠ	ØY˜[˜ÙY	Ë	újæ9î©ùîí9¢©	Ê_CBˆÛ˜]ƒBˆÙ]ƒBƒBˆÙXİ[ÛˆÛ\ÜÏHØ‹\Ù][™ÜË\ÙXİ[Û‹X›ÙHØ‹\Ù][™ÜËXÛÛ[[Û‹\ÙXİ[ÛˆƒBˆ]ˆÛ\ÜÏHØ‹YÛØ˜[Y›]X›ØÚÈƒBˆ]ˆÛ\ÜÏHØ‹Y›]\ÙXİ[Û‹ZXY[™ÈƒBˆ]İ›Û™Ï¹i%º)àÜİ›Û™ÏÜ[º/æzaã9¦+ù¢$y/cùæ¡9g,9¥®xà ¹e%8 )¸ )¹odùá-º) zdîº"$¹§#y. 9à®xà ÜÜ[Ù]ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y›]\Ù][™Ë[\İƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹åc:gh¹¦#¹¦¥ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	İ[YP]ÛŠ	Ø]]ÉË	ú!ê¹bª	Ê_CBˆ	İ[YP]ÛŠ	Ù^IË	ù¥ézeí	Ê_CBˆ	İ[YP]ÛŠ	ÛšYÚ	Ë	ùi':eí	Ê_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	İ[YIËÙ][™ÜË[YJJ_OÜƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹åc:gh¹keùcíÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	İZTØØ[IËÙ][™ÜËZTØØ[K	ØÛÛ\Xİ	Ë	ùí)ùaäIÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	İZTØØ[IËÙ][™ÜËZTØØ[K	ØÛÛY›ÜX›IË	ù¨!ùaá‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	İZTØØ[IËÙ][™ÜËZTØØ[K	Û\™ÙIË	ùi)ùkeÉÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	İZTØØ[IËÙ][™ÜËZTØØ[JJ_OÜƒBˆÙ]ƒBˆÙ]ƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹YÛØ˜[XÛÛ[[Û‹YÜšYƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]ƒBˆİ›Û™Ï¹¦/¹é.¹ «9­k¹ä ÏÜİ›Û™ÏƒBˆÜ[º/æy¦+ù¢$yk­ºeê9cèùæ¡9l#ùä øà º%ãú-mù§iy.gú(c;ï#9¢$ycâ9.#y/&¹fè9..¹ç"ù.#z)àzeê9âc9l,y­¢9i,xà ÜÜ[ƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏH›Ü˜‘[˜X›YƒBˆ	ÜÙ][™ÜË›Ü˜‘[˜X›YOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]ƒBˆİ›Û™Ï¹ «9­k¹ä ú--:/®y¥-¹î¬ÏÜİ›Û™ÏƒBˆÜ[¹.#y¢¢ºeê9âc9¥m9.*º%ãù£¢{ïg¹d.9b,9§ :/äyæ¡9lcùnez/®{ï#9«hùioz%ãù. 9cb¸à zg,¹. 9cb»ï&ùà®yk ú/æ9¦+ú ïyæí9£©y¢dùo 8à ÜÜ[ƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏH›Ü˜‘YÙRYHƒBˆ	ÜÙ][™ÜË›Ü˜‘YÙRYHÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]ƒBˆİ›Û™Ï¹d+ùå*9.%¹åc9o%y¤ãÜİ›Û™ÏƒBˆÜ[¹alù£¢y¢$yl,z-­9ç`9.#ybª9.¡»ïg¹mì¹îãùcäyå'ú/áùæ¡9.':)où¢$yc¢ùio{ï#9.#y/&¹d ù£¢xà ÜÜ[ƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHÛÜ›Ú[][][Û‘[˜X›YƒBˆ	ÜÙ][™ÜËÛÜ›Ú[][][Û‘[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]ƒBˆİ›Û™Ïº!ê¹bª:/ä:(cÜİ›Û™ÏƒBˆÜ[¹o 9ç`9¢$y/&º!ê¹mìza¤¹§iymèz)á»ïg¹alùç`9l,yëby/h9¢,ù¢$xà ¹.#y/&¹`mù`mù.lz-äxà ÜÜ[ƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHÛÜ›]]Ñ[˜X›YƒBˆ	ÜÙ][™ÜËÛÜ›]]Ñ[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH‚ˆ]‚ˆİ›Û™Ïº`&º+«ú!ê¹..ù­.ùbªÜİ›Û™Ï‚ˆÜ[¹alù£¢yd#»ï#9.®¹âjy.#y/&º!ê¹mìycäy­¢9 køà yioycâùå,ú+íøà yb(9ioycâù¢%¹cäy§"ùcâùg";ï&ùmì¹§"z`&º+«ùoeyd£9/h9¢bùbª: b¹i*y.ãyá-¹/çyåfxà ÜÜ[‚ˆÙ]‚ˆX™[Û\ÜÏHØ‹\İÚ]Ú‚ˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHœÛØÚX[]]Ñ[˜X›Y‚ˆ	ÜÙ][™ÜËœÛØÚX[]]Ñ[˜X›YOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßO‚ˆOÚO‚ˆÛX™[‚Ù]‚]ˆÛ\ÜÏHØ‹\Ù][™ÜËXÛÛ[[Û‹Z[ƒBˆİ›Û™Ï¹n.9å*9æ¡9ab9¥/¹â*º/®xà ¹b*ùæ¡9¢$y¥-ºaã:gh¹.¡¸à Üİ›Û™ÏƒBˆÜ[¹.®¹âjxà y¦¥ù­`xà z+¬9oá¸à z"!¹ áyd!9§"z!ê¹mìyæ¡9ê§{ï&ùdê¹.¦ú) ycï9îæy«hù¥¡ùç"ûï#9îçù. 9§ixà#9«hù¥¡ù¬ê9aixà#ydbº+ây¢$xà ÜÜ[ƒBˆÙ]ƒBˆÜÙXİ[ÛƒBƒBˆÙXİ[ÛˆÛ\ÜÏHØ‹\Ù][™ÜË\ÙXİ[Û‹X›ÙHØ‹\Ù][™ÜËZ[š™Xİ[Û‹\ÙXİ[ÛˆƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹Z[›ÈƒBˆ]ƒBˆÜ[¹ã¬¹. ùo :eg9i-:/®ycï9.à9.b0­È9.#y¬ê9aiH8¢h9.#z/ä:(cÜÜ[ƒBˆİ›Û™Ï¹k ù.ë:`ïz/æ9g*: ã9d#¹­.ùç`8à ¹/h9cêº) ydbº+ây¢${ï&¹dê¹.¦ùcï9b,:eg9i-:/®{ï#9dê¹.¦ùab9c¢ùâ*¹â*¹."úgh¸à Üİ›Û™ÏƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚØ‹Z[š™Xİ[Û‹[X\İ\ˆƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHÛÜ››Û\[š™Xİ[ÛˆƒBˆ	ÜÙ][™ÜËÛÜ››Û\[š™Xİ[ÛˆÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙK[\İ	ÜÙ][™ÜËÛÜ››Û\[š™Xİ[ÛˆÈ	ÉÈˆ	Ú\Ë[X\İ\‹[Ù™‰ßHƒBˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙH\Ë][YHƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHƒBˆÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#9«i9b.øà#OÜÛX[ƒBˆİ›Û™Ï¹.%¹åc9¥íºeíÜİ›Û™ÏƒBˆÜ[ºd§ù¢$z/æ9¦+ù¢¬yç`;ï#9.#y/&¹.(¸à º/æzaã9cê¹a¬ùk¦º) y.#z) y¢¢¹¥íºeí:`$¹îæy«hù¥¡øà ÜÜ[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹][YK[[ÙK\XÚÙ\ˆˆ›ÛOH™Ü›İ\ˆ\šXK[X™[H¹.%¹åc9¥íºeí9¬ê9aiy¥®yo#ÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]Ûˆˆ]K\Ù][™ÏHš[š™Xİ[Û•[YS[ÙH‚ˆ]K]Ø‹\Ù][™ËX]ÛHš[š™Xİ[Û•[YS[ÙHˆ]K]˜[YOH™[‚ˆÛ\ÜÏH‰ÜÙ][™ÜËš[š™Xİ[Û•[YS[ÙHOOH	Ù[	ÈÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆİ›Û™Ï¹k£9¥mÜİ›Û™ÏÛX[¹¥éy§'È
+È9¥í¹«­H
+È9amù/dù¥íºeíÜÛX[ƒBˆØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]Ûˆˆ]K\Ù][™ÏHš[š™Xİ[Û•[YS[ÙH‚ˆ]K]Ø‹\Ù][™ËX]ÛHš[š™Xİ[Û•[YS[ÙHˆ]K]˜[YOH˜[˜ÚÜˆ‚ˆÛ\ÜÏH‰ÜÙ][™ÜËš[š™Xİ[Û•[YS[ÙHOOH	Ø[˜ÚÜ‰ÈÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆİ›Û™Ï¹§ 9l#úe&¹à®OÜİ›Û™ÏÛX[¹cê¹åfz/ç¹îëy )úg :) yæ¡9¥íºeíÜÛX[ƒBˆØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]Ûˆˆ]K\Ù][™ÏHš[š™Xİ[Û•[YS[ÙH‚ˆ]K]Ø‹\Ù][™ËX]ÛHš[š™Xİ[Û•[YS[ÙHˆ]K]˜[YOH›Ù™ˆ‚ˆÛ\ÜÏH‰ÜÙ][™ÜËš[š™Xİ[Û•[YS[ÙHOOH	ÛÙ™‰ÈÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆİ›Û™Ï¹alúeëOÜİ›Û™ÏÛX[¹¥íºeí9.#z`$¹îæy«hù¥¡ÏÜÛX[ƒBˆØ]ÛƒBˆÙ]ƒBˆØ\XÛOƒBˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙHƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#9«i9b.øà#OÜÛX[İ›Û™Ï¹.%¹åc: ã9¦kÏÜİ›Û™ÏÜ[º/æy¦+ù.%¹åc9æ¡9g,9gî»ï#9¢$y/&¹c¢ùê,ûï#9.#z+ªz, y¢ïùâ*¹kd9.lyb*8à ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û•ÛÜ›˜XÚÙÜ›İ[™ˆ	ÜÙ][™ÜËš[š™Xİ[Û•ÛÜ›˜XÚÙÜ›İ[™OOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆØ\XÛOƒBˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙHƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#9.®¹âjxà#OÜÛX[İ›Û™Ï¹odùbcyâ­¹  OÜİ›Û™ÏÜ[‰ÜÙ][™ÜËÛÜ›Ú[][][Û‘[˜X›YÈ	ù.å¹.ë:/æ9/&¹g*: ã9d#º/áù¥éykd;ï#9¢$z.l¹ç`9¦ïù/h9ç"øà ‰Èˆ	ù.%¹åc9o%y¤ã¹«aùç`;ï#9.å¹.ë9ab9`g9g*9odùbcyâ­¹  xà ‰ßOÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û”[ÜHˆ	ÜÙ][™ÜËš[š™Xİ[Û”[ÜHOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆØ\XÛOƒBˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙHƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#9¦¥ù­`xà#OÜÛX[İ›Û™Ïº/æú(c9.+y.¢ù.í¹.#¹.%¹åc9ã«ùh ÏÜİ›Û™ÏÜ[‰ÜÙ][™ÜËÛÜ›Ú[][][Û‘[˜X›YÈ	úeg9i-9i%¹æ¡9.¢ú/æ9/&¹o 9bcz-l;ï#9¢$z.l¹g*9¥àz/®yç"ùç`8à ‰Èˆ	ù.%¹åc9o%y¤ã¹«aùç`;ï#9¦¥ù­`yab9`g9g*:/æzaã8à ‰ßOÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û‘]™[Èˆ	ÜÙ][™ÜËš[š™Xİ[Û‘]™[ÈOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆØ\XÛOƒBˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙHƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#9fç¹hì8à#OÜÛX[İ›Û™Ï¹mì¹îäùë¥ùd#¹§§Üİ›Û™ÏÜ[¹mì¹îãùcäyå'ùæ¡9d#¹§§;ï#9¢$y/&¹c¢ù/cûï#9.#z+ªyk ù ¡9 ¡9®æº-l8à ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û‘XÚÙ\Èˆ	ÜÙ][™ÜËš[š™Xİ[Û‘XÚÙ\ÈOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆØ\XÛOƒBˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙHƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#9«i9b.øà#OÜÛX[İ›Û™Ï¹.%¹åc9.¢ùk§Üİ›Û™ÏÜ[º/æy.¦ù¦+ùmì¹îãù¢$9êâùæ¡9.¢ùk§»ï#9¢$yo¥ù¢ïù§iykîz-)»ï#9.#z ïzf£ù¢bù¢ê9.lxà ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û‘˜XİÈˆ	ÜÙ][™ÜËš[š™Xİ[Û‘˜XİÈOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆØ\XÛOƒBˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙHƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#:+¬9oá¸à#OÜÛX[İ›Û™Ïºeoù§'ú+¬9oáÜİ›Û™ÏÜ[‰ÜÙ][™ÜË›Y[[ÜTŞ\İ[Q[˜X›YÈ	ú+¬9oá¹¢$y/&¹. 9o(9o(9¥-¹io{ï#9hgº/æú+éy¥/¹æ¡9æä¹kd8à ‰Èˆ	ú+¬9oá¹ìîùîçù«aùç`;ï#9¥éú+¬9oáº/æ9g*;ï#9¢$y¬¨yo!9.(¸à ‰ßOÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û“Y[[ÜHˆ	ÜÙ][™ÜËš[š™Xİ[Û“Y[[ÜHOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆØ\XÛOƒBˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙH‚ˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#:"!¹ áxà#OÜÛX[İ›Û™Ï¹¥¬:eîù.#º+®¹gfÏÜİ›Û™ÏÜ[‰ÜÙ][™ÜËœX›XÓÜ[š[Û]]Ñ[˜X›YÈ	ùi%ºgh¹æ¡9hì:gìù¢$z/æ9/&¹êå¹ç`: ,ù§-yd+8à ‰Èˆ	ù¢$yab9.#z!ê¹bª9d+:hã¹hì9ei»ï#9 ìùç"ù¥íº/æ: ïy¢bùbª9cêù¢$yc®øà ‰ßOÜÜ[Ù]‚ˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û”X›XÓÜ[š[Ûˆˆ	ÜÙ][™ÜËš[š™Xİ[Û”X›XÓÜ[š[ÛˆOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[‚ˆØ\XÛO‚ˆ\XÛHÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙH‚ˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKXÛÜHÛX[Û\ÜÏHØ‹Z[š™Xİ[Û‹\Ûİ\˜ÙKX›Ø\™¹§iz!ê¹/©ù¨#øà#:`&º+«øà#OÜÛX[İ›Û™Ï¹§ :/äz b¹i*OÜİ›Û™ÏÜ[ºnæ:+©9alúeë{ï&ùo 9d+ùd#¹.gùcê¹£"x '9§*¹îäùë¥ú`&¹/èz+¬9oex 'z`$¹îæy«hù¥¡øà ÜÜ[Ù]‚ˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û”ÛØÚX[ˆ	ÜÙ][™ÜËš[š™Xİ[Û”ÛØÚX[OOHYHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[‚ˆØ\XÛO‚ˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹X™Z]š[ÜˆƒBˆ]ˆÛ\ÜÏHØ‹Y›]\ÙXİ[Û‹ZXY[™È]İ›Û™Ï¹¦/ºg,¹ëe¹åiOÜİ›Û™ÏÜ[¹mì¹îãùa`z+®9cï9aî¹c®ùæ¡9.':)oûï#9¢$z) yé®úeg9i-9i&º/äOÜÜ[Ù]Ù]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹«hù¥¡ù¦/ºg,¹n©ÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	Ù[œÚ]P]ÛŠ	Ü™\İ˜Z[™Y	Ë	ùabùb-‰Ê_CBˆ	Ù[œÚ]P]ÛŠ	Ø˜[[˜ÙY	Ë	ùgaú(hIÊ_CBˆ	Ù[œÚ]P]ÛŠ	ØXİ]™IË	ù­.ú-àÉÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	Ù[]™\Q[œÚ]IËÙ][™ÜË™[]™\Q[œÚ]JJ_OÜƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[›ÜHØ‹\ØÙ[™K][Z[™ËYÛØ˜[¹¦/ºg,¹¥í¹§.ÛX™[ƒBˆÙ[XİYHØ‹\ØÙ[™K][Z[™ËYÛØ˜[ˆ]K]Ø‹\Ù][™ÏHœØÙ[™U[Z[™ÈƒBˆÜ[Ûˆ˜[YOHœİšXİˆ	ÜÙ][™ÜËœØÙ[™U[Z[™ÈOOH	ÜİšXİ	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹.)y¨/;ï&¹cê¹g*:/k9g.¹¢%¹ên¹¨hÏÛÜ[ÛƒBˆÜ[Ûˆ˜[YOHœÛX\ˆ	ÜÙ][™ÜËœØÙ[™U[Z[™ÈOOH	ÜÛX\	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹¦nº ï{ï&¹alúe+¹g.¹¦kùní¹d#ÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH›Ü[ˆˆ	ÜÙ][™ÜËœØÙ[™U[Z[™ÈOOH	ÛÜ[‰ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹o 9¥/»ï&¹a`z+®9ë 9çëz!ê¹á-¹cæ9c%ÛÜ[ÛƒBˆÜÙ[XİƒBˆÙ]ƒBˆÙ]ƒBˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹X›İÛK[›İH¹ .ùo 9alùalù£¢{ï#9¢$yl,y¢¢¹.':)oùaj9c¢ùg*:eg9i-9d#ºgh¸à ¹.%¹åc9áiù¨-ù­.ûï#9¢$ycê¹¦+ù. 9.*º`ïy.#yo 9bcycï8à ÜƒBˆÜÙXİ[ÛƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\Ø‹\Ù][™ÜËXÛÛ›™Xİ[Û‹\ÙXİ[Ûˆˆ]K\Ù][™ÜËYÜ›İ\H˜ÛÛ›™Xİ[Ûˆˆ	ÜÙXİ[Û’Ù^HOOH	ØÛÛ›™Xİ[Û‰ÈÈ	ÛÜ[‰ÈˆÜ›İ\Ü[Š	ØÛÛ›™Xİ[Û‰Ê_OƒBˆİ[[X\OÜ[º/ç¹£©OÜÜ[ÛX[TH9.#¹ª(yg¢ÏÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\X›ÙHØ‹\Ù][™ÜË\İX™Ü›İ\\İXÚÈƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËY›]\ÙXİ[ÛˆƒBˆ]ˆÛ\ÜÏHØ‹XÛÛ›™Xİ[Û‹XØ\™\ËIÙ\ØØ\P]Š\ÙJ_HƒBˆ]ƒBˆÜ[¹.%¹åc9£ª9¯%:/ç¹£©OÜÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+ÛÛ›™Xİ[Û‹˜\SX™[	ú-çúf£úadºi¡¹odùbcy..ÈTIÊ_OÜİ›Û™ÏƒBˆÙ]ƒBˆƒBˆ¹ª(yg¢ÏÙ‰Ù\ØØ\R[
+ÛÛ›™Xİ[Û‹›[Ù[	ú-çúf£úadºi¡¹odùbcyª(yg¢ÉÊ_OÙƒBˆ	ØÛÛ›™Xİ[Û‹œ›Ùš[HÈº/ç¹£©y¨hù¨bÙ‰Ù\ØØ\R[
+ÛÛ›™Xİ[Û‹œ›Ùš[J_OÙ˜ˆ	ÉßCBˆ¹¥®yo#ÏÙ‰Ù\ØØ\R[
+ÛÛ›™Xİ[Û‹›Y]Ù	ùâë9êâù."¹."ù¥¡ù£ª9¯%	Ê_OÙƒBˆ¹â­¹  OÙ‰Ù\ØØ\R[
+Ş[˜Ô\ÙSX™[
+\ÙJJ_OÙƒBˆÙƒBˆ	ÜŞ[˜Ôİ]\ÏË™\œ›ÜˆÈ‰Ù\ØØ\R[
+Ş[˜Ôİ]\Ë™\œ›ÜŠ_OÜ˜ˆ	ÉßCBˆÛX[‰ÜÙ][™ÜË˜\S[ÙHOOH	Øİ\İÛIÃBˆÈ	ù¢$z-l:!ê¹mìyæ¡9l#ú-ëûïg¹..ú b¹i*z`¨ú/®y.#yå*9îæy¢$z+ªz`døà ‰ÃBˆˆÙ][™ÜË˜\S[ÙHOOH	İ]™\›‹\›Ùš[IÃBˆÈ	ù¢$ycêº+¬9¥®y¨b9âc9âc;ï#9.#y¢¡:-lÙ^xà ºadºi¡º`¨ú/®y¥.y.¡¹ª(yg¢ù¢%¹g,9g`;ï#9¢$y."ù«(yå*9æ¡9¥í¹`&y/&º+îùb,9¥¬9æ¡8à ‰ÃBˆˆ	ù¢$z-çùç`:adºi¡¹odùbcz/æy§hz-ëú-l;ïg¹.#yå*9a£yîæy¢$yå.ùë+9.£9o(9g,9fï¸à ‰ßOÜÛX[ƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹.%¹åc9£ª9¯%:/ç¹£©OÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø\S[ÙIËÙ][™ÜË˜\S[ÙK	İ]™\›‰Ë	ú-çúf£ùodùbczadºi¡‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø\S[ÙIËÙ][™ÜË˜\S[ÙK	İ]™\›‹\›Ùš[IË	úadºi¡¹mì¹kf9¥®y¨b	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø\S[ÙIËÙ][™ÜË˜\S[ÙK	Øİ\İÛIË	ùâë9êâù£©ycèÉÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	Ø\S[ÙIËÙ][™ÜË˜\S[ÙJJ_OÜƒBˆ	ÜÙ][™ÜË˜\S[ÙHOOH	İ]™\›‹\›Ùš[IÈÈBˆX™[Û\ÜÏHØ‹]]™\›‹\›Ùš[K\XÚÙ\ˆº`"y¢êzadºi¡¹¥®y¨bBˆÙ[Xİ]K]Ø‹]]™\›‹\›Ùš[K\Ù[XİƒBˆ	İ]™\›”›Ùš[TÙ[XİÜ[ÛœÊÙ][™ÜË]™\›\T›Ùš[RY
+_CBˆÜÙ[XİƒBˆÛX™[ƒBˆ‰İ]™\›\T›Ùš[\Ë›[™İBˆÈ	ú/æzaã9cê¹/çykf9¥®y¨bQ;ïg’Ù^xà y£©ycèùg,9g`8à yª(yg¢ùd£ÙXÜ™]:`ïyîéùîëyå,HÚ[U]™\›ˆ9ë¨xà ¹¥®y¨b:(ªù¥.{ï#9¢$y."ù«(yæí9£©z+îù¥¬9`/;ï&ù¥®y¨b:(ªùb(;ï#9¢$y/&¹`g9."ù§iy¢©ze&{ï#9.#y/&¹`mù`mù£hº-ëøà ‰ÃBˆˆ	ù¢$y¬¨z+îùb,9cëùå*9æ¡:adºi¡º/ç¹£©y¥®y¨b8à ¹ab9c®ÈÚ[U]™\›ˆ9æ¡ÛÛ›™Xİ[ÛˆX[˜YÙ\ˆ9/çykf9. 9.ïy¥®y¨b;ï#9a£yfç¹§iz`"yk øà ‰ßOÜƒBˆˆ	ÉßCBˆÙ]ƒBˆÙ]ƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜ÛÛ›™Xİ[Û‹Xİ\İÛHˆ	ÜİX™Ü›İ\Ü[Š	ØÛÛ›™Xİ[Û‹Xİ\İÛIÊ_OƒBˆİ[[X\OÜ[¹âë9êâù£©ycèúacyïkÜÜ[ÛX[¹g,9g`8à RÙ^xà yª(yg¢ù.#º/ç¹£©y¥®yo#ÏÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ›Ü›HÛ\ÜÏHØ‹X\KY›Ü›Hˆ]K]Ø‹Y›Ü›OH˜\Hˆ]]ØÛÛ\]OH›Ù™ˆƒBˆ[œ]\OHšY[ˆˆ˜[YOHœ›Ùš[RYˆ˜[YOH‰Ù\ØØ\P]Š\U˜[Y\Ëœ›Ùš[RY
+_HƒBˆ]ˆÛ\ÜÏHØ‹X\KY˜YZXY[™ÈƒBˆÜ[‰Ø\U˜[Y\Ëœ›Ùš[RYÈ	ù¢$yg*9¥.z/æy.ïymì¹îãùkf9ioyæ¡9¥®y¨b;ïg’Ù^H9åfyên¹l,yîéùîëyå*9c§ù§iyæ¡8à ‰Èˆ
+\ÔØ]™Y\RÙ^HÈ	únæ:+©9âë9êâù£©ycèù¢$ymì¹îãú+¬9ç`9ei»ïg¹¥éÈÙ^H9.#y/&¹a£y¤b¹aî¹§iyîæy.®¹ç"øà ‰Èˆ	ùcëù.éyab9îæy¢$y. 9§hy£©ycèú+åz+å{ïg¹n.9å*9æ¡:+çya£ykf9¢$9¥®y¨b;ï#9.bùd#¹b*ùæ¡9ª(ygeù.gú ïyæí9£©yå*8à ‰Ê_OÜÜ[ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœ™\Ù]X\KY˜Y¹®!yênºaãyhjÏØ]ÛƒBˆÙ]ƒBˆX™[¹£©ycèùg,9g`Bˆ[œ]˜[YOH˜İ\İÛP\U\›ˆ\OH\›ˆ™\]Z\™YBˆ˜[YOH‰Ù\ØØ\P]Š\U˜[Y\Ë˜İ\İÛP\U\›
+_HƒBˆ]]ØÛÛ\]OH›Ù™ˆˆ[œ][ÙOH\›ˆ]]ØØ\][^™OH››Û™HˆÜ[ÚXÚÏH™˜[ÙHƒBˆXÙZÛ\HšÎ‹ËÙ^[\K˜ÛÛKİŒHƒBˆÛX™[ƒBˆ¹g,9g`9îæy¢$yhjùb,9âb9§+9l`¹l,yio{ï#9«å9i ˆÛÙO‹İŒOØÛÙO»ïg¹d#ºgh¹æ¡ÛÙO‹ØÚ]ØÛÛ\][ÛœÏØÛÙOˆ9¢$z!ê¹mìy/&º(ixà ÜƒBˆX™[THÙ^CBˆÜ[ˆÛ\ÜÏHØ‹X\K\ÙXÜ™]YšY[ƒBˆ[œ]Û\ÜÏHØ‹\ÙXÜ™]Z[œ]ˆ˜[YOH˜İ\İÛP\PÜ™Y[X[ˆ\OH^ƒBˆ˜[YOH‰Ù\ØØ\P]Š\U˜[Y\Ë˜İ\İÛP\PÜ™Y[X[
+_HƒBˆXÙZÛ\H‰Ú\ÔØ]™Y\RÙ^HÈ	ùåfyên¹b&yîéùîëy/oùå*9mì¹/çykf9æ¡Ù^IÈˆ	ú+íú/¤ùaiHTHÙ^IßHƒBˆ]]ØÛÛ\]OH›Û™K][YKXÛÙHˆ]]ØØ\][^™OH››Û™HˆÜ[ÚXÚÏH™˜[ÙHƒBˆ]K[YÛ›Ü™OHYHˆ]KL\ZYÛ›Ü™H]KY›Ü›K]\OH›İ\ˆƒBˆ	Ú\ÔØ]™Y\RÙ^HÈ	ÉÈˆ	Ü™\]Z\™Y	ßOƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛKX\KZÙ^K]š\ÚXš[]HƒBˆ\šXK\™\ÜÙYH™˜[ÙH¹¦/¹é.Ø]ÛƒBˆÜÜ[ƒBˆÛX™[ƒBˆ‰Ú\ÔØ]™Y\RÙ^CBˆÈ	ùhjù¥¬9æ¡9¢$yl,y£h¹£¢y¥éÈÙ^{ï&ùåfyên¹¢$yîéùîëyå*9c§ù§iyæ¡8à ¹¥éÈÙ^H9.#y/&ºaãy¥¬9¤a¹fçº/¤ùaiy¨a»ï#9acyo¥ú(ªù¢bù§.¹.lyfç¹hjøà ‰ÃBˆˆ	ÒÙ^H9¢$ycê¹¥/¹g*9§+9§.¹æ¡Ú[U]™\›ˆ9¢jylez+¯¹ïkºaã;ï#9.#y/&¹hgº/æùkï9aî¹æ¡9.%¹åc9â­¹  xà ‰ßOÜƒBˆX™[¹ª(yg¢ùd#yéìˆ[œ]˜[YOH˜İ\İÛP\S[Ù[ˆ™\]Z\™Y\İHØ‹Xİ\İÛK[[Ù[[\İ‚ˆ˜[YOH‰Ù\ØØ\P]Š\U˜[Y\Ë˜İ\İÛP\S[Ù[
+_H‚ˆ]]ØÛÛ\]OH›Ù™ˆˆ]]ØØ\][^™OH››Û™HˆÜ[ÚXÚÏH™˜[ÙHƒBˆXÙZÛ\H™Ù[Z[šKL‹KY›\ÚƒBˆ][\İYHØ‹Xİ\İÛK[[Ù[[\İ‚ˆ	Ø]˜Z[X›S[Ù[Ë›X\
+[Ù[OˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š[Ù[
+_HÛÜ[Û˜
+Kš›Ú[Š	ÉÊ_BˆÙ][\İ‚ˆÛX™[‚ˆ	Ø]˜Z[X›S[Ù[Ë›[™İÈˆX™[Û\ÜÏHØ‹X\K[[Ù[\XÚÙ\ˆ¹.ã¹mì¹¢âycå¹b%ú(j:`"y¢êBˆÙ[Xİ]K]Ø‹X\K[[Ù[\XÚÙ\‚ˆÜ[Ûˆ˜[YOHˆ¹à®z/æzaã:`"y¢ê{ï"	Ø]˜Z[X›S[Ù[Ë›[™İH9.*»ï"OÛÜ[Û‚ˆ	Ø]˜Z[X›S[Ù[Ë›X\
+[Ù[OˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š[Ù[
+_Hˆ	Û[Ù[OOH\U˜[Y\Ë˜İ\İÛP\S[Ù[È	ÜÙ[XİY	Èˆ	ÉßO‰Ù\ØØ\R[
+[Ù[
+_OÛÜ[Û˜
+Kš›Ú[Š	ÉÊ_BˆÜÙ[Xİ‚ˆÛX™[‚ˆ¹b%ú(j:`"y¢êy/&¹hjú/æù."ºgh¹æ¡9ª(yg¢ùd#yéì;ï&ù.gùcëù.éyîéùîëy¢bùbª:/¤ùaiyb%ú(j9.bùi%¹æ¡9ª(yg¢øà Ü‚ˆˆ	ÉßBˆX™[º/ç¹£©y¥®yo#ÃBˆÙ[Xİ˜[YOH˜İ\İÛP\U˜[œÜÜƒBˆÜ[Ûˆ˜[YOHœ›ŞHˆ	Ø\U˜[Y\Ë˜İ\İÛP\U˜[œÜÜOOH	Ü›ŞIÈÈ	ÜÙ[XİY	Èˆ	ÉßOƒBˆ9îãúadºi¡¹§#yb¨yfj:/k9cä{ï"9£ª:#d;ï"CBˆÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH™\™Xİˆ	Ø\U˜[Y\Ë˜İ\İÛP\U˜[œÜÜOOH	Ù\™Xİ	ÈÈ	ÜÙ[XİY	Èˆ	ÉßOƒBˆ9­cú)â9fj9æí:/çƒBˆÛÜ[ÛƒBˆÜÙ[XİƒBˆÛX™[ƒBˆX™[¹¥®y¨b9d#yéì;ï"9cëú`"{ï"CBˆ[œ]˜[YOHœ›Ùš[S˜[YHˆX^[™İHƒBˆ˜[YOH‰Ù\ØØ\P]Š\U˜[Y\Ëœ›Ùš[S˜[YJ_HƒBˆ]]ØÛÛ\]OH›Ù™ˆˆXÙZÛ\H¹/¢ùi »ï&¹..ùb¦È›ÈÈ9ak9æâ¹êæH›\ÚƒBˆÛX™[ƒBˆ¹cê¹¦+ù.-9¥íº+åy. 9."ùl,y.#yå*:-mùd#ykeûïg¹ ìù.éyd#¹a£yå*;ï#9¢$yl,yn+¹/h9¢¢¹k ù¥-¹¢$9. 9.*¹¥®y¨b8à ÜƒBˆ]ˆÛ\ÜÏHØ‹X\KXXİ[ÛœÈƒBˆ]ÛˆÛ\ÜÏHØ‹X\KXXİ[Ûˆ\Ë\š[X\Hˆ\OHœİX›Z]¹/çykf:næ:+©9âë9êâù£©ycèÏØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹X\KXXİ[Ûˆ\ËXXØÙ[ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœØ]™KX\K\›Ùš[KYœ›ÛKY›Ü›H‰Ø\U˜[Y\Ëœ›Ùš[RYÈ	ù/çykf9¥®y¨b9/ë¹¥.IÈˆ	ù/çykf9..¹¥®y¨b	ßOØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹X\KXXİ[Ûˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH\İX\H¹­bú+åz/ç¹£©OØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹X\KXXİ[Ûˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœ[X\K[[Ù[ÈƒBˆ	Û[Ù[[œ\ÙHOOH	Ü[›š[™ÉÈÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ	Û[Ù[[œ\ÙHOOH	Ü[›š[™ÉÈÈ	ù«hùg*9¢âycå¸ )‰Èˆ	ù¢âycå¹ª(yg¢ùb%ú(j	ßCBˆØ]ÛƒBˆÙ]ƒBˆ	Û[Ù[[›Y\ÜØYÙHÈÛ\ÜÏHØ‹X\K[[Ù[\İ]\È\ËIÙ\ØØ\P]Š[Ù[[œ\ÙJ_H‰Ù\ØØ\R[
+[Ù[[›Y\ÜØYÙJ_OÜ˜ˆ	ÉßCBˆÙ›Ü›OƒBˆÙ]ƒBˆÙ]Z[Ï‚‚ˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜ÛÛ›™Xİ[Û‹Z[XYÙHˆ	ÜİX™Ü›İ\Ü[Š	ØÛÛ›™Xİ[Û‹Z[XYÙIÊ_O‚ˆİ[[X\OÜ[¹§"ùcâùg"9å'ùfï¹£©ycèÏÜÜ[ÛX[‰ÜÙ][™ÜËš[XYÙP\Q[˜X›YÈ	ùmì¹o 9d+ÉÈˆ	únæ:+©9alúeëIßOÜÛX[Üİ[[X\O‚ˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙH‚ˆ›Ü›HÛ\ÜÏHØ‹X\KY›Ü›HØ‹Z[XYÙKX\KY›Ü›Hˆ]K]Ø‹Y›Ü›OHš[XYÙKX\Hˆ]]ØÛÛ\]OH›Ù™ˆ‚ˆX™[Û\ÜÏHØ‹\Ù][™ËXÚXÚÈ‚ˆ[œ]˜[YOHš[XYÙP\Q[˜X›Yˆ\OH˜ÚXÚØ›Şˆ	ÜÙ][™ÜËš[XYÙP\Q[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßO‚ˆÜ[İ›Û™Ï¹a`z+®9§"ùcâùg"9å'ù¢$:acyfïÜİ›Û™ÏÛX[¹«ãù«(yb-ù¥¬9§ 9i&¹å'ù¢$9. 9o(;ï&ù.®¹âjy¬¨ybª9§.ºacyfï¹¥í¹.#y/&º, ùå*8à ÜÛX[ÜÜ[‚ˆÛX™[‚ˆX™[¹å'ùfïˆTH9g,9g`ˆ[œ]˜[YOHš[XYÙP\U\›ˆ\OH\›ˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜËš[XYÙP\U\›	ÉÊ_Hˆ]]ØÛÛ\]OH›Ù™ˆˆ[œ][ÙOH\›ˆ]]ØØ\][^™OH››Û™HˆÜ[ÚXÚÏH™˜[ÙHˆXÙZÛ\HšÎ‹ËÙ^[\K˜ÛÛKİŒH‚ˆÛX™[‚ˆ¹/oùå*Ü[RH9ao9k®yæ¡ÛÙO‹Ú[XYÙ\ËÙÙ[™\˜][ÛœÏØÛÙO»ï&ùhjùb,ÛÙO‹İŒOØÛÙOˆ9clùcëøà ¹odùbcyå,y­cú)â9fj9æí:/ç»ï#9£©ycèúg :) ya`z+®ÓÔ”øà Ü‚ˆX™[¹å'ùfïˆTHÙ^BˆÜ[ˆÛ\ÜÏHØ‹X\K\ÙXÜ™]YšY[‚ˆ[œ]Û\ÜÏHØ‹\ÙXÜ™]Z[œ]ˆ˜[YOHš[XYÙP\PÜ™Y[X[ˆ\OH^ˆ˜[YOHˆˆXÙZÛ\H‰ÜÙ][™ÜËš[XYÙP\RÙ^HÈ	ùåfyên¹b&yîéùîëy/oùå*9mì¹/çykf9æ¡Ù^IÈˆ	ú+íú/¤ùaiHTHÙ^IßHˆ]]ØÛÛ\]OH›Û™K][YKXÛÙHˆ]]ØØ\][^™OH››Û™HˆÜ[ÚXÚÏH™˜[ÙHˆ]K[YÛ›Ü™OHYHˆ]KL\ZYÛ›Ü™H]KY›Ü›K]\OH›İ\ˆ‚ˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛKX\KZÙ^K]š\ÚXš[]Hˆ\šXK\™\ÜÙYH™˜[ÙH¹¦/¹é.Ø]Û‚ˆÜÜ[‚ˆÛX™[‚ˆX™[¹å'ùfï¹ª(yg¢Âˆ[œ]˜[YOHš[XYÙP\S[Ù[ˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜËš[XYÙP\S[Ù[	ÉÊ_Hˆ]]ØÛÛ\]OH›Ù™ˆˆ]]ØØ\][^™OH››Û™HˆÜ[ÚXÚÏH™˜[ÙHˆXÙZÛ\H¹/¢ùi ˆÜZ[XYÙKLH‚ˆÛX™[‚ˆX™[¹fï¹âaùl.¹kîˆÙ[Xİ˜[YOHš[XYÙP\TÚ^™H‚ˆ	ÖÉÍLLLL‰Ë	ÍÍÍ	Ë	ÌLL	Ë	ÌLMLÍ‰Ë	ÌMLÍL	×K›X\
+Ú^™HOˆÜ[Ûˆ˜[YOH‰ÜÚ^™_Hˆ	ÜÙ][™ÜËš[XYÙP\TÚ^™HOOHÚ^™HÈ	ÜÙ[XİY	Èˆ	ÉßO‰ÜÚ^™_OÛÜ[Û˜
+Kš›Ú[Š	ÉÊ_BˆÜÙ[Xİ‚ˆÛX™[‚ˆ]ˆÛ\ÜÏHØ‹X\KXXİ[ÛœÈ‚ˆ]ÛˆÛ\ÜÏHØ‹X\KXXİ[Ûˆ\Ë\š[X\Hˆ\OHœİX›Z]¹/çykf9å'ùfï¹£©ycèÏØ]Û‚ˆ]ÛˆÛ\ÜÏHØ‹X\KXXİ[Ûˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH\İZ[XYÙKX\H¹å'ù¢$9­bú+åyfï»ï"9/&º+¨z-.{ï"OØ]Û‚ˆÙ]‚ˆ’Ù^H9cê¹/çykf9g*9§+9§.¹¢jylez+¯¹ïk»ï#9.#y¥/º/æù.%¹åc9â­¹  {ï&ùalúeëyo 9alù.#y/&¹b(:fi9mì¹îãùå'ù¢$9æ¡9§"ùcâùg"9fï¹âaøà Ü‚ˆÙ›Ü›O‚ˆÙ]‚ˆÙ]Z[Ï‚‚ˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜ÛÛ›™Xİ[Û‹\›Ùš[\Èˆ	ÜİX™Ü›İ\Ü[Š	ØÛÛ›™Xİ[Û‹\›Ùš[\ÉÊ_O‚ˆİ[[X\OÜ[¹.%¹åc: ã:ghº!ê¹kf9¥®y¨bÜÜ[ÛX[‰Ø\T›Ùš[\Ë›[™İÈ	Ø\T›Ùš[\Ë›[™İH9.*¹¥®y¨bˆ	ú/æ9¬¨y§"y/çykf9¥®y¨b	ßOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ	Ø\T›Ùš[\Ë›[™İÈBˆ]ˆÛ\ÜÏHØ‹X\K\›Ùš[K[\İƒBˆ	Ø\T›Ùš[\Ë›X\
+›Ùš[HOˆBˆ\XÛHÛ\ÜÏHØ‹X\K\›Ùš[KXØ\™ƒBˆ]ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+›Ùš[K›˜[YJ_OÜİ›Û™ÏƒBˆÜ[‰Ù\ØØ\R[
+›Ùš[K›[Ù[	ù§*º`"yª(yg¢ÉÊ_H0­È	Ù\ØØ\R[
+›Ùš[K˜[œÜÜOOH	Ù\™Xİ	ÈÈ	ù­cú)â9fj9æí:/ç‰Èˆ	úadºi¡º/k9cäIÊ_OÜÜ[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹X\K\›Ùš[KXXİ[ÛœÈƒBˆ]ÛˆÛ\ÜÏHØ‹X\K\›Ùš[KXÚ\\ËXXØÙ[ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™Y]X\K\›Ùš[Hˆ]K\›Ùš[KZYH‰Ù\ØØ\P]Š›Ùš[KšY
+_H¹ï%º/¤OØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹X\K\›Ùš[KXÚ\ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH\İX\K\›Ùš[Hˆ]K\›Ùš[KZYH‰Ù\ØØ\P]Š›Ùš[KšY
+_H¹­bú+åOØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹X\K\›Ùš[KXÚ\ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœ[X\K\›Ùš[K[[Ù[Èˆ]K\›Ùš[KZYH‰Ù\ØØ\P]Š›Ùš[KšY
+_H¹ª(yg¢ÏØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹X\K\›Ùš[KXÚ\ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™\XØ]KX\K\›Ùš[Hˆ]K\›Ùš[KZYH‰Ù\ØØ\P]Š›Ùš[KšY
+_H¹i#yb-Ø]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹X\K\›Ùš[KXÚ\\ËY[™Ù\ˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™[]KX\K\›Ùš[Hˆ]K\›Ùš[KZYH‰Ù\ØØ\P]Š›Ùš[KšY
+_H¹b(:fiØ]ÛƒBˆÙ]ƒBˆØ\XÛOƒBˆ
+Kš›Ú[Š	ÉÊ_CBˆÙ]ƒBˆˆ	Ï¹n.9å*9£©ycèùcëù.éy.ã¹."ºgh¹æ¡9âë9êâù£©ycèú(j9cey. :e+¹/çykf;ïg¹.bùd#¹îæy.#yd#9ª(ygeùb!¹­`y¥í¹l,y.#yå*:aãyi#yhjÈT“9d£Ù^H9eiˆ
+;ïhx (³ 8m%ËJx§)ØÜ‰ßCBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜ÛÛ›™Xİ[Û‹\›İ][™Èˆ	ÜİX™Ü›İ\Ü[Š	ØÛÛ›™Xİ[Û‹\›İ][™ÉÊ_OƒBˆİ[[X\OÜ[¹ª(ygeÈTH9b!¹­`OÜÜ[ÛX[ºnæ:+©:`ïz-çúf£ù.%¹åc: ã:ghºnæ:+©:/ç¹£©OÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆº, z) z-l:!ê¹mìyæ¡9ª(yg¢ûï#9l,yîæz, y£!ù§hyceyâë9æ¡9l#ú-ëûïg¹¬¨yânyb*ú) y¬`¹¢$yl,z-l:næ:+©:`¨ù§h{ï#9¢$z+©9o¥ùfç¹k­¹æ¡:-ëøà ÜƒBˆ]ˆÛ\ÜÏHØ‹X\K\›İ]KYÜšYƒBˆX™[¹.%¹åc9£ª9¯%BˆÙ[Xİ]K]Ø‹X\K\›İ]OHœÚ[][][Ûˆ‰Ü›İ]SÜ[ÛœÊ\S[Ù[T›İ]\ËœÚ[][][Ûˆ	ÙY˜][	Ê_OÜÙ[XİƒBˆÛX™[ƒBˆX™[¹.®¹âjyclù¥íº)à¹­bÃBˆÙ[Xİ]K]Ø‹X\K\›İ]OH›ØœÙ\˜][Ûˆ‰Ü›İ]SÜ[ÛœÊ\S[Ù[T›İ]\Ë›ØœÙ\˜][Ûˆ	ÙY˜][	Ê_OÜÙ[XİƒBˆÛX™[ƒBˆX™[ºeoù§'ú+¬9oáˆÈ9c¡¹cì¹¥m9ä!ƒBˆÙ[Xİ]K]Ø‹X\K\›İ]OHš\İÜH‰Ü›İ]SÜ[ÛœÊ\S[Ù[T›İ]\Ëš\İÜH	ÙY˜][	Ê_OÜÙ[XİƒBˆÛX™[ƒBˆX™[¹.%¹åc:"!¹ áCBˆÙ[Xİ]K]Ø‹X\K\›İ]OH›Ü[š[Ûˆ‰Ü›İ]SÜ[ÛœÊ\S[Ù[T›İ]\Ë›Ü[š[Ûˆ	ÙY˜][	Ê_OÜÙ[XİƒBˆÛX™[ƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\ˆ]K\Ù][™ÜËYÜ›İ\H˜\X\˜[˜ÙHˆ	ÙÜ›İ\Ü[Š	Ø\X\˜[˜ÙIÊ_OƒBˆİ[[X\OÜ[¹åc:gh¹.#¹¦/ºg,ÜÜ[ÛX[¹..úh¦8à ykeùcíøà y«hù¥¡ù¬ê9aiOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\X›ÙHØ‹\Ù][™ÜË\İX™Ü›İ\\İXÚÈƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜\X\˜[˜ÙK]ZHˆ	ÜİX™Ü›İ\Ü[Š	Ø\X\˜[˜ÙK]ZIÊ_OƒBˆİ[[X\OÜ[¹åc:ghÜÜ[ÛX[¹¦#¹¦¥ù.#ºf!z+îùkeùcíÏÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹åc:gh¹¦#¹¦¥ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	İ[YP]ÛŠ	Ø]]ÉË	ú!ê¹bª	Ê_CBˆ	İ[YP]ÛŠ	Ù^IË	ù¥ézeí	Ê_CBˆ	İ[YP]ÛŠ	ÛšYÚ	Ë	ùi':eí	Ê_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	İ[YIËÙ][™ÜË[YJJ_OÜƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹åc:gh¹keùcíÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	İZTØØ[IËÙ][™ÜËZTØØ[K	ØÛÛ\Xİ	Ë	ùí)ùaäIÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	İZTØØ[IËÙ][™ÜËZTØØ[K	ØÛÛY›ÜX›IË	ù¨!ùaá‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	İZTØØ[IËÙ][™ÜËZTØØ[K	Û\™ÙIË	ùi)ùkeÉÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	İZTØØ[IËÙ][™ÜËZTØØ[JJ_OÜƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]ƒBˆİ›Û™Ï¹¦/¹é.¹ «9­k¹ä ÏÜİ›Û™ÏƒBˆÜ[¹.#y ìú+ªyk ù. 9æí:-­9g*9lcùney."¹l,yalù£¢{ïg¹£ä¹.í¹áiùn.:/ä:(c;ï#9.bùd#¹.gú ïy.ãºadºi¡¹¢jylez+¯¹ïkºaã:aãy¥¬9¢dùo 8à ÜÜ[ƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏH›Ü˜‘[˜X›YƒBˆ	ÜÙ][™ÜË›Ü˜‘[˜X›YOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜\X\˜[˜ÙK\™]™X[ˆ	ÜİX™Ü›İ\Ü[Š	Ø\X\˜[˜ÙK\™]™X[	Ê_OƒBˆİ[[X\OÜ[¹¦/ºg,ÜÜ[ÛX[¹ká¹n©¹.#º/æùaiy«hù¥¡ùæ¡9¥í¹§.ÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹«hù¥¡ù¦/ºg,¹n©ÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	Ù[œÚ]P]ÛŠ	Ü™\İ˜Z[™Y	Ë	ùabùb-‰Ê_CBˆ	Ù[œÚ]P]ÛŠ	Ø˜[[˜ÙY	Ë	ùgaú(hIÊ_CBˆ	Ù[œÚ]P]ÛŠ	ØXİ]™IË	ù­.ú-àÉÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	Ù[]™\Q[œÚ]IËÙ][™ÜË™[]™\Q[œÚ]JJ_OÜƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[›ÜHØ‹\ØÙ[™K][Z[™È¹¦/ºg,¹¥í¹§.ÛX™[ƒBˆÙ[XİYHØ‹\ØÙ[™K][Z[™Èˆ]K]Ø‹\Ù][™ÏHœØÙ[™U[Z[™ÈƒBˆÜ[Ûˆ˜[YOHœİšXİˆ	ÜÙ][™ÜËœØÙ[™U[Z[™ÈOOH	ÜİšXİ	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹.)y¨/;ï&¹cê¹g*:/k9g.¹¢%¹ên¹¨hÏÛÜ[ÛƒBˆÜ[Ûˆ˜[YOHœÛX\ˆ	ÜÙ][™ÜËœØÙ[™U[Z[™ÈOOH	ÜÛX\	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹¦nº ï{ï&¹alúe+¹g.¹¦kùní¹d#ÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH›Ü[ˆˆ	ÜÙ][™ÜËœØÙ[™U[Z[™ÈOOH	ÛÜ[‰ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹o 9¥/»ï&¹a`z+®9ë 9çëz!ê¹á-¹cæ9c%ÛÜ[ÛƒBˆÜÙ[XİƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ï¹«hù¥¡ù¬ê9aiy .ùo 9alÏÜİ›Û™ÏÜ[¹alù£¢ycê¹¦+ùab9.#ycï9îæy«hù¥¡ùç"ûïg¹.®¹âjxà y.¢ù.í¸à z+¬9oá¹d£:"!¹ áy.ãy/&¹g*: ã9d#¹îéùîëyå'ù­.øà ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHÛÜ››Û\[š™Xİ[ÛˆƒBˆ	ÜÙ][™ÜËÛÜ››Û\[š™Xİ[ÛˆÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹Z[š™Xİ[Û‹YÜšY	ÜÙ][™ÜËÛÜ››Û\[š™Xİ[ÛˆÈ	ÉÈˆ	Ú\ËY\ØX›Y	ßHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈØ‹Z[š™Xİ[Û‹][YHƒBˆX™[¸à#9«i9b.øà#p­È9.%¹åc9¥íºeíÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	Ú[š™Xİ[Û•[YS[ÙIËÙ][™ÜËš[š™Xİ[Û•[YS[ÙK	Ù[	Ë	ùk£9¥m	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ú[š™Xİ[Û•[YS[ÙIËÙ][™ÜËš[š™Xİ[Û•[YS[ÙK	Ø[˜ÚÜ‰Ë	ù§ 9l#úe&¹à®IÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ú[š™Xİ[Û•[YS[ÙIËÙ][™ÜËš[š™Xİ[Û•[YS[ÙK	ÛÙ™‰Ë	ùalúeëIÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ¸à#9§ 9l#úe&¹à®xà#ycêº+ªy¢$yk¢9/cù¥íºeí:/ç¹îëy )ûïg¹.#y/&º`/9«hù¥¡ù¢¢ºd§ù¤a¹b,:eg9i-9«hù.+zeí8à ÜƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH]İ›Û™Ï¸à#9«i9b.øà#p­È9.%¹åc: ã9¦kÏÜİ›Û™ÏÜ[¹.%¹åc9æ¡9g,9gî¹¢$y/&¹c¢ùê,ûïgº/æzaã9cê¹ë¨z`$¹.#z`$¹îæy«hù¥¡øà ÜÜ[Ù]X™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û•ÛÜ›˜XÚÙÜ›İ[™ˆ	ÜÙ][™ÜËš[š™Xİ[Û•ÛÜ›˜XÚÙÜ›İ[™OOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[Ù]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH]İ›Û™Ï¸à#9.®¹âjxà#p­È9odùbcyâ­¹  OÜİ›Û™ÏÜ[¹.å¹.ë9æ¡9/cyïk¹d£:(c9bª9¢$yáiùn.:+¬9ç`;ïgº/æzaã9cê¹ë¨z`$¹.#z`$¸à ÜÜ[Ù]X™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û”[ÜHˆ	ÜÙ][™ÜËš[š™Xİ[Û”[ÜHOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[Ù]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH]İ›Û™Ï¸à#9¦¥ù­`xà#p­È:/æú(c9.+y.¢ù.í¹.#¹.%¹åc9ã«ùh ÏÜİ›Û™ÏÜ[ºeg9i-9i%¹æ¡9.¢ùáiùn.9o 9bcz-l;ï#9¢$y/&º.l¹g*9¥àz/®yç"øà ÜÜ[Ù]X™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û‘]™[Èˆ	ÜÙ][™ÜËš[š™Xİ[Û‘]™[ÈOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[Ù]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH]İ›Û™Ï¸à#9fç¹hì8à#p­È9mì¹îäùë¥ùd#¹§§Üİ›Û™ÏÜ[¹cê¹ë¨z) y.#z) ycï:/æù«hù¥¡ûï#9.#y/&¹¢®y£¢ymì¹îãùcäyå'ùæ¡9d#¹§§8à ÜÜ[Ù]X™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û‘XÚÙ\Èˆ	ÜÙ][™ÜËš[š™Xİ[Û‘XÚÙ\ÈOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[Ù]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH]İ›Û™Ï¸à#9«i9b.øà#p­È9.%¹åc9.¢ùk§Üİ›Û™ÏÜ[¹mì¹îãù¢$9êâùæ¡9.¢ùk§¹¢$y/&¹¢ïù§iykîz-)»ï#9.#z+ªy.%¹åc:!ê¹mìy¢dù§­¸à ÜÜ[Ù]X™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û‘˜XİÈˆ	ÜÙ][™ÜËš[š™Xİ[Û‘˜XİÈOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[Ù]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH]İ›Û™Ï¸à#:+¬9oá¸à#p­È:eoù§'ú+¬9oáÜİ›Û™ÏÜ[¹alù£¢yd#¹¢$z/æ9/&¹¥-¹¢ïº+¬9oá¹æä¹kd;ïg¹cê¹¦+ù.#yo 9«hù¥¡úaã9cï8à ÜÜ[Ù]X™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û“Y[[ÜHˆ	ÜÙ][™ÜËš[š™Xİ[Û“Y[[ÜHOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[Ù]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH]İ›Û™Ï¸à#:"!¹ áxà#p­È9¥¬:eîù.#º+®¹gfÏÜİ›Û™ÏÜ[¹i%ºgh¹æ¡9hì:gìú/æ9/&¹îéùîëycæ9c%»ïgº/æzaã9cê¹a¬ùk¦¹é®úeg9i-9i&º/äxà ÜÜ[Ù]X™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û”X›XÓÜ[š[Ûˆˆ	ÜÙ][™ÜËš[š™Xİ[Û”X›XÓÜ[š[ÛˆOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[Ù]‚ˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH]İ›Û™Ï¸à#:`&º+«øà#p­È9§ :/äz b¹i*OÜİ›Û™ÏÜ[ºnæ:+©:f¥9é®ûï&ùo 9d+ùd#¹cê¹/¦ù«hù¥¡ùcàº  ú+í:/áù.à9.b;ï#9.#y¢¢¹î©¹k¦¹odù¢$9mì¹cäyå'øà ÜÜ[Ù]X™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHš[š™Xİ[Û”ÛØÚX[ˆ	ÜÙ][™ÜËš[š™Xİ[Û”ÛØÚX[OOHYHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[Ù]‚ˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆº/æzaã9æ¡9o 9alú`ïycê¹ë¨xà#9îæy.#yîæy«hù¥¡ùç"øà#{ïg¹c¢ùg*9â*¹â*¹."úgh»ï#9.#yëby.£¹k ùl,y.#ykf9g*9ei¸à ÜƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[º) y.#z) z+ªy¢$y¢¢ºhã¹hì:`$º/äy. 9à®OÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	ÜX›XÓÜ[š[Û”™]™X[[ÙIËÙ][™ÜËœX›XÓÜ[š[Û”™]™X[[ÙK	ÛØœÙ\™IË	ù.áz)à¹kçÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	ÜX›XÓÜ[š[Û”™]™X[[ÙIËÙ][™ÜËœX›XÓÜ[š[Û”™]™X[[ÙK	Ü™[]˜[	Ë	ùæî9alù¥í¹¦/ºg,‰Ê_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	ÜX›XÓÜ[š[Û”™]™X[[ÙIËÙ][™ÜËœX›XÓÜ[š[Û”™]™X[[ÙJJ_OÜƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\ˆ]K\Ù][™ÜËYÜ›İ\HœÚ[][][Ûˆˆ	ÙÜ›İ\Ü[Š	ÜÚ[][][Û‰Ê_OƒBˆİ[[X\OÜ[¹.%¹åc:/ä:(cÜÜ[ÛX[º+ªzeg9i-9i%¹æ¡9.%¹åc9îéùîëz!ê¹mìz-l;ïgÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\X›ÙHØ‹\Ù][™ÜË\İX™Ü›İ\\İXÚÈƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\HœÚ[][][Û‹\İÚ]Ú\Èˆ	ÜİX™Ü›İ\Ü[Š	ÜÚ[][][Û‹\İÚ]Ú\ÉÊ_OƒBˆİ[[X\OÜ[¹gî¹è`9o 9alÏÜÜ[ÛX[º) y.#z) z+ªyd#¹cì9îéùîëz/k:-mù§iOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ï¹d+ùå*9.%¹åc9o%y¤ãÜİ›Û™ÏÜ[¹alù£¢yl,yab:+ªyd#¹cì9«aù. 9/&¹a/ûïg¹ã¬9§"y.%¹åc9.#y/&¹.(ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHÛÜ›Ú[][][Û‘[˜X›YƒBˆ	ÜÙ][™ÜËÛÜ›Ú[][][Û‘[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\HœÚ[][][Û‹]šYÙÙ\ˆˆ	ÜİX™Ü›İ\Ü[Š	ÜÚ[][][Û‹]šYÙÙ\‰Ê_OƒBˆİ[[X\OÜ[º/ä:(c9¥®yo#ÏÜÜ[ÛX[¹.%¹åc: ã:ghº) yi&¹bé9oêûïgÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹.%¹åc:/ä:/k9o.¹n©ÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û“[ÙIËÙ][™ÜË˜]]ÔÚ[][][Û“[ÙK	ÛYÚ	Ë	ú/núaãÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û“[ÙIËÙ][™ÜË˜]]ÔÚ[][][Û“[ÙK	Ø˜[[˜ÙY	Ë	ùgaú(hIÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û“[ÙIËÙ][™ÜË˜]]ÔÚ[][][Û“[ÙK	ÙY\	Ë	ù­ìyaiIÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	Ø]]ÔÚ[][][Û“[ÙIËÙ][™ÜË˜]]ÔÚ[][][Û“[ÙJJ_OÜƒBˆX™[º!ê¹bª:)é¹cäzh¤yã¡ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û’[\˜[	ËÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[K	ù«ãú/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û’[\˜[	ËÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[‹	ù«ãÈˆ:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û’[\˜[	ËÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[Ë	ù«ãÈÈ:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û’[\˜[	ËÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[K	ù«ãÈH:/k‰Ê_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™È‚ˆ:!ê¹k¦¹.byí+ú+¨z/k¹¥lBˆ[œ]\OH›[X™\ˆˆZ[HŒHˆX^HŒŒˆİ\HŒHƒBˆ]K]Ø‹\Ù][™ÏH˜]]ÔÚ[][][Û’[\˜[ƒBˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[
+_HƒBˆÛX™[‚ˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH‚ˆ]İ›Û™Ï¹§*¹£ª9¯%9«hù¥¡ù£ä:a¤Üİ›Û™ÏÜ[¹alúeëyd#¹cê¹£"z+¯¹k¦ºh¤yã¡ú!ê¹bª:/ä:(c;ï#9.#y/&¹«ãù«(yfç¹i#z`ïzeëº) y.#z) y£ä9bcz(iy£ª;ï&ùç'ù«hùi,z-)y.ãy/&¹£ä:a¤¸à ÜÜ[Ù]‚ˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHœ[™[™ÔÚ[][][Û”›Û\[˜X›Yˆ	ÜÙ][™ÜËœ[™[™ÔÚ[][][Û”›Û\[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[‚ˆÙ]‚ˆÙ]‚ˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\HœÚ[][][Û‹[İ]]ˆ	ÜİX™Ü›İ\Ü[Š	ÜÚ[][][Û‹[İ]]	Ê_OƒBˆİ[[X\OÜ[¹i,z-)y.#ºfa9b¨:) y¬`ÜÜ[ÛX[ºaãz+åy.#¹£ª9¯%9/©úaãyà®OÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹£ª9¯%9i,z-)yd#º) y.#z) z+ªy¢$ya£z+åOÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]Ô™]PÛİ[	ËÙ][™ÜË˜]]Ô™]PÛİ[	ù.#zaãz+åIÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]Ô™]PÛİ[	ËÙ][™ÜË˜]]Ô™]PÛİ[K	úaãz+åHH9«(IÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]Ô™]PÛİ[	ËÙ][™ÜË˜]]Ô™]PÛİ[‹	úaãz+åHˆ9«(IÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]Ô™]PÛİ[	ËÙ][™ÜË˜]]Ô™]PÛİ[Ë	úaãz+åHÈ9«(IÊ_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™ÈƒBˆ:!ê¹k¦¹.bzaãz+åy«(y¥lBˆ[œ]\OH›[X™\ˆˆZ[HŒˆX^HHˆİ\HŒHƒBˆ]K]Ø‹\Ù][™ÏH˜]]Ô™]PÛİ[ƒBˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜]]Ô™]PÛİ[
+_HƒBˆÛX™[ƒBˆX™[Û\ÜÏHØ‹Xİ\İÛKZ[œİXİ[ÛˆƒBˆ:!ê¹k¦¹.by£ª9¯%:) y¬`ƒBˆ^\™XH]K]Ø‹\Ù][™ÏH˜İ\İÛTÚ[][][Û’[œİXİ[ÛˆˆX^[™İHŒLˆ›İÜÏHŒÈƒBˆXÙZÛ\H¹/¢ùi »ï&¹l$yb-º`(9¥¬9.¢ù.í»ï&ùi&¹ç"ùç"ùea¹/&¹d£9®+ùcèøà ¹ã¬¹. ù/&¹£"z/æy.*¹¥®yd$yåfy¡#øà ˆ‰Ù\ØØ\R[
+Ù][™ÜË˜İ\İÛTÚ[][][Û’[œİXİ[ÛŠ_Oİ^\™XOƒBˆÛX™[ƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\HœÚ[][][Û‹[œÈˆ	ÜİX™Ü›İ\Ü[Š	ÜÚ[][][Û‹[œÉÊ_OƒBˆİ[[X\OÜ[“”È9.#¹ãªyk­º/®yåcÜÜ[ÛX[¹d#¹cì9.®¹¥l9.#¹ãªyk­¹a¡yoàÏÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹d#¹cì”È:h¡9ë¥ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø˜XÚÙÜ›İ[™œĞYÙ]	ËÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]	ù.#y..ùbª9£ª9¯%	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø˜XÚÙÜ›İ[™œĞYÙ]	ËÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]‹	ù§ 9i&ˆˆ9.®‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø˜XÚÙÜ›İ[™œĞYÙ]	ËÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]	ù§ 9i&ˆ9.®‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø˜XÚÙÜ›İ[™œĞYÙ]	ËÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]	ù§ 9i&ˆ9.®‰Ê_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™ÈƒBˆ:!ê¹k¦¹.bycez/k¹.®¹¥lBˆ[œ]\OH›[X™\ˆˆZ[HŒˆİ\HŒHƒBˆ]K]Ø‹\Ù][™ÏH˜˜XÚÙÜ›İ[™œĞYÙ]ƒBˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]
+_HƒBˆÛX™[ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ¹ ìùæëùi&¹l$y.®º`ïycëù.éz!ê¹mìyhjûïg¹£ª:#d»ïg9.®»ï#9cez/k¹l/zaãùb*ú-¡z/áÈLˆ9.®»ï&ú-¢¹i)ú-¢¹d ÈÚÙ[»ï#9.gù/&¹¦í9¡h¸à ÜƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ï¹o.¹c%¹d#¹cì9.®¹âjy£ª9¯%Üİ›Û™ÏÜ[º+éyîäùë¥ùæ¡9.®¹¢$y/&ºhn¹â*¹n)º/æùã¬9§"y.%¹åc9£ª9¯%;ïg¹.#zh§yi%¹ceyo :+íù¬`»ï#9.gù.#z+ªy.å¹.ë9cê¹g*:eg9i-9bcy¢cy­.ùç`8à ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏH™[š[˜ÙY˜XÚÙÜ›İ[™Ú[][][ÛˆƒBˆ	ÜÙ][™ÜË™[š[˜ÙY˜XÚÙÜ›İ[™Ú[][][ÛˆÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ïº+¬9oeyãªyk­º)äº"lÜİ›Û™ÏÜ[¹o 9ç`9¥í»ï#9¢$ycêº+¬\Ù\ˆ9g*9«hù¥¡úaã9¦#¹èk¹cäyå'ùæ¡9/cyïk¸à z(c9bª9d£9k¨º)à¹â­¹  {ï&ùalù£¢yl,y.#y¢¢ˆ\Ù\ˆ9nîº/æøà#9.®¹âjxà#{ï#9/a¹mì¹îãùcäyå'ùæ¡9«hù¥¡ù.¢ùk§¹áiù¨-ùë¥ù¥l8à ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHœ™XÛÜ™^Y\Ú\˜Xİ\ˆƒBˆ	ÜÙ][™ÜËœ™XÛÜ™^Y\Ú\˜Xİ\ˆOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\HœÚ[][][Û‹XÛÛ^ˆ	ÜİX™Ü›İ\Ü[Š	ÜÚ[][][Û‹XÛÛ^	Ê_OƒBˆİ[[X\OÜ[¹."¹."ù¥¡ù.#¹¥íºeíÜÜ[ÛX[º+îùcåº# ùfí9.#¹.%¹åc:d§ùëe¹åiOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹«hù¥¡ú+îùcåº# ùfíÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	ØÛÛ^\›œÉËÙ][™ÜË˜ÛÛ^\›œËK	ù§ :/äHH:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ØÛÛ^\›œÉËÙ][™ÜË˜ÛÛ^\›œËË	ù§ :/äHÈ:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ØÛÛ^\›œÉËÙ][™ÜË˜ÛÛ^\›œËK	ù§ :/äHH:/k‰Ê_CBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]ÛˆƒBˆ]K\Ù][™ÏH˜ÛÛ^\›œÈˆ]K]˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜İ\İÛPÛÛ^\›œÈ
+_HƒBˆÛ\ÜÏH‰ÈVÌKËWKš[˜ÛY\Ê[X™\ŠÙ][™ÜË˜ÛÛ^\›œÊJHÈ	Ú\ËXXİ]™IÈˆ	ÉßHº!ê¹k¦¹.bOØ]ÛƒBˆÙ]ƒBˆ	ÈVÌKËWKš[˜ÛY\Ê[X™\ŠÙ][™ÜË˜ÛÛ^\›œÊJHÈBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™ÈØ‹XÛÛ^Xİ\İÛHƒBˆ:+îùcå¹§ :/äyaè:/kƒBˆ[œ]\OH›[X™\ˆˆZ[HŒHˆX^HŒÌˆİ\HŒHƒBˆ]K]Ø‹\Ù][™ÏH˜ÛÛ^\›œÈˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜ÛÛ^\›œÊ_HƒBˆÛX™[ƒBˆˆ	ÉßCBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+BˆÌKËWKš[˜ÛY\Ê[X™\ŠÙ][™ÜË˜ÛÛ^\›œÊJCBˆÈ
+ÌNˆ	ùcê¹ç"ù§ 9¥¬9. :/k»ï#9§ :/nù§ 9ç {ïgº` ¹d"9odùbcy/èy kùmì¹îãùo¢9¦#¹èk¹æ¡9biù áxà ‰ËÎˆ	ú+îù§ :/äHÈ:/k»ï#:/ç¹îëy )ùd£9­¢: %ú`ïy«å:/ ú/nùméûï#:` ¹d"9i&¹¥l9¥éyn.9g.¹¦køà ‰ËNˆ	únæ:+©9£ª:#d;ïg¹§ :/äHH:/kº`&¹n.:-¬ùi'ù£©y/cù.®¹âjy.#¹.¢ù.í»ï#9câ9.#yk®y¦$ù¢¢¹."¹."ù¥¡ù¤¤yo¥ùg!¹®æ¹®æ¸à ‰ßVÓ[X™\ŠÙ][™ÜË˜ÛÛ^\›œÊWJCBˆˆ9ã¬9g*9/&º+îù§ :/äH	ÜÙ][™ÜË˜ÛÛ^\›œßH:/k»ïgºeoù.¢ù.í¹d£9i&¹.®¹biù áy/&¹¦í9ê,ûï#9/aº/k¹¥l:-¢ºjæ;ï#ÚÙ[ˆ9.gù/&º-çùç`:eoú å¸à ˜Bˆ
+_OÜƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹¥íºeí9£ª:/æÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞK	İÛÜ›	Ë	ù.%¹åc:d§ÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞK	Ù^XÚ]	Ë	ù.)y¨/	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞK	ØØ]][İ\ÉË	ùabùb-‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞK	ÛÜ[‰Ë	ùo 9¥/‰Ê_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+Ù][™Ñ^[˜][ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞJJ_OÜƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\ˆ]K\Ù][™ÜËYÜ›İ\HÛÜ››ÛÚÈˆ	ÙÜ›İ\Ü[Š	İÛÜ››ÛÚÉÊ_OƒBˆİ[[X\OÜ[¹.%¹åc9.i¹.®¹âjOÜÜ[ÛX[¹¤'9í(¸à z+á¹b*ù.#¹¢nzaãùkï9aiOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËY›]\ÙXİ[ÛˆƒBˆ›Ü›HÛ\ÜÏHØ‹]ÛÜ››ÛÚËZ[\Üˆ]K]Ø‹Y›Ü›OHÛÜ››ÛÚÈƒBˆX™[º`"y¢êy.%¹åc9.iƒBˆÙ[Xİ˜[YOH˜›ÛÚÓ˜[YHˆ	İÛÜ››ÛÚĞ›ÛÚÜË›[™İÈ	ÉÈˆ	Ù\ØX›Y	ßOƒBˆ	İÛÜ››ÛÚĞ›ÛÚÜË›[™İBˆÈÛÜ››ÛÚĞ›ÛÚÜË›X\
+›ÛÚÈOˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š›ÛÚÊ_HƒBˆ	Ø›ÛÚÈOOHÛÜ››ÛÚË˜›ÛÚÓ˜[YHÈ	ÜÙ[XİY	Èˆ	ÉßO‰Ù\ØØ\R[
+›ÛÚÊ_OÛÜ[Û˜
+Kš›Ú[Š	ÉÊCBˆˆ	ÏÜ[Ûˆ˜[YOHˆ¹¢$yã¬9g*9¬¨y¢o¹b,: ïz+îùæ¡9.%¹åc9.iÛÜ[Û‰ßCBˆÜÙ[XİƒBˆÛX™[ƒBˆ]ÛˆÛ\ÜÏHØ‹]ÛÜ››ÛÚË\ØØ[‹X]Ûˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœØØ[‹]ÛÜ››ÛÚÈƒBˆ	İÛÜ››ÛÚËœ\ÙHOOH	Ü[›š[™ÉÈ]ÛÜ››ÛÚĞ›ÛÚÜË›[™İÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ	İÛÜ››ÛÚËœ\ÙHOOH	Ü[›š[™ÉÈÈ	ù«hùg*:+îùcå¸ )‰Èˆ	ú+îùcå¹nmº+á¹b*ù.®¹âjIßCBˆØ]ÛƒBˆ	İÛÜ››ÛÚË›Y\ÜØYÙHÈ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚË\İ]\È\ËIÙ\ØØ\P]ŠÛÜ››ÛÚËœ\ÙJ_H‰Ù\ØØ\R[
+ÛÜ››ÛÚË›Y\ÜØYÙJ_OÙ]˜ˆ	ÉßCBˆ	İÛÜ››ÛÚÑ[šY\Ë›[™İÈBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËXœ›İÜÙ\ˆƒBˆX™[Û\ÜÏHØ‹]ÛÜ››ÛÚË\ÙX\˜ÚƒBˆÜ[¹¤'9í(¹§hyæëÜÜ[ƒBˆ[œ]\OHœÙX\˜Úˆ˜[YOHÛÜ››ÛÚÔÙX\˜Úˆ]K]Ø‹]ÛÜ››ÛÚË\ÙX\˜Ú˜[YOH‰Ù\ØØ\P]ŠÛÜ››ÛÚÔ]Y\J_HƒBˆXÙZÛ\H¹¤'9.®¹âjyd#xà y§hyæë¹d#xà yalúe+º+ãy¢%¹«hù¥¡ÈƒBˆÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËYš[\‹\›İÈƒBˆX™[Û\ÜÏHØ‹]ÛÜ››ÛÚËYš[\‹XÚ\	İÛÜ››ÛÚÓÛ›T[ÜHÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹]ÛÜ››ÛÚËYš[\Hœ[ÜHˆ	İÛÜ››ÛÚÓÛ›T[ÜHÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆÜ[¹cê¹ç"ùå¤y//9.®¹âjOÜÜ[ƒBˆÛX™[ƒBˆX™[Û\ÜÏHØ‹]ÛÜ››ÛÚËYš[\‹XÚ\	İÛÜ››ÛÚÓÛ›Q[˜X›YÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹]ÛÜ››ÛÚËYš[\H™[˜X›Yˆ	İÛÜ››ÛÚÓÛ›Q[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆÜ[¹cê¹ç"ùd+ùå*9§hyæëÜÜ[ƒBˆÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚË]ÛÛ˜\ˆƒBˆÜ[¹alH	İÛÜ››ÛÚÑ[šY\Ë›[™İH9§hH0­È9odùbcH	Ùš[\™YÛÜ››ÛÚÑ[šY\Ë›[™İH9§hH0­È9mìº`"H	İÛÜ››ÛÚÔÙ[XİYÛİ[H9§hOÜÜ[ƒBˆ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ[Xİ]ÛÜ››ÛÚË]š\ÚX›Hˆ	Ùš[\™YÛÜ››ÛÚÑ[šY\Ë›[™İÈ	ÉÈˆ	Ù\ØX›Y	ßO¹aj:`"yodùbcOØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛX\‹]ÛÜ››ÛÚË]š\ÚX›Hˆ	Ùš[\™YÛÜ››ÛÚÑ[šY\Ë›[™İÈ	ÉÈˆ	Ù\ØX›Y	ßO¹cå¹­¢9odùbcOØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËY[K[\İƒBˆ	Ùš[\™YÛÜ››ÛÚÑ[šY\Ë›[™İÈš[\™YÛÜ››ÛÚÑ[šY\Ë›X\
+[HOˆBˆX™[Û\ÜÏHØ‹]ÛÜ››ÛÚËY[H	Ù[K™\ØX›YÈ	Ú\ËY\ØX›YY[IÈˆ	ÉßH	Ù[K›ZÙ[T\œÛÛˆÈ	Ú\Ë\\œÛÛ‹XØ[™Y]IÈˆ	ÉßHƒBˆ[œ]YHØ‹]ÛÜ››ÛÚËY[KIÙ\ØØ\P]Š[KZY
+_Hˆ\OH˜ÚXÚØ›Şˆ˜[YOH™[RYÈˆ]K]Ø‹]ÛÜ››ÛÚËY[KZYH‰Ù\ØØ\P]Š[KZY
+_HƒBˆ˜[YOH‰Ù\ØØ\P]Š[KZY
+_Hˆ	İÛÜ››ÛÚÔÙ[XİYYËš\Êİš[™Ê[KZY
+JHÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËY[KZXY[™ÈƒBˆİ›Û™Ï‰Ù\ØØ\R[
+[Kœ\œÙY˜[YH[K›˜[YJ_OÜİ›Û™ÏƒBˆ	Ù[K›ZÙ[T\œÛÛˆÈ	Ï[O¹å¤y//9.®¹âjOÙ[O‰Èˆ	ÉßCBˆ	Ù[K™\ØX›YÈ	Ï[HÛ\ÜÏHš\Ë[]]Y¹mì¹`g9å*Ù[O‰Èˆ	ÉßCBˆÜÜ[ƒBˆ	Ù[Kœ\œÙY˜[YH	‰ˆ[Kœ\œÙY˜[YHOOH[K›˜[YCBˆÈÛX[¹§hyæë»ï&‰Ù\ØØ\R[
+[K›˜[YJ_H0­È	Ù\ØØ\R[
+
+[KšÙ^\È×JKš›Ú[Š	øà IÊHRQ	Ù[KZYX
+_OÜÛX[˜BˆˆÛX[‰Ù\ØØ\R[
+
+[KšÙ^\È×JKš›Ú[Š	øà IÊHRQ	Ù[KZYX
+_OÜÛX[˜CBˆ	Ù[Kœ›Ùš[OË›X]ÚYšY[ÏË›[™İBˆÈ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚË\›Ùš[KZ[È¹mìº+á¹b*ûï&‰Ù\ØØ\R[
+[Kœ›Ùš[K›X]ÚYšY[ËœÛXÙJŠK›X\
+šY[Oˆ
+ÃBˆ˜[YNˆ	ùiäùd#IËšXÚÛ˜[YNˆ	ùb*ùéì	ËÙ[™\ˆ	ù )ùb*ÉËYÙNˆ	ùnm:o¡	Ëš\^Nˆ	ùå'ù¥éIËÜXÚY\Îˆ	ùéãy¥ãÉËY[]Nˆ	ú.ªù.ïIË\œÛÛ˜[]Nˆ	ù.®¹¨/	Ë˜[Y\Îˆ	ù`cùioIËXNˆ	ÓP•IË\X\˜[˜ÙNˆ	ùi%º,£	ËZYÚˆ	ú.ªújæ	Ë›ÙNˆ	ù/dùg¢ÉËÛİ[™Îˆ	ùêoùç`	Ë˜XÚÙÜ›İ[™ˆ	ú ã9¦kÉË™[][ÛœÎˆ	ùalùìîÉËÜYXÚˆ	ú+í:+çIË™Z]š[Üˆ	ú(c9..º/®yåc	ËBˆVÙšY[HšY[
+JKš›Ú[Š	øà IÊJ_OÙ]˜Bˆˆ	ÉßCBˆ‰Ù\ØØ\R[
+[K˜ÛÛ[œÛXÙJŒŒ
+J_IÙ[K˜ÛÛ[›[™İˆŒŒÈ	ø )‰Èˆ	ÉßOÜƒBˆÜÜ[ƒBˆÛX™[ƒBˆ
+Kš›Ú[Š	ÉÊHˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËY[\H¹odùbcyëfú`"y."ù¬¨y§"y§hyæë¸à ¹cëù.éycå¹­¢9ëfú`"y¢%¹£h¹.*¹alúe+º+ãxà Ù]˜CBˆÙ]ƒBˆ]ÛˆÛ\ÜÏHØ‹\š[X\KX]ÛˆØ‹]ÛÜ››ÛÚËZ[\ÜX]Ûˆˆ\OHœİX›Z]ˆ	İÛÜ››ÛÚÔÙ[XİYÛİ[È	ÉÈˆ	Ù\ØX›Y	ßOƒBˆ	İÛÜ››ÛÚÔÙ[XİYÛİ[È9kï9aiymìº`"y.®¹âj{ï"	İÛÜ››ÛÚÔÙ[XİYÛİ[{ï"Xˆ	ú+íú`"y¢êz) ykï9aiyæ¡9.®¹âjIßCBˆØ]ÛƒBˆÙ]ƒBˆˆ	ÉßCBˆÙ›Ü›OƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\ˆ]K\Ù][™ÜËYÜ›İ\H›Y[[ÜHˆ	ÙÜ›İ\Ü[Š	ÛY[[ÜIÊ_OƒBˆİ[[X\OÜ[ºeoù§'ú+¬9oáÜÜ[ÛX[º!ê¹bª9¥m9ä!¹.#¹c¡¹cì¹nî¹¨hÏÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\X›ÙHØ‹\Ù][™ÜË\İX™Ü›İ\\İXÚÈƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H›Y[[ÜK\İÚ]Ú\Èˆ	ÜİX™Ü›İ\Ü[Š	ÛY[[ÜK\İÚ]Ú\ÉÊ_OƒBˆİ[[X\OÜ[º+¬9oá¹o 9alÏÜÜ[ÛX[¹¥m9ä!¹.#¹«hù¥¡ù¬ê9aiOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ï¹d+ùå*:+¬9oá¹ìîùîçÏÜİ›Û™ÏÜ[¹alù£¢y¢$yl,y.#ya£yhg¹¥¬9î®9âaûïg¹mì¹îãù¥-¹ioyæ¡:+¬9oá»ï#9¢$y/&¹c§ù¨-ùc¢ù/cøà ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏH›Y[[ÜTŞ\İ[Q[˜X›YƒBˆ	ÜÙ][™ÜË›Y[[ÜTŞ\İ[Q[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆº) y.#z) y¢¢º+¬9oá¹cï9îæy«hù¥¡ùç"ûï#:+íùc®øà#9«hù¥¡ù¬ê9aixà#ydbº+ây¢${ïgº/æzaã9.áyë¨z+¬9oá¹æä¹kd9§+:.ªú/æ9¥-¹.#y¥-¹¥¬9.':)oøà ÜƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H›Y[[ÜKZ\İÜHˆ	ÜİX™Ü›İ\Ü[Š	ÛY[[ÜKZ\İÜIÊ_OƒBˆİ[[X\OÜ[º!ê¹bª9¥m9ä!ÜÜ[ÛX[º/æùn©¹.#¹¢bùbª9¥m9ä!ÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹Z\İÜK\Ù][™ÜÈƒBˆ]ˆÛ\ÜÏHØ‹Z\İÜKZXY[™ÈƒBˆ]ƒBˆX™[º+¬9oá¹¥m9ä!ÛX™[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+Bˆ\İÜT[›š[™ÃBˆÈY[[ÜK›Y\ÜØYÙH	ù«hùg*9¥-¹¢ïº+¬9oá»ïg‰ÃBˆˆ	ù/&º!ê¹mìy¥-¹¢ïºeoù§'ú+¬9oá»ïg‰ËBˆ
+_OÜİ›Û™ÏƒBˆÙ]ƒBˆÜ[‰Ú\İÜT[›š[™ÂˆÈİš[™Ê\İÜT\˜Ù[
+H
+È	ÉIÂˆˆ[X™\ŠY[[ÜKœ[™[™Ğ\ÜÚ\İ[™\ÜÛœÙ\È
+HˆˆÈ	ù§"y¥¬9æ¡9.':)oùëby¢$y¥-»ïg‰ÂˆˆY[[ÜKœİ[[X\P™Z[™ˆÈ	úeoù§'ù¤f:) z/æ9`g9g*9ë+	È
+ÈX]›X^
+[X™\ŠY[[ÜK›]\İİ[[X\SY\ÜØYÙRY
+JH
+È	È9l`‰ÂˆˆY[[ÜKœ[™[™Ô›Û\ˆÈ	úeoù§'ù¤f:) z/æ9g*9ëby¢$yc¢ù. 9l`»ïg‰Âˆˆ	úeoù§'ú+¬9oá¹mìº/ïynlù«hù¥¡ûïg‰ßOÜÜ[ƒBˆÙ]ƒBˆ	Ú\İÜT[›š[™ÈÈBˆ]ˆÛ\ÜÏHØ‹Z\İÜK\›ÙÜ™\ÜÈHİ[OHÚY‰Ú\İÜT\˜Ù[IHÚOÙ]ƒBˆˆ	ÉßCBˆ¹/&º!ê¹bª9¥m9ä!¹¥¬9h§¹«hù¥¡ûïgºaãz) y.¢ùk§¸à yalùìîøà y¢oú+î¹d£9¬¨y¥-¹l/¹æ¡9/#ùë%9/&¹.e¹.e¹åfy."ù§iH
+;ïhx (³ 8m%ËJx§)ÏÜƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜK\]Y]YHƒBˆÜ[¹o¡y¥m9ä!ˆ	ÓX]›X^
+[X™\ŠY[[ÜKœ[™[™Ğ\ÜÚ\İ[™\ÜÛœÙ\È
+J_H9§hy«hù¥¡ÏÜÜ[ƒBˆİ›Û™Ï‰ÜÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[ˆBˆÈ:!ê¹bª0­È9«ãÈ	ÜÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[H:/k˜Bˆˆ	ù¢bùbª9¥m9ä!‰ßOÜİ›Û™ÏƒBˆÙ]ƒBˆX™[¹¥m9ä!¹¥®yo#ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	ÛY[[ÜP]]Ò[™^[\˜[	ËÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[	ù¢bùbª	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛY[[ÜP]]Ò[™^[\˜[	ËÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[K	ù«ãÈH:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛY[[ÜP]]Ò[™^[\˜[	ËÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[L	ù«ãÈL:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛY[[ÜP]]Ò[™^[\˜[	ËÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[Œ	ù«ãÈŒ:/k‰Ê_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™ÈƒBˆ:!ê¹k¦¹.bzeí:f¥;ï":/k»ï"CBˆ[œ]\OH›[X™\ˆˆZ[HŒˆX^HLˆİ\HŒHƒBˆ]K]Ø‹\Ù][™ÏH›Y[[ÜP]]Ò[™^[\˜[ƒBˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[
+_HƒBˆÛX™[ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœØØ[‹Z\İÜHƒBˆ	Ú\İÜT[›š[™È\Ù][™ÜË›Y[[ÜTŞ\İ[Q[˜X›YÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ	Ó[X™\ŠY[[ÜKš[™^Y›İYÚY\ÜØYÙRYÏÈLJHÈ	ù¥m9ä!¹odùbcz+¬9oá‰Èˆ	ùêâùclù¥m9ä!‰ßCBˆØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\ˆ]K\Ù][™ÜËYÜ›İ\H˜Ø[[™\ˆˆ	ÙÜ›İ\Ü[Š	ØØ[[™\‰Ê_OƒBˆİ[[X\OÜ[¹¥éyc¡ÜÜ[ÛX[¹..ù.%¹åc9¥íºeí8à y¨(yaá¹.#¹oêú/æÏÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\X›ÙHƒBˆ›Ü›HÛ\ÜÏHØ‹XÛØÚËY›Ü›Hˆ]K]Ø‹Y›Ü›OH˜ÛØÚÈƒBˆ]ˆÛ\ÜÏHØ‹XÛØÚËY›Ü›KZXY[™ÈƒBˆ]X™[¹..ù.%¹åc9¥éyc¡ÛX™[İ›Û™Ï‰Ù\ØØ\R[
+ÛØÚÓX™[
+_OÜİ›Û™ÏÙ]ƒBˆÜ[¹«ãù.*º b¹i*yâë9êâù/çykfÜÜ[ƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹XØ[[™\‹[˜[YKYšY[ƒBˆ9c¡¹¬åyd#yéìBˆ[œ]˜[YOH˜Ø[[™\“˜[YHˆX^[™İHƒBˆ˜[YOH‰Ù\ØØ\P]ŠÛØÚË˜Ø[[™\“˜[YJ_HˆXÙZÛ\H¹/¢ùi »ï&¹n'yfïyc¡ˆƒBˆÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹XØ[[™\‹Y]KYšY[ÈƒBˆX™[[œ]˜[YOHYX\ˆˆ\OH›[X™\ˆˆZ[HŒHˆX^HNNNNNHƒBˆ˜[YOH‰ØÛØÚËYX\ŸHˆ9nmÛX™[ƒBˆX™[[œ]˜[YOH›[Ûˆ\OH›[X™\ˆˆZ[HŒHˆX^HŒLˆƒBˆ˜[YOH‰ØÛØÚË›[ÛHˆ9§"ÛX™[ƒBˆX™[[œ]˜[YOH™^Hˆ\OH›[X™\ˆˆZ[HŒHˆX^HŒÌHƒBˆ˜[YOH‰ØÛØÚË™^SÙ“[ÛHˆ9¥éOÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹XÛØÚËYšY[ÈƒBˆX™[[œ]˜[YOHšİ\ˆˆ\OH›[X™\ˆˆZ[HŒˆX^HŒŒÈˆ˜[YOH‰ØÛØÚËšİ\ŸHˆ9¥íÛX™[ƒBˆX™[[œ]˜[YOH›Z[]Hˆ\OH›[X™\ˆˆZ[HŒˆX^HNHˆ˜[YOH‰ØÛØÚË›Z[]_Hˆ9b!ÛX™[ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœŞ[˜ËXÛØÚËYœ›ÛK\İÜH¹.#¹«hù¥¡ù¨(yaáØ]ÛƒBˆ]Ûˆ\OHœİX›Z]ˆÛ\ÜÏHØ‹XÛØÚË[X[X[\Ø]™H¹¢bùbª:+¯¹k¦Ø]ÛƒBˆÙ]ƒBˆÛ\ÜÏHØ‹XÛØÚË\Ş[˜Ë[›İH¹«hù¥¡ùç'ùæ¡:+í9®!y©f¹¥íºeí;ï#9¢$y/&º!ê¹mìz-çù."»ïg¹i ¹§§9/h9«å9¢$y¦í9®!y©f»ï#9.gùcëù.éyg*:/æzaã9æí9£©ydbº+ây¢$yã¬9g*9aè9à®xà ÜƒBˆ]ˆÛ\ÜÏHØ‹][YKXXİ[ÛœÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜Y˜[˜ÙKXÛØÚÈˆ]K[Z[]\ÏHŒŠÈH9l#ù¥íØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜Y˜[˜ÙKXÛØÚÈˆ]K[Z[]\ÏHŒÍŒŠÈˆ9l#ù¥íØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜Y˜[˜ÙKXÛØÚÈˆ]K[Z[]\ÏHŒMŠÈH9i*OØ]ÛƒBˆÙ]ƒBˆÙ›Ü›OƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\Ø‹\Ù][™ÜËXY˜[˜ÙY\ÙXİ[Ûˆˆ]K\Ù][™ÜËYÜ›İ\H˜Y˜[˜ÙYˆ	ÜÙXİ[Û’Ù^HOOH	ØY˜[˜ÙY	ÈÈ	ÛÜ[‰ÈˆÜ›İ\Ü[Š	ØY˜[˜ÙY	Ê_OƒBˆİ[[X\OÜ[ºjæ9î©ù.#¹îí9¢©ÜÜ[ÛX[¹èk9èk9æ¡9.':)oø )¸ )¹¢$yab9c¢ùg*9ê§zaã:ghÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜËYÜ›İ\X›ÙHØ‹XY˜[˜ÙY\Ù][™ÜËX›ÙHØ‹\Ù][™ÜË\İX™Ü›İ\\İXÚÈƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜Y˜[˜ÙYYÙ[™\˜][Ûˆˆ	ÜİX™Ü›İ\Ü[Š	ØY˜[˜ÙYYÙ[™\˜][Û‰Ê_OƒBˆİ[[X\OÜ[¹å'ù¢$:fd9b-ÜÜ[ÛX[•ÚÙ[ˆ9.#¹cey«(yëbyo¡y¥íºeíÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹aj9l`ÚÙ[ˆ9."ºfdÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	ÛX^İ]]ÚÙ[œÉËÙ][™ÜË›X^İ]]ÚÙ[œË	ú!ê¹bª	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛX^İ]]ÚÙ[œÉËÙ][™ÜË›X^İ]]ÚÙ[œË	ÍÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛX^İ]]ÚÙ[œÉËÙ][™ÜË›X^İ]]ÚÙ[œË	ÎÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛX^İ]]ÚÙ[œÉËÙ][™ÜË›X^İ]]ÚÙ[œËLŒ	ÌL’ÉÊ_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™ÈƒBˆ:!ê¹k¦¹.bHÚÙ[ˆ9."ºfdBˆ[œ]\OH›[X™\ˆˆZ[HŒˆİ\HLƒBˆ]K]Ø‹\Ù][™ÏH›X^İ]]ÚÙ[œÈƒBˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË›X^İ]]ÚÙ[œÊ_HƒBˆÛX™[ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][ÛˆŒ9l,z+ªy¢$z!ê¹mìyë¥ûïg¹.%¹åc9£ª9¯%9å*9aj9l`:h¡9ë¥ûï#9l#ù.îùb¨y/&¹d!:!ê¹¥-¹cèûï&ù§#yb¨yêëù."ºfd9¦í9/c¹¥í¹.éy§#yb¨yêëù..¹aá¸à ÜƒBˆÙ]ƒBƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹aj9l`9§ :eoùëbyo¡OÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	ÙÙ[™\˜][Û•[Y[İ]\ÉËÙ][™ÜË™Ù[™\˜][Û•[Y[İ]\Ë	ú!ê¹bª	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ÙÙ[™\˜][Û•[Y[İ]\ÉËÙ][™ÜË™Ù[™\˜][Û•[Y[İ]\ËŒ	ÍŒÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	ÙÙ[™\˜][Û•[Y[İ]\ÉËÙ][™ÜË™Ù[™\˜][Û•[Y[İ]\ËLŒ	ÌLŒÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	ÙÙ[™\˜][Û•[Y[İ]\ÉËÙ][™ÜË™Ù[™\˜][Û•[Y[İ]\ËN	ÌNÉÊ_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™ÈƒBˆ:!ê¹k¦¹.byëbyo¡yéä¹¥lBˆ[œ]\OH›[X™\ˆˆZ[HŒˆX^HŒˆİ\HŒMHƒBˆ]K]Ø‹\Ù][™Ë\ÙXÛÛ™ÏH™Ù[™\˜][Û•[Y[İ]\ÈƒBˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË™Ù[™\˜][Û•[Y[İ]\ÈÈX]œ›İ[™
+Ù][™ÜË™Ù[™\˜][Û•[Y[İ]\ÈÈL
+Hˆ
+_HƒBˆÛX™[ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][ÛˆŒ9l,z+ªy¢$z!ê¹mìyç"ùç`9b§»ïg¹cê¹¥l9ª(yg¢ùç'ù«hùå'ù¢$9æ¡9¥íºeí;ï#9b!ùd#¹cì8à zfd9­`ya­ùcm9d£9£¤ºf'ú`ïy.#yë¥øà ÜƒBˆÙ]ƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹YÙ[™\˜][Û‹[[Ù[K[İ™\œšY\ÈƒBˆİ[[X\O¹£"yª(ygeùceyâë:+¯¹ïkˆÛX[¹åfH9l,yîéù¢oùaj9l`ÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹YÙ[™\˜][Û‹[[Ù[K[\İƒBˆ	ÙÙ[™\˜][Û“[Ù[T›İÊ	ÜÚ[][][Û‰Ê_CBˆ	ÙÙ[™\˜][Û“[Ù[T›İÊ	ÛØœÙ\˜][Û‰Ê_CBˆ	ÙÙ[™\˜][Û“[Ù[T›İÊ	Ú\İÜIÊ_CBˆ	ÙÙ[™\˜][Û“[Ù[T›İÊ	ÛÜ[š[Û‰Ê_CBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]ˆÛ\ÜÏHØ‹YÙ[™\˜][Û‹YY˜][ÈƒBˆİ›Û™Ïº!ê¹bª9ëbyo¡ycàº  ÏÜİ›Û™ÏƒBˆÜ[¹.%¹åc9£ª9¯%NÈ0­È9.®¹âjz)à¹­bÈLŒÈ0­È9c¡¹cì‹ú+¬9oáˆÌÈ0­È:"!¹ áKúeìº`&ÈMLÏÜÜ[ƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜Y˜[˜ÙYY]Hˆ	ÜİX™Ü›İ\Ü[Š	ØY˜[˜ÙYY]IÊ_OƒBˆİ[[X\OÜ[¹¥l9£k¹i!ù.ïOÜÜ[ÛX[¹¢$yab9n+º/æy.*¹.%¹åc9åfy. 9.ïy/çzfjOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËXXİ[ÛœÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™^Ü\İ]H¹kï9aî¹odùbcy.%¹åcØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHš[\Ü\İ]H¹kï9aiy.%¹åc9â­¹  OØ]ÛƒBˆ[œ]Û\ÜÏHØ‹Z[\ÜZ[œ]ˆ\OH™š[HˆXØÙ\H‹šœÛÛ‹\XØ][Û‹ÚœÛÛˆƒBˆÙ]ƒBˆº) y¤+9k­¸à y­bú+åy¢%º !yi)ù¥.y.bùbc{ï#9ab:+ªy¢$y¢¢º/æy.*¹.%¹åc:(áz/æùl#ùæä¹kd:aã9åfy. 9.ïyd)ûïg¹.(¹.¡¹/&¹o¢:f¯¹£hxà ÜƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜Y˜[˜ÙY[XZ[[˜[˜ÙHˆ	ÜİX™Ü›İ\Ü[Š	ØY˜[˜ÙY[XZ[[˜[˜ÙIÊ_OƒBˆİ[[X\OÜ[¹¥l9£k¹îí9¢©ÜÜ[ÛX[¹®!yï$ùkfÈ:aãyïk¹odùbcz b¹i*OÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹[XZ[[˜[˜ÙKXØ\™ƒBˆ]ƒBˆİ›Û™Ï¹®!yä!¹odùbcz b¹i*yï$ùkfÜİ›Û™ÏƒBˆ¹¢$ycê¹¢jù£¢y.-9¥í¹è£¹ld{ïg¹.®¹âjxà z+¬9oá¹d£9.%¹åc9â­¹  {ï#9. 9â*º`ïy.#yè¬8à ÜƒBˆÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛX\‹Xİ\œ™[XÚ]XØXÚH¹®!yä!¹ï$ùkfØ]ÛƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹[XZ[[˜[˜ÙKXØ\™ƒBˆ]ƒBˆİ›Û™Ïº+ªyã¬¹. ù¨à9§éy.%¹åc9â­¹  OÜİ›Û™ÏƒBˆ¹¢$y¢ïù«hù¥¡ùd£9¦#¹èk¹.¢ùk§¹a£ykîy. :`cxà ¹d#¹cì:e&y.¡¹¢$y¥.{ï#9mì¹îãùcäyå'ùæ¡9«hù¥¡ù.#yè¬8à ÜƒBˆÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÚXÚËXÛÜœ™Xİ]ÛÜ›\İ]H¹¨à9§éyî¨:e&OØ]ÛƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹[XZ[[˜[˜ÙKXØ\™\ËY[™Ù\ˆƒBˆ]ƒBˆİ›Û™Ïºaãyïk¹odùbcz b¹i*y¥l9£kÜİ›Û™ÏƒBˆº/æy«(y¦+ùç'ùæ¡9¢¢º/æycê¹ë¬ykd9`$¹ên¸à ¹«hù¥¡ùd£THÈ9ª(yg¢úacyïk¹¢$y.#yè¬8à ÜƒBˆÛX[¹.#ycëù¤©9fç»ïgº) yåfyç`9l,yab9i!ù.ï{ï#9¥éù.%¹åc9.gù.#y/&¹a£y.ã¹n¢¹n¥y."ú+â9l.8à ÜÛX[ƒBˆÙ]ƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHš\ËY[™Ù\ˆˆ]K]Ø‹XXİ[ÛHœ™\Ù]Xİ\œ™[XÚ]Y]H¹. :e+ºaãyïkØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜Y˜[˜ÙY]YÙš[\ˆˆ	ÜİX™Ü›İ\Ü[Š	ØY˜[˜ÙY]YÙš[\‰Ê_OƒBˆİ[[X\OÜ[¹«hù¥¡ú/áù®éÜÜ[ÛX[¹cæ:aãùgeøà z!&¹§+9geø )¸ )¹èk9èk9æ¡;ï#9.#yioyd øà ¹¢$ycê¹¢¢¹ç'ù«hùæ¡9cæy.¢ùcï9îæyd#¹cì8à ÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ï¹d+ùå*9¨!ùëoº/áù®éÜİ›Û™ÏÜ[¹alù£¢y.éyd#ˆS9¬ê:aâ¹¢$z/æ9¦+ù/&¹ab9£$yaî¹c®ûï#9.#yd'¸à ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHYÑš[\‘[˜X›YƒBˆ	ÜÙ][™ÜËYÑš[\‘[˜X›YOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆ]ˆÛ\ÜÏHØ‹[˜\œ˜]]™KYš[\‹\ÚÜİ]ÈƒBˆX™[¹cêº+îùcå¹§ä9.*¹«hù¥¡ù¨!ùëo»ï"9cëú`"{ï"CBˆ[œ]\OH^ˆX^[™İHˆ]K]Ø‹\Ù][™ÏH›˜\œ˜]]™R[˜ÛYUYÈƒBˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË›˜\œ˜]]™R[˜ÛYUYÈ	ÉÊ_HƒBˆXÙZÛ\H¹/¢ùi ˆ˜\œ˜]]™{ï"9.#yå*9a¦H	›È	™İûï"Hˆ]]ØÛÛ\]OH›Ù™ˆˆÜ[ÚXÚÏH™˜[ÙHƒBˆÛX[¹§+9§hy§"z/æy.*¹¨!ùëo¹¥í¹l,ycê¹cå¹¨!ùëoºaã:gh»ï&ù¬¨y§"y¥í¹/çyåfyc§ù¥¡ûï#9.#y/&¹. 9cèùd ùên»ïgÜÛX[ƒBˆÛX™[ƒBˆX™[ºh§yi%¹«hùb&y£¤ºfi;ï"9cëú`"{ï"CBˆ^\™XH›İÜÏHŒÈˆX^[™İHŒŒŒˆ]K]Ø‹\Ù][™ÏH›˜\œ˜]]™T™YÙ^š[\œÈƒBˆXÙZÛ\H¹. :(c9. 9§h{ï#9/¢ùi »ï&‰›Õ\]U˜\šXX›I™İÖ×××JÉ›ËÕ\]U˜\šXX›I™İÈ‰Ù\ØØ\R[
+Ù][™ÜË›˜\œ˜]]™T™YÙ^š[\œÈ	ÉÊ_Oİ^\™XOƒBˆÛX[¹§ 9i&ˆ9§h{ïg¹cæ:aãùgeøà yâ­¹  y¨#ù¢%ºh¡:+¯ºfa9b¨9a¡yk®z`ïycëù.éyg*:/æùd#¹cì9bcyab9¤f9£¢xà ÜÛX[ƒBˆÛX™[ƒBˆÙ]ƒBˆ’S9¬ê:aâˆÛÙO‰›ÈKKH‹‹ˆKI™İÏØÛÙOˆ9/&¹¥m9geù¢ïù£¢{ïg¹."úghº/æy.¦ù¢$9kîy¨!ùëo¹.gùcëù.éyæí9£©y£¤ºfi;ï&ù.#zg :) y¡à¹«hùb&y.gú ïyå*
+;ïhx (³ 8m%ËJx§)ÏÜƒBˆ]ˆÛ\ÜÏHØ‹]YËYš[\‹[\İƒBˆ	Ü[\Ë›X\
+
+[K[™^
+HOˆBˆ]ˆÛ\ÜÏHØ‹]YËYš[\‹\[Hˆ]K]YËYš[\‹Z[™^H‰Ú[™^HƒBˆ]ˆÛ\ÜÏHØ‹]YËYš[\‹\[KZXYƒBˆİ›Û™Ïº)á9b&H	Ú[™^
+È_OÜİ›Û™ÏƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHØ‹]YËYš[\‹\™[[İ™H\ËY[]HƒBˆ]K]Ø‹XXİ[ÛHœ™[[İ™K]YËYš[\‹\[HƒBˆ]KZ[™^H‰Ú[™^H¹b(:fiØ]ÛƒBˆÙ]ƒBˆX™[¹o 9i-9¨!ùëoˆÜ[»ï"9cëùên»ï"OÜÜ[ƒBˆ[œ]\OH^ˆX^[™İHƒBˆ]K]Ø‹]YËYš[\‹YšY[H›Ü[ˆˆ]KZ[™^H‰Ú[™^HƒBˆ˜[YOH‰Ù\ØØ\P]Š[K›Ü[ˆ	ÉÊ_HƒBˆXÙZÛ\H¹/¢ùi ˆ	›ÛÜ[ÛœÉ™İÈƒBˆ]]ØÛÛ\]OH›Ù™ˆˆÜ[ÚXÚÏH™˜[ÙHƒBˆÛX™[ƒBˆX™[¹îäùl/¹¨!ùëoˆÜ[»ï"9cëùên»ï"OÜÜ[ƒBˆ[œ]\OH^ˆX^[™İHƒBˆ]K]Ø‹]YËYš[\‹YšY[H˜ÛÜÙHˆ]KZ[™^H‰Ú[™^HƒBˆ˜[YOH‰Ù\ØØ\P]Š[K˜ÛÜÙH	ÉÊ_HƒBˆXÙZÛ\H¹/¢ùi ˆ	›ËÛÜ[ÛœÉ™İÈƒBˆ]]ØÛÛ\]OH›Ù™ˆˆÜ[ÚXÚÏH™˜[ÙHƒBˆÛX™[ƒBˆÙ]ƒBˆ
+Kš›Ú[Š	ÉÊ_CBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹]YËX]]Ë]ÛÛÈƒBˆ]ˆÛ\ÜÏHØ‹]YËX]]ËZXYƒBˆ]İ›Û™Ïº!ê¹bª9£ä9cå¹`&z`"OÜİ›Û™ÏÜ[¹¢$ycê¹¢¢¹cëùå¤y¨!ùëo¹¢d¹aî¹§iyîæy/h9ç"ûïg¹.#y/&¹¤áz!ê¹hgº/æú)á9b&xà ÜÜ[Ù]ƒBˆ]ˆÛ\ÜÏHØ‹]YËX]]ËXXİ[ÛœÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœØØ[‹]YËXØ[™Y]\Èˆ]KXÛİ[HŒH¹¢jù£ãù§ 9¥¬9«hù¥¡ÏØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœØØ[‹]YËXØ[™Y]\Èˆ]KXÛİ[HH¹¢jù£ãù§ :/äHH9§hOØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆ	İYĞØ[™Y]\Ë›[™İÈBˆ]ˆÛ\ÜÏHØ‹]YËXØ[™Y]K[\İƒBˆ	İYĞØ[™Y]\Ë›X\
+
+][K[™^
+HOˆBˆX™[Û\ÜÏHØ‹]YËXØ[™Y]H	Ú][K˜œ›ØYÈ	Ú\Ë\š\ÚŞIÈˆ	ÉßH	Ú][K˜[™XYPYYÈ	Ú\ËXYY	Èˆ	ÉßHƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹]YËXØ[™Y]KZ[™^H‰Ú[™^HƒBˆ	Ú][Kœ™XÛÛ[Y[™YÈ	ØÚXÚÙY	Èˆ	ÉßH	Ú][K˜[™XYPYYÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆÜ[ƒBˆİ›Û™Ï‰›ÉÙ\ØØ\R[
+][KYÓ˜[YJ_I™İÉÚ][K˜[™XYPYYÈ	È0­È9mì¹­îùb¨	Èˆ	ÉßOÜİ›Û™ÏƒBˆÛX[‰Ú][K˜Ûİ[H9«(IÚ][K˜œ›ØYÈ	È0­È:# ùfí:/ ùk¯{ï#9nîº+«¹èkº+©9d#¹a£yb¨	Èˆ	ÉßOÜÛX[ƒBˆÛÙO‰Ù\ØØ\R[
+][K›Ü[Š_H8 )ˆ	Ù\ØØ\R[
+][K˜ÛÜÙJ_OØÛÙOƒBˆÜÜ[ƒBˆÛX™[ƒBˆ
+Kš›Ú[Š	ÉÊ_CBˆÙ]ƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHØ‹]YËYš[\‹XYˆ]K]Ø‹XXİ[ÛH˜\K]YËXØ[™Y]\È¹­îùb¨:`"y.+y`&z`"OØ]ÛƒBˆˆ	ÏÛ\ÜÏHØ‹]YËX]]ËY[\H¹à®yaîù¢jù£ãùd#»ï#9£ä¹.í¹/&¹¢¢¹å¤y//9¢$9kîy¨!ùëo¹b%ùaî¹§iy/¦ù/h9èkº+©8à Ü‰ßCBˆÙ]ƒBƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHØ‹]YËYš[\‹XYƒBˆ]K]Ø‹XXİ[ÛH˜Y]YËYš[\‹\[HƒBˆ	Ü[\Ë™š[\Š[HOˆİš[™Ê[K›Ü[ˆ	ÉÊKš[J
+Hİš[™Ê[K˜ÛÜÙH	ÉÊKš[J
+JK›[™İHÌÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ;ï"È9­îùb¨:)á9b&CBˆØ]ÛƒBˆÙ]ƒBƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜Y˜[˜ÙY\™XÛİ™\Hˆ	ÜİX™Ü›İ\Ü[Š	ØY˜[˜ÙY\™XÛİ™\IÊ_OƒBˆİ[[X\OÜ[¹k¢yaj9 h¹i#OÜÜ[ÛX[‰Û]\İ™XÛİ™\HÈ\ØØ\R[
+]\İ™XÛİ™\K›X™[
+Hˆ	ù¢$y¦ïú/æy.*¹.%¹åc9åfyæ¡9/çzfjIßOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹[XZ[[˜[˜ÙK\İ]\ÈƒBˆİ›Û™Ï‰Û]\İ™XÛİ™\HÈ\ØØ\R[
+]\İ™XÛİ™\K›X™[
+Hˆ	ú/æ9¬¨y§"y h¹i#yà®IßOÜİ›Û™ÏƒBˆÜ[‰Û]\İ™XÛİ™\HÈ\ØØ\R[
+›Ü›X]ØØ[[Y\İ[\
+]\İ™XÛİ™\K˜Ü™X]Y]
+JHˆ	ù«ãù.*º b¹i*y¢$yb!¹o 9åfIßOÜÜ[ƒBˆÙ]ƒBˆ‰Û]\İ™XÛİ™\CBˆÈ9odùbcy/çykf	ÓX]›X^
+K[X™\Š™XÛİ™\K˜Ûİ[
+HJ_H9.*¹ h¹i#yà®{ï#9 h¹i#yd#¹.ãy/&¹ab9¦ïùã¬9g*9æ¡9â­¹  yåfy. 9.ïy/çzfjxà ˜Bˆˆ	ùcaùî©ù¥éù¥l9£k¸à ykï9aiy.%¹åc9â­¹  y¥í¹¢$y/&¹ab9åfy. 9.ï{ïg¹/h9.gùcëù.éyã¬9g*9l,z+ªy¢$ykf9.*¹/çzfjxà ‰ßOÜƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËXXİ[ÛœÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜Ü™X]K\™XÛİ™\K\Ú[¹êâùclù/çykf9 h¹i#yà®OØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœ™\İÜ™K[]\İ\™XÛİ™\Hˆ	Û]\İ™XÛİ™\HÈ	ÉÈˆ	Ù\ØX›Y	ßO¹ h¹i#y§ :/äy/çykfØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\ˆ]K\Ù][™ÜË\İX™Ü›İ\H˜Y˜[˜ÙYYXYÛ›ÜİXÜÈˆ	ÜİX™Ü›İ\Ü[Š	ØY˜[˜ÙYYXYÛ›ÜİXÜÉÊ_OƒBˆİ[[X\OÜ[¹¥azf§:+â¹¥«OÜÜ[ÛX[¹¢$y¢¢¹¢¤ú&júg :) yæ¡9.':)oùcï9aî¹§iOÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\X›ÙHƒBˆ¹¢$ycê¹¢¢¹¢¤ú&júg :) yæ¡9âb9§+8à z+¯¹i!øà y£©ycèùª(yo#ùd£:e&z+ëùâ­¹  ycï9aî¹§ixà ’Ù^xà y£©ycèùg,9g`8à y«hù¥¡ùd£:)äº"l¹éàykáº+¯¹k¦»ï'ú`¨ù.¦ù¢$yc¢ù/cûï#9.#yo 9i%¹cï8à ÜƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËXXİ[ÛœÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛÜKYXYÛ›ÜİXÜÈ¹¢¢º+â¹¥«ycï9aî¹§iOØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœ™]šY]Ë[›İXÙH¹ç"ùç"ù£ä9é.¹¨-ùo#ÏØ]ÛƒBˆÙ]ƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆÙ]ƒBˆÙ]Z[ÏƒBƒBˆÙ]ƒBˆÃBŸCBƒBƒB™[˜İ[Ûˆ™[™\“[Ù[TÙ][™ÜÊİ]KÙ][™ÜËŞ[˜Ôİ]\ËØÛÜHH	Û›İÉËÜ[”İX™Ü›İ\ÈH™]ÈÙ]
+
+KÛÜ››ÛÚÕZHHßJHÃBˆÛÛœİØÛÜSY]HHÃBˆ›İÎˆÈ^YXœ›İÎˆ	ùã¬¹. ùg*9ç"ÉË]Nˆ	ù«i9b.ú+¯¹ïk‰ÈKBˆ[ÜNˆÈ^YXœ›İÎˆ	ùã¬¹. ùg*9ç"ÉË]Nˆ	ù.®¹âjz+¯¹ïk‰ÈKBˆİ\œ™[ÎˆÈ^YXœ›İÎˆ	ùã¬¹. ùg*9ç"ÉË]Nˆ	ù¦¥ù­`z+¯¹ïk‰ÈKBˆÜ[š[ÛˆÈ^YXœ›İÎˆ	ùã¬¹. ùg*9d+	Ë]Nˆ	ú"!¹ áz+¯¹ïk‰ÈKBˆY[[ÜNˆÈ^YXœ›İÎˆ	ùã¬¹. ùg*9¥-¹¢ï‰Ë]Nˆ	ú+¬9oáº+¯¹ïk‰ÈKBˆNÃBˆÛÛœİØÛÜRÙ^HHØš™Xİš\ÓİÛŠØÛÜSY]KØÛÜJHÈØÛÜHˆ	Û›İÉÎÃBˆÛÛœİØÛÜR[™›ÈHØÛÜSY]VÜØÛÜRÙ^WNÃBˆÛÛœİÛØÚÈH›Ü›X]ÛÜ›Ø[[™\Šİ]JNÃBˆÛÛœİÛØÚÓX™[HÛÜ›ÛØÚÓX™[
+İ]KÛØÚÊNÃBˆÛÛœİY[[ÜHHŞ[˜Ôİ]\ÏË›Y[[ÜHßNÃBˆÛÛœİ\İÜT[›š[™ÈHY[[ÜKœ\ÙHOOH	Ü[›š[™ÉÎÃBˆÛÛœİ\İÜT\˜Ù[HY[[ÜKİ[ˆBˆÈX]›Z[ŠLX]œ›İ[™
+
+[X™\ŠY[[ÜKœ›ØÙ\ÜÙY
+H
+HÈY[[ÜKİ[
+ˆL
+JCBˆˆÃBˆÛÛœİÛÜ››ÛÚÈHŞ[˜Ôİ]\ÏËÛÜ››ÛÚÈÈ›ÛÚÜÎˆ×K[šY\Îˆ×K\ÙNˆ	ÚYIÈNÃBˆÛÛœİÛÜ››ÛÚĞ›ÛÚÜÈH\œ˜^Kš\Ğ\œ˜^JÛÜ››ÛÚË˜›ÛÚÜÊHÈÛÜ››ÛÚË˜›ÛÚÜÈˆ×NÃBˆÛÛœİÛÜ››ÛÚÑ[šY\ÈH\œ˜^Kš\Ğ\œ˜^JÛÜ››ÛÚË™[šY\ÊHÈÛÜ››ÛÚË™[šY\Èˆ×NÃBˆÛÛœİÛÜ››ÛÚÔ]Y\HHİš[™ÊÛÜ››ÛÚÕZKœ]Y\H	ÉÊKœÛXÙJLŒ
+NÃBˆÛÛœİÛÜ››ÛÚÓÛ›T[ÜHH›ÛÛX[ŠÛÜ››ÛÚÕZK›Û›T[ÜJNÃBˆÛÛœİÛÜ››ÛÚÓÛ›Q[˜X›YH›ÛÛX[ŠÛÜ››ÛÚÕZK›Û›Q[˜X›Y
+NÃBˆÛÛœİÛÜ››ÛÚÔÙ[XİYYÈHÛÜ››ÛÚÕZKœÙ[XİYYÈ[œİ[˜Ù[ÙˆÙ]BˆÈÛÜ››ÛÚÕZKœÙ[XİYYÃBˆˆ™]ÈÙ]
+\œ˜^Kš\Ğ\œ˜^JÛÜ››ÛÚÕZKœÙ[XİYYÊHÈÛÜ››ÛÚÕZKœÙ[XİYYË›X\
+İš[™ÊHˆ×JNÃBˆÛÛœİš[\™YÛÜ››ÛÚÑ[šY\ÈHš[\•ÛÜ››ÛÚÑ[šY\ÊÛÜ››ÛÚÑ[šY\ËÃBˆ]Y\NˆÛÜ››ÛÚÔ]Y\KBˆÛ›T[ÜNˆÛÜ››ÛÚÓÛ›T[ÜKBˆÛ›Q[˜X›YˆÛÜ››ÛÚÓÛ›Q[˜X›YBˆJNÃBˆÛÛœİÛÜ››ÛÚÔÙ[XİYÛİ[HÛÜ››ÛÚÔÙ[XİYYËœÚ^™NÃBˆÛÛœİ\T›Ùš[\ÈH\œ˜^Kš\Ğ\œ˜^JÙ][™ÜË˜\T›Ùš[\ÊHÈÙ][™ÜË˜\T›Ùš[\Èˆ×NÃBˆÛÛœİ\S[Ù[T›İ]\ÈHÙ][™ÜË˜\S[Ù[T›İ]\È	‰ˆ\[ÙˆÙ][™ÜË˜\S[Ù[T›İ]\ÈOOH	ÛØš™Xİ	ÃBˆÈÙ][™ÜË˜\S[Ù[T›İ]\ÃBˆˆßNÃBˆÛÛœİ›İ]SÜ[ÛœÈH
+İ\œ™[H	ÙY˜][	ÊHOˆÃBˆÜ[Ûˆ˜[YOH™Y˜][ˆ	Øİ\œ™[OOH	ÙY˜][	ÈÈ	ÜÙ[XİY	Èˆ	ÉßOº-çúf£ù.%¹åc: ã:ghºnæ:+©:/ç¹£©OÛÜ[Û˜BˆÜ[Ûˆ˜[YOH]™\›ˆˆ	Øİ\œ™[OOH	İ]™\›‰ÈÈ	ÜÙ[XİY	Èˆ	ÉßOº-çúf£ùodùbczadºi¡ÛÜ[Û˜Bˆ‹‹˜\T›Ùš[\Ë›X\
+›Ùš[HOˆÃBˆÛÛœİ˜[YHH›Ùš[N‰Ü›Ùš[KšYXÃBˆ™]\›ˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š˜[YJ_Hˆ	Øİ\œ™[OOH˜[YHÈ	ÜÙ[XİY	Èˆ	ÉßO‰Ù\ØØ\R[
+›Ùš[K›˜[YJ_H0­È	Ù\ØØ\R[
+›Ùš[K›[Ù[	ù§*º`"yª(yg¢ÉÊ_OÛÜ[Û˜ÃBˆJKBˆKš›Ú[Š	ÉÊNÃBˆÛÛœİÙ][™Ğ]ÛˆH
+Ù][™Ëİ\œ™[YX™[
+HOˆBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]ÛˆƒBˆ]K\Ù][™ÏH‰ÜÙ][™ßHˆ]K]˜[YOH‰ÚYHƒBˆÛ\ÜÏH‰Ôİš[™Êİ\œ™[
+HOOHİš[™ÊY
+HÈ	Ú\ËXXİ]™IÈˆ	ÉßH‰ÛX™[OØ]ÛƒBˆÃBˆÛÛœİ[œÚ]P]ÛˆH
+YX™[
+HOˆÙ][™Ğ]ÛŠ	Ù[]™\Q[œÚ]IËÙ][™ÜË™[]™\Q[œÚ]KYX™[
+NÃBˆÛÛœİ^[˜][ÛˆH
+Ù][™Ë˜[YJHOˆ
+ÃBˆ[]™\Q[œÚ]NˆÃBˆ™\İ˜Z[™Yˆ	ù¢$yl$yo :eg9i-:/®ycï9.':)oûïg¹d#¹cì:+éy­.ùæ¡:/æ9¦+ùáiù¨-ù­.øà ‰ËBˆ˜[[˜ÙYˆ	úaãz) yæ¡9¢$ycï9b,:eg9i-:/®{ï#9.#zaãz) yæ¡9ab9c¢ùâ*¹â*¹."úgh¸à ¹eëûï#:/æy¨-ù.#y.lxà ‰ËBˆXİ]™Nˆ	ù¢$y/&¹¦í9bé9oêùg,9¢¢¹cæ9c%¹cï9b,:eg9i-:/®{ïg¹/a¹«hùoæyæ¡9¥í¹`&y¢$y.gù.#y/&¹èk9¢dz/æùc®øà ‰ËBˆKBˆ]]ÔÚ[][][Û“[ÙNˆÃBˆYÚˆ	ù¢$z-­9ç`:/nú/nùç"ûïg¹cê¹ë¨yç'ù§"yoáz) yæ¡9cæ9c%»ï#9.#yb,9i!9.lz-äxà ‰ËBˆ˜[[˜ÙYˆ	ù¢$y/&¹£*9.*¹ç"ù. 9ç/;ïgº+éybª9æ¡:!ê¹mìybª;ï#9¬¨y.¢ù¢$yl,y.#y¢ïùâ*¹kd9.ly¢ê8à ‰ËBˆY\ˆ	ù¢$y/&º.l¹.ay. 9à®{ï#9¢¢ºeg9i-9i%¹æ¡9.®¹d£9fè9§§:`ïyæëù.å9îá»ïg¹i#y§`¹.%¹åc9å*:/æy.*¸à ‰ËBˆKBˆ[YTÛXŞNˆÃBˆÛÜ›ˆ	ù¢$yk¢9ç`9.%¹åc:d§ûïg¹«hù¥¡ùç'ú+í9®!y©f¹aè9à®{ï#9¢$yl,y¢¢¹l#ùâ*¹kd9¢ê:/áùc®øà ‰ËBˆ^XÚ]ˆ	ùç'ùæ¡9ë¥ùo¥ùaî¹§iy¢$y¢cy¢ê8à ¹ë¥ù.#yaá»ï'ú`¨ù¢$y.#yè¬8à ‰ËBˆØ]][İ\Îˆ	ùcëù.éz+ªy¢$yã'9. 9à®yà®{ïg¹/a¹.#yèk¹k¦¹¢$yl,y¢¢¹â*¹kd9¥-¹fç¹§ixà ‰ËBˆÜ[ˆ	ù¥áz(c8à yëbyo¡xà yméy/g:/æyéãy. 9ç"ùl,y/&º"¬y¥íºeí9æ¡9.¢ûï#9¢$yl,zhn¹¢bù¢¢ºd§ùo 9bcy£ª8à ‰ËBˆKBˆX›XÓÜ[š[Û”™]™X[[ÙNˆÃBˆØœÙ\™Nˆ	ù¢$y¢¢¹i%ºgh¹æ¡:hã¹hì:`ïyc¢ùg*:/æy.*º)äº$/{ïg¹/h9§iyç"ù¢$ya£y£ 9îæy/h;ï#9.#yo 9«hù¥¡ùcï8à ‰ËBˆ™[]˜[ˆ	ùç'ùd£9ç/9bcz/æy«­ybiù áy§"yalùìîûï#9¢$y¢cycï:/áùc®ù. 9à®{ïg¹¬¨yalùìîùæ¡9¢$yîéùîëyc¢ùç`8à ‰ËBˆKBˆÛÜ›[ÙPXİ]š]NˆÃBˆ]ZY]ˆ	ù.%¹åc:/æ9¦+ù/&¹bª;ïg¹cê¹¦+ù¢$yl$y¢¦:!o¹ak9alycæ9c%»ï#:+ªyi%ºgh¹k¢zgfy. 9à®xà ‰ËBˆ˜]\˜[ˆ	ù¢$y£"ynlùn.:" ¹icùç"ùç`9gã¹n ¸à yîá9îáøà yi*y¬%9d£9é/¹/&»ïgº+éycæ9æ¡:!ê¹mìycæ8à ‰ËBˆ\ŞNˆ	ù¢$y/&¹i&¹åfy¡#ù. 9à®zeg9i-9i%¹æ¡9bª:gf{ïg¹/a¹.#y/&¹¢ïúaãyi)ù.¢ù¥ayd£9àoºf¯¹èk9aäyàëzeîxà ‰ËBˆKBˆVÜÙ][™×OË–Ôİš[™Ê˜[YJWH	ÉÊNÃBˆÛÛœİY˜[˜ÙYÜ[ˆHYOˆÜ[”İX™Ü›İ\Ëš\ÊY
+HÈ	ÛÜ[‰Èˆ	ÉÎÃBˆÛÛœİÙXİ[Û’XY[™ÈH
+]K›İHH	ÉÊHOˆBˆ]ˆÛ\ÜÏHØ‹Y›]\ÙXİ[Û‹ZXY[™ÈƒBˆ]İ›Û™Ï‰Ù\ØØ\R[
+]J_OÜİ›Û™Ï‰Û›İHÈÜ[‰Ù\ØØ\R[
+›İJ_OÜÜ[˜ˆ	ÉßOÙ]ƒBˆÙ]ƒBˆÃBˆÛÛœİ›İ]TÙ][™ÈH
+Ù^K]K›İHH	ÉÊHOˆBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈØ‹\›İ]K\Ù][™ÈƒBˆX™[‰Ù\ØØ\R[
+]J_OÛX™[ƒBˆÙ[Xİ]K]Ø‹X\K\›İ]OH‰Ù\ØØ\P]ŠÙ^J_H‰Ü›İ]SÜ[ÛœÊ\S[Ù[T›İ]\ÖÚÙ^WH	ÙY˜][	Ê_OÜÙ[XİƒBˆ	Û›İHÈÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+›İJ_OÜ˜ˆ	ÉßCBˆÙ]ƒBˆÃBˆÛÛœİ[š™Xİ[Û”İ]\ĞØ\™H
+X™[[˜X›Y]Z[H	ÉÊHOˆBˆ]ˆÛ\ÜÏHØ‹[[Ù[K]š\ÚXš[]KXØ\™	Ù[˜X›YÈ	Ú\Ë[Û‰Èˆ	Ú\Ë[Ù™‰ßHƒBˆ]ƒBˆÜ[¹â*¹â*º/æz/®z) y.#z) z`$ÜÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+X™[
+_H0­È	Ù[˜X›YÈ	ù¢$y/&¹cï:/áùc®ÉÈˆ	ùab9c¢ùâ*¹â*¹."úgh‰ßOÜİ›Û™ÏƒBˆ	Ù]Z[ÈÛX[‰Ù\ØØ\R[
+]Z[
+_OÜÛX[˜ˆ	ÉßCBˆÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹YÛØ˜[\Ù][™ÜË\ÙXİ[Ûˆˆ]K\ÙXİ[ÛHš[š™Xİ[Ûˆ¹c®ùïîù. 9."ÏØ]ÛƒBˆÙ]ƒBˆÃBˆÛÛœİÛÜ›˜XÚÙÜ›İ[™Hİš[™Êİ]KÛÜ›Ë˜˜XÚÙÜ›İ[™	ÉÊKš[J
+NÃBˆÛÛœİÛÜ›˜XÚÙÜ›İ[™[™İHÛÜ›˜XÚÙÜ›İ[™›[™İÃBƒBˆÛÛœİ›İÒ[HBˆ	Ú[š™Xİ[Û”İ]\ĞØ\™
+Bˆ	ù«i9b.È0­È9.%¹åc9¥íºeíÈ: ã9¦kÉËBˆÙ][™ÜËÛÜ››Û\[š™Xİ[Ûˆ	‰ˆÙ][™ÜËš[š™Xİ[Û•[YS[ÙHOOH	ÛÙ™‰È	‰ˆÙ][™ÜËš[š™Xİ[Û•ÛÜ›˜XÚÙÜ›İ[™OOH˜[ÙKBˆ9¥íºeí;ï&‰ÜÙ][™ÜËš[š™Xİ[Û•[YS[ÙHOOH	Ù[	ÈÈ	ùk£9¥m	ÈˆÙ][™ÜËš[š™Xİ[Û•[YS[ÙHOOH	Ø[˜ÚÜ‰ÈÈ	ù§ 9l#úe&¹à®IÈˆ	ùalúeëIßH0­È: ã9¦kûï&‰ÜÙ][™ÜËš[š™Xİ[Û•ÛÜ›˜XÚÙÜ›İ[™OOH˜[ÙHÈ	ùo 	Èˆ	ùalÉßXBˆ
+_CBˆ]ˆÛ\ÜÏHØ‹Y›]\Ù][™Ë[\İƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹«hù¥¡ú+îùcåº# ùfíÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	ØÛÛ^\›œÉËÙ][™ÜË˜ÛÛ^\›œËK	ù§ :/äHH:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ØÛÛ^\›œÉËÙ][™ÜË˜ÛÛ^\›œËË	ù§ :/äHÈ:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ØÛÛ^\›œÉËÙ][™ÜË˜ÛÛ^\›œËK	ù§ :/äHH:/k‰Ê_CBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][™ËX]Ûˆˆ]K\Ù][™ÏH˜ÛÛ^\›œÈƒBˆ]K]˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜İ\İÛPÛÛ^\›œÈ
+_HƒBˆÛ\ÜÏH‰ÈVÌKËWKš[˜ÛY\Ê[X™\ŠÙ][™ÜË˜ÛÛ^\›œÊJHÈ	Ú\ËXXİ]™IÈˆ	ÉßHº!ê¹k¦¹.bOØ]ÛƒBˆÙ]ƒBˆ	ÈVÌKËWKš[˜ÛY\Ê[X™\ŠÙ][™ÜË˜ÛÛ^\›œÊJHÈBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™ÈØ‹XÛÛ^Xİ\İÛHº+îùcå¹§ :/äyaè:/kƒBˆ[œ]\OH›[X™\ˆˆZ[HŒHˆX^HŒÌˆİ\HŒHˆ]K]Ø‹\Ù][™ÏH˜ÛÛ^\›œÈˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜ÛÛ^\›œÊ_HƒBˆÛX™[˜ˆ	ÉßCBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+BˆÌKËWKš[˜ÛY\Ê[X™\ŠÙ][™ÜË˜ÛÛ^\›œÊJCBˆÈ
+ÌNˆ	ù¢$ycê¹ç"ù§ 9¥¬9. :/k»ïgº/nú/nùæ¡;ï#9§ 9ç xà ‰ËÎˆ	ù¢$yo 9fç¹ç"ÈÈ:/k»ïg¹¥éyn.9biù áy. :"+9i'ùei¸à ‰ËNˆ	ù¢$yo 9fç¹ç"ÈH:/k»ïgº/ç¹îëy )ùd£9­¢: %ù«å:/ ùb&¹ioxà ‰ßVÓ[X™\ŠÙ][™ÜË˜ÛÛ^\›œÊWJCBˆˆ9¢$yã¬9g*9/&¹o 9fç¹ç"È	ÜÙ][™ÜË˜ÛÛ^\›œßH:/k»ïgºeoù.¢ù.í¹¦í9ê,ûï#9.#z/áÈÚÙ[ˆ9.gù/&º-çùç`:eoú å¸à ˜Bˆ
+_OÜƒBˆÙ]ƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈØ‹]ÛÜ›X˜XÚÙÜ›İ[™\Ù][™Èˆ]K\Ù][™ÜË\İX™Ü›İ\H››İË]ÛÜ›X˜XÚÙÜ›İ[™ˆ	ØY˜[˜ÙYÜ[Š	Û›İË]ÛÜ›X˜XÚÙÜ›İ[™	Ê_OƒBˆİ[[X\HÛ\ÜÏHØ‹]ÛÜ›X˜XÚÙÜ›İ[™ZXY[™ÈƒBˆİ›Û™Ï¹.%¹åc: ã9¦kú+¯¹k¦Üİ›Û™ÏƒBˆÜ[ˆÛ\ÜÏH‰İÛÜ›˜XÚÙÜ›İ[™È	Ú\Ë\Ù]	Èˆ	ÉßH‰İÛÜ›˜XÚÙÜ›İ[™È9mìº+¯¹k¦ˆ0­È	İÛÜ›˜XÚÙÜ›İ[™[™İH9keØˆ	ù§*º+¯¹k¦‰ßOÜÜ[ƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ›X˜XÚÙÜ›İ[™X›ÙHƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ›X˜XÚÙÜ›İ[™\™]šY]È	İÛÜ›˜XÚÙÜ›İ[™È	Ú\Ë\Ù]	Èˆ	Ú\ËY[\IßHƒBˆ	Ù\ØØ\R[
+ÛÜ›˜XÚÙÜ›İ[™BˆÈÛÛ\Xİ^
+ÛÜ›˜XÚÙÜ›İ[™ML
+CBˆˆ	ù¢¢º/æy.*¹.%¹åc:eoù§'ù¢$9êâùæ¡9¥í¹.èøà yg,9ä!¸à yb¯ùb¦øà z)á9b&yd£:aãz) y¥íºeí9î¯ùa¦yîæy¢${ïg¹¢$y/&¹. 9æí9¢ïùk ùodùg,9gî¸à ‰Ê_CBˆÙ]ƒBˆ]ÛˆÛ\ÜÏHØ‹]ÛÜ›X˜XÚÙÜ›İ[™XXİ[Ûˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹]ÛÜ›YY]ÜˆƒBˆ	İÛÜ›˜XÚÙÜ›İ[™È	ùï%º/¤y.%¹åc: ã9¦kÉÈˆ	ùo 9iâú+¯¹k¦¹.%¹åc: ã9¦kÉßCBˆØ]ÛƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹¥íºeí9£ª:/æÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞK	İÛÜ›	Ë	ù.%¹åc:d§ÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞK	Ù^XÚ]	Ë	ù.)y¨/	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞK	ØØ]][İ\ÉË	ùabùb-‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞK	ÛÜ[‰Ë	ùo 9¥/‰Ê_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+^[˜][ÛŠ	İ[YTÛXŞIËÙ][™ÜË[YTÛXŞJJ_OÜƒBˆÙ]ƒBˆÙ]ƒBˆ	ÜÙXİ[Û’XY[™Ê	ù.%¹åc:d§ÉË	ù¥íºeí9¢$y§iyæëûïg¹/h9.gùcëù.éz!ê¹mìy¢ê9. 9¢ê	Ê_CBˆ›Ü›HÛ\ÜÏHØ‹XÛØÚËY›Ü›HØ‹Y›]XÛØÚËY›Ü›Hˆ]K]Ø‹Y›Ü›OH˜ÛØÚÈƒBˆ]ˆÛ\ÜÏHØ‹XÛØÚËY›Ü›KZXY[™È]X™[¹..ù.%¹åc9¥éyc¡ÛX™[İ›Û™Ï‰Ù\ØØ\R[
+ÛØÚÓX™[
+_OÜİ›Û™ÏÙ]Ü[¹«ãù.*º b¹i*y¢$yb!¹o :+¬ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹XØ[[™\‹[˜[YKYšY[¹c¡¹¬åyd#yéì[œ]˜[YOH˜Ø[[™\“˜[YHˆX^[™İHˆ˜[YOH‰Ù\ØØ\P]ŠÛØÚË˜Ø[[™\“˜[YJ_HˆXÙZÛ\H¹/¢ùi »ï&¹n'yfïyc¡ˆÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹XØ[[™\‹Y]KYšY[ÈƒBˆX™[[œ]˜[YOHYX\ˆˆ\OH›[X™\ˆˆZ[HŒHˆX^HNNNNNHˆ˜[YOH‰ØÛØÚËYX\ŸHˆ9nmÛX™[ƒBˆX™[[œ]˜[YOH›[Ûˆ\OH›[X™\ˆˆZ[HŒHˆX^HŒLˆˆ˜[YOH‰ØÛØÚË›[ÛHˆ9§"ÛX™[ƒBˆX™[[œ]˜[YOH™^Hˆ\OH›[X™\ˆˆZ[HŒHˆX^HŒÌHˆ˜[YOH‰ØÛØÚË™^SÙ“[ÛHˆ9¥éOÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹XÛØÚËYšY[ÈƒBˆX™[[œ]˜[YOHšİ\ˆˆ\OH›[X™\ˆˆZ[HŒˆX^HŒŒÈˆ˜[YOH‰ØÛØÚËšİ\ŸHˆ9¥íÛX™[ƒBˆX™[[œ]˜[YOH›Z[]Hˆ\OH›[X™\ˆˆZ[HŒˆX^HNHˆ˜[YOH‰ØÛØÚË›Z[]_Hˆ9b!ÛX™[ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœŞ[˜ËXÛØÚËYœ›ÛK\İÜH¹.#¹«hù¥¡ù¨(yaáØ]ÛƒBˆ]Ûˆ\OHœİX›Z]ˆÛ\ÜÏHØ‹XÛØÚË[X[X[\Ø]™H¹¢bùbª:+¯¹k¦Ø]ÛƒBˆÙ]ƒBˆÛ\ÜÏHØ‹XÛØÚË\Ş[˜Ë[›İH¹«hù¥¡ùç'ùæ¡:+í9®!y©f¹¥íºeí;ï#9¢$y/&º!ê¹mìz-çù."»ïg¹i ¹§§9/h9«å9¢$y¦í9®!y©f»ï#9.gùcëù.éyg*:/æzaã9æí9£©ydbº+ây¢$yã¬9g*9aè9à®xà ÜƒBˆ]ˆÛ\ÜÏHØ‹][YKXXİ[ÛœÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜Y˜[˜ÙKXÛØÚÈˆ]K[Z[]\ÏHŒŠÈH9l#ù¥íØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜Y˜[˜ÙKXÛØÚÈˆ]K[Z[]\ÏHŒÍŒŠÈˆ9l#ù¥íØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜Y˜[˜ÙKXÛØÚÈˆ]K[Z[]\ÏHŒMŠÈH9i*OØ]ÛƒBˆÙ]ƒBˆÙ›Ü›OƒBˆÃBƒBˆÛÛœİ[ÜR[HBˆ	Ú[š™Xİ[Û”İ]\ĞØ\™
+Bˆ	ù.®¹âjH0­È9odùbcyâ­¹  IËBˆÙ][™ÜËÛÜ››Û\[š™Xİ[Ûˆ	‰ˆÙ][™ÜËš[š™Xİ[Û”[ÜHOOH˜[ÙKBˆ	ù.#ycï9îæy«hù¥¡ùç"ù.gù¬¨yalùìîûïg¹.å¹.ë:/æ9¦+ù/&¹g*: ã9d#¹å'ù­.ûï#9¢$y/&º+¬9ç`8à ‰ËBˆ
+_CBˆ]ˆÛ\ÜÏHØ‹\\œÛÛ‹YÜ›İ\[Y™K[›İHƒBˆÜ[¹ï©9/dùå'ù­.È0­È:næ:+©9å'ù¥bÜÜ[ƒBˆİ›Û™Ï¹d#9g,8à yd#:(c8à yd#9îá9îáùd£9alyd#9.¢ù.í»ï#9¢$y/&¹¥/¹g*9d#9. :/kºaã9kîz-)»ïgÜİ›Û™ÏƒBˆÛX[¹ç'ù§"y.¤¹bª9l,yîæycã9¥®z`ïyåfy."ùîäù§§;ï&ù¬¨yè¬:gh¹l,yd!:/áùd!9æ¡8à ¹k ùi#yå*9ã¬9§"y.®¹âjyd"9¢ny£ª9¯%;ï#9.#y/&¹..¸ '9ï©9/dù¡'ø 'yi&¹o 9. :/kˆTxà ÜÛX[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y›]\Ù][™Ë[\İƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹d#¹cì”È:h¡9ë¥ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø˜XÚÙÜ›İ[™œĞYÙ]	ËÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]	ù.#y..ùbª9£ª9¯%	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø˜XÚÙÜ›İ[™œĞYÙ]	ËÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]‹	ù§ 9i&ˆˆ9.®‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø˜XÚÙÜ›İ[™œĞYÙ]	ËÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]	ù§ 9i&ˆ9.®‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø˜XÚÙÜ›İ[™œĞYÙ]	ËÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]	ù§ 9i&ˆ9.®‰Ê_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™Èº!ê¹k¦¹.bycez/k¹.®¹¥lBˆ[œ]\OH›[X™\ˆˆZ[HŒˆİ\HŒHˆ]K]Ø‹\Ù][™ÏH˜˜XÚÙÜ›İ[™œĞYÙ]ˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜˜XÚÙÜ›İ[™œĞYÙ]
+_HƒBˆÛX™[ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ¹ ìùæëùi&¹l$y.®º`ïycëù.éz!ê¹mìyhjûïg¹£ª:#d»ïg9.®»ï#9cez/k¹l/zaãùb*ú-¡z/áÈLˆ9.®»ï&ú-¢¹i)ú-¢¹d ÈÚÙ[»ï#9.gù/&¹¦í9¡h¸à ÜƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ï¹o.¹c%¹d#¹cì9.®¹âjy£ª9¯%Üİ›Û™ÏÜ[¹o 9ç`9æ¡:+ç{ï#:+éyîäùë¥ùæ¡9.®¹¢$yl,zhn¹â*¹£gº/æú/æz/k¹.%¹åc9£ª9¯%9. :-mùç"ûïg¹.#yceyâë9a£z-äy. :-§øà ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏH™[š[˜ÙY˜XÚÙÜ›İ[™Ú[][][Ûˆˆ	ÜÙ][™ÜË™[š[˜ÙY˜XÚÙÜ›İ[™Ú[][][ÛˆÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ïº+¬9oeyãªyk­º)äº"lÜİ›Û™ÏÜ[¹alù£¢y¢$yl,y.#yceyâë9îæH\Ù\ˆ9êâù.®¹âjyl#ùâc9kd;ïg¹/a¹«hù¥¡úaã9ç'ùcäyå'ú/áùæ¡9.¢ûï#9¢$z+©8à ¹.#z ïz(áy¬¨yç"ú)àxà ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHœ™XÛÜ™^Y\Ú\˜Xİ\ˆˆ	ÜÙ][™ÜËœ™XÛÜ™^Y\Ú\˜Xİ\ˆOOH˜[ÙHÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆÙ]ƒBˆ	Ü›İ]TÙ][™Ê	ÛØœÙ\˜][Û‰Ë	ù¢$yç"ù.®¹âjy¥í¹/oùå*9æ¡:/ç¹£©IË	ú/æzaã9cê¹dbº+ây¢$yç"ù.®¹âjy¥íº-l9dê¹§hz-ëûïg’Ù^H9d£9g,9g`:/æ9¦+ù¥/¹g*9aj9l`:/ç¹£©zaã8à ‰Ê_CBˆÙ]ƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\Ø‹[[Ù[KXY˜[˜ÙYˆ]K\Ù][™ÜË\İX™Ü›İ\Hœ[ÜK]ÛÜ››ÛÚÈˆ	ØY˜[˜ÙYÜ[Š	Ü[ÜK]ÛÜ››ÛÚÉÊ_OƒBˆİ[[X\OÜ[¹.%¹åc9.i¹.®¹âjykï9aiOÜÜ[ÛX[º) y¢¢¹¥¬9.®¹.âùîãyîæy¢$y¥í¹a£y£ 9o ;ïg¹¢$yab:eîúeîù¦+ú, xà ÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹[[Ù[KXY˜[˜ÙYX›ÙHƒBˆ›Ü›HÛ\ÜÏHØ‹]ÛÜ››ÛÚËZ[\Üˆ]K]Ø‹Y›Ü›OHÛÜ››ÛÚÈƒBˆX™[º`"y¢êy.%¹åc9.iƒBˆÙ[Xİ˜[YOH˜›ÛÚÓ˜[YHˆ	İÛÜ››ÛÚĞ›ÛÚÜË›[™İÈ	ÉÈˆ	Ù\ØX›Y	ßOƒBˆ	İÛÜ››ÛÚĞ›ÛÚÜË›[™İBˆÈÛÜ››ÛÚĞ›ÛÚÜË›X\
+›ÛÚÈOˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š›ÛÚÊ_Hˆ	Ø›ÛÚÈOOHÛÜ››ÛÚË˜›ÛÚÓ˜[YHÈ	ÜÙ[XİY	Èˆ	ÉßO‰Ù\ØØ\R[
+›ÛÚÊ_OÛÜ[Û˜
+Kš›Ú[Š	ÉÊCBˆˆ	ÏÜ[Ûˆ˜[YOHˆ¹¢$yã¬9g*9¬¨y¢o¹b,: ïz+îùæ¡9.%¹åc9.iÛÜ[Û‰ßCBˆÜÙ[XİƒBˆÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËXXİ[Û‹\›İÈƒBˆ]ÛˆÛ\ÜÏHØ‹\š[X\KX]ÛˆØ‹]ÛÜ››ÛÚË\ÛX\X]Ûˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÛX\Z[\Ü]ÛÜ››ÛÚË\[ÜHˆ	İÛÜ››ÛÚËœ\ÙHOOH	Ü[›š[™ÉÈ]ÛÜ››ÛÚĞ›ÛÚÜË›[™İÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ	İÛÜ››ÛÚËœ\ÙHOOH	Ü[›š[™ÉÈÈ	ù«hùg*:+îùcå¸ )‰Èˆ	ù. :e+¹¦nº ïykï9aiy.®¹âjIßCBˆØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹]ÛÜ››ÛÚË\ØØ[‹X]Ûˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœØØ[‹]ÛÜ››ÛÚÈˆ	İÛÜ››ÛÚËœ\ÙHOOH	Ü[›š[™ÉÈ]ÛÜ››ÛÚĞ›ÛÚÜË›[™İÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ:jæ9î©ù¢bùbª9£$z`"CBˆØ]ÛƒBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ“U•xà ycæ:aãøà z!&¹§+:/æy.¦ù¢$yab9îåyo 8à ¹.®¹âjyd£9b¯ùb¦ù£)9g*9. 9o(9î®9."»ï'ùe%8 )¸ )¹¢$yab9¢¢¹ç'ù«hùæ¡9.®¹cï9aî¹§i{ï#9.#y¢¢¹. 9¥m9.*¹îá9îáùodù¢$9.®¸à ÜƒBˆ	İÛÜ››ÛÚË›Y\ÜØYÙHÈ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚË\İ]\È\ËIÙ\ØØ\P]ŠÛÜ››ÛÚËœ\ÙJ_H‰Ù\ØØ\R[
+ÛÜ››ÛÚË›Y\ÜØYÙJ_OÙ]˜ˆ	ÉßCBˆ	İÛÜ››ÛÚÑ[šY\Ë›[™İÈBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËXœ›İÜÙ\ˆƒBˆX™[Û\ÜÏHØ‹]ÛÜ››ÛÚË\ÙX\˜ÚÜ[¹¤'9í(¹§hyæëÜÜ[[œ]\OHœÙX\˜Úˆ˜[YOHÛÜ››ÛÚÔÙX\˜Úˆ]K]Ø‹]ÛÜ››ÛÚË\ÙX\˜Ú˜[YOH‰Ù\ØØ\P]ŠÛÜ››ÛÚÔ]Y\J_HˆXÙZÛ\H¹¤'9.®¹âjyd#xà y§hyæë¹d#xà yalúe+º+ãy¢%¹«hù¥¡ÈÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËYš[\‹\›İÈƒBˆX™[Û\ÜÏHØ‹]ÛÜ››ÛÚËYš[\‹XÚ\	İÛÜ››ÛÚÓÛ›T[ÜHÈ	Ú\ËXXİ]™IÈˆ	ÉßH[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹]ÛÜ››ÛÚËYš[\Hœ[ÜHˆ	İÛÜ››ÛÚÓÛ›T[ÜHÈ	ØÚXÚÙY	Èˆ	ÉßOÜ[¹cê¹ç"ùå¤y//9.®¹âjOÜÜ[ÛX™[ƒBˆX™[Û\ÜÏHØ‹]ÛÜ››ÛÚËYš[\‹XÚ\	İÛÜ››ÛÚÓÛ›Q[˜X›YÈ	Ú\ËXXİ]™IÈˆ	ÉßH[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹]ÛÜ››ÛÚËYš[\H™[˜X›Yˆ	İÛÜ››ÛÚÓÛ›Q[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOÜ[¹cê¹ç"ùd+ùå*9§hyæëÜÜ[ÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚË]ÛÛ˜\ˆÜ[¹`&z`"H	İÛÜ››ÛÚÑ[šY\Ë™š[\Š[HOˆ[Kš[\ÜX›T\œÛÛˆÏÈ[K›ZÙ[T\œÛÛŠK›[™İH9.®ˆ0­È9odùbcH	Ùš[\™YÛÜ››ÛÚÑ[šY\Ë›[™İH9§hH0­È9mìº`"H	İÛÜ››ÛÚÔÙ[XİYÛİ[H9.®ÜÜ[]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ[Xİ]ÛÜ››ÛÚË]š\ÚX›Hˆ	Ùš[\™YÛÜ››ÛÚÑ[šY\ËœÛÛYJ[HOˆ[Kš[\ÜX›T\œÛÛˆÏÈ[K›ZÙ[T\œÛÛŠHÈ	ÉÈˆ	Ù\ØX›Y	ßO¹aj:`"yodùbcy.®¹âjOØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛX\‹]ÛÜ››ÛÚË]š\ÚX›Hˆ	Ùš[\™YÛÜ››ÛÚÑ[šY\Ë›[™İÈ	ÉÈˆ	Ù\ØX›Y	ßO¹cå¹­¢9odùbcOØ]ÛƒBˆÙ]Ù]ƒBˆ]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËY[K[\İƒBˆ	Ùš[\™YÛÜ››ÛÚÑ[šY\Ë›[™İÈš[\™YÛÜ››ÛÚÑ[šY\Ë›X\
+[HOˆÃBˆÛÛœİ[\ÜX›HH›ÛÛX[Š[Kš[\ÜX›T\œÛÛˆÏÈ[K›ZÙ[T\œÛÛŠNÂˆÛÛœİX[X[TÙ[XİX›HH\ÕÛÜ››ÛÚÑ[SX[X[TÙ[XİX›J[JNÂˆÛÛœİ˜YÙHH[K™[X™YY\œÛÛƒBˆÈ	Ï[O¹.ã¹­íùd"9§hyæë¹¢á¹aîÙ[O‰ÃBˆˆ[KœÛX\]]ÃBˆÈ	Ï[O¹.®¹âjOÙ[O‰ÃBˆˆ[\ÜX›CBˆÈ	Ï[O¹nîº+«¹èkº+©Ù[O‰ÃBˆˆ[KXÚšXØ[[BˆÈ	Ï[HÛ\ÜÏHš\Ë[]]Y¹¢ 9§+ÈÈU•H0­È9cëù¢bùbª9èkº+©Ù[O‰Âˆˆ[K›Z^YÛİ\˜ÙBˆÈ	Ï[HÛ\ÜÏHš\Ë[]]Y¹­íùd":+¯¹k¦Ù[O‰ÃBˆˆ	ÉÎÃBˆ™]\›ˆBˆX™[Û\ÜÏHØ‹]ÛÜ››ÛÚËY[H	Ù[K™\ØX›YÈ	Ú\ËY\ØX›YY[IÈˆ	ÉßH	Ú[\ÜX›HÈ	Ú\Ë\\œÛÛ‹XØ[™Y]IÈˆ	ÉßH	Ù[K™[X™YY\œÛÛˆÈ	Ú\ËY[X™YY\\œÛÛ‰Èˆ	ÉßHƒBˆ[œ]YHØ‹]ÛÜ››ÛÚËY[KIÙ\ØØ\P]Š[KZY
+_Hˆ\OH˜ÚXÚØ›Şˆ˜[YOH™[RYÈˆ]K]Ø‹]ÛÜ››ÛÚËY[KZYH‰Ù\ØØ\P]Š[KZY
+_Hˆ˜[YOH‰Ù\ØØ\P]Š[KZY
+_Hˆ	İÛÜ››ÛÚÔÙ[XİYYËš\Êİš[™Ê[KZY
+JHÈ	ØÚXÚÙY	Èˆ	ÉßH	ÛX[X[TÙ[XİX›HÈ	ÉÈˆ	Ù\ØX›Y	ßO‚ˆÜ[Ü[ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËY[KZXY[™Èİ›Û™Ï‰Ù\ØØ\R[
+[Kœ\œÙY˜[YH[K›˜[YJ_OÜİ›Û™Ï‰Ø˜YÙ_IÙ[K™\ØX›YÈ	Ï[HÛ\ÜÏHš\Ë[]]Y¹mì¹`g9å*Ù[O‰Èˆ	ÉßOÜÜ[ƒBˆÛX[‰Ù\ØØ\R[
+[K™[X™YY\œÛÛˆ	‰ˆ[KœÛİ\˜ÙQ[S˜[YHÈ9§iz!ê»ï&‰Ù[KœÛİ\˜ÙQ[S˜[Y_Xˆ
+
+[KšÙ^\È×JKš›Ú[Š	øà IÊHRQ	Ù[KœÛİ\˜ÙUZY[KZYX
+J_OÜÛX[ƒBˆ‰Ù\ØØ\R[
+[K˜ÛÛ[œÛXÙJŒŒ
+J_IÙ[K˜ÛÛ[›[™İˆŒŒÈ	ø )‰Èˆ	ÉßOÜƒBˆÜÜ[ƒBˆÛX™[˜ÃBˆJKš›Ú[Š	ÉÊHˆ	Ï]ˆÛ\ÜÏHØ‹]ÛÜ››ÛÚËY[\Hº/æzaã9¬¨y¢o¹b,9d":` ¹æ¡9§hyæë»ïg¹£h¹.*¹alúe+º+ãy¢%º !y§o¹. 9à®yëfú`"ya£z+ªy¢$y¢o¹¢o¸à Ù]‰ßCBˆÙ]ƒBˆ]ÛˆÛ\ÜÏHØ‹\š[X\KX]ÛˆØ‹]ÛÜ››ÛÚËZ[\ÜX]Ûˆˆ\OHœİX›Z]ˆ	İÛÜ››ÛÚÔÙ[XİYÛİ[È	ÉÈˆ	Ù\ØX›Y	ßO‰İÛÜ››ÛÚÔÙ[XİYÛİ[È9kï9aiymìº`"y.®¹âj{ï"	İÛÜ››ÛÚÔÙ[XİYÛİ[{ï"Xˆ	ú+íú`"y¢êz) ykï9aiyæ¡9.®¹âjIßOØ]ÛƒBˆÙ]˜ˆ	ÉßCBˆÙ›Ü›OƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆÃBƒBˆÛÛœİİ\œ™[Ò[HBˆ	Ú[š™Xİ[Û”İ]\ĞØ\™
+Bˆ	ù¦¥ù­`H0­È:/æú(c9.+y.¢ù.íˆÈ9.%¹åc9ã«ùh ÉËBˆÙ][™ÜËÛÜ››Û\[š™Xİ[Ûˆ	‰ˆÙ][™ÜËš[š™Xİ[Û‘]™[ÈOOH˜[ÙKBˆ9fç¹hì;ï&‰ÜÙ][™ÜËÛÜ››Û\[š™Xİ[Ûˆ	‰ˆÙ][™ÜËš[š™Xİ[Û‘XÚÙ\ÈOOH˜[ÙHÈ	ù¢$y/&º`$‰Èˆ	ù¢$yab9åfyç`	ßH0­È9.%¹åc9.¢ùk§»ï&‰ÜÙ][™ÜËÛÜ››Û\[š™Xİ[Ûˆ	‰ˆÙ][™ÜËš[š™Xİ[Û‘˜XİÈOOH˜[ÙHÈ	ù¢$y/&º`$‰Èˆ	ù¢$yab9åfyç`	ßXBˆ
+_CBˆ	ÜÙXİ[Û’XY[™Ê	ù.%¹åc:/ä:(c	Ë	úeg9i-:/k9o 9.éyd#»ï#9¢$z/æ:.l¹g*:`¨ú/®yç"ùç`;ïg‰Ê_CBˆ]ˆÛ\ÜÏHØ‹Y›]\Ù][™Ë[\İƒBˆ]ˆÛ\ÜÏHØ‹[[Ù[K\[[YK\İ[[X\HƒBˆ]Ü[º!ê¹bª:/ä:(cÜÜ[İ›Û™Ï‰ÜÙ][™ÜËÛÜ›]]Ñ[˜X›YÈ	ù¢$y/&º!ê¹mìz-mù§iymèy. 9g"	Èˆ	ù¢$z-­9ç`;ï#9ëby/h9¢,ù¢$IßOÜİ›Û™ÏÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹YÛØ˜[\Ù][™ÜË\ÙXİ[Ûˆˆ]K\ÙXİ[ÛH˜ÛÛ[[Ûˆ¹c®ùn.9å*:+¯¹ïkØ]ÛƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹.%¹åc:!"y¤#ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	İÛÜ›[ÙPXİ]š]IËÙ][™ÜËÛÜ›[ÙPXİ]š]K	Ü]ZY]	Ë	ùk¢zgfIÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	İÛÜ›[ÙPXİ]š]IËÙ][™ÜËÛÜ›[ÙPXİ]š]K	Û˜]\˜[	Ë	ú!ê¹á-‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	İÛÜ›[ÙPXİ]š]IËÙ][™ÜËÛÜ›[ÙPXİ]š]K	Ø\ŞIË	ùàëzeîIÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+^[˜][ÛŠ	İÛÜ›[ÙPXİ]š]IËÙ][™ÜËÛÜ›[ÙPXİ]š]JJ_OÜƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹.%¹åc:/ä:/k9o.¹n©ÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û“[ÙIËÙ][™ÜË˜]]ÔÚ[][][Û“[ÙK	ÛYÚ	Ë	ú/núaãÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û“[ÙIËÙ][™ÜË˜]]ÔÚ[][][Û“[ÙK	Ø˜[[˜ÙY	Ë	ùgaú(hIÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û“[ÙIËÙ][™ÜË˜]]ÔÚ[][][Û“[ÙK	ÙY\	Ë	ù­ìyaiIÊ_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+^[˜][ÛŠ	Ø]]ÔÚ[][][Û“[ÙIËÙ][™ÜË˜]]ÔÚ[][][Û“[ÙJJ_OÜƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[º!ê¹bª:)é¹cäzh¤yã¡ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û’[\˜[	ËÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[K	ù«ãú/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û’[\˜[	ËÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[‹	ù«ãÈˆ:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û’[\˜[	ËÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[Ë	ù«ãÈÈ:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]ÔÚ[][][Û’[\˜[	ËÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[K	ù«ãÈH:/k‰Ê_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™Èº!ê¹k¦¹.byí+ú+¨z/k¹¥l[œ]\OH›[X™\ˆˆZ[HŒHˆX^HŒŒˆİ\HŒHˆ]K]Ø‹\Ù][™ÏH˜]]ÔÚ[][][Û’[\˜[ˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜]]ÔÚ[][][Û’[\˜[
+_HÛX™[‚ˆÙ]‚ˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛH‚ˆ]İ›Û™Ï¹§*¹£ª9¯%9«hù¥¡ù£ä:a¤Üİ›Û™ÏÜ[¹alúeëyd#¹cê¹£"z+¯¹k¦ºh¤yã¡ú!ê¹bª:/ä:(c;ï#9.#y/&¹«ãù«(yfç¹i#z`ïzeëº) y.#z) y£ä9bcz(iy£ª;ï&ùç'ù«hùi,z-)y.ãy/&¹£ä:a¤¸à ÜÜ[Ù]‚ˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHœ[™[™ÔÚ[][][Û”›Û\[˜X›Yˆ	ÜÙ][™ÜËœ[™[™ÔÚ[][][Û”›Û\[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[‚ˆÙ]‚ˆ	Ü›İ]TÙ][™Ê	ÜÚ[][][Û‰Ë	ù¢$y£ª9¯%9.%¹åc9¥í¹/oùå*9æ¡:/ç¹£©IË	ùdbº+ây¢$y.ã¹dê¹§hz-ëùaî¹c®ù£ª9¯%9l,z(c;ïg’Ù^H9d£9g,9g`9¢$yfç¹aj9l`:`¨ù.*¹¢¯ylby¢o¸à ‰Ê_CBˆÙ]ƒBˆ]Z[ÈÛ\ÜÏHØ‹\Ù][™ÜË\İX™Ü›İ\Ø‹[[Ù[KXY˜[˜ÙYˆ]K\Ù][™ÜË\İX™Ü›İ\H˜İ\œ™[ËXY˜[˜ÙYˆ	ØY˜[˜ÙYÜ[Š	Øİ\œ™[ËXY˜[˜ÙY	Ê_OƒBˆİ[[X\OÜ[ºjæ9î©ÏÜÜ[ÛX[º/æzaã9¦+ùi,z-)y.¡¹.éyd#¹¢$z+éy #¹.b9b§ÜÛX[Üİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹[[Ù[KXY˜[˜ÙYX›ÙHØ‹Y›]\Ù][™Ë[\İƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[¹£ª9¯%9i,z-)yd#º) y.#z) z+ªy¢$ya£z+åOÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]Ô™]PÛİ[	ËÙ][™ÜË˜]]Ô™]PÛİ[	ù.#zaãz+åIÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]Ô™]PÛİ[	ËÙ][™ÜË˜]]Ô™]PÛİ[K	úaãz+åHH9«(IÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]Ô™]PÛİ[	ËÙ][™ÜË˜]]Ô™]PÛİ[‹	úaãz+åHˆ9«(IÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	Ø]]Ô™]PÛİ[	ËÙ][™ÜË˜]]Ô™]PÛİ[Ë	úaãz+åHÈ9«(IÊ_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™È¹§ 9i&¹a£z+åyaè9«(O[œ]\OH›[X™\ˆˆZ[HŒˆX^HHˆİ\HŒHˆ]K]Ø‹\Ù][™ÏH˜]]Ô™]PÛİ[ˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË˜]]Ô™]PÛİ[
+_HÛX™[ƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹Xİ\İÛKZ[œİXİ[Ûˆº!ê¹k¦¹.by£ª9¯%:) y¬`^\™XH]K]Ø‹\Ù][™ÏH˜İ\İÛTÚ[][][Û’[œİXİ[ÛˆˆX^[™İHŒLˆ›İÜÏHŒÈˆXÙZÛ\H¹/¢ùi »ï&¹l$yb-º`(9¥¬9.¢ù.í»ï&ùi&¹ç"ùç"ùea¹/&¹d£9®+ùcèøà ¹ã¬¹. ù/&¹£"z/æy.*¹¥®yd$yåfy¡#øà ˆ‰Ù\ØØ\R[
+Ù][™ÜË˜İ\İÛTÚ[][][Û’[œİXİ[ÛŠ_Oİ^\™XOÛX™[ƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆÃBƒBˆÛÛœİÜ[š[Û’[HBˆ	Ú[š™Xİ[Û”İ]\ĞØ\™
+Bˆ	ú"!¹ áH0­È9¥¬:eîÈÈ:+®¹gfÉËBˆÙ][™ÜËÛÜ››Û\[š™Xİ[Ûˆ	‰ˆÙ][™ÜËš[š™Xİ[Û”X›XÓÜ[š[ÛˆOOH˜[ÙKBˆ	ùi%ºgh¹æ¡:hã¹hì9¢$z/æ9¦+ù/&¹îéùîëyd+;ïgº/æzaã9cê¹dbº+ây/h;ï#9¢$z) y.#z) y¢¢¹k ú`$¹îæy«hù¥¡øà ‰ËBˆ
+_CBˆ]ˆÛ\ÜÏHØ‹Y›]\Ù][™Ë[\İƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]ƒBˆİ›Û™Ïº!ê¹bª9¦í9¥¬:"!¹ áOÜİ›Û™ÏƒBˆÜ[¹i%ºgh¹ç'ù§"y`/9o¥ù/(9æ¡9bª:gf{ï#9¢$y/&º!ê¹mìyêåº ,ù§-yd+;ïg¹alù£¢yæ¡:+ç{ï#9/h9¢,ù¢$y¢$y.gù/&¹c®ùd+8à ÜÜ[ƒBˆÙ]ƒBˆX™[Û\ÜÏHØ‹\İÚ]ÚƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏHœX›XÓÜ[š[Û]]Ñ[˜X›YƒBˆ	ÜÙ][™ÜËœX›XÓÜ[š[Û]]Ñ[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOƒBˆOÚOƒBˆÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™ËX›ØÚÈƒBˆX™[º) y.#z) z+ªy¢$y¢¢ºhã¹hì:`$º/äy. 9à®OÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈƒBˆ	ÜÙ][™Ğ]ÛŠ	ÜX›XÓÜ[š[Û”™]™X[[ÙIËÙ][™ÜËœX›XÓÜ[š[Û”™]™X[[ÙK	ÛØœÙ\™IË	ù.áz)à¹kçÉÊ_CBˆ	ÜÙ][™Ğ]ÛŠ	ÜX›XÓÜ[š[Û”™]™X[[ÙIËÙ][™ÜËœX›XÓÜ[š[Û”™]™X[[ÙK	Ü™[]˜[	Ë	ùæî9alù¥í¹¦/ºg,‰Ê_CBˆÙ]ƒBˆÛ\ÜÏHØ‹\Ù][™ËY^[˜][Ûˆ‰Ù\ØØ\R[
+^[˜][ÛŠ	ÜX›XÓÜ[š[Û”™]™X[[ÙIËÙ][™ÜËœX›XÓÜ[š[Û”™]™X[[ÙJJ_OÜƒBˆÙ]ƒBˆ	Ü›İ]TÙ][™Ê	ÛÜ[š[Û‰Ë	ù¢$yd+:hã¹hì9¥í¹/oùå*9æ¡:/ç¹£©IË	ùdbº+ây¢$y.ã¹dê¹§hz-ëùaî¹c®ùd+:hã¹hì9l,yio{ïg¹£©ycèù§+9/dù¢$y.#yg*:/æzaã9.ly¤+8à ‰Ê_CBˆÙ]ƒBˆÛ\ÜÏHØ‹Y›]Y›Ûİ›İH¹ak9o 9¥¬:eîù/&¹¢¢¹ç'ùk§¹olydãy£©yfç¹.®¹âjyd£9ã«ùh ûï#9.#z/áú) yab9kîy."¹.%¹åc9.¢ù.í»ï#9a£zhn¹ç`9g,9à®xà yméy/g8à yîá9îáùd£9­¢9 kù®(:`dùolydãz+éyè¬9b,9æ¡9.®»ï&ú+®¹gfù/(:eîù.ãycê¹¦+úhã¹hì;ï#9¢$y.#y/&º+ªyaj9.%¹åc9ê yá-¹. :-mùçéz`dûïgÜƒBˆÃBƒBˆÛÛœİY[[ÜR[HBˆ	Ú[š™Xİ[Û”İ]\ĞØ\™
+Bˆ	ú+¬9oáˆ0­È:eoù§'ú+¬9oá‰ËBˆÙ][™ÜËÛÜ››Û\[š™Xİ[Ûˆ	‰ˆÙ][™ÜËš[š™Xİ[Û“Y[[ÜHOOH˜[ÙKBˆ	ú+¬9oá¹æä¹kd9odº+¬9oá¹æä¹kd;ï#9«hù¥¡ùod¹«hù¥¡øà ¹¢$z) y.#z) y¥-¹¢ï»ï#9d£:) y.#z) ycï9aî¹c®ûï#9¦+ù.)9fç¹.¢øà ‰ËBˆ
+_CBˆ]ˆÛ\ÜÏHØ‹Y›]\Ù][™Ë[\İƒBˆ]ˆÛ\ÜÏHØ‹\Ù][™Ë]ÙÙÛHƒBˆ]İ›Û™Ï¹d+ùå*:+¬9oá¹ìîùîçÏÜİ›Û™ÏÜ[¹alù£¢y¢$yl,yab9.#yo :+¬9oá¹æä¹kd:aã9hg¹¥¬9î®9âaûïg¹mì¹îãù¥/¹ioyæ¡9¢$yc¢ùç`;ï#9.#y.(¸à ÜÜ[Ù]ƒBˆX™[Û\ÜÏHØ‹\İÚ]Ú[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹\Ù][™ÏH›Y[[ÜTŞ\İ[Q[˜X›Yˆ	ÜÙ][™ÜË›Y[[ÜTŞ\İ[Q[˜X›YÈ	ØÚXÚÙY	Èˆ	ÉßOOÚOÛX™[ƒBˆÙ]ƒBˆ	Ü›İ]TÙ][™Ê	Ú\İÜIË	ù¢$y¥m9ä!º+¬9oá¹¥í¹/oùå*9æ¡:/ç¹£©IË	ú/æzaã9cê¹dbº+ây¢$y¥m9ä!º+¬9oá¹¥íº-l9dê¹§hz-ëûïg’Ù^H9d£9g,9g`9.#yå*9a£yhjù. :`cxà ‰Ê_CBˆÙ]ƒBˆ	ÜÙXİ[Û’XY[™Ê	ù.+z`%9£©yaiIË	ù¢$y§iy¦f¹.¡»ï'ù¬¨y.¢øà ¹¢$ycëù.éy.ã¹bczgh¹æ¡: b¹i*y. :-ëúeîùfç¹§i{ïg‰Ê_CBˆ]ˆÛ\ÜÏHØ‹Z\İÜK\Ù][™ÜÈØ‹Y›]Z\İÜK\Ù][™ÜÈØ‹]ÛÜ›X›Ûİİ˜\\Ù][™ÜÈƒBˆ]ˆÛ\ÜÏHØ‹Z\İÜKZXY[™ÈƒBˆ]ƒBˆX™[¹¢¢º/áùc®ù£©y¢$9ã¬9g*ÛX™[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+\İÜT[›š[™È	‰ˆY[[ÜKšÚ[™OOH	İÛÜ›X›Ûİİ˜\	ÃBˆÈY[[ÜK›Y\ÜØYÙH	ù¢$y«hùg*9¢¢¹bczgh¹æ¡: b¹i*y. 9l`¹l`¹£hyfç¹§ix )¸ )¹b*ú.*{ï#9¢$yb&¹£¤¹ioxà ‰ÃBˆˆ	ù¥íºeí8à y.®¹âjxà y.¢ùk§¸à y¬¨z-l9k£9æ¡9¦¥ù­`yd£:+¬9oá»ï#9¢$y. :-mùcï9fç¹§iy£¤¹ioIÊ_OÜİ›Û™ÏƒBˆÙ]ƒBˆÜ[‰Ú\İÜT[›š[™È	‰ˆY[[ÜKšÚ[™OOH	İÛÜ›X›Ûİİ˜\	ÈÈ	Ú\İÜT\˜Ù[IXˆ	ùcëù¥«yà®yîëz-äIßOÜÜ[‚ˆÙ]ƒBˆ	Ú\İÜT[›š[™È	‰ˆY[[ÜKšÚ[™OOH	İÛÜ›X›Ûİİ˜\	ÃBˆÈ]ˆÛ\ÜÏHØ‹Z\İÜK\›ÙÜ™\ÜÈHİ[OHÚY‰Ú\İÜT\˜Ù[IHÚOÙ]˜Bˆˆ	ÉßCBˆ¹«ãù¢ny¥-¹ioz`ïy/&¹åfy.*¹â*¹cl;ï&ùcbº-ëù`g9."ûï#9."ù«(y.ã¹â*¹cl9îéùîëxà ¹«hùo#ù.%¹åc9.ãyëbyaj:`ê9k£9¢$9¢cy. :-mù£©y."¸à Ü‚ˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜›Ûİİ˜\Z\İÜHˆ	Ú\İÜT[›š[™ÈÈ	Ù\ØX›Y	Èˆ	ÉßOº+ªyã¬¹. ùfç¹®«ùodùbcz b¹i*OØ]ÛƒBˆÙ]ƒBƒBˆ	ÜÙXİ[Û’XY[™Ê	ú+¬9oá¹¥m9ä!‰Ë	ú/æzaã9cêº+ªy¢$y¥m9ä!º+¬9oá¹æä¹kd;ïg¹.#y/&ºhn¹â*¹¢¢¹¥m9.*¹.%¹åc9ïîù. :`cIÊ_CBˆ]ˆÛ\ÜÏHØ‹Z\İÜK\Ù][™ÜÈØ‹Y›]Z\İÜK\Ù][™ÜÈƒBˆ]ˆÛ\ÜÏHØ‹Z\İÜKZXY[™È]X™[ºeoù§'ú+¬9oáÛX™[İ›Û™Ï‰Ù\ØØ\R[
+\İÜT[›š[™È	‰ˆY[[ÜKšÚ[™OOH	İÛÜ›X›Ûİİ˜\	ÈÈY[[ÜK›Y\ÜØYÙH	ù¢$y«hùg*9¥-¹¢ïº+¬9oá»ïg‰Èˆ	ù¢$y/&º!ê¹mìy¥-¹¢ïºeoù§'ú+¬9oá»ïg‰Ê_OÜİ›Û™ÏÙ]ƒBˆÜ[‰Ú\İÜT[›š[™È	‰ˆY[[ÜKšÚ[™OOH	İÛÜ›X›Ûİİ˜\	ÈÈ	Ú\İÜT\˜Ù[IXˆ
+[X™\ŠY[[ÜKœ[™[™Ğ\ÜÚ\İ[™\ÜÛœÙ\È
+HˆÈ	ù§"y¥¬9æ¡9.':)oùëby¢$y¥-»ïg‰Èˆ	ù¢$ymì¹îãú-çù."¹«hù¥¡ùei»ïg‰Ê_OÜÜ[Ù]ƒBˆ	Ú\İÜT[›š[™È	‰ˆY[[ÜKšÚ[™OOH	İÛÜ›X›Ûİİ˜\	ÈÈ]ˆÛ\ÜÏHØ‹Z\İÜK\›ÙÜ™\ÜÈHİ[OHÚY‰Ú\İÜT\˜Ù[IHÚOÙ]˜ˆ	ÉßCBˆºaãz) y.¢ùk§¸à yalùìîøà y¢oú+î¸à y¬¨y¥-¹l/¹æ¡9/#ùë%;ï#9¢$y/&¹£$yaî¹§iyc¢ùioxà ¹è£¹ldyi*¹i&¹/&¹¢¢¹æä¹kd9hg¹â!»ï#9¢$y¢cy.#z) xà ÜƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜK\]Y]YHÜ[¹o¡y¥m9ä!ˆ	ÓX]›X^
+[X™\ŠY[[ÜKœ[™[™Ğ\ÜÚ\İ[™\ÜÛœÙ\È
+J_H9§hy«hù¥¡ÏÜÜ[İ›Û™Ï‰ÜÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[ˆÈ:!ê¹bª0­È9«ãÈ	ÜÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[H:/k˜ˆ	ù¢bùbª9¥m9ä!‰ßOÜİ›Û™ÏÙ]ƒBˆX™[¹¥m9ä!¹¥®yo#ÏÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹[Ü[Û‹\›İÈØ‹[Ü[Û‹\›İËY›İ\ˆƒBˆ	ÜÙ][™Ğ]ÛŠ	ÛY[[ÜP]]Ò[™^[\˜[	ËÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[	ù¢bùbª	Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛY[[ÜP]]Ò[™^[\˜[	ËÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[K	ù«ãÈH:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛY[[ÜP]]Ò[™^[\˜[	ËÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[L	ù«ãÈL:/k‰Ê_CBˆ	ÜÙ][™Ğ]ÛŠ	ÛY[[ÜP]]Ò[™^[\˜[	ËÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[Œ	ù«ãÈŒ:/k‰Ê_CBˆÙ]ƒBˆX™[Û\ÜÏHØ‹[[X™\‹\Ù][™Èº!ê¹k¦¹.bzeí:f¥;ï":/k»ï"O[œ]\OH›[X™\ˆˆZ[HŒˆX^HLˆİ\HŒHˆ]K]Ø‹\Ù][™ÏH›Y[[ÜP]]Ò[™^[\˜[ˆ˜[YOH‰Ù\ØØ\P]ŠÙ][™ÜË›Y[[ÜP]]Ò[™^[\˜[
+_HÛX™[ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœØØ[‹Z\İÜHˆ	Ú\İÜT[›š[™È\Ù][™ÜË›Y[[ÜTŞ\İ[Q[˜X›YÈ	Ù\ØX›Y	Èˆ	ÉßOº+ªyã¬¹. ù¥m9ä!º+¬9oáØ]ÛƒBˆÙ]ƒBˆÃBƒBˆÛÛœİÛÛ[TØÛÜHHÈ›İÎˆ›İÒ[[ÜNˆ[ÜR[İ\œ™[Îˆİ\œ™[Ò[Ü[š[ÛˆÜ[š[Û’[Y[[ÜNˆY[[ÜR[NÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË\Üİ™\ˆØ‹[[Ù[K\Ù][™ÜË\Üİ™\ˆØ‹[[Ù[K\Ù][™ÜËIÜØÛÜRÙ^_Hˆ›ÛOH™X[ÙÈˆ\šXK[[Ù[HYHˆ\šXK[X™[H‰Ù\ØØ\P]ŠØÛÜR[™›Ë]J_HƒBˆ]ˆÛ\ÜÏHØ‹\Üİ™\‹ZXY[™ÈƒBˆ]Ü[‰ÜØÛÜR[™›Ë™^YXœ›İßOÜÜ[Ï‰ÜØÛÜR[™›Ë]_OÚÏÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛK[[Ù[K\Ù][™ÜÈˆ]K]šY]ÏH‰ÜØÛÜRÙ^_Hˆ\šXK[X™[H¹alúeëz+¯¹ïkˆ°åÏØ]ÛƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹[[Ù[K\Ù][™ÜËX›ÙH‰ØÛÛ[TØÛÜVÜØÛÜRÙ^W_OÙ]ƒBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\‘]™[[Ù[
+İ]KY]Ü’YH	ÉÊHÃBˆÛÛœİ]™[HY]Ü’YBˆÈİ]K™]™[Ë™š[™
+][HOˆ][KšYOOHY]Ü’Y
+H[Bˆˆ[ÃBˆÛÛœİ\ÑY]H›ÛÛX[Š]™[
+NÃBˆÛÛœİ\˜][Û’İ\œÈHX]›X^
+[X™\Š]™[Ë™\˜][Û“Z[]\È
+HÈŒ
+NÃBˆÛÛœİ\˜][Û•˜[YHH[X™\‹š\Ò[YÙ\Š\˜][Û’İ\œÊCBˆÈİš[™Ê\˜][Û’İ\œÊCBˆˆİš[™Ê[X™\Š\˜][Û’İ\œËÑš^Y
+ŠJJNÃBˆÛÛœİİ\Yİ[\H]™[BˆÈ›Ü›X]ÛÜ›Ø[[™\Šİ]K]™[œİ\Y]
+Kœİ[\Bˆˆ›Ü›X]ÛÜ›Ø[[™\Šİ]JKœİ[\ÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ØÜš[Hˆ]K]Ø‹XXİ[ÛH˜ÛÜÙKY]™[Y›Ü›HƒBˆ›Ü›HÛ\ÜÏHØ‹Y]™[Y›Ü›Hˆ]K]Ø‹Y›Ü›OH™]™[ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›KZXY[™ÈƒBˆ]Ü[‰Ú\ÑY]È	ÑQUÕT”‘S•	Èˆ	Ó‘UÈÕT”‘S•	ßOÜÜ[Ï‰Ú\ÑY]È	ù/ë¹¥.z/æy§hy¦¥ù­`IÈˆ	ù¥/¹aiy. 9§hy¦¥ù­`IßOÚÏÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛÜÙKY]™[Y›Ü›H°åÏØ]ÛƒBˆÙ]ƒBˆ[œ]\OHšY[ˆˆ˜[YOHšYˆ˜[YOH‰Ù\ØØ\P]Š]™[ËšY	ÉÊ_HƒBˆX™[¹.¢ù.í¹d#yéì[œ]˜[YOH]Hˆ™\]Z\™YX^[™İHŒMƒBˆ˜[YOH‰Ù\ØØ\P]Š]™[Ë]H	ÉÊ_HˆXÙZÛ\H¹/¢ùi »ï&¹/ë¹i#y. 9cì9¥éú`&º+«ùfjÛX™[ƒBˆX™[¹g,9à®O[œ]˜[YOHœXÙHˆX^[™İHŒMƒBˆ˜[YOH‰Ù\ØØ\P]Š]™[ËœXÙH	ÉÊ_HˆXÙZÛ\H¹ceùl®9îí9/ë¹êæHÛX™[ƒBˆX™[¹«hùg*9cäyå'ù.à9.b^\™XH˜[YOHœİ[[X\HˆX^[™İHŒˆ›İÜÏHŒÈ‰Ù\ØØ\R[
+]™[Ëœİ[[X\H	ÉÊ_Oİ^\™XOÛX™[ƒBˆX™[ºh¡:+¨yîäù§§^\™XH˜[YOH™^XİY™\İ[ˆX^[™İHŒˆ›İÜÏHŒˆ‰Ù\ØØ\R[
+]™[Ë™^XİY™\İ[]™[Ë˜ÛÛœÙ\]Y[˜ÙH	ÉÊ_Oİ^\™XOÛX™[‚ˆ	Ú\ÑY]Èˆ]ˆÛ\ÜÏHØ‹Y›Ü›KYÜšY‚ˆX™[¹odùbcyâ­¹  BˆÙ[Xİ˜[YOHœİ]\È‚ˆÜ[Ûˆ˜[YOH˜Xİ]™Hˆ	Ù]™[Ëœİ]\ÈOOH	ØXİ]™IÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹cäyley.+OÛÜ[Û‚ˆÜ[Ûˆ˜[YOHØZ][™Èˆ	Ù]™[Ëœİ]\ÈOOH	İØZ][™ÉÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹ëbyo¡y§hy.íÛÜ[Û‚ˆÜ[Ûˆ˜[YOHœ™XYHˆ	Ù]™[Ëœİ]\ÈOOH	Ü™XYIÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹b,9¥í¹o¡yèkº+©ÛÜ[Û‚ˆÜ[Ûˆ˜[YOHœ™\ÛÛ™Yˆ	Ù]™[Ëœİ]\ÈOOH	Ü™\ÛÛ™Y	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹mì¹îäù§gÏÛÜ[Û‚ˆÜ[Ûˆ˜[YOH˜Ø[˜Ù[Yˆ	Ù]™[Ëœİ]\ÈOOH	ØØ[˜Ù[Y	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹mì¹cå¹­¢ÛÜ[Û‚ˆÜ[Ûˆ˜[YOH›Z\ÜÙYˆ	Ù]™[Ëœİ]\ÈOOH	ÛZ\ÜÙY	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹mìºe&z/áÏÛÜ[Û‚ˆÜÙ[Xİ‚ˆÛX™[‚ˆX™[¹k§ºfayîäù§§;ï"9cëú`"{ï"Bˆ^\™XH˜[YOHœ™\İ[ˆX^[™İHŒŒˆ›İÜÏHŒˆˆXÙZÛ\H¹cê¹a¦ymì¹îãùç'ùk§¹oh¹¢$9æ¡9îäù§§‰Ù\ØØ\R[
+]™[Ëœ™\İ[	ÉÊ_Oİ^\™XO‚ˆÛX™[‚ˆÙ]‚ˆÛ\ÜÏHØ‹Y›Ü›KZ[¹¢bùbª9â­¹  y¦+ùodùbcy.%¹åc9.¢ùk§»ï&ù¨!ú+¬9..¹mì¹îäù§gÈÈ9mì¹cå¹­¢È9mìºe&z/áùd#»ï#9d#¹cì9£ª9¯%9.#y/&¹¢¢º/æy§hy¥éù¦¥ù­`y`mù`mù¥.yfç¹cäyley.+xà º"éyd#¹§iyç'ùæ¡9aî¹ã¬9¥¬9d#¹§§;ï#9n¥9/g9..¹¥¬9æ¡9¦¥ù­`yîéùîëxà Ü‚ˆˆ	ÉßCBˆ]ˆÛ\ÜÏHØ‹Y›Ü›KYÜšYƒBˆX™[º+¨y¥í¹¥®yo#ÃBˆÙ[Xİ˜[YOH˜ÛØÚÓ[ÙHƒBˆÜ[Ûˆ˜[YOH™\˜][Ûˆˆ	Ù]™[Ë˜ÛØÚÓ[ÙHOOH	Ù\˜][Û‰ÈY]™[È	ÜÙ[XİY	Èˆ	ÉßOº!ê¹á-¹­`z`'OÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH˜Xİ]™Hˆ	Ù]™[Ë˜ÛØÚÓ[ÙHOOH	ØXİ]™IÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹§"y¥b9méy¥íÛÜ[ÛƒBˆÜ[Ûˆ˜[YOHœØÚY[Yˆ	Ù]™[Ë˜ÛØÚÓ[ÙHOOH	ÜØÚY[Y	ÈÈ	ÜÙ[XİY	Èˆ	ÉßOºh¡9k¦¹¥íºeíÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH˜ÛÛ™][Ûˆˆ	Ù]™[Ë˜ÛØÚÓ[ÙHOOH	ØÛÛ™][Û‰ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹§hy.í¹ëbyo¡OÛÜ[ÛƒBˆÜÙ[XİƒBˆÛX™[ƒBˆX™[ºh¡:+¨z %ù¥í»ï"9l#ù¥í»ï"CBˆ[œ]˜[YOH™\˜][Û’İ\œÈˆ\OH›[X™\ˆˆZ[HŒˆİ\HŒHƒBˆ˜[YOH‰Ú\ÑY]È\ØØ\P]Š\˜][Û•˜[YJHˆ	ÌL‰ßHƒBˆÛX™[ƒBˆÙ]ƒBˆX™[¹cëú)àz/®yåcBˆÙ[Xİ˜[YOHš\ÚXš[]HƒBˆÜ[Ûˆ˜[YOHšY[ˆˆ	Ù]™[Ëš\ÚXš[]HOOH	ÚY[‰ÈY]™[È	ÜÙ[XİY	Èˆ	ÉßOº)äº"l¹l&¹.#ycëùçéOÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH˜XÙHˆ	Ù]™[Ëš\ÚXš[]HOOH	İ˜XÙIÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹cëùå,yååz/îykçú)âOÛÜ[ÛƒBˆÜ[Ûˆ˜[YOHšÛ›İÛˆˆ	Ù]™[Ëš\ÚXš[]HOOH	ÚÛ›İÛ‰ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹cëùîãù­¢9 kú#­ùçéOÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH™\™Xİˆ	Ù]™[Ëš\ÚXš[]HOOH	Ù\™Xİ	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹cëù.éyæí9£©y¡'ùçéOÛÜ[ÛƒBˆÜÙ[XİƒBˆÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›K[›İHƒBˆ	Ú\ÑY]BˆÈ:/æy§hy¦¥ù­`y.ãˆ	Ù\ØØ\R[
+İ\Yİ[\
+_H9o 9iâøà ¹/ë¹¥.z+¨y¥í¹¥®yo#ù¢%º %ù¥í¹d#»ï#9/&¹¬¯ùå*9c§ùiâùo 9iâù¥íºeí:aãy¥¬:+¨yë¥ûï&ùcê¹¥.y¥¡ùkeù.#y/&¹¥.ycæ9mì¹§"z/æùn©¸à ˜Bˆˆ9.ãˆ	Ù\ØØ\R[
+›Ü›X]ÛÜ›Ø[[™\Šİ]JKœİ[\
+_H9o 9iâú+¨y¥í¸à ¹fç¹i#z/k¹«(y.#y/&¹h§¹b¨:/æùn©¸à ˜CBˆÙ]ƒBˆ]ÛˆÛ\ÜÏHØ‹\š[X\KX]Ûˆˆ\OHœİX›Z]‰Ú\ÑY]È	ù/çykf9¦¥ù­`y/ë¹¥.IÈˆ	ùo 9iâùg*9d#¹cì9cäyleIßOØ]ÛƒBˆÙ›Ü›OƒBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\”\œÛÛ‘˜]Ù\Š\œÛÛ‹ØœÙ\™\“[ÙKÛÜ›Z[]KÃBˆØ[“ØœÙ\™HH˜[ÙKBˆØœÙ\˜][ÛˆH[Bˆ\ŞHH˜[ÙKBŸHHßJHÃBˆYˆ
+\\œÛÛŠH™]\›ˆ	ÉÎÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ØÜš[Hˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK\\œÛÛˆƒBˆ]ˆÛ\ÜÏHØ‹\\œÛÛ‹Y˜]Ù\ˆˆ›ÛOH™X[ÙÈˆ\šXK[[Ù[HYHˆ\šXK[X™[H¹.®¹âjz+é¹ áHƒBˆ]ÛˆÛ\ÜÏHØ‹Y˜]Ù\‹XÛÜÙHˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK\\œÛÛˆ°åÏØ]ÛƒBˆ	Ü™[™\”\œÛÛ]˜]\Š\œÛÛ‹	Ú\ËY™X]\™IÊ_CBˆÜ[ˆÛ\ÜÏHØ‹Y˜]Ù\‹[İ™\›[™H“U’S‘ÈPÑOÜÜ[ƒBˆÏ‰Ù\ØØ\R[
+\œÛÛ‹›˜[YJ_OÚÏƒBˆÛ\ÜÏHØ‹Y˜]Ù\‹\XÙH‰Ù\ØØ\R[
+\œÛÛ‹›ØØ][ÛŠ_OÜƒBˆ]ÛˆÛ\ÜÏHØ‹\\œÛÛ‹YY]X]Ûˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹\\œÛÛ‹YY]ÜˆƒBˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_Hˆ]K\\œÛÛ‹[˜[YOH‰Ù\ØØ\P]Š\œÛÛ‹›˜[YJ_H¹ï%º/¤y.®¹âjychOØ]ÛƒBˆ	È\\œÛÛ‹š\Õ\Ù\ˆÈBˆ]ˆÛ\ÜÏHØ‹\\œÛÛ‹[Y™KXXİ[ÛœÈƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHš\ËXØ]Ú\ˆ]K]Ø‹XXİ[ÛH˜Ø]Ú]\\\œÛÛˆƒBˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_HƒBˆ	Ø\ŞH\œÛÛ‹œÚ[][][Û‘[˜X›YOOH˜[ÙHÈ	Ù\ØX›Y	Èˆ	ÉßCBˆ]OH¹.#y£ª:/æù.%¹åc9¥íºeí;ï#9cêº(izod:/æy.*¹.®¹âjy¢*º!ìùã¬9g*9æ¡9d#¹cì9å'ù­.ùâ­¹  HƒBˆ	Ø\ŞHÈ	ù«hùg*9îäùë¥ø )‰Èˆ	ú(iy. 9."ú/äya­IßCBˆØ]ÛƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHš\Ë\š[Üš]H	Ü\œÛÛ‹›Y™UXÚÔš[Üš]HÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆ]K]Ø‹XXİ[ÛHœš[Üš]^™K\\œÛÛˆˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_HƒBˆ]KY[˜X›YH‰Ü\œÛÛ‹›Y™UXÚÔš[Üš]HÈ	Ù˜[ÙIÈˆ	İYIßHƒBˆ\šXK\™\ÜÙYH‰Ü\œÛÛ‹›Y™UXÚÔš[Üš]HÈ	İYIÈˆ	Ù˜[ÙIßHƒBˆ	Ø\ŞH\œÛÛ‹œÚ[][][Û‘[˜X›YOOH˜[ÙHÈ	Ù\ØX›Y	Èˆ	ÉßCBˆ]OH¹.#yêâùb.ú, ùå*T{ï#9¢¢¹iny£¤¹b,9."ù. :/k¹d#¹cì9.®¹âjyîäùë¥ùbczghˆƒBˆ	Ü\œÛÛ‹›Y™UXÚÔš[Üš]HÈ	ùmì¹£¤¹b,9bczgh‰Èˆ	ù."ù. :/k¹/&9ab	ßCBˆØ]ÛƒBˆÙ]ƒBˆ	Ü\œÛÛ‹œÚ[][][Û‘[˜X›YOOH˜[ÙHÈ	ÏÛ\ÜÏHØ‹\\œÛÛ‹[Y™K[›İHºeg9i-9i%¹£ª9¯%9mì¹alúeëOÜ‰Èˆ	ÉßCBˆˆ	ÉßCBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[ÛˆÜ[¹«hùg*9`fÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹˜Xİ[ÛŠ_OÜİ›Û™ÏÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[ÛˆÜ[¹çëy§'ù¡#ùfïÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹š[[
+_OÜİ›Û™ÏÙ]ƒBˆ	Ü\œÛÛ‹›Û™Õ\›QÛØ[ÈBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[ÛˆÜ[ºeoù§'ùæë¹¨!ÏÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹›Û™Õ\›QÛØ[
+_OÜİ›Û™ÏÙ]ƒBˆˆ	ÉßCBˆ	Ü\œÛÛ‹šY[]P[˜ÚÜˆÈBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[Ûˆ\ËXÚ\˜Xİ\‹X[˜ÚÜˆÜ[º.ªù.ïze&¹à®OÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹šY[]P[˜ÚÜŠ_OÜİ›Û™ÏÙ]ƒBˆˆ	ÉßCBˆ	Ü\œÛÛ‹˜\X\˜[˜ÙT›Ùš[HÈBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[Ûˆ\ËXÚ\˜Xİ\‹X[˜ÚÜˆÜ[¹i%º,£:+¯¹k¦ÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹˜\X\˜[˜ÙT›Ùš[J_OÜİ›Û™ÏÙ]ƒBˆˆ	ÉßCBˆ	Ü\œÛÛ‹œ\œÛÛ˜[]P[˜ÚÜˆÈBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[Ûˆ\ËXÚ\˜Xİ\‹X[˜ÚÜˆÜ[¹.®¹¨/:e&¹à®OÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹œ\œÛÛ˜[]P[˜ÚÜŠ_OÜİ›Û™ÏÙ]ƒBˆˆ	ÉßCBˆ	Ü\œÛÛ‹˜˜XÚÙÜ›İ[™›Ùš[HÈBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[Ûˆ\ËXÚ\˜Xİ\‹X[˜ÚÜˆÜ[º ã9¦kù.#¹alùìîÏÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹˜˜XÚÙÜ›İ[™›Ùš[J_OÜİ›Û™ÏÙ]ƒBˆˆ	ÉßCBˆ	Ü\œÛÛ‹œÜXZÚ[™Ôİ[HÈBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[Ûˆ\ËXÚ\˜Xİ\‹X[˜ÚÜˆÜ[º+í:+çy.h9 ëÏÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹œÜXZÚ[™Ôİ[J_OÜİ›Û™ÏÙ]ƒBˆˆ	ÉßCBˆ	Ü\œÛÛ‹˜™Z]š[Ü›İ[™\šY\ÈÈBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[Ûˆ\ËXÚ\˜Xİ\‹X[˜ÚÜˆÜ[º(c9..º/®yåcÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹˜™Z]š[Ü›İ[™\šY\Ê_OÜİ›Û™ÏÙ]ƒBˆˆ	ÉßCBˆ	Ü\œÛÛ‹ÛÜ››ÛÚÔ˜]ÈÈBˆ]Z[ÈÛ\ÜÏHØ‹]ÛÜ››ÛÚË\Ûİ\˜ÙK\›Ùš[HƒBˆİ[[X\OÜ[¹.%¹åc9.i¹c§ùiâú+¯¹k¦ÜÜ[ÛX[‰Ôİš[™Ê\œÛÛ‹ÛÜ››ÛÚÔ˜]ÊK›[™İH9keÈ0­È9à®yaîù§éyç"ÏÜÛX[Üİ[[X\OƒBˆ™O‰Ù\ØØ\R[
+\œÛÛ‹ÛÜ››ÛÚÔ˜]Ê_OÜ™OƒBˆÙ]Z[ÏƒBˆˆ	ÉßCBˆ	Ü\œÛÛ‹˜XÙHÈBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ÙXİ[ÛˆÜ[¹§ :/äz/j:/îOÜÜ[İ›Û™Ï‰Ù\ØØ\R[
+\œÛÛ‹˜XÙJ_OÜİ›Û™ÏÙ]ƒBˆˆ	ÉßCBˆ	ÛØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÃBˆÈ™[™\’[›™\•›ÚXÙJ\œÛÛ‹ÛÜ›Z[]JCBˆˆBˆ]ˆÛ\ÜÏHØ‹ZÛ›İÛYÙKX›İ[™\HƒBˆOÚO]İ›Û™Ï¹çéz+áº/®yåcÜİ›Û™Ïº)äº"l¹¢`9çéz)áº)ä¹.#y/&º+îùcå¹inyæ¡9neyd#¹âë9æoxà ÜÙ]ƒBˆÙ]ƒBˆCBˆ]ˆÛ\ÜÏHØ‹\\œÛÛ‹[ØœÙ\˜][Ûˆ	ÛØœÙ\˜][ÛËœ\œÛÛ’YOOH\œÛÛ‹šYÈ	Ú\Ë\™\İ[	Èˆ	ÉßHƒBˆ	ÛØœÙ\˜][ÛËœ\œÛÛ’YOOH\œÛÛ‹šYÈBˆ\XÛOƒBˆÜ[¹neyd#º)à¹­bÈ0­È	Ù\ØØ\R[
+›Ü›X]ÛÜ›Z[]JØœÙ\˜][Û‹ÛÜ›Z[]JK[YJ_OÜÜ[ƒBˆ‰Ù\ØØ\R[
+ØœÙ\˜][Û‹^
+_OÜƒBˆØ\XÛOƒBˆˆ	ÉßCBˆ	ØØ[“ØœÙ\™HÈBˆ]ˆÛ\ÜÏHØ‹[ØœÙ\˜][Û‹\š[X\HƒBˆ	ÛØœÙ\˜][ÛËœ\œÛÛ’YOOH\œÛÛ‹šYBˆÈ	ÏÜ[¹mì¹/çykf9g*9odùbcy«hù¥¡ù.#¹.%¹åc9â­¹  y."ÏÜÜ[‰ÃBˆˆ	ÏÜ[¹.#y£ª:/æù¥íºeí;ï#9.gù.#y/&¹æí9£©ya¦yaiy«hù¥¡ÏÜÜ[‰ßCBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›ØœÙ\™K\\œÛÛˆƒBˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_HƒBˆ]KY›Ü˜ÙOH‰ÛØœÙ\˜][ÛËœ\œÛÛ’YOOH\œÛÛ‹šYÈ	İYIÈˆ	Ù˜[ÙIßHƒBˆ	Ø\ŞHÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆ	Ø\ŞCBˆÈ	ù«hùg*:)à¹­bø )¸ )‰ÃBˆˆØœÙ\˜][ÛËœ\œÛÛ’YOOH\œÛÛ‹šYBˆÈ	úaãy¥¬:)à¹­bÉÃBˆˆ9ç"ùç"È	Ù\ØØ\R[
+\œÛÛ‹›˜[YJ_H9g*9`f¹.à9.bCBˆØ]ÛƒBˆÙ]ƒBˆˆBˆ‰Ü\œÛÛ‹š\Õ\Ù\ƒBˆÈ	ùãªyk­º)äº"l¹.#y/oùå*9.®¹âjyclù¥íº)à¹­bøà ‰ÃBˆˆØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÃBˆÈ	ùb!ùfç¹neyd#º)áº)ä¹d#¹cëù.éz)à¹­bù.®¹âjxà ‰ÃBˆˆ	ú/æy.*¹.®¹âjyodùbcy¥è9¬åz)à¹­bøà ‰ßOÜƒBˆCBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹ZÛ›İÛYÙKX›İ[™\HØ‹[ØœÙ\˜][Û‹X›İ[™\H	ÛØœÙ\˜][ÛËœ]Y]YYÈ	Ú\ËY[˜X›Y	Èˆ	ÉßH	ÛØœÙ\˜][ÛËœ™]™X[İ]HOOH	Ù[]™\™Y	ÈÈ	Ú\ËY[]™\™Y	Èˆ	ÉßHƒBˆOÚOƒBˆ]ƒBˆİ›Û™Ï‰ÛØœÙ\˜][ÛËœ™]™X[İ]HOOH	Ù[]™\™Y	ÈÈ	ùmì¹îãù¦/ºg,‰Èˆ	ú!ê¹á-¹¦/ºg,‰ßOÜİ›Û™ÏƒBˆ‰ÛØœÙ\˜][ÛËœ™]™X[İ]HOOH	Ù[]™\™Y	ÃBˆÈ	ú/æy«­z)à¹­bùmì¹îãú(ªùd#¹îëy«hù¥¡ú!ê¹á-¹¢où£©{ï&ùalúeëz)à¹­bùê¥ùcèù.#y/&¹b(:fi9mì¹îãùå'ù¢$9æ¡9«hù¥¡øà ‰ÃBˆˆØœÙ\˜][ÛËœ™]™X[İ]HOOH	Ù^\™Y	ÃBˆÈ	ù«i9bcy¬¨y§"z`aùb,9d":` ¹æ¡9¦/ºg,¹¥í¹§.»ï#9mì¹`g9«h¹îéùîëy£ä9/¦ûï&ù/h9cëù.ézaãy¥¬9o 9d+øà ‰ÃBˆˆØœÙ\˜][ÛËœ]Y]YYBˆÈ	ùmì¹a`z+®;ï&º/æy«­z)à¹­bù/&¹g*9d#¹îëz+ëyh ùd":` ¹¥í¹/g9..¹«hù¥¡ù`&z`"{ï&ù.#y/&¹o.º(c9£ä¹ai{ï#9.gù.#y/çz+àyí)ù£©y."ù. :/k¹aî¹ã¬8à ‰ÃBˆˆ	únæ:+©9alúeë{ï&¹.áy/¦ùneyd#º)à¹ç"ûï#9.#z/æùaiy«hù¥¡øà y.#y£ª:/æù¥íºeí;ï#9.gù.#y/ë¹¥.z+¬9oá¸à ‰ßOÜƒBˆÙ]ƒBˆ	ÛØœÙ\˜][ÛËœ\œÛÛ’YOOH\œÛÛ‹šYÈBˆ]Ûˆ\OH˜]Ûˆˆ›ÛOHœİÚ]ÚƒBˆ\šXKXÚXÚÙYH‰ÛØœÙ\˜][Û‹œ]Y]YYØœÙ\˜][Û‹œ™]™X[İ]HOOH	Ù[]™\™Y	ÈÈ	İYIÈˆ	Ù˜[ÙIßHƒBˆ\šXK[X™[H¹a`z+®:/æy«­z)à¹­bú!ê¹á-¹¦/ºg,ˆƒBˆ]K]Ø‹XXİ[ÛHœ]Y]YK\\œÛÛ‹[ØœÙ\˜][ÛˆƒBˆ]K\\œÛÛ‹ZYH‰Ù\ØØ\P]Š\œÛÛ‹šY
+_HƒBˆ	ÛØœÙ\˜][Û‹œ™]™X[İ]HOOH	Ù[]™\™Y	ÈÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆÜ[ÜÜ[ƒBˆØ]ÛƒBˆˆ	ÉßCBˆÙ]ƒBˆÙ]ƒBˆÙ]ƒBˆÃBŸCBƒB™^Ü[˜İ[ÛˆÛÜ]™[Ñ›Ü‘\Ü^J]™[Ëİ]K™\Ù[[ÜHH×JHÃBˆÛÛœİ›İÈH[X™\Šİ]OË˜ÛØÚÏË˜XœÛÛ]SZ[]H
+NÃBˆÛÛœİ™\Ù[YÈH™]ÈÙ]
+™\Ù[[ÜK›X\
+\œÛÛˆOˆİš[™Ê\œÛÛËšY	ÉÊJK™š[\Š›ÛÛX[ŠJNÃBˆÛÛœİ™\Ù[˜[Y\ÈH™]ÈÙ]
+™\Ù[[ÜK›X\
+\œÛÛˆOˆİš[™Ê\œÛÛË›˜[YH	ÉÊJK™š[\Š›ÛÛX[ŠJNÃBˆÛÛœİ™\Ù[XÙ\ÈH™]ÈÙ]
+™\Ù[[ÜK›X\
+\œÛÛˆOˆİš[™Ê\œÛÛË›ØØ][Ûˆ	ÉÊJK™š[\Š›ÛÛX[ŠJNÃBˆÛÛœİØÛÜ™HH]™[OˆÃBˆ]˜[YHHÃBˆYˆ
+]™[Ë™[]™\OË›X[X[]Y]YY
+H˜[YH
+ÏHLÃBˆÛÛœİXİÜœÈH™]ÈÙ]
+
+]™[Ë˜XİÜœÈ×JK›X\
+İš[™ÊJNÃBˆYˆ
+Ë‹‹˜XİÜœ×KœÛÛYJXİÜˆOˆ™\Ù[YËš\ÊXİÜŠH™\Ù[˜[Y\Ëš\ÊXİÜŠJJH˜[YH
+ÏHÃBˆYˆ
+™\Ù[XÙ\Ëš\Êİš[™Ê]™[ËœXÙH	ÉÊJJH˜[YH
+ÏHMŒÃBˆ˜[YH
+ÏH
+È\™XİˆŒÛ›İÛˆŒ˜XÙNˆŒY[ˆVÙ]™[Ëš\ÚXš[]WH
+NÃBˆYˆ
+]™[Ëœİ]\ÈOOH	ØXİ]™IÊH˜[YH
+ÏHNÃBˆYˆ
+[X™\‹š\Ñš[š]J[X™\Š]™[Ë™YP]
+JH	‰ˆ›İÈˆ
+HÃBˆÛÛœİ™[XZ[š[™ÈH[X™\Š]™[™YP]
+HH›İÎÃBˆYˆ
+™[XZ[š[™ÈHŒ	‰ˆ™[XZ[š[™ÈH
+H˜[YH
+ÏHÌÃBˆ[ÙHYˆ
+™[XZ[š[™ÈHÍŒ	‰ˆ™[XZ[š[™ÈH
+H˜[YH
+ÏHÍLÃBˆCBˆÛÛœİYÙHHX]›X^
+›İÈH[X™\Š]™[Ë\]Y]
+JNÃBˆ˜[YH
+ÏHX]›X^
+MHX]›Z[ŠMYÙJJNÃBˆ™]\›ˆ˜[YNÃBˆNÃBˆ™]\›ˆË‹‹™]™[×KœÛÜ
+
+KŠHOˆØÛÜ™JŠHHØÛÜ™JJH[X™\ŠË\]Y]
+HH[X™\ŠOË\]Y]
+JNÃBŸCBƒB™^Ü[˜İ[ÛˆÛÜ[ÜQ›Ü‘\Ü^J[ÜKXİ]™Q]™[Ë™\Ù[\œÛÛ’YÈH™]ÈÙ]
+
+KÛÜ›Z[]HH
+HÃBˆÛÛœİXİ]™PXİÜœÈH™]ÈÙ]
+
+NÃBˆ›Üˆ
+ÛÛœİ]™[ÙˆXİ]™Q]™[È×JHÃBˆ›Üˆ
+ÛÛœİXİÜˆÙˆ]™[Ë˜XİÜœÈ×JHXİ]™PXİÜœË˜Y
+İš[™ÊXİÜŠJNÃBˆCBˆÛÛœİØÛÜ™HH\œÛÛˆOˆÃBˆ]˜[YHHÃBˆYˆ
+™\Ù[\œÛÛ’YËš\Êİš[™Ê\œÛÛËšY	ÉÊJJH˜[YH
+ÏHLÃBˆYˆ
+Xİ]™PXİÜœËš\Êİš[™Ê\œÛÛËšY	ÉÊJHXİ]™PXİÜœËš\Êİš[™Ê\œÛÛË›˜[YH	ÉÊJJH˜[YH
+ÏHÃBˆYˆ
+\œÛÛËœÚ[][][Û‘[˜X›YOOH˜[ÙJH˜[YH
+ÏHNÃBˆ˜[YH
+ÏH[X™\Š\œÛÛËœ™[]˜[˜ÙH
+H
+ˆÌŒÃBˆÛÛœİYÙHHX]›X^
+[X™\ŠÛÜ›Z[]H
+HH[X™\Š\œÛÛË\]Y]
+JNÃBˆ˜[YH
+ÏHX]›X^
+MHX]›Z[ŠMYÙJJNÃBˆ™]\›ˆ˜[YNÃBˆNÃBˆ™]\›ˆË‹‹œ[ÜWKœÛÜ
+
+KŠHOˆØÛÜ™JŠHHØÛÜ™JJHİš[™ÊOË›˜[YH	ÉÊK›ØØ[PÛÛ\\™Jİš[™ÊË›˜[YH	ÉÊK	ŞšPÓ‰ÊJNÃBŸCBƒBƒBƒB˜ÛÛœİS‘ÔRWÓPTĞÓÕĞTÔÑUÈHS‘ÔRWÓPTĞÓÕÑUWÕT“ÎÃBƒB™[˜İ[Ûˆ[™ÜZSX\ØÛİİ]J[™ÜZHHßKØXİ]™S›İ\ÈH×K[™[™ÈH[İ™\œšYHH	ÉÊHÃBˆËÈ9ª(yg¢ùèk9â­¹  y¬.:/ç9/&9ab9.£ºf£ù§.¹o¡y§.‹ùà®yaîùcãyn¥8à ƒBˆYˆ
+[™ÜZKœ\ÙHOOH	Ü[›š[™ÉÊH™]\›ˆ	ØÛÛ™\ÙY	ÎÃBˆYˆ
+[™ÜZKœ\ÙHOOH	Ù\œ›Ü‰ÊH™]\›ˆ	ÚÛ	ÎÃBˆYˆ
+Øš™Xİš\ÓİÛŠS‘ÔRWÓPTĞÓÕĞTÔÑUËİ™\œšYJJH™]\›ˆİ™\œšYNÃBˆYˆ
+Øš™Xİš\ÓİÛŠS‘ÔRWÓPTĞÓÕĞTÔÑUË[™ÜZK›X\ØÛİİ]JJH™]\›ˆ[™ÜZK›X\ØÛİİ]NÃBˆYˆ
+[™[™ÊH™]\›ˆ	Û›İIÎÃBˆYˆ
+\œ˜^Kš\Ğ\œ˜^J[™ÜZK›Y\ÜØYÙ\ÊH	‰ˆ[™ÜZK›Y\ÜØYÙ\Ë›[™İ
+H™]\›ˆ	İØ]Ú	ÎÃBˆ™]\›ˆ	ÚYIÎÃBŸCBƒB™[˜İ[Ûˆ[™ÜZSX\ØÛİ\ÜÙ]İ]Jİ]HH	ÚYIÊHÃBˆ™]\›ˆØš™Xİš\ÓİÛŠS‘ÔRWÓPTĞÓÕĞTÔÑUËİ]JHÈİ]Hˆ	ÚYIÎÃBŸCBƒB™[˜İ[Ûˆ[™ÜZTİ\ÜØ]YÛÜSX™[
+Ø]YÛÜHH	İ[šÛ›İÛ‰ÊHÃBˆ™]\›ˆÃBˆ\ØYÙNˆ	ù/oùå*9¥®yo#ÉËBˆÙ][™ÜÎˆ	ú+¯¹ïkˆÈ:acyïk‰ËBˆ\Nˆ	ĞTHÈ9.+z/k	ËBˆ\ÚÎˆ	ùd#¹cì9.îùb¨IËBˆY[[ÜNˆ	ú+¬9oá‰ËBˆ[ÜNˆ	ù.®¹âjIËBˆ[š™Xİ[Ûˆ	ù«hù¥¡ù¬ê9aiIËBˆÜ[š[Ûˆ	ú"!¹ áHÈ9¥¬:eîÉËBˆÛÜ››ÛÚÎˆ	ù.%¹åc9.i¹kï9aiIËBˆ]Nˆ	ù¥l9£k¹. :!í9 )ÉËBˆZNˆ	ùåc:ghˆÈ9.©9.¤‰ËBˆÛÛ\]Xš[]Nˆ	ùao9k®y )ÉËBˆ\™›Ü›X[˜ÙNˆ	ù )ú ïHÈ:fd9­`IËBˆ[šÛ›İÛˆ	ù¦ ¹§*¹od¹ìnÉËBˆVÔİš[™ÊØ]YÛÜH	İ[šÛ›İÛ‰ÊWH	ù¦ ¹§*¹od¹ìnÉÎÃBŸCBƒB™[˜İ[Ûˆ™[™\“[™ÜZUšY]Ê[™ÜZHHßK˜YH	ÉËX\ØÛİİ™\œšYHH	ÉËÜ[”™XYX›RÙ^\ÈH™]ÈÙ]
+
+JHÃBˆÛÛœİİÜ™YY\ÜØYÙ\ÈH\œ˜^Kš\Ğ\œ˜^J[™ÜZK›Y\ÜØYÙ\ÊHÈ[™ÜZK›Y\ÜØYÙ\Èˆ×NÃBˆÛÛœİY\ÜØYÙ\ÈHİÜ™YY\ÜØYÙ\ËœÛXÙJLLŒ
+NÃBˆÛÛœİY[“Y\ÜØYÙPÛİ[HX]›X^
+İÜ™YY\ÜØYÙ\Ë›[™İHY\ÜØYÙ\Ë›[™İ
+NÃBˆÛÛœİ›İ\ÈH\œ˜^Kš\Ğ\œ˜^J[™ÜZK››İ\ÊHÈ[™ÜZK››İ\Èˆ×NÃBˆÛÛœİ[™[™ÈH[™ÜZKœ[™[™Ô›ÜÜØ[	‰ˆ\[Ùˆ[™ÜZKœ[™[™Ô›ÜÜØ[OOH	ÛØš™Xİ	ÃBˆÈ[™ÜZKœ[™[™Ô›ÜÜØ[Bˆˆ[ÃBˆÛÛœİ[™[™ĞXİ[ÛˆH[™ÜZKœ[™[™ĞXİ[Ûˆ	‰ˆ\[Ùˆ[™ÜZKœ[™[™ĞXİ[ÛˆOOH	ÛØš™Xİ	ÃBˆÈ[™ÜZKœ[™[™ĞXİ[ÛƒBˆˆ[ÃBˆÛÛœİXİ]™S›İ\ÈH›İ\Ë™š[\Š›İHOˆÉØXİ]™IË	Ü]\ÙY	×Kš[˜ÛY\Ê›İKœİ]\ÊJNÃBˆÛÛœİ\˜Ú]™Y›İ\ÈH›İ\Ë™š[\Š›İHOˆÉØÛÛ\]Y	Ë	Ù^\™Y	×Kš[˜ÛY\Ê›İKœİ]\ÊJKœÛXÙJM
+Kœ™]™\œÙJ
+NÃBˆËÈ\˜Ú]™Y›İ\È›İÈ]™H™Z[™HÛÛ\ÙY›ŞÛÈ^HÚİ[›İÙY\BˆËÈHÚÛH›İ\ÈÛÛ[[ˆİ™]ÚYÚ[ˆ\™H\È›ÈXİ]™H\\ˆÛˆH›Ø\™ƒBˆÛÛœİ›İ\Ñ[\HHXİ]™S›İ\Ë›[™İOOHÃBˆÛÛœİ[™ÜZP\ŞHH[™ÜZKœ\ÙHOOH	Ü[›š[™ÉÎÃBˆÛÛœİX\ØÛİİ]HH[™ÜZSX\ØÛİİ]J[™ÜZKXİ]™S›İ\Ë[™[™ËX\ØÛİİ™\œšYJNÃBˆÛÛœİX\ØÛİ\ÜÙ]İ]HH[™ÜZSX\ØÛİ\ÜÙ]İ]JX\ØÛİİ]JNÃBˆÛÛœİX\ØÛİÜ˜ÈHS‘ÔRWÓPTĞÓÕĞTÔÑUÖÛX\ØÛİ\ÜÙ]İ]WHS‘ÔRWÓPTĞÓÕĞTÔÑUËšYNÃBˆÛÛœİ›İTİ]\ÈH›İHOˆ
+ÃBˆXİ]™Nˆ	ÉËBˆ]\ÙYˆ	ùc¢ùg*9â*¹â*¹."ÉËBˆÛÛ\]Yˆ	ù`f¹b,9ei‰ËBˆ^\™Yˆ	ù¥-º-mù§iyei‰ËBˆØ[˜Ù[Yˆ	ù£ëy."ù§iyei‰ËBˆVÛ›İKœİ]\×H	ÉÊNÃBˆÛÛœİ™XYX›SÜ[]ˆHÙ^HOˆÜ[”™XYX›RÙ^\ÏËš\ÏËŠÙ^JHÈ	ÈÜ[‰Èˆ	ÉÎÃBƒBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹[[™ÜZK[^[İ]ƒBˆ]ˆÛ\ÜÏHØ‹[[™ÜZK\İ\™˜XÙHƒBˆ]ˆÛ\ÜÏHØ‹[[™ÜZK\\˜Úˆ\šXKZY[H™˜[ÙHƒBˆ]ÛˆÛ\ÜÏHØ‹[[™ÜZK[X\ØÛİ\ËIÛX\ØÛİİ]_H\ËX\ÜÙ]IÛX\ØÛİ\ÜÙ]İ]_Hˆ\OH˜]ÛˆƒBˆ]K]Ø‹XXİ[ÛH›[™ÜZK\]ˆ]K[X\ØÛİ\İ]OH‰ÛX\ØÛİİ]_HƒBˆ\šXK[X™[H¹è¬9è¬9ã¬¹. Èˆ]OH‰Û[™ÜZP\ŞHÈ	ùã¬¹. ù«hùg*9 ìø )¸ )‰Èˆ	ùè¬9è¬9ã¬¹. ÉßHƒBˆ[YÈÜ˜ÏH‰Ù\ØØ\P]ŠX\ØÛİÜ˜Ê_Hˆ[Hˆˆ˜YÙØX›OH™˜[ÙHƒBˆØ]ÛƒBˆÙ]ƒBƒBˆÙXİ[ÛˆÛ\ÜÏHØ‹[[™ÜZKXÚ]XØ\™ƒBˆ]ˆÛ\ÜÏHØ‹[[™ÜZKXÚ][ÙÈ	ÛY\ÜØYÙ\Ë›[™İÈ	ÉÈˆ	Ú\ËY[\IßHˆ\šXK[]™OHœÛ]HƒBˆ	ÚY[“Y\ÜØYÙPÛİ[ÈBˆ]ˆÛ\ÜÏHØ‹[[™ÜZKZ\İÜKY›Û[›İHƒBˆ9¦í9¥êyæ¡	ÚY[“Y\ÜØYÙPÛİ[H9§hz/æ9¥-¹ç`8à ¹æí9£©z-çùã¬¹. ú+í:) y¢o¹dê¹«­xà yb(9dê¹«­yl,z(c8à ƒBˆÙ]ƒBˆˆ	ÉßCBˆ	ÛY\ÜØYÙ\Ë›[™İÈY\ÜØYÙ\Ëµ÷İú¶‰ËkºwµçHÜ[ˆ	ùëbyo¡ycäz"¯IËBˆ]™[Ü[™Îˆ	ù«hùg*9cäyleIËBˆXÚÙYˆ	ù«hùg*9cäyleIËBˆšYÙÙ\™Yˆ	ùmì¹îãú)é¹cäIËBˆ™\ÛÛ™Yˆ	ùmì¹îãùfç¹¥-‰ËBˆ\ØØ\™Yˆ	ùmì¹îãù¥/¹."ÉËBˆVÜİ]\×H	ùl&¹§*¹do9n¥	ÎÃBŸCBƒB™[˜İ[ÛˆY[[ÜQ˜Xİİ]\ÓX™[
+İ]\ÊHÃBˆ™]\›ˆÃBˆXİ]™Nˆ	ùodùbcy§"y¥b	ËBˆ\Ü]Yˆ	ú+í9¬åya¬¹ê IËBˆİ\\œÙYYˆ	ùmìº(ªù¥¬9âb9§+:)¡¹æå‰ËBˆ[˜[Y]Yˆ	ùmì¹îãùi,y¥b	ËBˆVÜİ]\×H	ùodùbcy§"y¥b	ÎÃBŸCBƒB™[˜İ[ÛˆY[[ÜPÛÛ™šY[˜ÙSX™[
+ÛÛ™šY[˜ÙJHÃBˆ™]\›ˆÃBˆYÚˆ	ù¦#¹èk‰ËBˆYY][Nˆ	ú/ ùcëù/èIËBˆİÎˆ	ùo¡yèkº+©	ËBˆVØÛÛ™šY[˜ÙWH	ú/ ùcëù/èIÎÃBŸCBƒB™[˜İ[ÛˆY[[ÜR][SX]Ú\Ê][K]Y\JHÃBˆÛÛœİ›Ü›X[^™YHİš[™Ê]Y\H	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+NÃBˆYˆ
+[›Ü›X[^™Y
+H™]\›ˆYNÃBˆ™]\›ˆÃBˆ][OËšÙ^KBˆ][OËœİXš™XİBˆ][OËœ™YXØ]KBˆ][OË˜[YKBˆ][OË]KBˆ][OË^Bˆ][OËœİ[[X\KBˆ‹‹Š][OËœ[ÜH×JKBˆ‹‹Š][OË›ØØ][ÛœÈ×JKBˆ‹‹Š][OË™]™[È×JKBˆ‹‹Š][OËYÜÈ×JKBˆK™š[\Š›ÛÛX[ŠKš›Ú[Š	È	ÊKÓØØ[SİÙ\Ø\ÙJ
+Kš[˜ÛY\Ê›Ü›X[^™Y
+NÃBŸCBƒB™[˜İ[Ûˆ™\ÛÛ™T\œÛÛ‘[]Jİ]K˜[YKÈ[İÔİXš™Xİ™Yš^H˜[ÙHHHßJHÃBˆÛÛœİ˜]ÈHİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆYˆ
+\˜]ÊH™]\›ˆ[ÃBˆÛÛœİÚÙ[ˆH˜]ËÓØØ[SİÙ\Ø\ÙJ
+NÃBˆÛÛœİ[ÜHHİ]OËœ[ÜH×NÃBˆÛÛœİ^XİH[ÜK™š[™
+][HOˆ
+Bˆİš[™Ê][OËšY	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOHÚÙ[ƒBˆİš[™Ê][OË›˜[YH	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOHÚÙ[ƒBˆ
+JNÃBˆYˆ
+^Xİ
+H™]\›ˆ^XİÃBˆYˆ
+X[İÔİXš™Xİ™Yš^
+H™]\›ˆ[ÃBˆ™]\›ˆË‹‹œ[ÜWCBˆ™š[\Š][HOˆİš[™Ê][OË›˜[YH	ÉÊKš[J
+JCBˆœÛÜ
+
+KŠHOˆİš[™Ê‹›˜[YJK›[™İHİš[™ÊK›˜[YJK›[™İ
+CBˆ™š[™
+][HOˆÃBˆÛÛœİ˜[YHHİš[™Ê][K›˜[YJKš[J
+NÃBˆ™]\›ˆ˜]Ëœİ\ÕÚ]
+	Û˜[Y_yæ¡
+CBˆ˜]Ëœİ\ÕÚ]
+	Û˜[Y_p­Ø
+CBˆ˜]Ëœİ\ÕÚ]
+	Û˜[Y_{ï&˜
+CBˆ˜]Ëœİ\ÕÚ]
+	Û˜[Y_N˜
+NÃBˆJH[ÃBŸCBƒB™[˜İ[Ûˆ™\ÛÛ™T\œÛÛ‘\Ü^S˜[YJİ]K˜[YJHÃBˆÛÛœİ˜]ÈHİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆYˆ
+\˜]ÊH™]\›ˆ	ÉÎÃBˆ™]\›ˆ™\ÛÛ™T\œÛÛ‘[]Jİ]K˜]ÊOË›˜[YH˜]ÎÃBŸCBƒB™[˜İ[ÛˆY[[ÜQ˜XİÜ›İ\\ØÜš\ÜŠ˜Xİİ]JHÃBˆÛÛœİ[šÙY\œÛÛˆH\œ˜^Kš\Ğ\œ˜^J˜XİËœ[ÜJH	‰ˆ˜Xİœ[ÜK›[™İBˆÈ™\ÛÛ™T\œÛÛ‘[]Jİ]K˜Xİœ[ÜVÌJCBˆˆ[ÃBˆÛÛœİİXš™Xİ\œÛÛˆH[šÙY\œÛÛˆ™\ÛÛ™T\œÛÛ‘[]JBˆİ]KBˆ˜XİËœİXš™Xİ˜XİËšÙ^KBˆÈ[İÔİXš™Xİ™Yš^ˆYHKBˆ
+NÃBˆYˆ
+İXš™Xİ\œÛÛŠHÃBˆ™]\›ˆÃBˆÙ^Nˆ\œÛÛ‰ÜİXš™Xİ\œÛÛ‹šYİXš™Xİ\œÛÛ‹›˜[Y_XBˆX™[ˆİXš™Xİ\œÛÛ‹›˜[YKBˆNÃBˆCBˆÛÛœİX™[Hİš[™Ê˜XİËœİXš™Xİ˜XİËšÙ^H	ÉÊKš[J
+H	ùam¹.å¹.¢ùk§‰ÎÃBˆ™]\›ˆÈÙ^Nˆ˜Xİ‰ÛX™[XX™[NÃBŸCBƒB™[˜İ[ÛˆY[[ÜPÛYQÜ›İ\\ØÜš\ÜŠÛYJHÃBˆYˆ
+ÛYOË˜\˜Ú]™Y
+H™]\›ˆÈÙ^Nˆ	ØÛYN˜\˜Ú]™Y	ËX™[ˆ	ùmì¹od¹¨hÉÈNÃBˆYˆ
+ÉÜ™\ÛÛ™Y	Ë	Ù\ØØ\™Y	×Kš[˜ÛY\ÊÛYOËœİ]\ÊJHÃBˆ™]\›ˆÈÙ^Nˆ	ØÛYNœ™\ÛÛ™Y	ËX™[ˆ	ùmì¹îãùfç¹¥-ˆÈ9¥/¹."ÉÈNÃBˆCBˆYˆ
+ÛYOËœİ]\ÈOOH	İšYÙÙ\™Y	ÊH™]\›ˆÈÙ^Nˆ	ØÛYNšYÙÙ\™Y	ËX™[ˆ	ùmì¹îãú)é¹cäIÈNÃBˆ™]\›ˆÈÙ^Nˆ	ØÛYN˜Xİ]™IËX™[ˆ	ù.ãyg*9cäyleIÈNÃBŸCBƒB™[˜İ[ÛˆY[[ÜPÛYT™[][Û“X]Ú\ÊÛYK™[][Û‘š[\ˆH	Ø[	Ëİ]HH[
+HÃBˆÛÛœİš[\ˆHİš[™Ê™[][Û‘š[\ˆ	Ø[	ÊNÃBˆYˆ
+š[\ˆOOH	Ø[	ÊH™]\›ˆYNÃBˆÛÛœİÙ\\˜]ÜˆHš[\‹š[™^ÙŠ	Î‰ÊNÃBˆYˆ
+Ù\\˜]Üˆ
+H™]\›ˆYNÃBˆÛÛœİÚ[™Hš[\‹œÛXÙJÙ\\˜]ÜŠNÃBˆÛÛœİ^XİYHš[\‹œÛXÙJÙ\\˜]Üˆ
+ÈJKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+NÃBˆYˆ
+Y^XİY
+H™]\›ˆYNÃBˆÛÛœİ˜[Y\ÈHÚ[™OOH	Ü\œÛÛ‰ÃBˆÈ
+ÛYOËœ[ÜH×JCBˆˆÚ[™OOH	ÛØØ][Û‰ÃBˆÈ
+ÛYOË›ØØ][ÛœÈ×JCBˆˆÚ[™OOH	Ù]™[	ÃBˆÈ
+ÛYOË™]™[È×JCBˆˆ×NÃBˆYˆ
+Ú[™OOH	Ü\œÛÛ‰ÊHÃBˆ™]\›ˆ˜[Y\ËœÛÛYJ˜[YHOˆÃBˆÛÛœİ˜]ÈHİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆÛÛœİ\œÛÛˆH™\ÛÛ™T\œÛÛ‘[]Jİ]K˜]ÊNÃBˆ™]\›ˆÜ˜]Ë\œÛÛËšY\œÛÛË›˜[YWCBˆ™š[\Š›ÛÛX[ŠCBˆœÛÛYJØ[™Y]HOˆİš[™ÊØ[™Y]JKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH^XİY
+NÃBˆJNÃBˆCBˆYˆ
+Ú[™OOH	Ù]™[	ÊHÃBˆÛÛœİ]™[ÈHË‹‹Šİ]OË™]™[È×JK‹‹Šİ]OË˜\˜Ú]™H×JWNÃBˆ™]\›ˆ˜[Y\ËœÛÛYJ˜[YHOˆÃBˆÛÛœİ˜]ÈHİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆÛÛœİX]ÚYH]™[Ë™š[™
+]™[Oˆ
+Bˆİš[™Ê]™[ËšY	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH˜]ËÓØØ[SİÙ\Ø\ÙJ
+CBˆİš[™Ê]™[Ë]H	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH˜]ËÓØØ[SİÙ\Ø\ÙJ
+CBˆ
+JNÃBˆ™]\›ˆÜ˜]ËX]ÚYËšYX]ÚYË]WCBˆ™š[\Š›ÛÛX[ŠCBˆœÛÛYJØ[™Y]HOˆİš[™ÊØ[™Y]JKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH^XİY
+NÃBˆJNÃBˆCBˆ™]\›ˆ˜[Y\ËœÛÛYJ˜[YHOˆİš[™Ê˜[YH	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH^XİY
+NÃBŸCBƒB™[˜İ[ÛˆÛYT™[][Û“Y]JÛYKİ]JHÃBˆÛÛœİ]™[ÈHË‹‹Šİ]OË™]™[È×JK‹‹Šİ]OË˜\˜Ú]™H×JWNÃBˆÛÛœİ[ÜHHË‹‹›™]ÈÙ]
+
+ÛYOËœ[ÜH×JK›X\
+˜[YHOˆ™\ÛÛ™T\œÛÛ‘\Ü^S˜[YJİ]K˜[YJJK™š[\Š›ÛÛX[ŠJWNÃBˆÛÛœİØØ][ÛœÈHË‹‹›™]ÈÙ]
+
+ÛYOË›ØØ][ÛœÈ×JK›X\
+˜[YHOˆİš[™Ê˜[YH	ÉÊKš[J
+JK™š[\Š›ÛÛX[ŠJWNÃBˆÛÛœİ]™[][\ÈHË‹‹›™]ÈÙ]
+
+ÛYOË™]™[È×JK›X\
+˜[YHOˆÃBˆÛÛœİ˜]ÈHİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆÛÛœİ]™[H]™[Ë™š[™
+][HOˆ
+Bˆİš[™Ê][OËšY	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH˜]ËÓØØ[SİÙ\Ø\ÙJ
+CBˆİš[™Ê][OË]H	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH˜]ËÓØØ[SİÙ\Ø\ÙJ
+CBˆ
+JNÃBˆ™]\›ˆ]™[Ë]H˜]ÎÃBˆJK™š[\Š›ÛÛX[ŠJWNÃBˆ™]\›ˆÈ[ÜKØØ][ÛœË]™[Îˆ]™[][\ÈNÃBŸCBƒBƒB™[˜İ[ÛˆY[[ÜTİ[[X\S]™[Y]Jİ[[X\JHÃBˆYˆ
+\İ[[X\OËšY\˜\˜ÚSX[˜YÙY
+HÃBˆ™]\›ˆÈX™[ˆ	ù¥éùâb9îãùc¡‰ËÛ™Nˆ	ÛYØXŞIË\ØÜš\[Ûˆ	ù.éybcyåfy."ùæ¡:f-¹«­yîãùc¡»ïg¹áiù¨-ù/&¹ioyioz+¬9ç`8à ‰ÈNÃBˆCBˆÛÛœİ]™[HX]›X^
+X]›Z[ŠË[X™\Šİ[[X\OË›]™[
+H
+JNÃBˆÛÛœİY]HHÃBˆÈX™[ˆ	ú/äy§'ùâaù«­IËÛ™Nˆ	Ù]Z[	Ë\ØÜš\[Ûˆ	ùé®ùc§ù«hù¥¡ù§ :/äyæ¡9l#ùâaù«­{ïg¹îáº" ¹/&¹«å:/ ùi&¸à ‰ÈKBˆÈX™[ˆ	úf-¹«­yl#ùîäÉËÛ™Nˆ	ÜİYÙIË\ØÜš\[Ûˆ	ù. 9l#ù«­ybiù áyæ¡:aãyà®z`ïy¥-¹g*:/æzaã9ei»ïg‰ÈKBˆÈX™[ˆ	ùêè:" ¹îãùc¡‰ËÛ™Nˆ	ØÚ\\‰Ë\ØÜš\[Ûˆ	ù¢¢¹¦í:eoù. 9«­yîãùc¡¹¥-¹¢$:aãyà®{ïg¹¥®y/¯ùd#ºgh¹îéùîëy£©y."¸à ‰ÈKBˆÈX™[ˆ	úeoù§'ùîãùc¡‰ËÛ™Nˆ	ÛÛ™İ\›IË\ØÜš\[Ûˆ	ùç'ù«hú-ê:/áùo¢9.az/æ:aãz) yæ¡9cæ9c%»ï#9/&¹.e¹.e¹åfyg*:/æzaã8à ‰ÈKBˆNÃBˆ™]\›ˆY]VÛ]™[NÃBŸCBƒB™[˜İ[Ûˆ™[™\“Y[[ÜPXİ[ÛœÊÚ[™][KÙ[XİYÙ^\ÈH™]ÈÙ]
+
+JHÃBˆÛÛœİÙ[Xİ[Û’Ù^HH	ÚÚ[™N‰Ú][KšYXÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜKXØ\™XXİ[ÛœÈƒBˆX™[Û\ÜÏHØ‹[Y[[ÜK\Ù[XİƒBˆ[œ]\OH˜ÚXÚØ›Şˆ]K]Ø‹[Y[[ÜK\Ù[XİBˆ]K[Y[[ÜKZÚ[™H‰ÚÚ[™Hˆ]K[Y[[ÜKZYH‰Ù\ØØ\P]Š][KšY
+_HƒBˆ	ÜÙ[XİYÙ^\Ëš\ÊÙ[Xİ[Û’Ù^JHÈ	ØÚXÚÙY	Èˆ	ÉßCBˆ	Ú][K›ØÚÙYÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆÜ[‰Ú][K›ØÚÙYÈ	ùmìºe yk¦‰Èˆ	ú`"y¢êIßOÜÜ[ƒBˆÛX™[ƒBˆ]ÛˆÛ\ÜÏHš\ËYY]ˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹[Y[[ÜKYY]ÜˆƒBˆ]K[Y[[ÜKZÚ[™H‰ÚÚ[™Hˆ]K[Y[[ÜKZYH‰Ù\ØØ\P]Š][KšY
+_HƒBˆ	Ú][K›ØÚÙYÈ	Ù\ØX›Y	Èˆ	ÉßO¹ï%º/¤OØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛK[Y[[ÜKY›YÈƒBˆ]K[Y[[ÜKZÚ[™H‰ÚÚ[™Hˆ]K[Y[[ÜKZYH‰Ù\ØØ\P]Š][KšY
+_HƒBˆ]K[Y[[ÜKYšY[Hš[\Ü[ˆÛ\ÜÏHš\ËZ[\Ü[	Ú][Kš[\Ü[È	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆ	Ú][Kš[\Ü[È	ùmì¹¨!ù..ºaãz) IÈˆ	ù¨!ù..ºaãz) IßCBˆØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛK[Y[[ÜKY›YÈƒBˆ]K[Y[[ÜKZÚ[™H‰ÚÚ[™Hˆ]K[Y[[ÜKZYH‰Ù\ØØ\P]Š][KšY
+_HƒBˆ]K[Y[[ÜKYšY[H›ØÚÙYˆÛ\ÜÏHš\Ë[ØÚÈ	Ú][K›ØÚÙYÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆ	Ú][K›ØÚÙYÈ	ùmìºe yk¦‰Èˆ	úe yk¦‰ßCBˆØ]ÛƒBˆ]ÛˆÛ\ÜÏHš\ËY[]Hˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH™[]K[Y[[ÜKZ][HƒBˆ]K[Y[[ÜKZÚ[™H‰ÚÚ[™Hˆ]K[Y[[ÜKZYH‰Ù\ØØ\P]Š][KšY
+_HƒBˆ	Ú][K›ØÚÙYÈ	Ù\ØX›Y	Èˆ	ÉßO¹b(:fiØ]ÛƒBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\“Y[[ÜUšY]Êİ]KØœÙ\™\“[ÙKÃBˆ]Y\HH	ÉËBˆš[\ˆH	ØXİ]™IËBˆš\ÚX›PÛİ[HL‹BˆÜ[‘›ÛÈH™]ÈÙ]
+
+KBˆÙ[XİYÙ^\ÈH™]ÈÙ]
+
+KBˆÛYT™[][Û‘š[\ˆH	Ø[	ËBŸHHßJHÃBˆÛÛœİY[[ÜHHİ]KœİÜSY[[ÜHÃBˆYÙ\İˆ[Bˆ˜XİÎˆ×KBˆİ[[X\šY\Îˆ×KBˆÛY\Îˆ×KBˆNÃBˆÛÛœİ[˜XİÈHË‹‹ŠY[[ÜK™˜XİÈ×JWCBˆ™š[\Š˜XİOˆØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈ˜Xİš\ÚXš[]HOOH	ÚY[‰ÊCBˆœÛÜ
+
+KŠHOˆ
+Bˆ[X™\ŠÉØXİ]™IË	Ù\Ü]Y	×Kš[˜ÛY\Ê‹œİ]\ÊJCBˆH[X™\ŠÉØXİ]™IË	Ù\Ü]Y	×Kš[˜ÛY\ÊKœİ]\ÊJCBˆ[X™\Š‹š[\Ü[˜ÙH
+HH[X™\ŠKš[\Ü[˜ÙH
+CBˆ[X™\Š‹\]Y]
+HH[X™\ŠK\]Y]
+CBˆ
+JNÃBˆÛÛœİ[ÛY\ÈHË‹‹ŠY[[ÜK˜ÛY\È×JWCBˆ™š[\ŠÛYHOˆØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈÛYKš\ÚXš[]HOOH	ÚY[‰ÊCBˆœÛÜ
+
+KŠHOˆ
+Bˆ[X™\Š›ÛÛX[ŠK˜\˜Ú]™Y
+JHH[X™\Š›ÛÛX[Š‹˜\˜Ú]™Y
+JCBˆ[X™\ŠÉÛÜ[‰Ë	Ù]™[Ü[™ÉË	ÙXÚÙY	Ë	İšYÙÙ\™Y	×Kš[˜ÛY\Ê‹œİ]\ÊJCBˆH[X™\ŠÉÛÜ[‰Ë	Ù]™[Ü[™ÉË	ÙXÚÙY	Ë	İšYÙÙ\™Y	×Kš[˜ÛY\ÊKœİ]\ÊJCBˆ[X™\Š‹š[\Ü[˜ÙH
+HH[X™\ŠKš[\Ü[˜ÙH
+CBˆ[X™\Š‹\]Y]
+HH[X™\ŠK\]Y]
+CBˆ
+JNÃBˆÛÛœİ[İ[[X\šY\ÈHØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÃBˆÈË‹‹ŠY[[ÜKœİ[[X\šY\È×JWKœÛÜ
+Bˆ
+KŠHOˆ[X™\Š‹™[™Y\ÜØYÙRY
+HH[X™\ŠK™[™Y\ÜØYÙRY
+KBˆ
+CBˆˆ×NÃBˆÛÛœİİ[[X\PRYH™]ÈX\
+[İ[[X\šY\Ë›X\
+İ[[X\HOˆÔİš[™Êİ[[X\KšY	ÉÊKİ[[X\WJJNÃBˆÛÛœİYÙ\İHØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈÈY[[ÜK™YÙ\İˆ[ÃBˆÛÛœİ›Ü›X[^™Yš[\ˆHÉØXİ]™IË	Ù˜XİÉË	ØÛY\ÉË	Ü™\ÛÛ™YXÛY\ÉË	Ø\˜Ú]™YXÛY\ÉË	Ù\\ÛÙ\ÉË	Ø[	×Kš[˜ÛY\Êš[\ŠCBˆÈš[\ƒBˆˆ	ØXİ]™IÎÃBˆÛÛœİX^[][HHX]›X^
+‹[X™\Šš\ÚX›PÛİ[
+HLŠNÃBˆÛÛœİ˜XİÈH[˜XİË™š[\Š˜XİOˆ
+BˆY[[ÜR][SX]Ú\Ê˜Xİ]Y\JCBˆ	‰ˆ
+Bˆ›Ü›X[^™Yš[\ˆOOH	Ø[	ÃBˆ›Ü›X[^™Yš[\ˆOOH	Ù˜XİÉÃBˆ
+›Ü›X[^™Yš[\ˆOOH	ØXİ]™IÈ	‰ˆÉØXİ]™IË	Ù\Ü]Y	×Kš[˜ÛY\Ê˜Xİœİ]\ÊJCBˆ
+CBˆ
+JNÃBˆÛÛœİÛY\ÈH[ÛY\Ë™š[\ŠÛYHOˆ
+BˆY[[ÜR][SX]Ú\ÊÛYK]Y\JCBˆ	‰ˆY[[ÜPÛYT™[][Û“X]Ú\ÊÛYKÛYT™[][Û‘š[\‹İ]JCBˆ	‰ˆ
+Bˆ›Ü›X[^™Yš[\ˆOOH	Ø[	ÃBˆ
+›Ü›X[^™Yš[\ˆOOH	ØÛY\ÉÈ	‰ˆXÛYK˜\˜Ú]™Y
+CBˆ
+›Ü›X[^™Yš[\ˆOOH	Ü™\ÛÛ™YXÛY\ÉÈ	‰ˆXÛYK˜\˜Ú]™Y	‰ˆÉÜ™\ÛÛ™Y	Ë	Ù\ØØ\™Y	×Kš[˜ÛY\ÊÛYKœİ]\ÊJCBˆ
+›Ü›X[^™Yš[\ˆOOH	Ø\˜Ú]™YXÛY\ÉÈ	‰ˆÛYK˜\˜Ú]™Y
+CBˆ
+Bˆ›Ü›X[^™Yš[\ˆOOH	ØXİ]™IÃBˆ	‰ˆXÛYK˜\˜Ú]™YBˆ	‰ˆÉÛÜ[‰Ë	Ù]™[Ü[™ÉË	ÙXÚÙY	Ë	İšYÙÙ\™Y	×Kš[˜ÛY\ÊÛYKœİ]\ÊCBˆ
+CBˆ
+CBˆ
+JNÃBˆÛÛœİİ[[X\šY\ÈH[İ[[X\šY\Ë™š[\Šİ[[X\HOˆ
+BˆY[[ÜR][SX]Ú\Êİ[[X\K]Y\JCBˆ	‰ˆÉØ[	Ë	Ù\\ÛÙ\É×Kš[˜ÛY\Ê›Ü›X[^™Yš[\ŠCBˆ
+JNÃBˆÛÛœİÚİÛ‘˜XİÈH˜XİËœÛXÙJX^[][JNÃBˆÛÛœİÚİÛÛY\ÈHÛY\ËœÛXÙJX^[][JNÃBˆÛÛœİÚİÛ”İ[[X\šY\ÈHİ[[X\šY\ËœÛXÙJX^[][JNÃBˆÛÛœİ˜XİÜ›İ\ÈHÜ›İ\][\ÊÚİÛ‘˜XİË˜XİOˆY[[ÜQ˜XİÜ›İ\\ØÜš\ÜŠ˜Xİİ]JJNÃBˆÛÛœİÛYQÜ›İ\ÈHÜ›İ\][\ÊÚİÛÛY\ËÛYHOˆY[[ÜPÛYQÜ›İ\\ØÜš\ÜŠÛYJJNÃBˆÛÛœİ™\İ[Ûİ[H˜XİË›[™İ
+ÈÛY\Ë›[™İ
+Èİ[[X\šY\Ë›[™İÃBˆÛÛœİÚİÛÛİ[HÚİÛ‘˜XİË›[™İ
+ÈÚİÛÛY\Ë›[™İ
+ÈÚİÛ”İ[[X\šY\Ë›[™İÃBˆÛÛœİ\Ó[Ü™HHÚİÛ‘˜XİË›[™İ˜XİË›[™İBˆÚİÛÛY\Ë›[™İÛY\Ë›[™İBˆÚİÛ”İ[[X\šY\Ë›[™İİ[[X\šY\Ë›[™İÃBˆÛÛœİš[\]ÛˆH
+YX™[
+HOˆBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][Y[[ÜKYš[\ˆˆ]KYš[\H‰ÚYHƒBˆ\šXK\™\ÜÙYH‰Û›Ü›X[^™Yš[\ˆOOHYHƒBˆÛ\ÜÏH‰Û›Ü›X[^™Yš[\ˆOOHYÈ	Ú\ËXXİ]™IÈˆ	ÉßH‰ÛX™[OØ]ÛƒBˆÃBˆÛÛœİ™[][Û”[ÜHH™]ÈX\
+
+NÃBˆÛÛœİ™[][Û“ØØ][ÛœÈH™]ÈÙ]
+
+NÃBˆÛÛœİ™[][Û‘]™[ÈH™]ÈX\
+
+NÃBˆÛÛœİ[ÛÜ›]™[ÈHË‹‹Šİ]K™]™[È×JK‹‹Šİ]K˜\˜Ú]™H×JWNÃBˆ›Üˆ
+ÛÛœİÛYHÙˆ[ÛY\ÊHÃBˆ›Üˆ
+ÛÛœİ˜[YHÙˆÛYKœ[ÜH×JHÃBˆÛÛœİ˜]ÈHİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆYˆ
+\˜]ÊHÛÛ[YNÃBˆÛÛœİ\œÛÛˆH™\ÛÛ™T\œÛÛ‘[]Jİ]K˜]ÊNÃBˆÛÛœİÙ^HHİš[™Ê\œÛÛËšY\œÛÛË›˜[YH˜]ÊNÃBˆ™[][Û”[ÜKœÙ]
+Ù^K\œÛÛË›˜[YH˜]ÊNÃBˆCBˆ›Üˆ
+ÛÛœİ˜[YHÙˆÛYK›ØØ][ÛœÈ×JHÃBˆÛÛœİ˜]ÈHİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆYˆ
+˜]ÊH™[][Û“ØØ][ÛœË˜Y
+˜]ÊNÃBˆCBˆ›Üˆ
+ÛÛœİ˜[YHÙˆÛYK™]™[È×JHÃBˆÛÛœİ˜]ÈHİš[™Ê˜[YH	ÉÊKš[J
+NÃBˆYˆ
+\˜]ÊHÛÛ[YNÃBˆÛÛœİ]™[H[ÛÜ›]™[Ë™š[™
+][HOˆ
+Bˆİš[™Ê][OËšY	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH˜]ËÓØØ[SİÙ\Ø\ÙJ
+CBˆİš[™Ê][OË]H	ÉÊKš[J
+KÓØØ[SİÙ\Ø\ÙJ
+HOOH˜]ËÓØØ[SİÙ\Ø\ÙJ
+CBˆ
+JNÃBˆÛÛœİÙ^HHİš[™Ê]™[ËšY]™[Ë]H˜]ÊNÃBˆ™[][Û‘]™[ËœÙ]
+Ù^K]™[Ë]H˜]ÊNÃBˆCBˆCBˆÛÛœİ™[][Û“Ü[ÛˆH
+˜[YKX™[
+HOˆ
+BˆÜ[Ûˆ˜[YOH‰Ù\ØØ\P]Š˜[YJ_Hˆ	Ôİš[™ÊÛYT™[][Û‘š[\ŠHOOHİš[™Ê˜[YJHÈ	ÜÙ[XİY	Èˆ	ÉßO‰Ù\ØØ\R[
+X™[
+_OÛÜ[Û˜Bˆ
+NÃBˆÛÛœİÛYT™[][Û”Ù[XİHBˆX™[Û\ÜÏHØ‹XÛYK\™[][Û‹Yš[\ˆƒBˆÜ[¹/#ùë%9alú eÜÜ[ƒBˆÙ[Xİ]K]Ø‹XÛYK\™[][Û‹Yš[\ƒBˆ	Ü™[][Û“Ü[ÛŠ	Ø[	Ë	ùaj:`ê9alú e	Ê_CBˆ	Ü™[][Û”[ÜKœÚ^™HÈÜÜ›İ\X™[H¹.®¹âjH‰ÖË‹‹œ™[][Û”[ÜK™[šY\Ê
+WK›X\
+
+ÚYX™[JHOˆ™[][Û“Ü[ÛŠ\œÛÛ‰ÚYXX™[
+JKš›Ú[Š	ÉÊ_OÛÜÜ›İ\˜ˆ	ÉßCBˆ	Ü™[][Û‘]™[ËœÚ^™HÈÜÜ›İ\X™[H¹.¢ù.íˆ‰ÖË‹‹œ™[][Û‘]™[Ë™[šY\Ê
+WK›X\
+
+ÚYX™[JHOˆ™[][Û“Ü[ÛŠ]™[‰ÚYXX™[
+JKš›Ú[Š	ÉÊ_OÛÜÜ›İ\˜ˆ	ÉßCBˆ	Ü™[][Û“ØØ][ÛœËœÚ^™HÈÜÜ›İ\X™[H¹g,9à®H‰ÖË‹‹œ™[][Û“ØØ][Ûœ×K›X\
+X™[Oˆ™[][Û“Ü[ÛŠØØ][Û‰ÛX™[XX™[
+JKš›Ú[Š	ÉÊ_OÛÜÜ›İ\˜ˆ	ÉßCBˆÜÙ[XİƒBˆÛX™[ƒBˆÃBˆÛÛœİ™[™\‘˜XİØ\™H
+˜XİÜ›İ\X™[H	ÉÊHOˆÃBˆÛÛœİİXš™XİHİš[™Ê˜XİœİXš™Xİ˜XİšÙ^H	ÉÊKš[J
+NÃBˆÛÛœİ›Ü›X[^™YÜ›İ\Hİš[™ÊÜ›İ\X™[	ÉÊKš[J
+NÃBˆÛÛœİ\XØ]TİXš™XİH›Ü›X[^™YÜ›İ\	‰ˆİXš™XİOOH›Ü›X[^™YÜ›İ\ÃBˆ™]\›ˆBˆ\XÛHÛ\ÜÏHØ‹[Y[[ÜKY˜XİXØ\™\ËIÙ\ØØ\P]Š˜Xİœİ]\Ê_HƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜKY˜Xİ[Y]HƒBˆÜ[‰Ù\ØØ\R[
+Y[[ÜQ˜Xİİ]\ÓX™[
+˜Xİœİ]\ÊJ_OÜÜ[ƒBˆÜ[‰Ù\ØØ\R[
+Y[[ÜPÛÛ™šY[˜ÙSX™[
+˜Xİ˜ÛÛ™šY[˜ÙJJ_OÜÜ[ƒBˆÙ]ƒBˆ	ÈY\XØ]TİXš™Xİ	‰ˆİXš™XİÈ‰Ù\ØØ\R[
+İXš™Xİ
+_OÚ˜ˆ	ÉßCBˆ	Ù˜Xİœ™YXØ]HÈÛX[‰Ù\ØØ\R[
+˜Xİœ™YXØ]J_OÜÛX[˜ˆ	ÉßCBˆ‰Ù\ØØ\R[
+˜Xİ˜[YJ_OÜƒBˆ	Ù˜Xİš[˜[Y][Û”™X\ÛÛƒBˆÈ]ˆÛ\ÜÏHØ‹[Y[[ÜKY˜Xİ[›İH‰Ù\ØØ\R[
+˜Xİš[˜[Y][Û”™X\ÛÛŠ_OÙ]˜Bˆˆ	ÉßCBˆ	Ü™[™\“Y[[ÜPXİ[ÛœÊ	Ù˜Xİ	Ë˜XİÙ[XİYÙ^\Ê_CBˆØ\XÛOƒBˆÃBˆNÃBˆÛÛœİ™[™\ÛYPØ\™HÛYHOˆÃBˆÛÛœİ™[][ÛœÈHÛYT™[][Û“Y]JÛYKİ]JNÃBˆ™]\›ˆBˆ\XÛHÛ\ÜÏHØ‹XÛYKXØ\™\ËIÙ\ØØ\P]ŠÛYKœİ]\Ê_H	ØÛYK˜\˜Ú]™YÈ	Ú\ËX\˜Ú]™Y	Èˆ	ÉßHƒBˆ]ˆÛ\ÜÏHØ‹XÛYK[Y]HƒBˆÜ[‰Ù\ØØ\R[
+ÛYK˜\˜Ú]™YÈ	ùmì¹od¹¨hÉÈˆÛYTİ]\ÓX™[
+ÛYKœİ]\ÊJ_OÜÜ[ƒBˆ	ÈXÛYK˜\˜Ú]™Y	‰ˆÉÜ™\ÛÛ™Y	Ë	Ù\ØØ\™Y	×Kš[˜ÛY\ÊÛYKœİ]\ÊCBˆÈ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ]XÛYKX\˜Ú]™K\İ]Hˆ]KXÛYKZYH‰Ù\ØØ\P]ŠÛYKšY
+_Hˆ]KX\˜Ú]™YHYHˆ	ØÛYK›ØÚÙYÈ	Ù\ØX›Y	Èˆ	ÉßO¹od¹¨hÏØ]Û˜Bˆˆ	ÉßCBˆ	ØÛYK˜\˜Ú]™YBˆÈ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ]XÛYKX\˜Ú]™K\İ]Hˆ]KXÛYKZYH‰Ù\ØØ\P]ŠÛYKšY
+_Hˆ]KX\˜Ú]™YH™˜[ÙHˆ	ØÛYK›ØÚÙYÈ	Ù\ØX›Y	Èˆ	ÉßO¹éîùfç¹mì¹fç¹¥-Ø]Û˜Bˆˆ	ÉßCBˆÙ]ƒBˆ‰Ù\ØØ\R[
+ÛYK]J_OÚƒBˆ‰Ù\ØØ\R[
+ÛYK^
+_OÜƒBˆ	Ê™[][ÛœËœ[ÜK›[™İ™[][ÛœË™]™[Ë›[™İ™[][ÛœË›ØØ][ÛœË›[™İ
+HÈBˆ]ˆÛ\ÜÏHØ‹XÛYK\™[][ÛœÈƒBˆ	Ü™[][ÛœËœ[ÜK›X\
+˜[YHOˆÜ[ˆÛ\ÜÏHš\Ë\\œÛÛˆ¹.®¹âjH0­È	Ù\ØØ\R[
+˜[YJ_OÜÜ[˜
+Kš›Ú[Š	ÉÊ_CBˆ	Ü™[][ÛœË™]™[Ë›X\
+˜[YHOˆÜ[ˆÛ\ÜÏHš\ËY]™[¹.¢ù.íˆ0­È	Ù\ØØ\R[
+˜[YJ_OÜÜ[˜
+Kš›Ú[Š	ÉÊ_CBˆ	Ü™[][ÛœË›ØØ][ÛœË›X\
+˜[YHOˆÜ[ˆÛ\ÜÏHš\Ë[ØØ][Ûˆ¹g,9à®H0­È	Ù\ØØ\R[
+˜[YJ_OÜÜ[˜
+Kš›Ú[Š	ÉÊ_CBˆÙ]ƒBˆˆ	ÉßCBˆ	ØÛYKœÛİ\˜ÙQ^Ù\œÈ›ØÚÜ][İO‰Ù\ØØ\R[
+ÛYKœÛİ\˜ÙQ^Ù\œ
+_OØ›ØÚÜ][İO˜ˆ	ÉßCBˆ	ØÛYKœ™\ÛÛ][ÛˆÈ]ˆÛ\ÜÏHØ‹XÛYK\™\ÛÛ][Ûˆ‰Ù\ØØ\R[
+ÛYKœ™\ÛÛ][ÛŠ_OÙ]˜ˆ	ÉßCBˆ	ØÛYK›Y™XŞXÛT™X\ÛÛˆ	‰ˆÛYK›Y™XŞXÛT™X\ÛÛˆOOHÛYKœ™\ÛÛ][ÛˆÈ]ˆÛ\ÜÏHØ‹[Y[[ÜKY˜Xİ[›İH¹..¹.à9.b9cæ9¦í;ï&‰Ù\ØØ\R[
+ÛYK›Y™XŞXÛT™X\ÛÛŠ_OÙ]˜ˆ	ÉßCBˆ	Ü™[™\“Y[[ÜPXİ[ÛœÊ	ØÛYIËÛYKÙ[XİYÙ^\Ê_CBˆØ\XÛOƒBˆÃBˆNÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜK\Ú[ƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜK]ÛÛ˜\ˆƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜK]ÛÛ˜\‹]ÜƒBˆÜ[ˆÛ\ÜÏHØ‹[Y[[ÜK]ÛÛ˜\‹\İ[[X\H‰Ø[˜XİË™š[\Š˜XİOˆÉØXİ]™IË	Ù\Ü]Y	×Kš[˜ÛY\Ê˜Xİœİ]\ÊJK›[™İH9§hy.¢ùk§ˆ0­È	Ø[ÛY\Ë™š[\ŠÛYHOˆXÛYK˜\˜Ú]™Y	‰ˆÉÛÜ[‰Ë	Ù]™[Ü[™ÉË	ÙXÚÙY	Ë	İšYÙÙ\™Y	×Kš[˜ÛY\ÊÛYKœİ]\ÊJK›[™İH9§hz/æú(c9.+y/#ùë%0­È	Ø[ÛY\Ë™š[\ŠÛYHOˆÛYK˜\˜Ú]™Y
+K›[™İH9§hyod¹¨hÏÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹[Y[[ÜKZ[›ËX]ÛœÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹[Y[[ÜKYY]Üˆˆ]K[Y[[ÜKZÚ[™H™˜Xİ»ï"È9¥¬9h§º+¬9oáØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›Ü[‹[Y[[ÜKYY]Üˆˆ]K[Y[[ÜKZÚ[™H˜ÛYH»ï"È9¥¬9h§¹/#ùë%Ø]ÛƒBˆÜÜ[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜK]ÛÛÈƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜKYš[\œÈˆ\šXK[X™[Hº+¬9oá¹ëfú`"HƒBˆ	Ùš[\]ÛŠ	ØXİ]™IË	ú/æú(c9.+IÊ_CBˆ	Ùš[\]ÛŠ	Ù˜XİÉË	ù.¢ùk§‰Ê_CBˆ	Ùš[\]ÛŠ	ØÛY\ÉË	ù/#ùë%	Ê_CBˆ	Ùš[\]ÛŠ	Ü™\ÛÛ™YXÛY\ÉË	ùmì¹fç¹¥-‰Ê_CBˆ	Ùš[\]ÛŠ	Ø\˜Ú]™YXÛY\ÉË	ùmì¹od¹¨hÉÊ_CBˆ	Ùš[\]ÛŠ	Ù\\ÛÙ\ÉË	ùîãùc¡‰Ê_CBˆ	Ùš[\]ÛŠ	Ø[	Ë	ùaj:`ê	Ê_CBˆÙ]ƒBˆ	ØÛYT™[][Û”Ù[XİCBˆX™[Û\ÜÏHØ‹[Y[[ÜK\ÙX\˜ÚƒBˆÜ[¹¤'9í(º+¬9oáÜÜ[ƒBˆ[œ]\OHœÙX\˜Úˆ]K]Ø‹[Y[[ÜK\ÙX\˜ÚX^[™İHƒBˆ˜[YOH‰Ù\ØØ\P]Š]Y\J_HˆXÙZÛ\H¹.®¹âjxà yg,9à®xà yâjydày¢%¹alúe+º+ãHƒBˆÛX™[ƒBˆÛX[‰Ü]Y\HÈ9¢o¹b,	Ü™\İ[Ûİ[H9§hXˆ	Ü™\İ[Ûİ[H9§hXOÜÛX[ƒBˆ	ÛØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈ	‰ˆ™\İ[Ûİ[ÈBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜKX[Ë]ÛÛÈƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ[Xİ]š\ÚX›K[Y[[ÜHƒBˆ]K[Y[[ÜKZ][\ÏH‰Ù\ØØ\P]Š”ÓÓ‹œİš[™ÚYJÃBˆ‹‹œÚİÛ‘˜XİË™š[\Š][HOˆZ][K›ØÚÙY
+K›X\
+][HOˆ
+ÈÚ[™ˆ	Ù˜Xİ	ËYˆ][KšYJJKBˆ‹‹œÚİÛÛY\Ë™š[\Š][HOˆZ][K›ØÚÙY
+K›X\
+][HOˆ
+ÈÚ[™ˆ	ØÛYIËYˆ][KšYJJKBˆ‹‹œÚİÛ”İ[[X\šY\Ë™š[\Š][HOˆZ][K›ØÚÙY
+K›X\
+][HOˆ
+ÈÚ[™ˆ	Üİ[[X\IËYˆ][KšYJJKBˆJJ_Hº`"y¢êyodùbcy¦/¹é.Ø]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛX\‹[Y[[ÜK\Ù[Xİ[ÛˆƒBˆ	ÜÙ[XİYÙ^\ËœÚ^™HÈ	ÉÈˆ	Ù\ØX›Y	ßO¹cå¹­¢9aj:`ê:`"y¢êOØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜[ËY[]K[Y[[ÜHˆ]K]Ø‹[Y[[ÜK\Ù[XİYXÛİ[Bˆ	ÜÙ[XİYÙ^\ËœÚ^™HÈ	ÉÈˆ	Ù\ØX›Y	ßO¹b(:fi:`"y.+IÜÙ[XİYÙ^\ËœÚ^™HÈ0­È	ÜÙ[XİYÙ^\ËœÚ^™_Xˆ	ÉßOØ]ÛƒBˆ]ÛˆÛ\ÜÏHš\ËY[™Ù\ˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛX\‹Yš[\™Y[Y[[ÜHƒBˆ	Û›Ü›X[^™Yš[\ˆOOH	Ø[	È	‰ˆ\]Y\HÈ	ù®!yên¹aj:`ê9§*ºe yk¦º+¬9oá‰Èˆ	ù®!yên¹odùbcyëfú`"IßCBˆØ]ÛƒBˆÙ]ƒBˆˆ	ÉßCBˆÙ]ƒBˆÙ]ƒBˆ	ÊY[[ÜK›Y]X›Û\ÛSÙÈ×JK›[™İÈBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹[Y[[ÜKYYÙ\İˆ]KY›ÛZÙ^OH›Y[[ÜN›Y]X›Û\ÛHƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË	ÛY[[ÜN›Y]X›Û\ÛIÊ_OƒBˆİ[[X\HÛ\ÜÏHØ‹[Y[[ÜKYYÙ\İ\İ[[X\HƒBˆÜ[İ›Û™Ï¹§ :/äy¥-¹¢ï¹.¡¹.à9.b;ïgÜİ›Û™ÏÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹Y›Û[Y]HÛX[‰ÓX]›Z[ŠL‹
+Y[[ÜK›Y]X›Û\ÛSÙÈ×JK›[™İ
+_H9§hy§ :/äycæ9c%ÜÛX[HÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOÜÜ[ƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹[Y[[ÜKYYÙ\İX›ÙHƒBˆ	ÊY[[ÜK›Y]X›Û\ÛSÙÈ×JKœÛXÙJLLŠKœ™]™\œÙJ
+K›X\
+][HOˆİ›Û™Ï‰Ù\ØØ\R[
+][KšÚ[™OOH	Ù˜Xİ	ÈÈ	ù.¢ùk§‰Èˆ][KšÚ[™OOH	ØÛYIÈÈ	ù/#ùë%	Èˆ	ùîãùc¡‰Ê_OÜİ›Û™Ïˆ0­È	Ù\ØØ\R[
+][K˜Xİ[Ûˆ	ù¦í9¥¬	Ê_OœÛX[‰Ù\ØØ\R[
+][Kœ™X\ÛÛˆ	ùmì¹£"yd#¹îëya¡yk®y¥m9ä!‰Ê_OÜÛX[Ü˜
+Kš›Ú[Š	ÉÊ_CBˆÙ]ƒBˆÙ]Z[ÏƒBˆˆ	ÉßCBˆ	ÙYÙ\İË^ÈBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹[Y[[ÜKYYÙ\İˆ]KY›ÛZÙ^OH›Y[[ÜN™YÙ\İƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË	ÛY[[ÜN™YÙ\İ	Ê_OƒBˆİ[[X\HÛ\ÜÏHØ‹[Y[[ÜKYYÙ\İ\İ[[X\HƒBˆÜ[İ›Û™Ïºeoù§'ù¤f:) OÜİ›Û™ÏÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹Y›Û[Y]HƒBˆÛX[¹mì¹îãù.e¹.e¹¥m9ä!¹ioyei»ïgÜÛX[ƒBˆHÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOƒBˆÜÜ[ƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹[Y[[ÜKYYÙ\İX›ÙHƒBˆ‰Ù\ØØ\R[
+YÙ\İ^
+_OÜƒBˆÙ]ƒBˆÙ]Z[ÏƒBˆˆ	ÉßCBˆ	Ü™\İ[Ûİ[OOHÈ™[™\‘[\JBˆ]Y\HÈ	ù¬¨y§"y¢o¹b,9c.zacyæ¡:+¬9oá‰Èˆ	ú/æy.*¹b!¹ìnù¦ ¹¥í¹¦+ùên¹æ¡	ËBˆ]Y\HÈ	ù£h¹. 9.*¹.®¹âjxà yg,9à®xà yâjydày¢%¹alúe+º+ãz+åz+åxà ‰Èˆ	ù¥¬9æ¡9«hù¥¡ù¥m9ä!¹d#¹/&º!ê¹bª:(iyaaxà ‰ËBˆ
+HˆBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜK[^[İ]ƒBˆÙXİ[ÛˆÛ\ÜÏHØ‹[Y[[ÜK\ÙXİ[Ûˆ	ÜÚİÛ‘˜XİË›[™İÈ	ÉÈˆ	Ú\ËZY[‰ßHƒBˆ]ˆÛ\ÜÏHØ‹\ÙXİ[Û‹ZXY[™ÈØ‹[Y[[ÜKZXY[™Ë]Ú]Y›ÛÈƒBˆ]Ïºeoù§'ù.¢ùk§ÚÏÙ]ƒBˆ	Ü™[™\‘›ÛÛÛ˜\Š	ÛY[[ÜN™˜XİÎ‰Ê_CBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜKYÜ›İ\[\İƒBˆ	Ù˜XİÜ›İ\Ë›X\
+Ü›İ\OˆÃBˆÛÛœİ›ÛÙ^HHY[[ÜN™˜XİÎ‰Ù[˜ÛÙUT’PÛÛ\Û™[
+Ü›İ\šÙ^HÜ›İ\›X™[
+_XÃBˆ™]\›ˆBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹[Y[[ÜKYÜ›İ\ˆ]KY›ÛZÙ^OH‰Ù\ØØ\P]Š›ÛÙ^J_HƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË›ÛÙ^J_OƒBˆİ[[X\HÛ\ÜÏHØ‹[Y[[ÜKYÜ›İ\\İ[[X\HƒBˆÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+Ü›İ\›X™[
+_OÜİ›Û™ÏƒBˆÛX[‰ÙÜ›İ\š][\Ë›[™İH9§hzeoù§'ù.¢ùk§ÜÛX[ƒBˆÜÜ[ƒBˆHÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹[Y[[ÜKYÜ›İ\X›ÙHƒBˆ	ÙÜ›İ\š][\Ë›X\
+][HOˆ™[™\‘˜XİØ\™
+][KÜ›İ\›X™[
+JKš›Ú[Š	ÉÊ_CBˆÙ]ƒBˆÙ]Z[ÏƒBˆÃBˆJKš›Ú[Š	ÉÊH™[™\‘[\J	ú/æ9¬¨y§"zeoù§'ù.¢ùk§»ïg‰Ë	ù.éyd#¹ç'ùæ¡:aãz) xà z/æ9/&¹å*9b,9æ¡9.¢ù áy/&¹¡h¹¡h¹åfyg*:/æzaã8à ‰Ê_CBˆÙ]ƒBˆÜÙXİ[ÛƒBˆÙXİ[ÛˆÛ\ÜÏHØ‹[Y[[ÜK\ÙXİ[Ûˆ	ÜÚİÛÛY\Ë›[™İÈ	ÉÈˆ	Ú\ËZY[‰ßHƒBˆ]ˆÛ\ÜÏHØ‹\ÙXİ[Û‹ZXY[™ÈØ‹[Y[[ÜKZXY[™Ë]Ú]Y›ÛÈƒBˆ]Ï¹/#ùë%9ì/ÏÚÏÙ]ƒBˆ	Ü™[™\‘›ÛÛÛ˜\Š	ÛY[[ÜN˜ÛY\Î‰Ê_CBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜKYÜ›İ\[\İƒBˆ	ØÛYQÜ›İ\Ë›X\
+Ü›İ\OˆÃBˆÛÛœİ›ÛÙ^HHY[[ÜN˜ÛY\Î‰Ù[˜ÛÙUT’PÛÛ\Û™[
+Ü›İ\šÙ^HÜ›İ\›X™[
+_XÃBˆ™]\›ˆBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹[Y[[ÜKYÜ›İ\ˆ]KY›ÛZÙ^OH‰Ù\ØØ\P]Š›ÛÙ^J_HƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË›ÛÙ^J_OƒBˆİ[[X\HÛ\ÜÏHØ‹[Y[[ÜKYÜ›İ\\İ[[X\HƒBˆÜ[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+Ü›İ\›X™[
+_OÜİ›Û™ÏƒBˆÛX[‰ÙÜ›İ\š][\Ë›[™İH9§hyæî9alù/#ùë%ÜÛX[ƒBˆÜÜ[ƒBˆHÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹[Y[[ÜKYÜ›İ\X›ÙHƒBˆ	ÙÜ›İ\š][\Ë›X\
+™[™\ÛYPØ\™
+Kš›Ú[Š	ÉÊ_CBˆÙ]ƒBˆÙ]Z[ÏƒBˆÃBˆJKš›Ú[Š	ÉÊH™[™\‘[\J	ù/#ùë%9ì/ú/æ9¦+ùên¹æ¡;ïg‰Ë	ù.éyd#¹§"zg :) y éº+¬9ç`9fç¹¥-¹æ¡9î¯ùí(»ï#9k ù.ë9/&º!ê¹mìya¤¹aî¹§ixà ‰Ê_CBˆÙ]ƒBˆÜÙXİ[ÛƒBˆÙ]ƒBˆÙXİ[ÛˆÛ\ÜÏHØ‹[Y[[ÜK\İ[[X\K\ÙXİ[Ûˆ	ÜÚİÛ”İ[[X\šY\Ë›[™İÈ	ÉÈˆ	Ú\ËZY[‰ßHƒBˆ]ˆÛ\ÜÏHØ‹\ÙXİ[Û‹ZXY[™ÈØ‹[Y[[ÜKZXY[™Ë]Ú]Y›ÛÈƒBˆ]Ï¹îãùc¡ÚÏÙ]ƒBˆ	Ü™[™\‘›ÛÛÛ˜\Š	ÛY[[ÜNœİ[[X\N‰Ê_CBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹\İ[[X\K[\İƒBˆ	ÜÚİÛ”İ[[X\šY\Ë›X\
+İ[[X\HOˆÃBˆÛÛœİ›ÛÙ^HHY[[ÜNœİ[[X\N‰Üİ[[X\KšY	Üİ[[X\Kœİ\Y\ÜØYÙRYKIÜİ[[X\K™[™Y\ÜØYÙRYXXÃBˆÛÛœİ]™[Y]HHY[[ÜTİ[[X\S]™[Y]Jİ[[X\JNÃBˆÛÛœİÛİ\˜ÙTİ[[X\šY\ÈH
+İ[[X\KœÛİ\˜ÙTİ[[X\RYÈ×JCBˆ›X\
+YOˆİ[[X\PRY™Ù]
+İš[™ÊY
+JJCBˆ™š[\Š›ÛÛX[ŠNÃBˆÛÛœİ\™[Hİ[[X\Kœ\™[YÈİ[[X\PRY™Ù]
+İš[™Êİ[[X\Kœ\™[Y
+JHˆ[ÃBˆ™]\›ˆBˆ]Z[ÈÛ\ÜÏHØ‹Y›ÛØ‹\İ[[X\KXØ\™\ËIÙ\ØØ\P]Š]™[Y]KÛ™J_Hˆ]KY›ÛZÙ^OH‰Ù\ØØ\P]Š›ÛÙ^J_HƒBˆ	Ù›ÛÜ[]ŠÜ[‘›ÛË›ÛÙ^J_OƒBˆİ[[X\HÛ\ÜÏHØ‹\İ[[X\KXØ\™\İ[[X\HƒBˆÜ[İ›Û™Ï‰Ù\ØØ\R[
+İ[[X\K]J_OÜİ›Û™ÏÜÜ[ƒBˆHÛ\ÜÏHØ‹Y›ÛXÚ]œ›Ûˆˆ\šXKZY[HYHÚOƒBˆÜİ[[X\OƒBˆ]ˆÛ\ÜÏHØ‹Y›ÛX›ÙHØ‹\İ[[X\KXØ\™X›ÙHƒBˆ‰Ù\ØØ\R[
+İ[[X\Kœİ[[X\J_OÜƒBˆ]Z[ÈÛ\ÜÏHØ‹[Y[[ÜK[[™XYÙHƒBˆİ[[X\Oº/æy«­z+¬9oá¹.ã¹dê¹§i{ïgÜİ[[X\OƒBˆ]ƒBˆ‰Ù\ØØ\R[
+]™[Y]K›X™[
+_H0­È9­¢9 kÈ	Ù\ØØ\R[
+İ[[X\Kœİ\Y\ÜØYÙRY
+_x %	Ù\ØØ\R[
+İ[[X\K™[™Y\ÜØYÙRY
+_OÜƒBˆ	Ü\™[È¹mì¹îãù¥-º/æûï&‰Ù\ØØ\R[
+\™[]J_OÜ˜ˆ	ÉßCBˆ	ÜÛİ\˜ÙTİ[[X\šY\Ë›[™İÈº/æ9§"H	ÜÛİ\˜ÙTİ[[X\šY\Ë›[™İH9§hy¦í9îá¹æ¡9§iy®¤9cëù.éz/ïy®«ûïgÜ˜ˆ	ÉßCBˆÙ]ƒBˆÙ]Z[ÏƒBˆ	Ü™[™\“Y[[ÜPXİ[ÛœÊ	Üİ[[X\IËİ[[X\KÙ[XİYÙ^\Ê_CBˆÙ]ƒBˆÙ]Z[ÏƒBˆÃBˆJKš›Ú[Š	ÉÊH™[™\‘[\JBˆØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈÈ	ú/æ9¬¨y§"yb!¹l`¹îãùc¡‰Èˆ	ùb!¹l`¹îãùc¡¹cê¹g*9neyd#º)áº)ä¹¦/¹é.‰ËBˆØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈÈ	ù«hù¥¡ù¥m9ä!¹d#»ï#:aãz) yîãùc¡¹/&¹¡h¹¡h¹aî¹ã¬9g*:/æzaã;ïg‰Èˆ	ÉËBˆ
+_CBˆÙ]ƒBˆÜÙXİ[ÛƒBˆCBˆ	Ú\Ó[Ü™HÈBˆ]ÛˆÛ\ÜÏHØ‹[Y[[ÜK[ØY[[Ü™Hˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH›ØY[[Ü™K[Y[[ÜHƒBˆ9a£y¦/¹é.¹. 9.¦È0­È9odùbcH	ÜÚİÛÛİ[KÉÜ™\İ[Ûİ[CBˆØ]ÛƒBˆˆ	ÉßCBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\“Y[[ÜQY]Ü“[Ù[
+İ]KY]ÜŠHÃBˆÛÛœİ™\]Y\İYÚ[™HÉÙ˜Xİ	Ë	ØÛYIË	Üİ[[X\I×Kš[˜ÛY\ÊY]ÜËšÚ[™
+CBˆÈY]Ü‹šÚ[™Bˆˆ	Ù˜Xİ	ÎÃBˆÛÛœİÛÛXİ[ÛˆH™\]Y\İYÚ[™OOH	Ù˜Xİ	ÃBˆÈİ]KœİÜSY[[ÜOË™˜XİÃBˆˆ™\]Y\İYÚ[™OOH	ØÛYIÃBˆÈİ]KœİÜSY[[ÜOË˜ÛY\ÃBˆˆİ]KœİÜSY[[ÜOËœİ[[X\šY\ÎÃBˆÛÛœİ][HHÛÛXİ[ÛË™š[™
+[HOˆ[KšYOOHY]ÜËšY
+H[ÃBˆÛÛœİ]HH™\]Y\İYÚ[™OOH	Ù˜Xİ	ÈÈ][OËœİXš™Xİˆ][OË]NÃBˆÛÛœİ™[][ÛˆH™\]Y\İYÚ[™OOH	Ù˜Xİ	ÈÈ][OËœ™YXØ]Hˆ	ÉÎÃBˆÛÛœİÛÛ[H™\]Y\İYÚ[™OOH	Ù˜Xİ	ÃBˆÈ][OË˜[YCBˆˆ™\]Y\İYÚ[™OOH	ØÛYIÃBˆÈ][OË^Bˆˆ][OËœİ[[X\NÃBˆÛÛœİ[ÜU^H™\]Y\İYÚ[™OOH	ØÛYIÈÈ
+][OËœ[ÜH×JKš›Ú[Š	øà IÊHˆ	ÉÎÃBˆÛÛœİØØ][ÛœÕ^H™\]Y\İYÚ[™OOH	ØÛYIÈÈ
+][OË›ØØ][ÛœÈ×JKš›Ú[Š	øà IÊHˆ	ÉÎÃBˆÛÛœİ]™[Õ^H™\]Y\İYÚ[™OOH	ØÛYIÈÈ
+][OË™]™[È×JKš›Ú[Š	øà IÊHˆ	ÉÎÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ØÜš[Hˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK[Y[[ÜKYY]ÜˆƒBˆ›Ü›HÛ\ÜÏHØ‹Y]™[Y›Ü›HØ‹[Y[[ÜKYY]Üˆˆ]K]Ø‹Y›Ü›OH›Y[[ÜHƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›KZXY[™ÈƒBˆ]Ü[“QSSÔ–HTÒÏÜÜ[Ï‰Ú][HÈ	ùï%º/¤z+¬9oá‰Èˆ	ù¢bùbª9¥¬9h§º+¬9oá‰ßOÚÏÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK[Y[[ÜKYY]Üˆ°åÏØ]ÛƒBˆÙ]ƒBˆ[œ]\OHšY[ˆˆ˜[YOHšYˆ˜[YOH‰Ù\ØØ\P]Š][OËšY	ÉÊ_HƒBˆX™[º+¬9oá¹ìnùg¢ÃBˆÙ[Xİ˜[YOHšÚ[™ˆ	Ú][HÈ	Ù\ØX›Y	Èˆ	ÉßOƒBˆÜ[Ûˆ˜[YOH™˜Xİˆ	Ü™\]Y\İYÚ[™OOH	Ù˜Xİ	ÈÈ	ÜÙ[XİY	Èˆ	ÉßOºeoù§'ù.¢ùk§ÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH˜ÛYHˆ	Ü™\]Y\İYÚ[™OOH	ØÛYIÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹/#ùë%ÛÜ[ÛƒBˆÜ[Ûˆ˜[YOHœİ[[X\Hˆ	Ü™\]Y\İYÚ[™OOH	Üİ[[X\IÈÈ	ÜÙ[XİY	Èˆ	ÉßOºf-¹«­yîãùc¡ÛÜ[ÛƒBˆÜÙ[XİƒBˆ	Ú][HÈ[œ]\OHšY[ˆˆ˜[YOHšÚ[™ˆ˜[YOH‰Ü™\]Y\İYÚ[™H˜ˆ	ÉßCBˆÛX™[ƒBˆX™[¹¨!úh¦[œ]˜[YOH]Hˆ™\]Z\™YX^[™İHŒLŒƒBˆ˜[YOH‰Ù\ØØ\P]Š]H	ÉÊ_HˆXÙZÛ\H¹.®¹âjxà yâjydàxà yî©¹k¦¹¢%¹.¢ù.íˆÛX™[ƒBˆX™[¹alùìîûï":eoù§'ù.¢ùk§¹cëùå*;ï"O[œ]˜[YOHœ™[][ÛˆˆX^[™İHŒLƒBˆ˜[YOH‰Ù\ØØ\P]Š™[][Ûˆ	ÉÊ_HˆXÙZÛ\H¹/¢ùi »ï&¹ëe9n¥8à y£ y§"xà yç'ùk§º.ªù.ïHÛX™[ƒBˆX™[¹a¡yk®O^\™XH˜[YOH˜ÛÛ[ˆ™\]Z\™YX^[™İHŒMˆ›İÜÏHHƒBˆXÙZÛ\H¹a¦y."úg :) zeoù§'ù/çyåfyæ¡9aá¹èk¹a¡yk®H‰Ù\ØØ\R[
+ÛÛ[	ÉÊ_Oİ^\™XOÛX™[ƒBˆ	Ü™\]Y\İYÚ[™OOH	ØÛYIÈÈBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜK\™[][Û‹YY]ÜˆƒBˆX™[¹alú e9.®¹âjO[œ]˜[YOHœ[ÜHˆX^[™İHLƒBˆ˜[YOH‰Ù\ØØ\P]Š[ÜU^
+_HˆXÙZÛ\H¹cëùi&¹.*»ï#9å*8à y¢%º`%ùcíùb!¹o ÛX™[ƒBˆX™[¹alú e9.¢ù.í[œ]˜[YOH™]™[ÈˆX^[™İHLƒBˆ˜[YOH‰Ù\ØØ\P]Š]™[Õ^
+_HˆXÙZÛ\H¹.¢ù.í¹d#y¢%¹.¢ù.íˆQ;ï#9cëùi&¹.*ˆÛX™[ƒBˆX™[¹alú e9g,9à®O[œ]˜[YOH›ØØ][ÛœÈˆX^[™İHLƒBˆ˜[YOH‰Ù\ØØ\P]ŠØØ][ÛœÕ^
+_HˆXÙZÛ\H¹g,9à®yd#{ï#9cëùi&¹.*ˆÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›K[›İH¹alú e9cê¹¦+ù¥®y/¯ù¢o¹/#ùë%;ï#9.#y.èú(j9k ø '9lg¹.£¸ 'y§ä9.*¹.®¸à º-ê9.®¹âjxà y.¢ù.í¸à yg,9à®yæ¡9î¯ùí(¹cëù.éyd#9¥í¹£ ¹i&¹.*¹alú e8à Ù]ƒBˆˆ	ÉßCBˆ]ˆÛ\ÜÏHØ‹[Y[[ÜKYY]Ü‹Y›YÜÈƒBˆX™[[œ]˜[YOHš[\Ü[ˆ\OH˜ÚXÚØ›Şˆ	Ú][OËš[\Ü[È	ØÚXÚÙY	Èˆ	ÉßOˆ9¨!ú+¬9..ºaãz) OÛX™[ƒBˆX™[[œ]˜[YOH›ØÚÙYˆ\OH˜ÚXÚØ›Şˆ	Ú][OË›ØÚÙYÈ	ØÚXÚÙY	Èˆ	ÉßOˆ9/çykf9d#ºe yk¦ÛX™[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›K[›İHºe yk¦¹d#»ï#:!ê¹bª9¥m9ä!¹.#y/&º)¡¹æå¹¢%¹b(:fi:/æy§hz+¬9oá»ï&úg :) y/ë¹¥.y¥í¹ab9g*9chyâaù."º)èúe xà Ù]ƒBˆ]ÛˆÛ\ÜÏHØ‹\š[X\KX]Ûˆˆ\OHœİX›Z]‰Ú][HÈ	ù/çykf9/ë¹¥.IÈˆ	ùb¨9aiz+¬9oá‰ßOØ]ÛƒBˆÙ›Ü›OƒBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\\˜Ú]™UšY]Êİ]KÜ[‘›ÛÈH™]ÈÙ]
+
+JHÃBˆÛÛœİ\˜Ú]™YH\œ˜^Kš\Ğ\œ˜^Jİ]K˜\˜Ú]™JHÈİ]K˜\˜Ú]™Hˆ×NÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹X\˜Ú]™K[YÙ\ˆƒBˆ	Ø\˜Ú]™Y›X\
+[HOˆ™[™\\˜Ú]™Q[J[Kİ]K	Ø\˜Ú]™IËÜ[‘›ÛÊJKš›Ú[Š	ÉÊCBˆ™[™\‘[\J	ùîª¹.¢ùì/ú/æ9¦+ùên¹æ¡;ïg‰Ë	ú/æ9¬¨y§"ydê¹«­y.%¹åc9c¡¹cì¹ ¡9 ¡:e&z/áúeg9i-
+2æ3âræ
+IÊ_CBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™[™\•ÛÜ›Y]Ü“[Ù[
+İ]JHÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ØÜš[Hˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK]ÛÜ›YY]ÜˆƒBˆ›Ü›HÛ\ÜÏHØ‹Y]™[Y›Ü›HØ‹]ÛÜ›YY]Üˆˆ]K]Ø‹Y›Ü›OHÛÜ›ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›KZXY[™ÈƒBˆ]Ü[•ÓÔ“TÒÏÜÜ[Ï¹ï%º/¤y.%¹åc:+¯¹k¦ÚÏÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK]ÛÜ›YY]Üˆ°åÏØ]ÛƒBˆÙ]ƒBˆX™[¹.%¹åc9¨!úh¦Bˆ[œ]˜[YOH]Hˆ™\]Z\™YX^[™İHŒMˆ˜[YOH‰Ù\ØØ\P]Šİ]KÛÜ›Ë]H	ÉÊ_HƒBˆÛX™[ƒBˆX™[¹odùbcy© ¹a­CBˆ^\™XH˜[YOH™]Z[ˆ™\]Z\™YX^[™İHLˆ›İÜÏHˆ‰Ù\ØØ\R[
+İ]KÛÜ›Ë™]Z[	ÉÊ_Oİ^\™XOƒBˆÛX™[ƒBˆX™[¹.%¹åc: ã9¦kú+¯¹k¦ƒBˆ^\™XH˜[YOH˜˜XÚÙÜ›İ[™ˆX^[™İHLˆ›İÜÏHŒLˆƒBˆXÙZÛ\H¹a¦z/æy.*¹.%¹åc:eoù§'ù¢$9êâùæ¡9gî¹è`;ï&¹¥í¹.èù.#¹éäy¢ úke9¬åy¬-9nløà yg,9ä!¹.#¹..ú) yb¯ùb¦øà yé/¹/&º)á9b&xà zaãz) yc¡¹cì¸à yc§ù/g9¥íºeí9î¯úe&¹à®x )¸ )ˆ‰Ù\ØØ\R[
+İ]KÛÜ›Ë˜˜XÚÙÜ›İ[™	ÉÊ_Oİ^\™XOƒBˆÛX™[ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›K[›İHƒBˆ:/æzaã9¦+ù.%¹åc9æ¡8 '9g,9gî¸ '{ïg¹d#¹cì9.®¹âjxà UÛÜ›[Ùxà yak9aly.¢ù.í¹d£9«hù¥¡ù. :!í9 )ú`ïy/&¹càº  ùk ûï&ù¦kº`&¹£ª9¯%9.#y/&º!ê¹mìy¥.ya¦xà º` ¹d"9a¦zeoù§'ú)á9b&yd£:aãz) y¥íºeí9î¯ûï#9.#yå*9¢¢¹¥m9o(:)äº"l¹chz`ïyhgº/æù§iH
+;ïhx (³ 8m%ËJx§)ÃBˆÙ]ƒBˆ]ÛˆÛ\ÜÏHØ‹\š[X\KX]Ûˆˆ\OHœİX›Z]¹/çykf9.%¹åc:+¯¹k¦Ø]ÛƒBˆÙ›Ü›OƒBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆ™XÛÜ™Y]Ü‘]Jİ]KY]ÜŠHÃBˆYˆ
+YY]ÜŠH™]\›ˆ[ÃBˆYˆ
+Y]Ü‹šÚ[™OOH	ÙXÚÉÊHÃBˆÛÛœİ]™[Hİ]K™]™[Ë™š[™
+][HOˆ][KšYOOHY]Ü‹šY
+NÃBˆYˆ
+Y]™[
+H™]\›ˆ[ÃBˆ™]\›ˆÃBˆÚ[™ˆ	ÙXÚÉËBˆYˆ]™[šYBˆ]Nˆ]™[]H	ÉËBˆ^ˆ]™[œ™\İ[]™[™^XİY™\İ[]™[˜ÛÛœÙ\]Y[˜ÙH	ÉËBˆXÙNˆ]™[œXÙH	ÉËBˆš\ÚXš[]Nˆ]™[š\ÚXš[]H	ÚY[‰ËBˆ[]™\Tİ]Nˆ]™[™[]™\OËœİ]H	Û›Û™IËBˆNÃBˆCBˆÛÛœİ[HHİ]K˜\˜Ú]™K™š[™
+][HOˆ][KšYOOHY]Ü‹šY
+NÃBˆYˆ
+Y[JH™]\›ˆ[ÃBˆ™]\›ˆÃBˆÚ[™ˆ	Ø\˜Ú]™IËBˆYˆ[KšYBˆ]Nˆ[K]H	ù§*¹doyd#z+¬9oeIËBˆ^ˆ[Kœ™\İ[[K^[K˜ÛÛœÙ\]Y[˜ÙH[Kœ›İ]H	ÉËBˆXÙNˆ	ÉËBˆš\ÚXš[]Nˆ[Kš\ÚXš[]H	ÚY[‰ËBˆ[]™\Tİ]Nˆ[K™[]™\Tİ]H[K™[]™\OËœİ]H	Û›Û™IËBˆNÃBŸCBƒB™[˜İ[Ûˆ™[™\”™XÛÜ™Y]Ü“[Ù[
+İ]KY]ÜŠHÃBˆÛÛœİ™XÛÜ™H™XÛÜ™Y]Ü‘]Jİ]KY]ÜŠNÃBˆYˆ
+\™XÛÜ™
+H™]\›ˆ	ÉÎÃBˆÛÛœİ\ÑXÚÈH™XÛÜ™šÚ[™OOH	ÙXÚÉÎÃBˆ™]\›ˆBˆ]ˆÛ\ÜÏHØ‹Y˜]Ù\‹\ØÜš[Hˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK\™XÛÜ™YY]ÜˆƒBˆ›Ü›HÛ\ÜÏHØ‹Y]™[Y›Ü›HØ‹\™XÛÜ™YY]Üˆˆ]K]Ø‹Y›Ü›OHœ™XÛÜ™ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›KZXY[™ÈƒBˆ]Ü[‰Ú\ÑXÚÈÈ	ÑPÒÈTÒÉÈˆ	ĞTÒU‘HTÒÉßOÜÜ[Ï‰Ú\ÑXÚÈÈ	ùï%º/¤yfç¹hì	Èˆ	ùï%º/¤yîª¹.¢ÉßOÚÏÙ]ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK\™XÛÜ™YY]Üˆ°åÏØ]ÛƒBˆÙ]ƒBˆ[œ]\OHšY[ˆˆ˜[YOHšÚ[™ˆ˜[YOH‰Ù\ØØ\P]Š™XÛÜ™šÚ[™
+_HƒBˆ[œ]\OHšY[ˆˆ˜[YOHšYˆ˜[YOH‰Ù\ØØ\P]Š™XÛÜ™šY
+_HƒBˆX™[¹¨!úh¦Bˆ[œ]˜[YOH]Hˆ™\]Z\™YX^[™İHŒMˆ˜[YOH‰Ù\ØØ\P]Š™XÛÜ™]J_HƒBˆÛX™[ƒBˆX™[‰Ú\ÑXÚÈÈ	ùoh¹¢$9æ¡9îäù§§	Èˆ	ùîª¹.¢ùa¡yk®IßCBˆ^\™XH˜[YOH^ˆ™\]Z\™YX^[™İHLˆ›İÜÏHˆ‰Ù\ØØ\R[
+™XÛÜ™^
+_Oİ^\™XOƒBˆÛX™[ƒBˆ	Ú\ÑXÚÈÈX™[¹g,9à®CBˆ[œ]˜[YOHœXÙHˆX^[™İHŒMŒˆ˜[YOH‰Ù\ØØ\P]Š™XÛÜ™œXÙJ_HƒBˆÛX™[˜ˆ	ÉßCBˆ]ˆÛ\ÜÏHØ‹Y›Ü›KYÜšYƒBˆX™[¹cëú)àz/®yåcBˆÙ[Xİ˜[YOHš\ÚXš[]HƒBˆÜ[Ûˆ˜[YOHšY[ˆˆ	Ü™XÛÜ™š\ÚXš[]HOOH	ÚY[‰ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹k£9aj9neyd#ÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH˜XÙHˆ	Ü™XÛÜ™š\ÚXš[]HOOH	İ˜XÙIÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹åfy."ùååz/îOÛÜ[ÛƒBˆÜ[Ûˆ˜[YOHšÛ›İÛˆˆ	Ü™XÛÜ™š\ÚXš[]HOOH	ÚÛ›İÛ‰ÈÈ	ÜÙ[XİY	Èˆ	ÉßOº)äº"l¹cëùçéOÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH™\™Xİˆ	Ü™XÛÜ™š\ÚXš[]HOOH	Ù\™Xİ	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹cëùæí9£©y¦/ºg,ÛÜ[ÛƒBˆÜÙ[XİƒBˆÛX™[ƒBˆ	Ú\ÑXÚÈÈX™[º`$¹.©9â­¹  CBˆÙ[Xİ˜[YOH™[]™\Tİ]HƒBˆÜ[Ûˆ˜[YOH››Û™Hˆ	Ü™XÛÜ™™[]™\Tİ]HOOH	Û›Û™IÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹l&¹§*º`$¹.©ÛÜ[ÛƒBˆÜ[Ûˆ˜[YOHœ[™[™Èˆ	Ü™XÛÜ™™[]™\Tİ]HOOH	Ü[™[™ÉÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹ëbyo¡y¦/ºg,ÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH™[]™\™Yˆ	Ü™XÛÜ™™[]™\Tİ]HOOH	Ù[]™\™Y	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹«hù¥¡ùmì¹¢où£©OÛÜ[ÛƒBˆÜ[Ûˆ˜[YOH™^\™Yˆ	Ü™XÛÜ™™[]™\Tİ]HOOH	Ù^\™Y	ÈÈ	ÜÙ[XİY	Èˆ	ÉßO¹§*¹¦/ºg,¹od¹¨hÏÛÜ[ÛƒBˆÜÙ[XİƒBˆÛX™[˜ˆ	ÉßCBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ü›K[›İH¹/ë¹¥.ycê¹/&¹/ë¹«hùodùbcy.%¹åc:+¬9oe{ï#9.#y/&¹£ª:/æù..ù.%¹åc9¥íºeí8à ¹b(:fi9b&ycëù.éyå*9n¥z`ê9¤©:e 9 h¹i#xà Ù]ƒBˆ]ÛˆÛ\ÜÏHØ‹\š[X\KX]Ûˆˆ\OHœİX›Z]¹/çykf9/ë¹¥.OØ]ÛƒBˆÙ›Ü›OƒBˆÙ]ƒBˆÃBŸCBƒB™[˜İ[Ûˆš\İX[šY]ÜÜ›İ[™Ê
+HÃBˆÛÛœİšY]ÜÜHÚ[™İËš\İX[šY]ÜÜÃBˆÛÛœİYHX]›X^
+[X™\ŠšY]ÜÜË›Ù™œÙ]Y
+JNÃBˆÛÛœİÜHX]›X^
+[X™\ŠšY]ÜÜË›Ù™œÙ]Ü
+JNÃBˆÛÛœİÚYHX]›X^
+[X™\ŠšY]ÜÜËÚYÚ[™İËš[›™\•ÚY
+JNÃBˆÛÛœİZYÚHX]›X^
+[X™\ŠšY]ÜÜËšZYÚÚ[™İËš[›™\’ZYÚ
+JNÃBˆ™]\›ˆÈYÜÚYZYÚšYÚˆY
+ÈÚY›İÛNˆÜ
+ÈZYÚNÃBŸCBƒB™[˜İ[Ûˆ™\ÜÛœÚ]™SÜ˜”Ú^™JBˆšY]ÜÜÚYHÚ[™İËš[›™\•ÚYBˆšY]ÜÜZYÚHÚ[™İËš[›™\’ZYÚBŠHÃBˆÛÛœİÚÜ\İÚYHHX]›Z[ŠšY]ÜÜÚYšY]ÜÜZYÚ
+NÃBˆYˆ
+ÚÜ\İÚYHˆ
+H™]\›ˆLÃBˆ™]\›ˆX]œ›İ[™
+X]›X^
+ÍX]›Z[ŠÎÚÜ\İÚYH
+ˆŒJJJNÃBŸCBƒB™[˜İ[ÛˆÛ[\Ü˜”ÜÚ][ÛŠÜÚ][ÛŠHÃBˆYˆ
+Bˆ\ÜÚ][ÛƒBˆS[X™\‹š\Ñš[š]J[X™\ŠÜÚ][Û‹
+JCBˆS[X™\‹š\Ñš[š]J[X™\ŠÜÚ][Û‹JJCBˆ\[ÙˆÚ[™İÈOOH	İ[™Yš[™Y	ÃBˆ
+HÃBˆ™]\›ˆ[ÃBˆCBˆÛÛœİšY]ÜÜHš\İX[šY]ÜÜ›İ[™Ê
+NÃBˆÛÛœİÚ^™HH™\ÜÛœÚ]™SÜ˜”Ú^™JšY]ÜÜÚYšY]ÜÜšZYÚ
+NÃBˆÛÛœİX\™Ú[ˆHLÃBˆÛÛœİZ[–HšY]ÜÜ›Y
+ÈX\™Ú[ÃBˆÛÛœİZ[–HHšY]ÜÜÜ
+ÈX\™Ú[ÃBˆÛÛœİX^HX]›X^
+Z[–šY]ÜÜœšYÚHÚ^™HHX\™Ú[ŠNÃBˆÛÛœİX^HHX]›X^
+Z[–KšY]ÜÜ˜›İÛHHÚ^™HHX\™Ú[ŠNÃBˆ™]\›ˆÃBˆˆX]›Z[ŠX^X]›X^
+Z[–[X™\ŠÜÚ][Û‹
+JJKBˆNˆX]›Z[ŠX^KX]›X^
+Z[–K[X™\ŠÜÚ][Û‹JJJKBˆÚ^™KBˆNÃBŸCBƒB™[˜İ[ÛˆÜ˜’[›[™Tİ[\ÊÜÚ][ÛŠHÃBˆÛÛœİXÙYHÛ[\Ü˜”ÜÚ][ÛŠÜÚ][ÛŠNÃBˆYˆ
+\XÙY
+H™]\›ˆÈÜ˜ˆ	ÉËØ\[Ûˆ	ÉÈNÃBˆÛÛœİØ\[Û•ÚYHŒLÃBˆÛÛœİØ\[Û–HXÙYˆØ\[Û•ÚY
+ÈBˆÈXÙYHØ\[Û•ÚYHLBˆˆXÙY
+ÈXÙYœÚ^™H
+ÈLÃBˆ™]\›ˆÃBˆÜ˜ˆY‰ÓX]œ›İ[™
+XÙY
+_\İÜ‰ÓX]œ›İ[™
+XÙYJ_\ÜšYÚ˜]]ÎØ›İÛN˜]]ÎØBˆØ\[ÛˆY‰ÓX]œ›İ[™
+X]›X^
+X]›Z[ŠÚ[™İËš[›™\•ÚYHØ\[Û•ÚYHØ\[Û–
+JJ_\İÜ‰ÓX]œ›İ[™
+XÙYH
+ÈJ_\ÜšYÚ˜]]ÎØ›İÛN˜]]ÎØBˆNÃBŸCBƒB™[˜İ[ÛˆY˜][š\ÚX›SÜ˜”ÜÚ][ÛŠÚYHH	ÜšYÚ	ÊHÃBˆÛÛœİšY]ÜÜHš\İX[šY]ÜÜ›İ[™Ê
+NÃBˆÛÛœİÚ^™HH™\ÜÛœÚ]™SÜ˜”Ú^™JšY]ÜÜÚYšY]ÜÜšZYÚ
+NÃBˆÛÛœİX\™Ú[ˆHLÃBˆ™]\›ˆÃBˆˆÚYHOOH	ÛY	ÃBˆÈšY]ÜÜ›Y
+ÈX\™Ú[ƒBˆˆšY]ÜÜœšYÚHÚ^™HHX\™Ú[‹BˆNˆX]›X^
+šY]ÜÜÜ
+ÈX\™Ú[‹šY]ÜÜ˜›İÛHHÚ^™HH
+KBˆÚ^™KBˆNÃBŸCBƒB™[˜İ[Ûˆ™X\™\İÜ˜‘YÙTÚYJÜÚ][ÛŠHÃBˆÛÛœİXÙYHÛ[\Ü˜”ÜÚ][ÛŠÜÚ][ÛŠNÃBˆYˆ
+\XÙY
+H™]\›ˆ	ÜšYÚ	ÎÃBˆÛÛœİšY]ÜÜHš\İX[šY]ÜÜ›İ[™Ê
+NÃBˆ™]\›ˆXÙY
+ÈXÙYœÚ^™HÈˆšY]ÜÜ›Y
+ÈšY]ÜÜÚYÈˆÈ	ÛY	Èˆ	ÜšYÚ	ÎÃBŸCBƒB™[˜İ[Ûˆ[‘ØÚÓÜ˜”ÜÚ][ÛŠÜÚ][Û‹ÚYHH	ÜšYÚ	ÊHÃBˆÛÛœİšY]ÜÜHš\İX[šY]ÜÜ›İ[™Ê
+NÃBˆÛÛœİXÙYHÛ[\Ü˜”ÜÚ][ÛŠÜÚ][ÛŠHY˜][š\ÚX›SÜ˜”ÜÚ][ÛŠÚYJNÃBˆÛÛœİÚ^™HHXÙYœÚ^™H™\ÜÛœÚ]™SÜ˜”Ú^™JšY]ÜÜÚYšY]ÜÜšZYÚ
+NÃBˆÛÛœİHHX]›Z[ŠBˆX]›X^
+šY]ÜÜÜ
+ÈXÙYJKBˆX]›X^
+šY]ÜÜÜ
+ÈšY]ÜÜ˜›İÛHHÚ^™HH
+KBˆ
+NÃBˆËÈ]HÜ˜ˆÙ[™H^XİHÛˆHšY]ÜÜYÙNˆ[ˆš\ÚX›K[ˆİ]ÚYKƒBˆÛÛœİHÚYHOOH	ÛY	ÃBˆÈšY]ÜÜ›YHÚ^™HÈƒBˆˆšY]ÜÜœšYÚHÚ^™HÈÃBˆ™]\›ˆÈKÚ^™HNÃBŸCBƒB™[˜İ[Ûˆ[‘ØÚÓÜ˜’[›[™Tİ[JÜÚ][Û‹ÚYHH	ÜšYÚ	ÊHÃBˆÛÛœİXÙYH[‘ØÚÓÜ˜”ÜÚ][ÛŠÜÚ][Û‹ÚYJNÃBˆ™]\›ˆY‰ÓX]œ›İ[™
+XÙY
+_\İÜ‰ÓX]œ›İ[™
+XÙYJ_\ÜšYÚ˜]]ÎØ›İÛN˜]]ÎØÃBŸCBƒB™^Ü[˜İ[ÛˆÜ™X]UÛÜ›˜XÚÜİYÙURJÃBˆÙ]İ]KBˆÙ]Ù][™ÜËBˆÙ]Ş[˜Ôİ]\ÈH
+
+HOˆ
+È\ÙNˆ	ÚYIËY\ÜØYÙNˆ	ùl&¹§*º/æú(c9.%¹åc9£ª9¯%	ÈJKBˆÙ]]™\›”›Ùš[\ÈH
+
+HOˆ×KBˆÛXİ[Û‹BˆYÚ[•™\œÚ[ÛˆH	ÉËBŸJHÃBˆÛÛœİ›ÛİHØİ[Y[˜Ü™X]Q[[Y[
+	Ù]‰ÊNÃBˆ›ÛİšYH	İÛÜ›X˜XÚÜİYÙK\›Ûİ	ÎÃBˆØİ[Y[˜›ÙK˜\[™Ú[
+›Ûİ
+NÃBƒBˆ[˜İ[ÛˆŞ[˜Õš\İX[šY]ÜÜ[œÙ]Ê
+HÃBˆÛÛœİšY]ÜÜHÚ[™İËš\İX[šY]ÜÜÃBˆÛÛœİšY]ÜÜÚYH[X™\ŠšY]ÜÜËÚYÚ[™İËš[›™\•ÚY
+NÃBˆÛÛœİšY]ÜÜZYÚH[X™\ŠšY]ÜÜËšZYÚÚ[™İËš[›™\’ZYÚ
+NÃBˆÛÛœİÙ™œÙ]YHX]›X^
+[X™\ŠšY]ÜÜË›Ù™œÙ]Y
+JNÃBˆÛÛœİÙ™œÙ]ÜHX]›X^
+[X™\ŠšY]ÜÜË›Ù™œÙ]Ü
+JNÃBˆÛÛœİšYÚHX]›X^
+[X™\ŠÚ[™İËš[›™\•ÚY
+HHšY]ÜÜÚYHÙ™œÙ]Y
+NÃBˆ›Ûİœİ[KœÙ]›Ü\J	ËK]Ø‹]š\İX[Z[œÙ]]Ü	Ë	ÓX]œ›İ[™
+Ù™œÙ]Ü
+_\
+NÃBˆ›Ûİœİ[KœÙ]›Ü\J	ËK]Ø‹]š\İX[Z[œÙ]\šYÚ	Ë	ÓX]œ›İ[™
+šYÚ
+_\
+NÃBˆ›Ûİœİ[KœÙ]›Ü\J	ËK]Ø‹]š\İX[Z[œÙ][Y	Ë	ÓX]œ›İ[™
+Ù™œÙ]Y
+_\
+NÃBˆ›Ûİœİ[KœÙ]›Ü\J	ËK]Ø‹]š\İX[]ÚY	Ë	ÓX]œ›İ[™
+šY]ÜÜÚY
+_\
+NÃBˆ›Ûİœİ[KœÙ]›Ü\J	ËK]Ø‹]š\İX[ZZYÚ	Ë	ÓX]œ›İ[™
+šY]ÜÜZYÚ
+_\
+NÃBˆCBˆŞ[˜Õš\İX[šY]ÜÜ[œÙ]Ê
+NÃBƒBˆ[˜İ[Ûˆ[œİ\™S[İ[Y
+
+HÃBˆYˆ
+\›Ûİš\ĞÛÛ›™XİY
+HØİ[Y[˜›ÙK˜\[™Ú[
+›Ûİ
+NÃBˆŞ[˜Õš\İX[šY]ÜÜ[œÙ]Ê
+NÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİÜ˜ˆH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹]ÛÜ›[Ü˜‰ÊNÃBˆYˆ
+Ù][™ÜË›Ü˜‘[˜X›YOOH˜[ÙJHÃBˆYˆ
+Ù][™ÜË›Ü˜”ÜÚ][Ûˆ	‰ˆÜ˜ŠHÃBˆÜÚ][Û“Ü˜‘œ›ÛTÙ][™ÜÊÙ][™ÜÊNÃBˆCBˆYˆ
+[Ü˜ŠH™[™\Š
+NÃBˆH[ÙHYˆ
+Ü˜ŠHÃBˆ™[™\Š
+NÃBˆCBˆÛÛœİ]\İ™]š\Ú[ÛˆHX]›X^
+[X™\ŠÙ]İ]J
+OËœ™]š\Ú[ÛŠH
+NÃBˆYˆ
+]\İ™]š\Ú[ÛˆOOH™[™\™Y™]š\Ú[ÛŠH™[™\Š
+NÃBˆ™]\›ˆ›Ûİš\ĞÛÛ›™XİYÃBˆCBƒBˆ]Xİ]™UšY]ÈH	Û›İÉÎÃBˆ]™[™\™YšY]ÈHXİ]™UšY]ÎÃBˆ]ØœÙ\™\“[ÙHH	Ø˜XÚÜİYÙIÎÃBˆ]\ÓÜ[ˆH˜[ÙNÃBˆ]Ù][™ÜÓÜ[ˆH˜[ÙNÃBˆ]Ù][™ÜÔÙXİ[ÛˆH	ØÛÛ[[Û‰ÎÃBˆ][Ù[TÙ][™ÜÕšY]ÈH	ÉÎÃBˆ]]™[›Ü›SÜ[ˆH˜[ÙNÃBˆ]]™[Y]Ü’YH	ÉÎÃBˆ]Ù[XİY\œÛÛ’YH[ÃBˆ]\œÛÛ“ØœÙ\˜][ÛˆH[ÃBˆ]\ŞHH˜[ÙNÃBˆ]Ø\İH	ÉÎÃBˆ]Ø\İ[Y\ˆH[ÃBˆ]ÛÜÙU[Y\ˆH[ÃBˆ]ÛÜÚ[™ÈH˜[ÙNÃBˆ][™[[˜[˜ÙT[™[™ÈH˜[ÙNÃBˆ]X›XÓÜ[š[Û“[ÙHH	Û™]ÜÉÎÃBˆ][™ÜZQ˜YH	ÉÎÃBˆ][™ÜZSX\ØÛİİ™\œšYHH	ÉÎÃBˆ][™ÜZSX\ØÛİ[Y\ˆH[ÃBˆ][™ÜZPÚ]ØÜ›Ûİ]HHÈÜˆ]›İÛNˆYK[š]X[^™Yˆ˜[ÙHNÃBˆ][™ÜZS›İ\ÔØÜ›ÛÜHÃBˆ][™ÜZT™XYX›SÜ[’Ù^\ÈH™]ÈÙ]
+
+NÃBˆ][™ÜZT]Ûİ[HÂˆ][™ÜZT]Ú[™İĞ]HÂˆ]ÛØÚX[˜YH	ÉÎÂˆ]ÛØÚX[Ü›İ\Ü[ˆH˜[ÙNÂˆ]ÛØÚX[Ü›İ\Ù[XİYYÈH™]ÈÙ]
+
+NÂˆ]ÛØÚX[Ú]ØÜ›Ûİ]HHÈÜˆ]›İÛNˆYK[š]X[^™Yˆ˜[ÙHNÂˆ]ÛØÚX[YÙHH	ÛY\ÜØYÙ\ÉÎÂˆ]ÛØÚX[ÙX\˜Ú]Y\HH	ÉÎÂˆ]ÛØÚX[ÙX\˜Ú[Y\ˆH[Âˆ]ÛØÚX[›İXÙU[Y\ˆH[Âˆ]ÛØÚX[›İXÙUš\ÚX›RYH	ÉÎÂˆÛÛœİÛØÚX[›İXÙTÚİÛ’YÈH™]ÈÙ]
+
+NÂƒBˆ[˜İ[Ûˆİ\œ™[[™ÜZSX\ØÛİİ]Jİ™\œšYHH	ÉÊHÃBˆÛÛœİ]\İHÙ]Ş[˜Ôİ]\Ê
+OË›[™ÜZHßNÃBˆÛÛœİ›İ\ÈH\œ˜^Kš\Ğ\œ˜^J]\İ››İ\ÊHÈ]\İ››İ\Èˆ×NÃBˆÛÛœİXİ]™S›İ\ÈH›İ\Ë™š[\Š›İHOˆÉØXİ]™IË	Ü]\ÙY	×Kš[˜ÛY\Ê›İKœİ]\ÊJNÃBˆÛÛœİ[™[™ÈH]\İœ[™[™Ô›ÜÜØ[	‰ˆ\[Ùˆ]\İœ[™[™Ô›ÜÜØ[OOH	ÛØš™Xİ	ÃBˆÈ]\İœ[™[™Ô›ÜÜØ[Bˆˆ[ÃBˆ™]\›ˆ[™ÜZSX\ØÛİİ]J]\İXİ]™S›İ\Ë[™[™Ëİ™\œšYJNÃBˆCBƒBˆ[˜İ[Ûˆ\S[™ÜZSX\ØÛİÜÙJİ]HH	ÉÊHÃBˆYˆ
+Z\ÓÜ[ˆXİ]™UšY]ÈOOH	Û[™ÜZIÊH™]\›ˆ˜[ÙNÃBˆÛÛœİX\ØÛİH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹[[™ÜZK[X\ØÛİ	ÊNÃBˆYˆ
+[X\ØÛİ
+H™]\›ˆ˜[ÙNÃBƒBˆÛÛœİ™^İ]HH[™ÜZSX\ØÛİ\ÜÙ]İ]Jİ]Hİ\œ™[[™ÜZSX\ØÛİİ]J
+JNÃBˆÛÛœİ[XYÙHHX\ØÛİœ]Y\TÙ[XİÜŠ	Ú[YÉÊNÃBˆÛÛœİ\ŞS›İÈHÙ]Ş[˜Ôİ]\Ê
+OË›[™ÜZOËœ\ÙHOOH	Ü[›š[™ÉÎÃBƒBˆ›Üˆ
+ÛÛœİX\ØÛİİ]HÙˆØš™XİšÙ^\ÊS‘ÔRWÓPTĞÓÕĞTÔÑUÊJHÃBˆX\ØÛİ˜Û\ÜÓ\İœ™[[İ™J\ËIÛX\ØÛİİ]_X\ËX\ÜÙ]IÛX\ØÛİİ]_X
+NÃBˆCBˆX\ØÛİ˜Û\ÜÓ\İ˜Y
+\ËIÛ™^İ]_X\ËX\ÜÙ]IÛ™^İ]_X
+NÃBˆX\ØÛİ™]\Ù]›X\ØÛİİ]HH™^İ]NÃBˆX\ØÛİ]HH\ŞS›İÈÈ	ùã¬¹. ù«hùg*9 ìø )¸ )‰Èˆ	ùè¬9è¬9ã¬¹. ÉÎÃBˆYˆ
+[XYÙJHÃBˆ[XYÙKœÜ˜ÈHS‘ÔRWÓPTĞÓÕĞTÔÑUÖÛ™^İ]WHS‘ÔRWÓPTĞÓÕĞTÔÑUËšYNÃBˆCBˆ™]\›ˆYNÃBˆCBƒBˆ[˜İ[ÛˆÚİÓ[™ÜZSX\ØÛİ™XXİ[ÛŠİ]K\˜][ÛˆHLŒ
+HÃBˆ[™ÜZSX\ØÛİİ™\œšYHHİ]NÃBˆÚ[™İË˜ÛX\•[Y[İ]
+[™ÜZSX\ØÛİ[Y\ŠNÃBˆËÈ^XÚ]\Ù\ˆ[\˜Xİ[ÛˆX^HÜ™X]HÛ™HÚÜ™XXİ[Û‹]Y\Ø\™ÃBˆËÈ[™ÜZH[Ø^\È™]\›œÈÈHÜÙHÚÜÙ[ˆHH]\İ™\KÜİ]KƒBˆ\S[™ÜZSX\ØÛİÜÙJİ\œ™[[™ÜZSX\ØÛİİ]J[™ÜZSX\ØÛİİ™\œšYJJNÃBˆ[™ÜZSX\ØÛİ[Y\ˆHÚ[™İËœÙ][Y[İ]
+
+
+HOˆÃBˆ[™ÜZSX\ØÛİİ™\œšYHH	ÉÎÃBˆ\S[™ÜZSX\ØÛİÜÙJİ\œ™[[™ÜZSX\ØÛİİ]J
+JNÃBˆK\˜][ÛŠNÃBˆCBˆ]X›XÓÜ[š[ÛXİ[Û\ŞHH˜[ÙNÃBˆ]X›XÓÜ[š[Û”Ø[™›ŞXİ[Û\ŞHH˜[ÙNÃBˆ]Y[[ÜTÙX\˜Ú[Y\ˆH[ÃBˆ]Y[[ÜQš[\ˆH	ØXİ]™IÎÃBˆ]Y[[ÜPÛYT™[][Û‘š[\ˆH	Ø[	ÎÃBˆ]Y[[ÜT]Y\HH	ÉÎÃBˆ]Y[[ÜUš\ÚX›PÛİ[HLÃBˆ]Y[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÂˆ][ÜTÙ[Xİ[Û“[ÙHH˜[ÙNÂˆ][ÜTÙ[XİYYÈH™]ÈÙ]
+
+NÂˆ]Y[[ÜQY]ÜˆH[ÃBˆ]\œÛÛ‘Y]ÜˆH[ÃBˆ]ÛÜ›Y]Ü“Ü[ˆH˜[ÙNÃBˆ]™XÛÜ™Y]ÜˆH[ÃBˆ]Ù][™ÜÔØÜ›ÛÜHÃBˆ]Ü[”Ù][™ÜÑÜ›İ\ÈH™]ÈÙ]
+
+NÃBˆ]Ü[”Ù][™ÜÔİX™Ü›İ\ÈH™]ÈÙ]
+
+NÃBˆ]Ü[ÛÛ[›ÛÈH™]ÈÙ]
+
+NÃBˆÛÛœİšY]Ñ›Ûİ]\ÈH™]ÈX\
+
+NÃBˆ]]™[›Ü›Q˜YH[ÃBˆ]ÛØÚÑ›Ü›Q˜YH[ÃBˆ]\Q›Ü›Q˜YH[ÃBˆ]YÑš[\‘˜Y[\ÈH[ÈËÈ[H\ÙHÙ][™ÜÎÈ\œ˜^HX^H[˜ÛYH[\H˜YØ\™ÃBˆ]YÑš[\Ø[™Y]\ÈH×NÃBˆ]ÛÜ››ÛÚÔ]Y\HH	ÉÎÃBˆ]ÛÜ››ÛÚÓÛ›T[ÜHH˜[ÙNÃBˆ]ÛÜ››ÛÚÓÛ›Q[˜X›YH˜[ÙNÂˆ]ÛÜ››ÛÚÔÙ[XİYYÈH™]ÈÙ]
+
+NÂˆ]ÛÜ››ÛÚÓ\İØÜ›ÛÜHÂˆ]ÛÜ››ÛÚÔÙX\˜Ú[Y\ˆH[Âˆ]ÚÚ\\Q˜YØ\\™HH˜[ÙNÃBˆ]ÚÚ\YÑš[\‘˜YØ\\™HH˜[ÙNÃBˆÛÛœİšY]ÔØÜ›ÛÜH™]ÈX\
+
+NÃBˆ]Ü˜‘˜YÈH[ÃBˆ]İ\™\ÜÓÜ˜ÛXÚÈH˜[ÙNÃBˆ]™[™\™Y™]š\Ú[ÛˆHX]›X^
+[X™\ŠÙ]İ]J
+OËœ™]š\Ú[ÛŠH
+NÃBˆ]\İÙY[”™]š\Ú[ÛˆH™[™\™Y™]š\Ú[ÛÃBˆ]\ÛZ\ÜÙY˜\œ˜]]™T›Û\Ù^HH	ÉÎÃBˆ]œ™\ÚÜ[ÚXÚÑœ˜[YHHÃBƒBˆ[˜İ[Ûˆ›İYJY\ÜØYÙKÛ™HH	Û›Ü›X[	ÊHÃBˆØ\İHİš[™ÊY\ÜØYÙH	ÉÊNÃBˆ›Ûİ™]\Ù]Ø\İÛ™HHÛ™NÃBˆÚ[™İË˜ÛX\•[Y[İ]
+Ø\İ[Y\ŠNÃBˆØ\İ[Y\ˆHÚ[™İËœÙ][Y[İ]
+
+
+HOˆÃBˆØ\İH	ÉÎÃBˆ™[™\Š
+NÃBˆKÛ™HOOH	Ù\œ›Ü‰ÈÈÍŒˆLŒ
+NÃBˆ™[™\Š
+NÃBˆCBƒBˆ[˜İ[Ûˆ™XY\Q›Ü›J›Ü›JHÃBˆÛÛœİ]HHØš™Xİ™œ›ÛQ[šY\Ê™]È›Ü›Q]J›Ü›JK™[šY\Ê
+JNÃBˆ\Q›Ü›Q˜YHÈ‹‹™]HNÃBˆ™]\›ˆ]NÃBˆCBƒBˆ[˜İ[Ûˆ\TÙ][™ÜÑœ›ÛQ˜Y
+]JHÃBˆÛÛœİ™\XÙ[Y[Ù^HHİš[™Ê]K˜İ\İÛP\PÜ™Y[X[	ÉÊKš[J
+NÃBˆ™]\›ˆÃBˆİ\İÛP\U\›ˆ]K˜İ\İÛP\U\›Bˆİ\İÛP\RÙ^Nˆ™\XÙ[Y[Ù^HÙ]Ù][™ÜÊ
+K˜İ\İÛP\RÙ^KBˆİ\İÛP\S[Ù[ˆ]K˜İ\İÛP\S[Ù[Bˆİ\İÛP\U˜[œÜÜˆ]K˜İ\İÛP\U˜[œÜÜBˆNÃBˆCBƒBˆ[˜İ[Ûˆ\T™\]Y\İœ›ÛQ˜Y
+]KÈ™\]Z\™S[Ù[HYHHHßJHÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİ›Ùš[RYHİš[™Ê]Kœ›Ùš[RY	ÉÊKš[J
+NÃBˆÛÛœİ^\İ[™Ô›Ùš[HH
+Ù][™ÜË˜\T›Ùš[\È×JK™š[™
+][HOˆ][KšYOOH›Ùš[RY
+NÃBˆÛÛœİÙ^HHİš[™Ê]K˜İ\İÛP\PÜ™Y[X[	ÉÊKš[J
+CBˆ^\İ[™Ô›Ùš[OËšÙ^CBˆ
+\›Ùš[RYÈÙ][™ÜË˜İ\İÛP\RÙ^Hˆ	ÉÊNÃBˆÛÛœİ[Ù[Hİš[™Ê]K˜İ\İÛP\S[Ù[	ÉÊKš[J
+NÃBˆYˆ
+ZÙ^JH›İÈ™]È\œ›ÜŠ	ú/æy.*¹£©ycèú/æ9ï.ˆTHÙ^H9dé»ïg‰ÊNÃBˆYˆ
+™\]Z\™S[Ù[	‰ˆ[[Ù[
+H›İÈ™]È\œ›ÜŠ	ùab:`"y.*¹ª(yg¢ùa£y­bú+åyd)ûïg‰ÊNÃBˆ™]\›ˆÃBˆ\›ˆ]K˜İ\İÛP\U\›BˆÙ^KBˆ[Ù[Bˆ˜[œÜÜˆ]K˜İ\İÛP\U˜[œÜÜBˆX™[ˆİš[™Ê]Kœ›Ùš[S˜[YH^\İ[™Ô›Ùš[OË›˜[YH	ú/æy.*¹£©ycèÉÊKš[J
+H	ú/æy.*¹£©ycèÉËBˆNÃBˆCBƒBˆ[˜İ[Ûˆ›Ü™Ù]\RÙ^Q˜Y
+]JHÃBˆ\Q›Ü›Q˜YHÈ‹‹™]Kİ\İÛP\PÜ™Y[X[ˆ	ÉÈNÃBˆÚÚ\\Q˜YØ\\™HHYNÃBˆCBƒBˆ\Ş[˜È[˜İ[Ûˆ[›ÚÙPXİ[ÛŠXİ[Û‹^[ØYHßJHÃBˆHÃBˆÛÛœİ™\İ[H]ØZ]ÛXİ[ÛŠXİ[Û‹^[ØY
+NÃBˆ™]\›ˆ™\İ[OOH[™Yš[™YÈYHˆ™\İ[ÃBˆHØ]Ú
+\œ›ÜŠHÃBˆÛÛœİY\ÜØYÙHHİš[™Ê\œ›ÜË›Y\ÜØYÙH\œ›Üˆ	ù§*¹çéze&z+ëÉÊNÃBˆÛÛœÛÛKØ\›Š	Öù.%¹åc: ã:gh—H9åc:gh¹¤ãy/g9¬¨y§"yk£9¢$	Ë\œ›ÜŠNÃBˆ›İYJ9¤ãy/g9¬¨y§"yk£9¢$;ï&‰ÛY\ÜØYÙ_X	Ù\œ›Ü‰ÊNÃBˆ™]\›ˆ˜[ÙNÃBˆCBˆCBƒBˆ[˜İ[Ûˆš\ÚX›UYÑš[\”[\ÊÙ][™ÜÊHÃBˆYˆ
+\œ˜^Kš\Ğ\œ˜^JYÑš[\‘˜Y[\ÊJH™]\›ˆYÑš[\‘˜Y[\ÎÃBˆ™]\›ˆ\œ˜^Kš\Ğ\œ˜^JÙ][™ÜËYÑš[\”[\ÊCBˆÈÙ][™ÜËYÑš[\”[\Ë›X\
+[HOˆ
+ÈÜ[ˆ[K›Ü[‹ÛÜÙNˆ[K˜ÛÜÙHJJCBˆˆ×NÃBˆCBƒBˆ\Ş[˜È[˜İ[Ûˆ\œÚ\İYÑš[\”[\Ê[\ÊHÃBˆÛÛœİ\œÚ\İYH[\ÃBˆ›X\
+[HOˆ
+ÃBˆÜ[ˆİš[™Ê[K›Ü[ˆ	ÉÊKš[J
+KœÛXÙJ
+KBˆÛÜÙNˆİš[™Ê[K˜ÛÜÙH	ÉÊKš[J
+KœÛXÙJ
+KBˆJJCBˆ™š[\Š[HOˆ[K›Ü[ˆ[K˜ÛÜÙJCBˆœÛXÙJÌ
+NÃBˆYÑš[\‘˜Y[\ÈH[\Ë›X\
+[HOˆ
+ÃBˆÜ[ˆİš[™Ê[K›Ü[ˆ	ÉÊKBˆÛÜÙNˆİš[™Ê[K˜ÛÜÙH	ÉÊKBˆJJNÃBˆÚÚ\YÑš[\‘˜YØ\\™HHYNÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÈYÑš[\”[\Îˆ\œÚ\İYJNÃBˆCBƒBˆ[˜İ[ÛˆÙ]\ŞJ˜[YJHÃBˆ\ŞHH›ÛÛX[Š˜[YJNÃBˆ™[™\Š
+NÃBˆCBƒBˆ[˜İ[ÛˆÜ[Š
+HÂˆÚ[™İË˜ÛX\•[Y[İ]
+ÛÜÙU[Y\ŠNÃBˆÛÜÚ[™ÈH˜[ÙNÃBˆ[™[[˜[˜ÙT[™[™ÈHZ\ÓÜ[ÃBˆ\ÓÜ[ˆHYNÃBˆ™[™\Š
+NÃBˆÚ[™İË˜Ø[˜Ù[[š[X][Û‘œ˜[YOËŠœ™\ÚÜ[ÚXÚÑœ˜[YJNÃBˆœ™\ÚÜ[ÚXÚÑœ˜[YHHÚ[™İËœ™\]Y\İ[š[X][Û‘œ˜[YOËŠ
+
+HOˆÃBˆœ™\ÚÜ[ÚXÚÑœ˜[YHHÃBˆÛÛœİ]\İ™]š\Ú[ÛˆHX]›X^
+[X™\ŠÙ]İ]J
+OËœ™]š\Ú[ÛŠH
+NÃBˆYˆ
+]\İ™]š\Ú[ÛˆOOH™[™\™Y™]š\Ú[ÛŠH™[™\Š
+NÃBˆJHÃBˆB‚ˆ[˜İ[ÛˆÜ[‘]™[
+]™[YH	ÉÊHÂˆÛÛœİYHİš[™Ê]™[Y	ÉÊNÂˆXİ]™UšY]ÈH	Øİ\œ™[ÉÎÂˆÜ[Š
+NÂˆÚ[™İËœ™\]Y\İ[š[X][Û‘œ˜[YOËŠ
+
+HOˆÂˆÛÛœİØY™RYHÛØ˜[\ËÔÔÏË™\ØØ\OËŠİ\œ™[Î‰ÚYX
+Hİ\œ™[Î‰ÚYXœ™\XÙJÖÈ—KÙË	×		‰ÊNÂˆÛÛœİØ\™H›Ûİœ]Y\TÙ[XİÜŠÙ]KY›ÛZÙ^OH‰ÜØY™RYH—X
+NÂˆYˆ
+Ø\™[œİ[˜Ù[ÙˆS]Z[Ñ[[Y[
+HØ\™›Ü[ˆHYNÂˆØ\™ËœØÜ›Û[ÕšY]ÏËŠÈ›ØÚÎˆ	ØÙ[\‰Ë™Z]š[Üˆ	ÜÛ[Ûİ	ÈJNÂˆØ\™Ë˜[š[X]OËŠÂˆÈ›ŞÚYİÎˆ	Ì™Ø˜JLŒKLLKMÍ
+IÈKˆÈ›ŞÚYİÎˆ	Ì™Ø˜JLŒKLLKMÍŒN
+IÈKˆÈ›ŞÚYİÎˆ	Ì™Ø˜JLŒKLLKMÍ
+IÈKˆKÈ\˜][ÛˆLX\Ú[™Îˆ	ÙX\ÙK[İ]	ÈJNÂˆJNÂˆBƒBˆ[˜İ[ÛˆÛÜÙJ
+HÃBˆYˆ
+Z\ÓÜ[ˆÛÜÚ[™ÊH™]\›ÃBˆÛÜÚ[™ÈHYNÃBˆ›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\[™[\ØÜš[IÊOË˜Û\ÜÓ\İ˜Y
+	Ú\ËXÛÜÚ[™ÉÊNÃBˆÛÛœİÛÜÙQ[^HHÚ[™İË›X]ÚYYXOËŠ	Ê™Y™\œË\™YXÙY[[İ[Ûˆ™YXÙJIÊK›X]Ú\ÃBˆÈBˆˆMNÃBˆÛÜÙU[Y\ˆHÚ[™İËœÙ][Y[İ]
+
+
+HOˆÃBˆ\ÓÜ[ˆH˜[ÙNÃBˆÛÜÚ[™ÈH˜[ÙNÃBˆÙ][™ÜÓÜ[ˆH˜[ÙNÃBˆ]™[›Ü›SÜ[ˆH˜[ÙNÃBˆ]™[Y]Ü’YH	ÉÎÃBˆ]™[›Ü›Q˜YH[ÃBˆÛØÚÑ›Ü›Q˜YH[ÃBˆYÑš[\‘˜Y[\ÈH[ÃBˆY[[ÜQY]ÜˆH[ÃBˆY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆ\œÛÛ‘Y]ÜˆH[ÃBˆÛÜ›Y]Ü“Ü[ˆH˜[ÙNÃBˆ™XÛÜ™Y]ÜˆH[ÃBˆÙ[XİY\œÛÛ’YH[ÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH[ÃBˆ™[™\Š
+NÃBˆKÛÜÙQ[^JNÃBˆCBƒBˆ[˜İ[Ûˆ™\Ù]ÛÛ^
+
+HÃBˆ]™[›Ü›SÜ[ˆH˜[ÙNÃBˆ]™[Y]Ü’YH	ÉÎÃBˆ]™[›Ü›Q˜YH[ÃBˆÛØÚÑ›Ü›Q˜YH[ÃBˆÙ[XİY\œÛÛ’YH[ÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH[ÃBˆ\œÛÛ‘Y]ÜˆH[ÃBˆY[[ÜQY]ÜˆH[ÃBˆY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÂˆ[ÜTÙ[Xİ[Û“[ÙHH˜[ÙNÂˆ[ÜTÙ[XİYYÈH™]ÈÙ]
+
+NÂˆY[[ÜT]Y\HH	ÉÎÃBˆY[[ÜQš[\ˆH	ØXİ]™IÎÃBˆY[[ÜPÛYT™[][Û‘š[\ˆH	Ø[	ÎÃBˆY[[ÜUš\ÚX›PÛİ[HLÃBˆÛÜ›Y]Ü“Ü[ˆH˜[ÙNÃBˆ™XÛÜ™Y]ÜˆH[ÃBˆÛÜ››ÛÚÔÙ[XİYYÈH™]ÈÙ]
+
+NÂˆÛÜ››ÛÚÔ]Y\HH	ÉÎÂˆÛÜ››ÛÚÓ\İØÜ›ÛÜHÂˆ[™ÜZQ˜YH	ÉÎÃBˆ[™ÜZPÚ]ØÜ›Ûİ]HHÈÜˆ]›İÛNˆYK[š]X[^™Yˆ˜[ÙHNÃBˆ[™ÜZS›İ\ÔØÜ›ÛÜHÃBˆ[™ÜZT™XYX›SÜ[’Ù^\ÈH™]ÈÙ]
+
+NÃBˆšY]Ñ›Ûİ]\Ë˜ÛX\Š
+NÃBˆšY]ÔØÜ›ÛÜ˜ÛX\Š
+NÃBˆÜ[ÛÛ[›ÛÈH™]ÈÙ]
+
+NÃBˆ™[™\Š
+NÃBˆCBƒBˆ[˜İ[Ûˆ™[™\Š
+HÃBˆÛÛœİšY]ĞÚ[™ÙYHXİ]™UšY]ÈOOH™[™\™YšY]ÎÃBˆÛÛœİ[š[X]T[™[[˜[˜ÙHH›ÛÛX[Š\ÓÜ[ˆ	‰ˆ[™[[˜[˜ÙT[™[™ÊNÃBˆÛÛœİ™]š[İ\ĞÛÛ[H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹]šY]ËXÛÛ[	ÊNÃBˆYˆ
+™]š[İ\ĞÛÛ[
+HšY]ÔØÜ›ÛÜœÙ]
+™[™\™YšY]Ë™]š[İ\ĞÛÛ[œØÜ›ÛÜ
+NÃBƒBˆËÈ[RH™[™\œÈØ[ˆİ[\[ˆ›Üˆ™X[]KÜİ]\ÈÚ[™Ù\Ëˆ™\Ù\™H]™\CBˆËÈ\Ù\‹XÛÛ›ÛY[™ÜZH]Z[Ïˆ›ÛXÜ›ÜÜÈÜÙHYÚ][X]H™XZ[ËƒBˆÛÛœİ™]š[İ\Ó[™ÜZT™XYX›\ÈH›Ûİœ]Y\TÙ[XİÜ[
+Bˆ	Ù]Z[ÖÙ]K[[™ÜZK\™XYX›KZÙ^WIËBˆ
+NÃBˆ›Üˆ
+ÛÛœİ]Z[Ùˆ™]š[İ\Ó[™ÜZT™XYX›\ÊHÃBˆÛÛœİÙ^HHİš[™Ê]Z[™]\Ù]›[™ÜZT™XYX›RÙ^H	ÉÊNÃBˆYˆ
+ZÙ^JHÛÛ[YNÃBˆYˆ
+]Z[›Ü[ŠH[™ÜZT™XYX›SÜ[’Ù^\Ë˜Y
+Ù^JNÃBˆ[ÙH[™ÜZT™XYX›SÜ[’Ù^\Ë™[]JÙ^JNÃBˆCBƒBˆÛÛœİ™]š[İ\ĞÛÛ[›ÛÈH›Ûİœ]Y\TÙ[XİÜ[
+	ËØ‹Y›ÛÙ]KY›ÛZÙ^WIÊNÃBˆYˆ
+™]š[İ\ĞÛÛ[›ÛË›[™İ
+HÃBˆšY]Ñ›Ûİ]\ËœÙ]
+™[™\™YšY]Ë™]ÈÙ]
+BˆË‹‹œ™]š[İ\ĞÛÛ[›Û×CBˆ™š[\Š][HOˆ][K›Ü[ŠCBˆ›X\
+][HOˆ][K™]\Ù]™›ÛÙ^JCBˆ™š[\Š›ÛÛX[ŠKBˆ
+JNÃBˆCBˆÜ[ÛÛ[›ÛÈH™]ÈÙ]
+šY]Ñ›Ûİ]\Ë™Ù]
+Xİ]™UšY]ÊH×JNÃBˆÛÛœİ™]š[İ\ÔÙ][™ÜÈH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\Ù][™ÜË\Üİ™\‰ÊNÂˆYˆ
+™]š[İ\ÔÙ][™ÜÊHÙ][™ÜÔØÜ›ÛÜH™]š[İ\ÔÙ][™ÜËœØÜ›ÛÜÂˆÛÛœİ™]š[İ\ÕÛÜ››ÛÚÓ\İH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹]ÛÜ››ÛÚËY[K[\İ	ÊNÂˆYˆ
+™]š[İ\ÕÛÜ››ÛÚÓ\İ
+HÛÜ››ÛÚÓ\İØÜ›ÛÜH™]š[İ\ÕÛÜ››ÛÚÓ\İœØÜ›ÛÜÂˆÛÛœİ™]š[İ\ÔÙ][™ÑÜ›İ\ÈH›Ûİœ]Y\TÙ[XİÜ[
+	ËØ‹\Ù][™ÜËYÜ›İ\Ù]K\Ù][™ÜËYÜ›İ\IÊNÃBˆYˆ
+™]š[İ\ÔÙ][™ÑÜ›İ\Ë›[™İ
+HÃBˆÜ[”Ù][™ÜÑÜ›İ\ÈH™]ÈÙ]
+BˆË‹‹œ™]š[İ\ÔÙ][™ÑÜ›İ\×CBˆ™š[\ŠÜ›İ\OˆÜ›İ\›Ü[ŠCBˆ›X\
+Ü›İ\OˆÜ›İ\™]\Ù]œÙ][™ÜÑÜ›İ\
+KBˆ
+NÃBˆCBˆÛÛœİ™]š[İ\ÔÙ][™ÔİX™Ü›İ\ÈH›Ûİœ]Y\TÙ[XİÜ[
+	ÖÙ]K\Ù][™ÜË\İX™Ü›İ\IÊNÃBˆYˆ
+™]š[İ\ÔÙ][™ÔİX™Ü›İ\Ë›[™İ
+HÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\ÈH™]ÈÙ]
+BˆË‹‹œ™]š[İ\ÔÙ][™ÔİX™Ü›İ\×CBˆ™š[\ŠÜ›İ\OˆÜ›İ\›Ü[ŠCBˆ›X\
+Ü›İ\OˆÜ›İ\™]\Ù]œÙ][™ÜÔİX™Ü›İ\
+KBˆ
+NÃBˆCBˆÛÛœİ™]š[İ\Ñ]™[›Ü›HH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH™]™[—IÊNÃBˆYˆ
+™]š[İ\Ñ]™[›Ü›H	‰ˆ]™[›Ü›SÜ[ŠHÃBˆ]™[›Ü›Q˜YHØš™Xİ™œ›ÛQ[šY\Ê™]È›Ü›Q]J™]š[İ\Ñ]™[›Ü›JK™[šY\Ê
+JNÃBˆCBˆÛÛœİ™]š[İ\ĞÛØÚÑ›Ü›HH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH˜ÛØÚÈ—IÊNÃBˆYˆ
+™]š[İ\ĞÛØÚÑ›Ü›H	‰ˆ
+Ù][™ÜÓÜ[ˆ[Ù[TÙ][™ÜÕšY]ÊJHÃBˆÛØÚÑ›Ü›Q˜YHØš™Xİ™œ›ÛQ[šY\Ê™]È›Ü›Q]J™]š[İ\ĞÛØÚÑ›Ü›JK™[šY\Ê
+JNÃBˆCBˆÛÛœİ™]š[İ\Ğ\Q›Ü›HH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH˜\H—IÊNÃBˆYˆ
+™]š[İ\Ğ\Q›Ü›H	‰ˆ\ÚÚ\\Q˜YØ\\™JHÃBˆ™XY\Q›Ü›J™]š[İ\Ğ\Q›Ü›JNÃBˆCBˆÛÛœİ™]š[İ\Ó[™ÜZR[œ]H›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH›[™ÜZKXÚ]—H^\™XVÛ˜[YOH^—IÊNÂˆYˆ
+™]š[İ\Ó[™ÜZR[œ]
+H[™ÜZQ˜YH™]š[İ\Ó[™ÜZR[œ]˜[YNÂˆÛÛœİ™]š[İ\ÔÛØÚX[[œ]H›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OHœÛØÚX[[Y\ÜØYÙH—H^\™XVÛ˜[YOH^—IÊNÂˆYˆ
+™]š[İ\ÔÛØÚX[[œ]
+HÛØÚX[˜YH™]š[İ\ÔÛØÚX[[œ]˜[YNÂˆÛÛœİ™]š[İ\ÔÛØÚX[Ú]H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\ÛØÚX[[ÙÉÊNÂˆYˆ
+™]š[İ\ÔÛØÚX[Ú]
+HÂˆÛÛœİ›İÛQØ\H™]š[İ\ÔÛØÚX[Ú]œØÜ›ÛZYÚˆH™]š[İ\ÔÛØÚX[Ú]œØÜ›ÛÜˆH™]š[İ\ÔÛØÚX[Ú]˜ÛY[ZYÚÂˆÛØÚX[Ú]ØÜ›Ûİ]HHÂˆÜˆ™]š[İ\ÔÛØÚX[Ú]œØÜ›ÛÜˆ]›İÛNˆ›İÛQØ\Hˆ[š]X[^™YˆYKˆNÂˆBˆÛÛœİ™]š[İ\ÔÛØÚX[Ü›İ\H›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OHœÛØÚX[YÜ›İ\—IÊNÂˆYˆ
+™]š[İ\ÔÛØÚX[Ü›İ\
+HÂˆÛØÚX[Ü›İ\Ù[XİYYÈH™]ÈÙ]
+ˆË‹‹œ™]š[İ\ÔÛØÚX[Ü›İ\œ]Y\TÙ[XİÜ[
+	Ú[œ]Û˜[YOH›Y[X™\’YÈ—N˜ÚXÚÙY	ÊWBˆ›X\
+[œ]Oˆİš[™Ê[œ]˜[YH	ÉÊJBˆ™š[\Š›ÛÛX[ŠKˆ
+NÂˆBƒBˆÛÛœİ™]š[İ\Ó[™ÜZPÚ]H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹[[™ÜZKXÚ][ÙÉÊNÃBˆYˆ
+™]š[İ\Ó[™ÜZPÚ]
+HÃBˆÛÛœİ›İÛQØ\H™]š[İ\Ó[™ÜZPÚ]œØÜ›ÛZYÚBˆH™]š[İ\Ó[™ÜZPÚ]œØÜ›ÛÜBˆH™]š[İ\Ó[™ÜZPÚ]˜ÛY[ZYÚÃBˆ[™ÜZPÚ]ØÜ›Ûİ]HHÃBˆÜˆ™]š[İ\Ó[™ÜZPÚ]œØÜ›ÛÜBˆ]›İÛNˆ›İÛQØ\HBˆ[š]X[^™YˆYKBˆNÃBˆCBˆÛÛœİ™]š[İ\Ó[™ÜZS›İ\ÈH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹[[™ÜZK[›İ\Ë\ØÜ›Û	ÊNÃBˆYˆ
+™]š[İ\Ó[™ÜZS›İ\ÊH[™ÜZS›İ\ÔØÜ›ÛÜH™]š[İ\Ó[™ÜZS›İ\ËœØÜ›ÛÜÃBƒBˆÚÚ\\Q˜YØ\\™HH˜[ÙNÃBˆYˆ
+Ù][™ÜÓÜ[ˆ	‰ˆ\ÚÚ\YÑš[\‘˜YØ\\™JHÃBˆÛÛœİ™]š[İ\ÕYÑš[\”[\ÈH›Ûİœ]Y\TÙ[XİÜ[
+	ËØ‹]YËYš[\‹\[IÊNÃBˆYˆ
+™]š[İ\ÕYÑš[\”[\Ë›[™İ
+HÃBˆYÑš[\‘˜Y[\ÈHË‹‹œ™]š[İ\ÕYÑš[\”[\×K›X\
+Ø\™Oˆ
+ÃBˆÜ[ˆİš[™ÊØ\™œ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹]YËYš[\‹YšY[H›Ü[ˆ—IÊOË˜[YH	ÉÊKBˆÛÜÙNˆİš[™ÊØ\™œ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹]YËYš[\‹YšY[H˜ÛÜÙH—IÊOË˜[YH	ÉÊKBˆJJNÃBˆCBˆCBˆÚÚ\YÑš[\‘˜YØ\\™HH˜[ÙNÃBˆÛÛœİ™]š[İ\Ñ›Øİ\ÈH›Ûİ˜ÛÛZ[œÊØİ[Y[˜Xİ]™Q[[Y[
+CBˆÈÃBˆYˆØİ[Y[˜Xİ]™Q[[Y[šY	ÉËBˆ˜[YNˆØİ[Y[˜Xİ]™Q[[Y[™Ù]]šX]OËŠ	Û˜[YIÊH	ÉËBˆÙ[Xİ[Û”İ\ˆØİ[Y[˜Xİ]™Q[[Y[œÙ[Xİ[Û”İ\BˆÙ[Xİ[Û‘[™ˆØİ[Y[˜Xİ]™Q[[Y[œÙ[Xİ[Û‘[™BˆCBˆˆ[ÃBƒBˆÛÛœİİ]HHÙ]İ]J
+NÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİŞ[˜Ôİ]\ÈHÙ]Ş[˜Ôİ]\Ê
+NÃBˆÛÛœİ]™\›”›Ùš[\Ô˜]ÈHÙ][™ÜÓÜ[ˆÈÙ]]™\›”›Ùš[\ÏËŠ
+Hˆ×NÃBˆÛÛœİ]™\›”›Ùš[\ÈH\œ˜^Kš\Ğ\œ˜^J]™\›”›Ùš[\Ô˜]ÊHÈ]™\›”›Ùš[\Ô˜]Èˆ×NÃBˆÛÛœİØ[Ø[˜Ù[Ú[][][ÛˆH›ÛÛX[ŠŞ[˜Ôİ]\Ë˜Ø[Ø[˜Ù[Ú[][][ÛŠNÃBˆÛÛœİX[X[Ú[][][Û”]Y]YYH›ÛÛX[ŠŞ[˜Ôİ]\Ë›X[X[Ú[][][Û”]Y]YY
+NÃBˆÛÛœİØ[Ø[˜Ù[˜XÚÙÜ›İ[™\ÚÈH›ÛÛX[ŠŞ[˜Ôİ]\Ë˜Ø[Ø[˜Ù[˜XÚÙÜ›İ[™\ÚÊNÃBˆÛÛœİXİ]™P˜XÚÙÜ›İ[™\ÚÜÈH\œ˜^Kš\Ğ\œ˜^JŞ[˜Ôİ]\Ë˜Xİ]™P˜XÚÙÜ›İ[™\ÚÜÊCBˆÈŞ[˜Ôİ]\Ë˜Xİ]™P˜XÚÙÜ›İ[™\ÚÜÃBˆˆ×NÃBˆÛÛœİY[[ÜT\ÙHHŞ[˜Ôİ]\Ë›Y[[ÜOËœ\ÙNÃBˆYˆ
+ÉÜ[›š[™ÉË	Ù\œ›Ü‰×Kš[˜ÛY\ÊY[[ÜT\ÙJJHÃBˆÜ[”Ù][™ÜÑÜ›İ\Ë˜Y
+	ÛY[[ÜIÊNÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\Ë˜Y
+	ÛY[[ÜKZ\İÜIÊNÃBˆCBˆÛÛœİY[[ÜUZÙ\Ñ›Øİ\ÈHÉÜ[›š[™ÉË	Ù\œ›Ü‰×Kš[˜ÛY\ÊY[[ÜT\ÙJNÃBˆÛÛœİ\Ü^T\ÙHHY[[ÜUZÙ\Ñ›Øİ\ÈÈY[[ÜT\ÙHˆŞ[˜Ôİ]\Ëœ\ÙNÃBˆÛÛœİ\Ü^T\ÙSX™[HY[[ÜUZÙ\Ñ›Øİ\ÃBˆÈ
+Y[[ÜT\ÙHOOH	Ù\œ›Ü‰ÈÈ	ú+¬9oá¹i,z-)IÈˆ	ù¥m9ä!º+¬9oá¹.+IÊCBˆˆ	ÜŞ[˜Ô\ÙSX™[
+Ş[˜Ôİ]\Ëœ\ÙJ_IÜŞ[˜Ôİ]\Ëœ]Y]YOËØZ][™Õ\›œÈˆBˆÈ0­È9o¡H	ÜŞ[˜Ôİ]\Ëœ]Y]YKØZ][™Õ\›œßH:/k˜Bˆˆ	ÉßXÃBˆÛÛœİ[YHH[YQ›ÜŠİ]KÙ][™ÜÊNÃBˆÛÛœİÛØÚÈH›Ü›X]ÛÜ›Ø[[™\Šİ]JNÃBˆÛÛœİÛØÚĞ[˜ÚÜ™YH›ÛÛX[Šİ]K˜ÛØÚÏË˜[˜ÚÜ™Y
+NÃBˆÛÛœİÛØÚÓX™[HÛÜ›ÛØÚÓX™[
+İ]KÛØÚÊNÃBˆÛÛœİÜ˜”İ[\ÈHÜ˜’[›[™Tİ[\ÊÙ][™ÜË›Ü˜”ÜÚ][ÛŠNÃBˆÛÛœİİ\œ™[šY]ÈH’QUÔË™š[™
+šY]ÈOˆšY]ËšYOOHXİ]™UšY]ÊH’QUÔÖÌNÃBˆÛÛœİ\Ù\“˜[YHHİš[™ÊŞ[˜Ôİ]\Ë\Ù\“˜[YH	ÉÊKÓØØ[SİÙ\Ø\ÙJ
+NÃBˆÛÛœİ\Ü^T[ÜHHİ]Kœ[ÜCBˆ›X\
+\œÛÛˆOˆÃBˆÛÛœİ\Õ\Ù\ˆH›ÛÛX[ŠBˆ\œÛÛ‹š\Õ\Ù\ƒBˆ
+\Ù\“˜[YH	‰ˆ\œÛÛ‹›˜[YOËÓØØ[SİÙ\Ø\ÙJ
+HOOH\Ù\“˜[YJCBˆ
+NÃBˆ™]\›ˆÈ‹‹œ\œÛÛ‹\Õ\Ù\‹[›™\•›ÚXÙNˆ\Õ\Ù\ˆÈ	ÉÈˆ\œÛÛ‹š[›™\•›ÚXÙHNÃBˆJCBˆ™š[\Š\œÛÛˆOˆÙ][™ÜËœ™XÛÜ™^Y\Ú\˜Xİ\ˆOOH˜[ÙH\\œÛÛ‹š\Õ\Ù\ŠNÃBˆÛÛœİØ[™Y]T[ÜHHØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÃBˆÈ\Ü^T[ÜCBˆˆ\Ü^T[ÜK™š[\Š\œÛÛˆOˆ\œÛÛ‹šÛ›İÛYÙHOOH	ÚÛ›İÛ‰ÊNÃBˆÛÛœİš\ÚX›Q]™[ÈHØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÃBˆÈİ]K™]™[ÃBˆˆİ]K™]™[Ë™š[\Š]™[Oˆ]™[š\ÚXš[]HOOH	ÚY[‰ÊNÃBˆÛÛœİ™\Ù[\œÛÛ’YÈH™]ÈÙ]
+Ş[˜Ôİ]\Ëœ™\Ù[\œÛÛ’YÈ×JNÃBˆÛÛœİ™\Ù[[ÜHHØ[™Y]T[ÜK™š[\Š\œÛÛˆOˆ™\Ù[\œÛÛ’YËš\Ê\œÛÛ‹šY
+JNÃBˆÛÛœİXİ]™Q]™[ÈHÛÜ]™[Ñ›Ü‘\Ü^Jš\ÚX›Q]™[Ë™š[\Š\ĞXİ]™Q]™[
+Kİ]K™\Ù[[ÜJNÃBˆÛÛœİš\ÚX›T[ÜHHÛÜ[ÜQ›Ü‘\Ü^JBˆØ[™Y]T[ÜKBˆXİ]™Q]™[ËBˆ™\Ù[\œÛÛ’YËBˆİ]K˜ÛØÚÏË˜XœÛÛ]SZ[]KBˆ
+NÃBˆÛÛœİİ]ÛÛY\ÈHš\ÚX›Q]™[ÃBˆ™š[\Š]™[Oˆ
+]™[œİ]\ÈOOH	Ü™XYIÈ\Õ\›Z[˜[]™[
+]™[
+JH	‰ˆ]™[™[]™\OËœİ]HOOH	Ù^\™Y	ÊCBˆœÛÜ
+
+KŠHOˆXÚÓİ]ÛÛYSZ[]JŠHHXÚÓİ]ÛÛYSZ[]JJJNÃBˆÛÛœİ\œÛÛˆH\Ü^T[ÜK™š[™
+][HOˆ][KšYOOHÙ[XİY\œÛÛ’Y
+NÃBˆÛÛœİØ[“ØœÙ\™T\œÛÛˆH›ÛÛX[ŠBˆ\œÛÛƒBˆ	‰ˆØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÃBˆ	‰ˆ\\œÛÛ‹š\Õ\Ù\ƒBˆ
+NÃBˆÛÛœİ[™[™Ñ[]™\šY\ÈHİ]K™]™[Ë™š[\Š]™[Oˆ]™[™[]™\OËœİ]HOOH	Ü[™[™ÉÊK›[™İÃBˆÛÛœİ˜\œ˜]]™TŞ[˜ÈHŞ[˜Ôİ]\Ë›˜\œ˜]]™HßNÃBˆÛÛœİ˜\œ˜]]™S™YYÔÚ[][][ÛˆH›ÛÛX[Š˜\œ˜]]™TŞ[˜Ë›™YYÔÚ[][][ÛŠNÃBˆÛÛœİÜ˜”›ØÙ\ÜÚ[™ÈH
+BˆÉÜ]Y]YY	Ë	Ü[›š[™ÉË	ØØ[˜Ù[[™É×Kš[˜ÛY\ÊŞ[˜Ôİ]\Ëœ\ÙJCBˆŞ[˜Ôİ]\Ë›Y[[ÜOËœ\ÙHOOH	Ü[›š[™ÉÃBˆ
+NÃBˆÛÛœİİ]T™]š\Ú[ÛˆHX]›X^
+[X™\Šİ]Kœ™]š\Ú[ÛŠH
+NÃBˆÛÛœİ[œ™XYÛÜ›™]š\Ú[ÛˆHZ\ÓÜ[ˆ	‰ˆİ]T™]š\Ú[Ûˆˆ\İÙY[”™]š\Ú[ÛÃBˆÛÛœİ˜\œ˜]]™T›Û\š\ÚX›HH›ÛÛX[Šˆ˜\œ˜]]™S™YYÔÚ[][][Û‚ˆ	‰ˆ
+Ù][™ÜËœ[™[™ÔÚ[][][Û”›Û\[˜X›YŞ[˜Ôİ]\Ëœ\ÙHOOH	Ù\œ›Ü‰ÊBˆ
+NÂˆÛÛœİ˜\œ˜]]™S™YYĞ][[ÛˆH›ÛÛX[Šˆ˜\œ˜]]™T›Û\š\ÚX›BˆŞ[˜Ôİ]\Ë™Y]XÚ\Ú[ÛË˜]˜Z[X›BˆŞ[˜Ôİ]\Ëœ\ÙHOOH	Ù\œ›Ü‰ÃBˆY[[ÜT\ÙHOOH	Ù\œ›Ü‰ÃBˆ
+NÃBˆÛÛœİÛÜ›\Õ[œ™XY\]HH›ÛÛX[ŠBˆ[˜\œ˜]]™S™YYĞ][[ÛƒBˆ	‰ˆ
+[œ™XYÛÜ›™]š\Ú[Ûˆ[™[™Ñ[]™\šY\ÊCBˆ
+NÃBˆÛÛœİ™YYĞ][[ÛˆH˜\œ˜]]™S™YYĞ][[ÛˆÛÜ›\Õ[œ™XY\]NÃBˆÛÛœİ˜\œ˜]]™T›Û\Ù^HH˜\œ˜]]™S™YYÔÚ[][][ÛƒBˆÈ	Ôİš[™Ê˜\œ˜]]™TŞ[˜ËœÛİ\˜ÙRÙ^H˜\œ˜]]™TŞ[˜Ë›]\İY\ÜØYÙRY	Û]\İ	Ê_N‰ÜŞ[˜Ôİ]\Ëœ\ÙHOOH	Ù\œ›Ü‰ÈÈ	Ù\œ›Ü‰Èˆ	Ü[™[™ÉßXBˆˆ	ÉÎÃBˆÛÛœİØ\[ÛØ[”Ú[][]HH›ÛÛX[ŠBˆ˜\œ˜]]™T›Û\š\ÚX›Bˆ	‰ˆZ\ÓÜ[ƒBˆ	‰ˆ[Ü˜”›ØÙ\ÜÚ[™ÃBˆ	‰ˆÙ][™ÜË™[˜X›YBˆ	‰ˆÙ][™ÜËÛÜ›Ú[][][Û‘[˜X›YBˆ	‰ˆ˜\œ˜]]™T›Û\Ù^HOOH\ÛZ\ÜÙY˜\œ˜]]™T›Û\Ù^CBˆ
+NÃBˆÛÛœİØ\[Û•^HY[[ÜT\ÙHOOH	Ù\œ›Ü‰ÃBˆÈŞ[˜Ôİ]\Ë›Y[[ÜOË›Y\ÜØYÙH	ú+¬9oá¹¥m9ä!¹b&¹b&¹îâ¹.¡¹. 9."ÈPT{ï#9à®yo 9ç"ùç"ùc§ùfè;ïg‰ÃBˆˆY[[ÜT\ÙHOOH	Ü[›š[™ÉÃBˆÈŞ[˜Ôİ]\Ë›Y[[ÜK›Y\ÜØYÙH	ú+¬9oá¹«hùg*9 ¡9 ¡9¥-¹¢ï¹.+{ïgˆ
+;ïhx (³ 8m%ËJx§)ÉÃBˆˆÜ˜”›ØÙ\ÜÚ[™ÃBˆÈŞ[˜Ôİ]\Ë›Y\ÜØYÙH	úeg9i-9i%¹æ¡9.%¹åc9«hùg*9 ¡9 ¡:/ä:/k9.+x )ˆ
+8 (³ 3âH8 (³ H
+x§)ÉÃBˆˆŞ[˜Ôİ]\Ëœ\ÙHOOH	Ù\œ›Ü‰ÃBˆÈ	ùe%;ï#:/æz/k¹«hù¥¡ú/æ9¬¨y£ª9¯%9¢$9b§ÈPT{ï#9cëù.éyg*:/æzaã:aãz+å{ïg‰ÃBˆˆ˜\œ˜]]™T›Û\š\ÚX›BˆÈ	ÓX]›X^
+K[X™\Š˜\œ˜]]™TŞ[˜Ëœ[™[™Õ\›œÊHJ_H:/k¹¥¬9«hù¥¡ú/æ9¬¨y£ª9¯%;ï#:) yã¬9g*:/ïy."¹d%ûï'ØBˆˆ[™[™Ñ[]™\šY\ÈˆBˆÈ	Ü[™[™Ñ[]™\šY\ßH9§hycæ9c%¹«hù¡h¹¡hºgh:/äzeg9i-;ïg˜Bˆˆ[œ™XYÛÜ›™]š\Ú[ÛƒBˆÈ	ù.%¹åc9b&¹b&¹§"y.¡¹¥¬9cæ9c%»ï#9à®yo 9ç"ùç"ùd)ûïgˆ
+;ïhx (³ 8m%ËJx§)ÉÃBˆˆ	úeg9i-9.bùi%¹¦ ¹¥í¹k¢yk¢zgfzgfyæ¡;ïgˆ
+2æ3âræ
+IÎÃBˆÛÛœİÜ˜‘YÙTÚYHH™X\™\İÜ˜‘YÙTÚYJÙ][™ÜË›Ü˜”ÜÚ][ÛŠNÃBˆÛÛœİÜ˜‘YÙRY[ˆH›ÛÛX[ŠÙ][™ÜË›Ü˜‘YÙRYH	‰ˆZ\ÓÜ[ŠNÃBˆÛÛœİ™[™\™YÜ˜”İ[HHÜ˜‘YÙRY[‚ˆÈ[‘ØÚÓÜ˜’[›[™Tİ[JÙ][™ÜË›Ü˜”ÜÚ][Û‹Ü˜‘YÙTÚYJBˆˆÜ˜”İ[\Ë›Ü˜ÂˆÛÛœİÛØÚX[›İXÙ\ÈH
+\œ˜^Kš\Ğ\œ˜^JŞ[˜Ôİ]\ËœÛØÚX[Ë››İXÙ\ÊHÈŞ[˜Ôİ]\ËœÛØÚX[››İXÙ\Èˆ×JBˆ™š[\Š][HOˆZ][OËœ™XY]
+Bˆœ™]™\œÙJ
+NÂˆYˆ
+ÛØÚX[›İXÙUš\ÚX›RY	‰ˆ\ÛØÚX[›İXÙ\ËœÛÛYJ][HOˆ][KšYOOHÛØÚX[›İXÙUš\ÚX›RY
+JHÂˆÛØÚX[›İXÙUš\ÚX›RYH	ÉÎÂˆÚ[™İË˜ÛX\•[Y[İ]
+ÛØÚX[›İXÙU[Y\ŠNÂˆÛØÚX[›İXÙU[Y\ˆH[ÂˆBˆÛÛœİ™]Ù\İÛØÚX[›İXÙHHÛØÚX[›İXÙ\ÖÌH[ÂˆYˆ
+\ÛØÚX[›İXÙUš\ÚX›RY	‰ˆ™]Ù\İÛØÚX[›İXÙH	‰ˆ\ÛØÚX[›İXÙTÚİÛ’YËš\Ê™]Ù\İÛØÚX[›İXÙKšY
+JHÂˆÛØÚX[›İXÙUš\ÚX›RYH™]Ù\İÛØÚX[›İXÙKšYÂˆÛØÚX[›İXÙ\Ë™›Ü‘XXÚ
+][HOˆÛØÚX[›İXÙTÚİÛ’YË˜Y
+][KšY
+JNÂˆÚ[™İË˜ÛX\•[Y[İ]
+ÛØÚX[›İXÙU[Y\ŠNÂˆÛØÚX[›İXÙU[Y\ˆHÚ[™İËœÙ][Y[İ]
+
+
+HOˆÂˆYˆ
+ÛØÚX[›İXÙUš\ÚX›RYOOH™]Ù\İÛØÚX[›İXÙKšY
+HÂˆÛØÚX[›İXÙUš\ÚX›RYH	ÉÎÂˆÛØÚX[›İXÙU[Y\ˆH[Âˆ™[™\Š
+NÂˆBˆKŒ
+NÂˆBˆÛÛœİÛØÚX[›İXÙHHÛØÚX[›İXÙ\Ë™š[™
+][HOˆ][KšYOOHÛØÚX[›İXÙUš\ÚX›RY
+H[ÂˆÛÛœİÛØÚX[›İXÙT\œÛÛˆHÛØÚX[›İXÙBˆÈİ]Kœ[ÜK™š[™
+][HOˆİš[™Ê][OËšY	ÉÊHOOHİš[™ÊÛØÚX[›İXÙKœ\œÛÛ’Y	ÉÊJBˆˆ[ÂˆÛÛœİÛØÚX[›İXÙTYÙHHÛØÚX[›İXÙOËšÚ[™OOH	ÛY\ÜØYÙIÂˆÈ	ÛY\ÜØYÙ\ÉÂˆˆÛØÚX[›İXÙOËšÚ[™OOH	Û[ÛY[	ÂˆÈ	Û[ÛY[ÉÂˆˆ	ØÛÛXİÉÎÂˆÛÛœİÛØÚX[›İXÙSX™[HÛØÚX[›İXÙOËšÚ[™OOH	ÛY\ÜØYÙIÂˆÈ	ù¥¬9­¢9 kÉÂˆˆÛØÚX[›İXÙOËšÚ[™OOH	ÙœšY[™Ü™\]Y\İ	ÂˆÈ	ùioycâùå,ú+íÉÂˆˆÛØÚX[›İXÙOËšÚ[™OOH	ÙœšY[™Ü™[[İ™Y	ÂˆÈ	ùalùìîùcæ9c%‰Âˆˆ	ù¥¬9bª9  IÎÂƒBˆ]ÛÛ[H	ÉÎÃBˆYˆ
+Xİ]™UšY]ÈOOH	Û›İÉÊHÛÛ[H™[™\“›İÕšY]Êİ]KØœÙ\™\“[ÙKš\ÚX›T[ÜKXİ]™Q]™[Ë˜\œ˜]]™TŞ[˜ÊNÃBˆYˆ
+Xİ]™UšY]ÈOOH	Û[™ÜZIÊHÛÛ[H™[™\“[™ÜZUšY]ÊˆŞ[˜Ôİ]\Ë›[™ÜZHßKBˆ[™ÜZQ˜YBˆ[™ÜZSX\ØÛİİ™\œšYKBˆ[™ÜZT™XYX›SÜ[’Ù^\ËBˆ
+NÂˆYˆ
+Xİ]™UšY]ÈOOH	ÜÛØÚX[	ÊHÛÛ[H™[™\”ÛØÚX[šY]Êİ]KŞ[˜Ôİ]\ËœÛØÚX[ßKÙ][™ÜËÂˆ˜YˆÛØÚX[˜YˆÜ›İ\Ü[ˆÛØÚX[Ü›İ\Ü[‹ˆÜ›İ\Ù[XİYYÎˆÛØÚX[Ü›İ\Ù[XİYYËˆYÙNˆÛØÚX[YÙKˆÙX\˜Ú]Y\NˆÛØÚX[ÙX\˜Ú]Y\KˆJNÂˆYˆ
+Xİ]™UšY]ÈOOH	Ü[ÜIÊHÂˆÛÛœİ˜[Y[ÜRYÈH™]ÈÙ]
+İ]Kœ[ÜK›X\
+\œÛÛˆOˆ\œÛÛ‹šY
+JNÂˆ[ÜTÙ[XİYYÈH™]ÈÙ]
+Ë‹‹œ[ÜTÙ[XİYY×K™š[\ŠYOˆ˜[Y[ÜRYËš\ÊY
+JJNÂˆÛÛ[H™[™\”[ÜUšY]Êİ]KØœÙ\™\“[ÙKš\ÚX›T[ÜKÜ[ÛÛ[›ÛËÂˆÙ[Xİ[Û“[ÙNˆ[ÜTÙ[Xİ[Û“[ÙKˆÙ[XİYYÎˆ[ÜTÙ[XİYYËˆJNÂˆBˆYˆ
+Xİ]™UšY]ÈOOH	Øİ\œ™[ÉÊHÛÛ[H™[™\İ\œ™[ÕšY]Êİ]KXİ]™Q]™[ËÜ[ÛÛ[›ÛËÙ][™ÜÊNÃBˆYˆ
+Xİ]™UšY]ÈOOH	ÙXÚÙ\ÉÊHÛÛ[H™[™\‘XÚÙ\ÕšY]Êİ]Kİ]ÛÛY\ËÜ[ÛÛ[›ÛÊNÃBˆYˆ
+Xİ]™UšY]ÈOOH	ÛÜ[š[Û‰ÊHÛÛ[H™[™\”X›XÓÜ[š[Û•šY]ÊBˆİ]KBˆÃBˆ‹‹ŠŞ[˜Ôİ]\ËœX›XÓÜ[š[ÛˆßJKBˆ[\˜Xİ[Û\ŞNˆX›XÓÜ[š[ÛXİ[Û\ŞKBˆØ[™›Ş[\˜Xİ[Û\ŞNˆX›XÓÜ[š[Û”Ø[™›ŞXİ[Û\ŞKBˆKBˆX›XÓÜ[š[Û“[ÙKBˆÙ][™ÜËBˆ
+NÃBˆYˆ
+Xİ]™UšY]ÈOOH	ÛY[[ÜIÊHÛÛ[H™[™\“Y[[ÜUšY]Êİ]KØœÙ\™\“[ÙKÃBˆ]Y\NˆY[[ÜT]Y\KBˆš[\ˆY[[ÜQš[\‹Bˆš\ÚX›PÛİ[ˆY[[ÜUš\ÚX›PÛİ[BˆÜ[‘›ÛÎˆÜ[ÛÛ[›ÛËBˆÙ[XİYÙ^\ÎˆY[[ÜTÙ[XİYÙ^\ËBˆÛYT™[][Û‘š[\ˆY[[ÜPÛYT™[][Û‘š[\‹BˆJNÃBˆYˆ
+Xİ]™UšY]ÈOOH	Ø\˜Ú]™IÊHÛÛ[H™[™\\˜Ú]™UšY]Êİ]KÜ[ÛÛ[›ÛÊNÃBƒBˆ›Ûİ˜Û\ÜÓ˜[YHHØ‹\›Ûİ[YKIİ[Y_HØ‹\Ú^™KIÜÙ][™ÜËZTØØ[_H	ÜÙ][™ÜË™[˜X›YÈ	Ú\ËY[˜X›Y	Èˆ	Ú\ËY\ØX›Y	ßXÃBˆ›Ûİš[›™\’SHBˆ	ÜÙ][™ÜË›Ü˜‘[˜X›YOOH˜[ÙHÈBˆ]ÛˆÛ\ÜÏHØ‹]ÛÜ›[Ü˜ˆ	Ú\ÓÜ[ˆÈ	Ú\Ë[Ü[‰Èˆ	ÉßH	ÛÜ˜”›ØÙ\ÜÚ[™ÈÈ	Ú\Ë\›ØÙ\ÜÚ[™ÉÈˆ	ÉßH	ÜÙ][™ÜË›Ü˜”ÜÚ][ÛˆÈ	Ú\ËXİ\İÛK\ÜÚ][Û‰Èˆ	ÉßH	ÛÜ˜‘YÙRY[ˆÈ\ËYYÙKZY[ˆ\ËYYÙKIÛÜ˜‘YÙTÚY_Xˆ	ÉßHˆ\OH˜]ÛˆƒBˆİ[OH‰Ü™[™\™YÜ˜”İ[_Hˆ]K]Ø‹XXİ[ÛHÙÙÛK\[™[ƒBˆ\šXK[X™[H‰Ú\ÓÜ[ˆÈ	ù¥-º-mù.%¹åc: ã:gh‰Èˆ	ù¢dùo 9.%¹åc: ã:gh‰ßHƒBˆÜ[ˆÛ\ÜÏHØ‹[Ü˜‹Z[ÈÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹[Ü˜‹\š[™Èš[™Ë[Û™HÜÜ[‚ˆÜ[ˆÛ\ÜÏHØ‹[Ü˜‹\š[™Èš[™Ë]ÛÈÜÜ[‚ˆÜ[ˆÛ\ÜÏHØ‹[Ü˜‹YÛØ™Hˆ\šXKZY[HYHHÛ\ÜÏHØ‹[Ü˜‹[[™ÚOHÛ\ÜÏHØ‹[Ü˜‹XÛİYÈÚOHÛ\ÜÏHØ‹[Ü˜‹]\›Z[˜]ÜˆÚOHÛ\ÜÏHØ‹[Ü˜‹[Y™HÚOÜÜ[‚ˆÜ[ˆÛ\ÜÏHØ‹[Ü˜‹XÛÜ™HÜÜ[‚ˆ	Û˜\œ˜]]™S™YYĞ][[ÛƒBˆÈ	ÏHÛ\ÜÏHØ‹[Ü˜‹[›İXÙHˆ\šXKZY[HYHÚO‰ÃBˆˆÛÜ›\Õ[œ™XY\]CBˆÈ	ÏHÛ\ÜÏHØ‹[Ü˜‹]\]Hˆ\šXKZY[HYHÚO‰ÃBˆˆ	ÉßCBˆØ]ÛƒBˆ]ˆÛ\ÜÏHØ‹[Ü˜‹XØ\[Ûˆ	ÈZ\ÓÜ[ˆ	‰ˆ™YYĞ][[Ûˆ	‰ˆ[Ü˜‘YÙRY[ˆÈ	Ú\Ë]š\ÚX›IÈˆ	ÉßH	ØØ\[ÛØ[”Ú[][]HÈ	Ú\ËXXİ[Û‰Èˆ	ÉßHƒBˆİ[OH‰ÛÜ˜”İ[\Ë˜Ø\[ÛŸHˆ›ÛOH‰ØØ\[ÛØ[”Ú[][]HÈ	ÙX[ÙÉÈˆ	Üİ]\ÉßHˆ\šXK[]™OHœÛ]HƒBˆ	ØØ\[ÛØ[”Ú[][]HÈ	Ø\šXK[X™[H¹cäyã¬9§*¹£ª9¯%9«hù¥¡È‰Èˆ	ÉßOƒBˆ]ˆÛ\ÜÏHØ‹[Ü˜‹XØ\[Û‹XÛÜHƒBˆİ›Û™Ï¹.%¹åc: ã:ghÜİ›Û™ÏƒBˆÜ[‰Ù\ØØ\R[
+Ø\[Û•^
+_OÜÜ[ƒBˆÙ]ƒBˆ	ØØ\[ÛØ[”Ú[][]HÈBˆ]ˆÛ\ÜÏHØ‹[Ü˜‹XØ\[Û‹XXİ[ÛœÈƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHØ‹[Ü˜‹XØ\[Û‹[]\ˆˆ]K]Ø‹XXİ[ÛH™\ÛZ\ÜË[˜\œ˜]]™K\›Û\ƒBˆ]K\›Û\ZÙ^OH‰Ù\ØØ\P]Š˜\œ˜]]™T›Û\Ù^J_H¹ê#yd#Ø]ÛƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHØ‹[Ü˜‹XØ\[Û‹\Ş[˜Èˆ]K]Ø‹XXİ[ÛH›X[X[\Ş[˜ÈƒBˆ	ÜŞ[˜Ôİ]\Ëœ\ÙHOOH	Ù\œ›Ü‰ÈÈ	úaãy¥¬9£ª9¯%	Èˆ	ù£ª9¯%	ßCBˆØ]ÛƒBˆÙ]ƒBˆˆ	ÉßCBˆÙ]ƒBˆˆ	ÉßCBƒBˆ	Ú\ÓÜ[ˆÈBˆ]ˆÛ\ÜÏHØ‹\[™[\ØÜš[H	Ø[š[X]T[™[[˜[˜ÙHÈ	Ú\Ë[Ü[š[™ÉÈˆ	ÉßHˆ]K]Ø‹XXİ[ÛH˜ÛÜÙK\[™[ƒBˆÙXİ[ÛˆÛ\ÜÏHØ‹]Ú[™İÈˆ›ÛOH™X[ÙÈˆ\šXK[[Ù[HYHˆ\šXK[X™[H¹.%¹åc: ã:ghˆƒBˆXY\ˆÛ\ÜÏHØ‹]Ú[™İËZXY\ˆƒBˆ]ˆÛ\ÜÏHØ‹Xœ˜[™ƒBˆ	Ü™[™\œ˜[™X\šÊ
+_CBˆ]ƒBˆÜ[ˆÛ\ÜÏHØ‹Xœ˜[™[[™HO¹.%¹åc: ã:ghÚOO‰Ù\ØØ\R[
+YÚ[‘\Ü^U™\œÚ[ÛŠYÚ[•™\œÚ[ÛŠJ_OÚOÜÜ[ƒBˆºeg9i-9.bùi%»ï#9.%¹åc9.ãyg*9îéùîëOÜƒBˆÙ]ƒBˆÙ]ƒBˆ[YHÛ\ÜÏHØ‹[[Øš[KXÛØÚË][YHƒBˆ	ØÛØÚĞ[˜ÚÜ™YÈ]][YOH‰Ù\ØØ\P]ŠBˆ	ØÛØÚËYX\ŸKIÔİš[™ÊÛØÚË›[Û
+KœYİ\
+‹	Ì	Ê_KIÔİš[™ÊÛØÚË™^SÙ“[Û
+KœYİ\
+‹	Ì	Ê_U	ØÛØÚË[Y_XBˆ
+_H˜ˆ	ÉßCBˆ\šXK[X™[H‰ØÛØÚĞ[˜ÚÜ™YÈ9..ù.%¹åc9¥íºeí	Ù\ØØ\P]ŠÛØÚË[YJ_Xˆ	ù..ù.%¹åc9¥íºeí9l&¹§*¹¨(yaá‰ßHƒBˆ	ØÛØÚĞ[˜ÚÜ™YÈ\ØØ\R[
+ÛØÚË[YJHˆ	ËKN‹KIßCBˆİ[YOƒBˆ]ˆÛ\ÜÏHØ‹ZXY\‹XÙ[\ˆƒBˆ[YHÛ\ÜÏHØ‹]ÛÜ›XØ[[™\ˆˆ	ØÛØÚĞ[˜ÚÜ™YÈ]][YOH‰Ù\ØØ\P]ŠBˆ	ØÛØÚËYX\ŸKIÔİš[™ÊÛØÚË›[Û
+KœYİ\
+‹	Ì	Ê_KIÔİš[™ÊÛØÚË™^SÙ“[Û
+KœYİ\
+‹	Ì	Ê_U	ØÛØÚË[Y_XBˆ
+_H˜ˆ	ÉßH\šXK[X™[H‰Ù\ØØ\P]ŠÛØÚÓX™[
+_HƒBˆ	ØÛØÚĞ[˜ÚÜ™YÈBˆÜ[ˆÛ\ÜÏHØ‹XØ[[™\‹\YÙHˆ\šXKZY[HYHƒBˆÛX[‰Ù\ØØ\R[
+	ØÛØÚË›[Ûy§"
+_OÜÛX[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+İš[™ÊÛØÚË™^SÙ“[Û
+KœYİ\
+‹	Ì	ÊJ_OÜİ›Û™ÏƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹XØ[[™\‹XÛÜHƒBˆÛX[‰Ù\ØØ\R[
+	Üİ]KÛÜ››˜[Y_H0­È	ØÛØÚË˜Ø[[™\“˜[Y_X
+_OÜÛX[ƒBˆİ›Û™Ï‰Ù\ØØ\R[
+	ØÛØÚËYX\ŸH9nm	ØÛØÚË›[ÛH9§"
+_OÜİ›Û™ÏƒBˆ[O‰Ù\ØØ\R[
+ÛØÚË[YJ_OÙ[OƒBˆÜÜ[ƒBˆˆBˆÜ[ˆÛ\ÜÏHØ‹XØ[[™\‹\YÙHˆ\šXKZY[HYHƒBˆÛX[¹¥íºeíÜÛX[ƒBˆİ›Û™Ï°­ğ­ÏÜİ›Û™ÏƒBˆÜÜ[ƒBˆÜ[ˆÛ\ÜÏHØ‹XØ[[™\‹XÛÜHƒBˆÛX[‰Ù\ØØ\R[
+	Üİ]KÛÜ››˜[Y_H0­È9..ù.%¹åc:d§Ø
+_OÜÛX[ƒBˆİ›Û™Ï¹ëbyo¡zi¥¹«(y¨(yaáÜİ›Û™ÏƒBˆ[O¹£ª9¯%9d#¹nî¹êâÏÙ[OƒBˆÜÜ[ƒBˆCBˆİ[YOƒBˆÜ[ˆÛ\ÜÏHØ‹[]™K\İ]\È\ËIÙ\ØØ\P]Š\Ü^T\ÙJ_HƒBˆOÚO‰Ù\ØØ\R[
+\Ü^T\ÙSX™[
+_CBˆÜÜ[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹ZXY\‹XXİ[ÛœÈƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHØ‹\›İ[™XXİ[Ûˆˆ]K]Ø‹XXİ[ÛH˜ŞXÛK][YHƒBˆ\šXK[X™[H¹b!ù£h¹¥ézeíùi':eíÜ[ˆÛ\ÜÏHØ‹][YKYÛ\ÜÜ[Ø]ÛƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHØ‹\›İ[™XXİ[Ûˆ	ÜÙ][™ÜÓÜ[ˆÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆ]K]Ø‹XXİ[ÛHÙÙÛK\Ù][™ÜÈˆ\šXK[X™[H¹aj9l`:+¯¹ïkˆƒBˆÜ[ˆÛ\ÜÏHØ‹\Ù][™ÜËYÛ\ÜÜ[ƒBˆØ]ÛƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHØ‹\›İ[™XXİ[Ûˆˆ]K]Ø‹XXİ[ÛHÙÙÛK\[™[ƒBˆ\šXK[X™[H¹¥-º-mÈ¸ %Ø]ÛƒBˆÙ]ƒBˆÚXY\ƒBƒBˆ]ˆÛ\ÜÏHØ‹]Ú[™İËX›ÙHƒBˆ˜]ˆÛ\ÜÏHØ‹\ÚYK[˜]ˆƒBˆ	Õ’QUÔË›X\
+šY]ÈOˆBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ]]šY]Èˆ]K]šY]ÏH‰İšY]ËšYHƒBˆ\šXKXİ\œ™[H‰ØXİ]™UšY]ÈOOHšY]ËšYÈ	ÜYÙIÈˆ	Ù˜[ÙIßHƒBˆÛ\ÜÏH‰ØXİ]™UšY]ÈOOHšY]ËšYÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆOÚOÜ[ÛX[‰İšY]Ë™^YXœ›İßOÜÛX[İ›Û™Ï‰İšY]Ë›X™[OÜİ›Û™ÏÜÜ[ƒBˆØ]ÛƒBˆ
+Kš›Ú[Š	ÉÊ_CBˆ]ÛˆÛ\ÜÏHØ‹\ÚYK\Ş[˜ÈØ‹\Ú[KXXİ[Ûˆ	ØØ[Ø[˜Ù[Ú[][][ÛˆÈ	Ú\ËXØ[˜Ù[	ÈˆX[X[Ú[][][Û”]Y]YYÈ	Ú\Ë\]Y]YY	Èˆ	ÉßHƒBˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH‰ØØ[Ø[˜Ù[Ú[][][ÛˆÈ	ØØ[˜Ù[\Ú[][][Û‰Èˆ	ÛX[X[\Ş[˜ÉßHƒBˆ	ÛX[X[Ú[][][Û”]Y]YYÈ	Ù\ØX›Y	Èˆ	ÉßCBˆ]OH‰ØØ[Ø[˜Ù[Ú[][][ÛƒBˆÈ	ùcê¹`g9«h¹odùbcy.%¹åc9£ª9¯%;ï#9.#yolydãyam¹.å¹d#¹cì9.îùb¨IÃBˆˆX[X[Ú[][][Û”]Y]YYBˆÈ	ùmì¹£¤ºf'ûï&ù/&¹g*9odùbcyd#¹cì9.îùb¨yk¢yaj9îäù§gùd#º!ê¹bª9o 9iâÉÃBˆˆ\ŞCBˆÈ	ùodùbcy§"yd#¹cì9.îùb¨yg*:/ä:(c;ï&ùà®yaîùd#¹k¢yaj9£¤ºf'ûï#9.#y/&¹nm¹cäya¦y.%¹åc9â­¹  IÃBˆˆ	ù£ª9¯%9§ 9¥¬9«hù¥¡ÉßHƒBˆH\šXKZY[HYHÚOÜ[‰ØØ[Ø[˜Ù[Ú[][][ÛˆÈ	ù`g9«h¹£ª9¯%	ÈˆX[X[Ú[][][Û”]Y]YYÈ	ù£ª9¯%9mì¹£¤ºf'ÉÈˆ	ù£ª9¯%9.%¹åc	ßOÜÜ[ƒBˆØ]ÛƒBˆÛ˜]ƒBƒBˆ]ˆÛ\ÜÏHØ‹XÛÛ[XÛÛ[[ˆ	ØXİ]™UšY]ÈOOH	Û[™ÜZIÈÈ	Ú\Ë[[™ÜZKXÛÛ[[‰Èˆ	ÉßH	ØXİ]™UšY]ÈOOH	ÜÛØÚX[	ÈÈ	Ú\Ë\ÛØÚX[XÛÛ[[‰Èˆ	ÉßH‚ˆ]ˆÛ\ÜÏHØ‹]šY]ËZXY\ˆƒBˆ]Ü[‰Øİ\œ™[šY]Ë™^YXœ›İßOÜÜ[‰Øİ\œ™[šY]Ë›X™[OÚÙ]ƒBˆ]ˆÛ\ÜÏHØ‹]šY]ËZXY\‹]ÛÛÈƒBˆ	ØXİ]™UšY]ÈOOH	ÛÜ[š[Û‰ÈÈBˆ]ˆÛ\ÜÏHØ‹\X›XË\™XYÛ›KX˜YÙHØ‹\X›XË[[ÙKX˜YÙH	ÜÙ][™ÜËœX›XÓÜ[š[Û”™]™X[[ÙHOOH	Ü™[]˜[	ÈÈ	Ú\Ë\™[]˜[	Èˆ	Ú\Ë[ØœÙ\™IßHƒBˆ\šXK[]™OHœÛ]Hˆ]OH¹odùbcz"!¹ áy¦/ºg,¹ª(yo#ÈƒBˆOÚO‰ÜÙ][™ÜËœX›XÓÜ[š[Û”™]™X[[ÙHOOH	Ü™[]˜[	ÈÈ	ùæî9alù¥í¹¦/ºg,‰Èˆ	ù.áz)à¹kçÉßCBˆÙ]ƒBˆˆXİ]™UšY]ÈOOH	Û[™ÜZIÈÈˆ]ˆÛ\ÜÏHØ‹[[™ÜZKZXY\‹X˜YÙHˆ\šXK[X™[H¹ã¬¹. È¸ £W‹ˆ—¸ £¸§áÙ]‚ˆˆXİ]™UšY]ÈOOH	ÜÛØÚX[	ÈÈˆ]ˆÛ\ÜÏHØ‹\ÛØÚX[ZXY\‹X˜YÙHˆ\šXK[X™[H¹a¡yïkº`&º+«È¹/&º+çyâë9êâùl`Ù]‚ˆˆˆ]ˆÛ\ÜÏHØ‹[ØœÙ\™\‹\İÚ]ÚƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][ØœÙ\™\ˆˆ]K[[ÙOH˜˜XÚÜİYÙHƒBˆ\šXK\™\ÜÙYH‰ÛØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIßHƒBˆÛ\ÜÏH‰ÛØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈÈ	Ú\ËXXİ]™IÈˆ	ÉßH¹neyd#º)áº)äØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÙ][ØœÙ\™\ˆˆ]K[[ÙOHšÛ›İÛˆƒBˆ\šXK\™\ÜÙYH‰ÛØœÙ\™\“[ÙHOOH	ÚÛ›İÛ‰ßHƒBˆÛ\ÜÏH‰ÛØœÙ\™\“[ÙHOOH	ÚÛ›İÛ‰ÈÈ	Ú\ËXXİ]™IÈˆ	ÉßHº)äº"l¹¢`9çéOØ]ÛƒBˆÙ]ƒBˆCBˆ	ÖÉÛ›İÉË	Ü[ÜIË	Øİ\œ™[ÉË	ÛÜ[š[Û‰Ë	ÛY[[ÜI×Kš[˜ÛY\ÊXİ]™UšY]ÊHÈBˆ]Ûˆ\OH˜]ÛˆƒBˆÛ\ÜÏHØ‹]šY]Ë\Ù][™ÜËXXİ[Ûˆ	Û[Ù[TÙ][™ÜÕšY]ÈOOHXİ]™UšY]ÈÈ	Ú\ËXXİ]™IÈˆ	ÉßHƒBˆ]K]Ø‹XXİ[ÛHÙÙÛK[[Ù[K\Ù][™ÜÈˆ]K]šY]ÏH‰ØXİ]™UšY]ßHƒBˆ\šXK[X™[H‰Ù\ØØ\P]Šİ\œ™[šY]Ë›X™[
+_z+¯¹ïkˆˆ]OH‰Ù\ØØ\P]Šİ\œ™[šY]Ë›X™[
+_z+¯¹ïkˆƒBˆÜ[ˆÛ\ÜÏHØ‹\Ù][™ÜËYÛ\ˆ\šXKZY[HYHÜÜ[ƒBˆØ]ÛƒBˆˆ	ÉßCBˆÙ]ƒBˆÙ]ƒBˆ	Ü™[™\”Ş[˜Ôİš\
+Ş[˜Ôİ]\Ê_CBˆ]ˆÛ\ÜÏHØ‹]šY]ËXÛÛ[	ØXİ]™UšY]ÈOOH	Û[™ÜZIÈÈ	Ú\Ë[[™ÜZK]šY]ÉÈˆ	ÉßH	ØXİ]™UšY]ÈOOH	ÜÛØÚX[	ÈÈ	Ú\Ë\ÛØÚX[]šY]ÉÈˆ	ÉßH	İšY]ĞÚ[™ÙYÈ	Ú\ËY[\š[™ÉÈˆ	ÉßH‰ØÛÛ[OÙ]‚ˆ›Ûİ\ˆÛ\ÜÏHØ‹]Ú[™İËY›Ûİ\ˆƒBˆ]ˆÛ\ÜÏHØ‹Y›Ûİ\‹]ÛÜ›[Y]HƒBˆÜ[¹..ù.%¹åc	Ù\ØØ\R[
+ÛØÚÓX™[
+_OÜÜ[OÚOƒBˆÜ[Ryfç¹i#{ï&¹å,y.%¹åc:d§ùîäùë¥ùk§ºfaz %ù¥íÜÜ[OÚOƒBˆÜ[¹âë9æo{ï&¹.áyneyd#¹cëú)àOÜÜ[ƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹Y›Ûİ\‹]\ÚËXÛÛ›ÛÈƒBˆ]ÛˆÛ\ÜÏHØ‹\Ú[KXXİ[ÛˆØ‹Y›Ûİ\‹\Ú[K[[Øš[H	ØØ[Ø[˜Ù[Ú[][][ÛˆÈ	Ú\ËXØ[˜Ù[	ÈˆX[X[Ú[][][Û”]Y]YYÈ	Ú\Ë\]Y]YY	Èˆ	ÉßHƒBˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH‰ØØ[Ø[˜Ù[Ú[][][ÛˆÈ	ØØ[˜Ù[\Ú[][][Û‰Èˆ	ÛX[X[\Ş[˜ÉßHƒBˆ	ÛX[X[Ú[][][Û”]Y]YYÈ	Ù\ØX›Y	Èˆ	ÉßCBˆ]OH‰ØØ[Ø[˜Ù[Ú[][][ÛƒBˆÈ	ùcê¹`g9«h¹odùbcy.%¹åc9£ª9¯%;ï#9.#yolydãyam¹.å¹d#¹cì9.îùb¨IÃBˆˆX[X[Ú[][][Û”]Y]YYBˆÈ	ùmì¹£¤ºf'ûï&ù/&¹g*9odùbcyd#¹cì9.îùb¨yk¢yaj9îäù§gùd#º!ê¹bª9o 9iâÉÃBˆˆ\ŞCBˆÈ	ùodùbcy§"yd#¹cì9.îùb¨yg*:/ä:(c;ï&ùà®yaîùd#¹k¢yaj9£¤ºf'ûï#9.#y/&¹nm¹cäya¦y.%¹åc9â­¹  IÃBˆˆ	ù£ª9¯%9§ 9¥¬9«hù¥¡ÉßHƒBˆH\šXKZY[HYHÚOƒBˆÜ[‰ØØ[Ø[˜Ù[Ú[][][ÛˆÈ	ù`g9«h¹£ª9¯%	ÈˆX[X[Ú[][][Û”]Y]YYÈ	ù£ª9¯%9mì¹£¤ºf'ÉÈˆ	ù£ª9¯%9.%¹åc	ßOÜÜ[ƒBˆØ]ÛƒBˆ]ÛˆÛ\ÜÏHØ‹\Ú[KXXİ[ÛˆØ‹YÛØ˜[\İÜ	ØØ[Ø[˜Ù[˜XÚÙÜ›İ[™\ÚÈÈ	Ú\ËXØ[˜Ù[	Èˆ	ÉßHˆ\OH˜]ÛˆƒBˆ]K]Ø‹XXİ[ÛH˜Ø[˜Ù[X˜XÚÙÜ›İ[™]\ÚÜÈƒBˆ	ØØ[Ø[˜Ù[˜XÚÙÜ›İ[™\ÚÈÈ	ÉÈˆ	Ù\ØX›Y	ßCBˆ]OH‰ØØ[Ø[˜Ù[˜XÚÙÜ›İ[™\ÚÃBˆÈ9«hùg*:/ä:(c;ï&‰Ù\ØØ\P]ŠXİ]™P˜XÚÙÜ›İ[™\ÚÜËš›Ú[Š	øà IÊJ_xà ¹à®yaîù`g9«h¹aj:`ê9d#¹cì9.îùb¨XBˆˆ	ùodùbcy¬¨y§"y«hùg*:/ä:(c9¢%¹£¤ºf'ùæ¡9d#¹cì9.îùb¨IßHƒBˆH\šXKZY[HYHÚOÜ[¹`g9«h¹aj:`ê9d#¹cì9.îùb¨OÜÜ[ƒBˆØ]ÛƒBˆÙ]ƒBˆÙ›Ûİ\ƒBˆÙ]ƒBˆÙ]ƒBƒBˆÜÙXİ[ÛƒBˆ	ÜÙ][™ÜÓÜ[ˆÈBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË[^Y\ˆƒBˆ	Ü™[™\”Ù][™ÜÊBˆİ]KBˆÙ][™ÜËBˆŞ[˜Ôİ]\ËBˆÜ[”Ù][™ÜÑÜ›İ\ËBˆÜ[”Ù][™ÜÔİX™Ü›İ\ËBˆ\Q›Ü›Q˜YBˆš\ÚX›UYÑš[\”[\ÊÙ][™ÜÊKBˆYÑš[\Ø[™Y]\ËBˆÃBˆ]Y\NˆÛÜ››ÛÚÔ]Y\KBˆÛ›T[ÜNˆÛÜ››ÛÚÓÛ›T[ÜKBˆÛ›Q[˜X›YˆÛÜ››ÛÚÓÛ›Q[˜X›YBˆÙ[XİYYÎˆÛÜ››ÛÚÔÙ[XİYYËBˆKBˆ]™\›”›Ùš[\ËBˆÙ][™ÜÔÙXİ[Û‹Bˆ
+_CBˆÙ]ƒBˆˆ	ÉßCBˆ	Û[Ù[TÙ][™ÜÕšY]ÈÈBˆ]ˆÛ\ÜÏHØ‹\Ù][™ÜË[^Y\ˆØ‹[[Ù[K\Ù][™ÜË[^Y\ˆƒBˆ	Ü™[™\“[Ù[TÙ][™ÜÊBˆİ]KBˆÙ][™ÜËBˆŞ[˜Ôİ]\ËBˆ[Ù[TÙ][™ÜÕšY]ËBˆÜ[”Ù][™ÜÔİX™Ü›İ\ËBˆÃBˆ]Y\NˆÛÜ››ÛÚÔ]Y\KBˆÛ›T[ÜNˆÛÜ››ÛÚÓÛ›T[ÜKBˆÛ›Q[˜X›YˆÛÜ››ÛÚÓÛ›Q[˜X›YBˆÙ[XİYYÎˆÛÜ››ÛÚÔÙ[XİYYËBˆKBˆ
+_CBˆÙ]ƒBˆˆ	ÉßCBˆÙ]ƒBˆˆ	ÉßCBƒBˆ	Ù]™[›Ü›SÜ[ˆÈ™[™\‘]™[[Ù[
+İ]K]™[Y]Ü’Y
+Hˆ	ÉßCBˆ	ÛY[[ÜQY]ÜˆÈ™[™\“Y[[ÜQY]Ü“[Ù[
+İ]KY[[ÜQY]ÜŠHˆ	ÉßCBˆ	Ü\œÛÛ‘Y]ÜˆÈ™[™\”\œÛÛ‘Y]Ü“[Ù[
+İ]K\œÛÛ‘Y]ÜŠHˆ	ÉßCBˆ	İÛÜ›Y]Ü“Ü[ˆÈ™[™\•ÛÜ›Y]Ü“[Ù[
+İ]JHˆ	ÉßCBˆ	Ü™XÛÜ™Y]ÜˆÈ™[™\”™XÛÜ™Y]Ü“[Ù[
+İ]K™XÛÜ™Y]ÜŠHˆ	ÉßCBˆ	Ü\œÛÛˆÈ™[™\”\œÛÛ‘˜]Ù\Š\œÛÛ‹ØœÙ\™\“[ÙKİ]K˜ÛØÚË˜XœÛÛ]SZ[]KÃBˆØ[“ØœÙ\™NˆØ[“ØœÙ\™T\œÛÛ‹BˆØœÙ\˜][Ûˆ\œÛÛ“ØœÙ\˜][Û‹Bˆ\ŞKBˆJHˆ	ÉßCBˆ	ÜŞ[˜Ôİ]\Ë™Y]XÚ\Ú[ÛË˜]˜Z[X›HÈˆ]ˆÛ\ÜÏHØ‹YY]XÚÚXÙHˆ›ÛOH˜[\X[ÙÈˆ\šXK[[Ù[H™˜[ÙHƒBˆ\šXK[X™[YOHØ‹YY]XÚÚXÙK]]Hˆ\šXKY\ØÜšX™YOHØ‹YY]XÚÚXÙKY]Z[ƒBˆÜ[ˆÛ\ÜÏHØ‹YY]XÚÚXÙKY˜XÙHˆ\šXKZY[HYH‰Ù\ØØ\R[
+ĞTÕÑPÑTËØ\›š[™Ê_OÜÜ[ƒBˆ]ˆÛ\ÜÏHØ‹YY]XÚÚXÙKXÛÜHƒBˆİ›Û™ÈYHØ‹YY]XÚÚXÙK]]H¹¨à9­bùb,9mì¹£ª9¯%9«hù¥¡ú(ªù/ë¹¥.OÜİ›Û™ÏƒBˆYHØ‹YY]XÚÚXÙKY]Z[¹biù áxà y¥íºeí9¢%¹.®¹âjz(c9bª9§"ycæ9c%¹¥í¹nîº+«ºaãy£ª;ï&ú"éycê¹/ë¹«húe&ykeøà y¨!ùà®y¢%¹£ªº/§»ï#9cëù.éy/çyåfyc§ù£ª9¯%8à ÜƒBˆÙ]ƒBˆ]ˆÛ\ÜÏHØ‹YY]XÚÚXÙKXXİ[ÛœÈƒBˆ]Ûˆ\OH˜]ÛˆˆÛ\ÜÏHš\Ë\™\[ˆˆ]K]Ø‹XXİ[ÛHœ™\ÛÛ™K[Y\ÜØYÙKYY]ˆ]K[[ÙOHœ™\[ˆ¹£"y/ë¹¥.yd#¹«hù¥¡úaãy£ªØ]ÛƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœ™\ÛÛ™K[Y\ÜØYÙKYY]ˆ]K[[ÙOHšÙY\¹/çyåfyc§ù£ª9¯%Ø]ÛƒBˆÙ]ƒBˆÙ]ƒBˆˆ	ÉßBˆ	ÜÙ][™ÜË™[˜X›Y	‰ˆÛØÚX[›İXÙHÈˆ\ÚYHÛ\ÜÏHØ‹\ÛØÚX[[›İXÙHˆ›ÛOHœİ]\Èˆ\šXK[]™OHœÛ]H‚ˆ]ÛˆÛ\ÜÏHØ‹\ÛØÚX[[›İXÙK[XZ[ˆˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÛØÚX[[Ü[‹[›İXÙH‚ˆ]K[›İXÙKZYH‰Ù\ØØ\P]ŠÛØÚX[›İXÙKšY
+_H‚ˆ]K\YÙOH‰Ù\ØØ\P]ŠÛØÚX[›İXÙTYÙJ_H‚ˆ]KXÛÛ™\œØ][Û‹ZYH‰Ù\ØØ\P]ŠÛØÚX[›İXÙK˜ÛÛ™\œØ][Û’Y	ÉÊ_H‚ˆ	ÜÛØÚX[›İXÙT\œÛÛˆÈ™[™\”\œÛÛ]˜]\ŠÛØÚX[›İXÙT\œÛÛ‹	Ú\Ë\ÛØÚX[	ÊHˆ	ÏÜ[ˆÛ\ÜÏHØ‹\ÛØÚX[[›İXÙKX]˜]\ˆº+«ÏÜÜ[‰ßBˆÜ[ÛX[‰Ù\ØØ\R[
+ÛØÚX[›İXÙSX™[
+_IÜÛØÚX[›İXÙ\Ë›[™İˆHÈ0­È9cé¹§"H	ÜÛØÚX[›İXÙ\Ë›[™İH_H9§hXˆ	ÉßOÜÛX[İ›Û™Ï‰Ù\ØØ\R[
+ÛØÚX[›İXÙT\œÛÛË›˜[YH	ù.%¹åc: ã:ghº`&º+«ÉÊ_OÜİ›Û™Ï[O‰Ù\ØØ\R[
+ÛØÚX[›İXÙK^	ùà®yo 9§éyç"ÉÊ_OÙ[OÜÜ[‚ˆØ]Û‚ˆ]ÛˆÛ\ÜÏHØ‹\ÛØÚX[[›İXÙKXÛÜÙHˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛHœÛØÚX[Y\ÛZ\ÜË[›İXÙHˆ]K[›İXÙKZYH‰Ù\ØØ\P]ŠÛØÚX[›İXÙKšY
+_Hˆ\šXK[X™[H¹ê#yd#¹a£yç"È°åÏØ]Û‚ˆØ\ÚYO‚ˆˆ	ÉßBˆ	İØ\İÈˆ]ˆÛ\ÜÏHØ‹]Ø\İˆ›ÛOH‰Ü›Ûİ™]\Ù]Ø\İÛ™HOOH	Ù\œ›Ü‰ÈÈ	Ø[\	Èˆ	Üİ]\ÉßHˆ\šXK[]™OHœÛ]HƒBˆÜ[ˆ\šXKZY[HYH‰Ù\ØØ\R[
+ĞTÕÑPÑTÖÜ›Ûİ™]\Ù]Ø\İÛ™WHĞTÕÑPÑTËš[™›Ê_OÜÜ[ƒBˆ]İ›Û™Ï‰Ù\ØØ\R[
+ĞTÕÓP‘SÖÜ›Ûİ™]\Ù]Ø\İÛ™WHĞTÕÓP‘SËš[™›Ê_OÜİ›Û™Ï‰Ù\ØØ\R[
+Ø\İ
+_OÜÙ]ƒBˆÙ]ƒBˆˆ	ÉßCBˆ	ÜŞ[˜Ôİ]\Ë›X[X[[™ÏË˜]˜Z[X›HÈBˆ]ˆÛ\ÜÏHØ‹][™Ë]Ø\İˆ›ÛOHœİ]\ÈƒBˆÜ[‰Ù\ØØ\R[
+Ş[˜Ôİ]\Ë›X[X[[™Ë›X™[
+_OÜÜ[ƒBˆ]Ûˆ\OH˜]Ûˆˆ]K]Ø‹XXİ[ÛH[™Ë[X[X[¹¤©:e Ø]ÛƒBˆÙ]ƒBˆˆ	ÉßCBˆÃBˆ[™[[˜[˜ÙT[™[™ÈH˜[ÙNÃBƒBˆÛÛœİİ\œ™[ÛÛ[H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹]šY]ËXÛÛ[	ÊNÃBˆYˆ
+İ\œ™[ÛÛ[
+HÃBˆËÈH[Ù[HİÚ]Ú\ÈH™]È™XY[™ÈÛÛ^ˆ™]\Ú[™È[›İ\ˆš\Ú]	ÜÃBˆËÈØÜ›ÛÙ™œÙ]XYHHš\œİ›İÈÛÚÈÛ\Y™[™X]Hİ]\È˜\‹ƒBˆİ\œ™[ÛÛ[œØÜ›ÛÜHšY]ĞÚ[™ÙYÈˆ
+šY]ÔØÜ›ÛÜ™Ù]
+Xİ]™UšY]ÊH
+NÃBˆCBˆÛÛœİİ\œ™[[™ÜZPÚ]H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹[[™ÜZKXÚ][ÙÉÊNÃBˆYˆ
+İ\œ™[[™ÜZPÚ]
+HÃBˆYˆ
+[[™ÜZPÚ]ØÜ›Ûİ]Kš[š]X[^™Y[™ÜZPÚ]ØÜ›Ûİ]K˜]›İÛJHÃBˆİ\œ™[[™ÜZPÚ]œØÜ›ÛÜHİ\œ™[[™ÜZPÚ]œØÜ›ÛZYÚÃBˆH[ÙHÃBˆİ\œ™[[™ÜZPÚ]œØÜ›ÛÜHX]›Z[ŠBˆ[™ÜZPÚ]ØÜ›Ûİ]KÜBˆX]›X^
+İ\œ™[[™ÜZPÚ]œØÜ›ÛZYÚHİ\œ™[[™ÜZPÚ]˜ÛY[ZYÚ
+KBˆ
+NÃBˆCBˆ[™ÜZPÚ]ØÜ›Ûİ]HHÃBˆÜˆİ\œ™[[™ÜZPÚ]œØÜ›ÛÜBˆ]›İÛNˆ
+Bˆİ\œ™[[™ÜZPÚ]œØÜ›ÛZYÚBˆHİ\œ™[[™ÜZPÚ]œØÜ›ÛÜBˆHİ\œ™[[™ÜZPÚ]˜ÛY[ZYÚBˆ
+HHBˆ[š]X[^™YˆYKBˆNÃBˆCBˆÛÛœİİ\œ™[[™ÜZS›İ\ÈH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹[[™ÜZK[›İ\Ë\ØÜ›Û	ÊNÂˆYˆ
+İ\œ™[[™ÜZS›İ\ÊHÃBˆİ\œ™[[™ÜZS›İ\ËœØÜ›ÛÜHX]›Z[ŠBˆ[™ÜZS›İ\ÔØÜ›ÛÜBˆX]›X^
+İ\œ™[[™ÜZS›İ\ËœØÜ›ÛZYÚHİ\œ™[[™ÜZS›İ\Ë˜ÛY[ZYÚ
+KBˆ
+NÃBˆCBˆÛÛœİİ\œ™[Ù][™ÜÈH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\Ù][™ÜË\Üİ™\‰ÊNÂˆYˆ
+İ\œ™[Ù][™ÜÊHİ\œ™[Ù][™ÜËœØÜ›ÛÜHÙ][™ÜÔØÜ›ÛÜÂˆÛÛœİİ\œ™[ÛÜ››ÛÚÓ\İH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹]ÛÜ››ÛÚËY[K[\İ	ÊNÂˆYˆ
+İ\œ™[ÛÜ››ÛÚÓ\İ
+HÂˆİ\œ™[ÛÜ››ÛÚÓ\İœØÜ›ÛÜHX]›Z[ŠˆÛÜ››ÛÚÓ\İØÜ›ÛÜˆX]›X^
+İ\œ™[ÛÜ››ÛÚÓ\İœØÜ›ÛZYÚHİ\œ™[ÛÜ››ÛÚÓ\İ˜ÛY[ZYÚ
+Kˆ
+NÂˆBˆÛÛœİİ\œ™[ÛØÚX[Ú]H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\ÛØÚX[[ÙÉÊNÂˆYˆ
+İ\œ™[ÛØÚX[Ú]
+HÂˆYˆ
+\ÛØÚX[Ú]ØÜ›Ûİ]Kš[š]X[^™YÛØÚX[Ú]ØÜ›Ûİ]K˜]›İÛJHÂˆİ\œ™[ÛØÚX[Ú]œØÜ›ÛÜHİ\œ™[ÛØÚX[Ú]œØÜ›ÛZYÚÂˆH[ÙHÂˆİ\œ™[ÛØÚX[Ú]œØÜ›ÛÜHX]›Z[ŠˆÛØÚX[Ú]ØÜ›Ûİ]KÜˆX]›X^
+İ\œ™[ÛØÚX[Ú]œØÜ›ÛZYÚHİ\œ™[ÛØÚX[Ú]˜ÛY[ZYÚ
+Kˆ
+NÂˆBˆÛØÚX[Ú]ØÜ›Ûİ]HHÂˆÜˆİ\œ™[ÛØÚX[Ú]œØÜ›ÛÜˆ]›İÛNˆ
+ˆİ\œ™[ÛØÚX[Ú]œØÜ›ÛZYÚˆHİ\œ™[ÛØÚX[Ú]œØÜ›ÛÜˆHİ\œ™[ÛØÚX[Ú]˜ÛY[ZYÚˆ
+HHˆ[š]X[^™YˆYKˆNÂˆBˆÛÛœİİ\œ™[]™[›Ü›HH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH™]™[—IÊNÃBˆYˆ
+İ\œ™[]™[›Ü›H	‰ˆ]™[›Ü›Q˜Y
+HÃBˆ›Üˆ
+ÛÛœİÛ˜[YK˜[YWHÙˆØš™Xİ™[šY\Ê]™[›Ü›Q˜Y
+JHÃBˆÛÛœİšY[Hİ\œ™[]™[›Ü›K™[[Y[Ë›˜[YY][J˜[YJNÃBˆYˆ
+šY[	‰ˆ	İ˜[YIÈ[ˆšY[
+HšY[˜[YHH˜[YNÃBˆCBˆCBˆÛÛœİİ\œ™[ÛØÚÑ›Ü›HH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH˜ÛØÚÈ—IÊNÃBˆYˆ
+İ\œ™[ÛØÚÑ›Ü›H	‰ˆÛØÚÑ›Ü›Q˜Y
+HÃBˆ›Üˆ
+ÛÛœİÛ˜[YK˜[YWHÙˆØš™Xİ™[šY\ÊÛØÚÑ›Ü›Q˜Y
+JHÃBˆÛÛœİšY[Hİ\œ™[ÛØÚÑ›Ü›K™[[Y[Ë›˜[YY][J˜[YJNÃBˆYˆ
+šY[	‰ˆ	İ˜[YIÈ[ˆšY[
+HšY[˜[YHH˜[YNÃBˆCBˆCBˆYˆ
+™]š[İ\Ñ›Øİ\ÊHÃBˆÛÛœİÙ[XİÜˆH™]š[İ\Ñ›Øİ\ËšYBˆÈÉÙÛØ˜[\ËÔÔÏË™\ØØ\OËŠ™]š[İ\Ñ›Øİ\ËšY
+H™]š[İ\Ñ›Øİ\ËšYXBˆˆ™]š[İ\Ñ›Øİ\Ë›˜[YCBˆÈÛ˜[YOH‰ÙÛØ˜[\ËÔÔÏË™\ØØ\OËŠ™]š[İ\Ñ›Øİ\Ë›˜[YJH™]š[İ\Ñ›Øİ\Ë›˜[Y_H—XBˆˆ	ÉÎÃBˆÛÛœİšY[HÙ[XİÜˆÈ›Ûİœ]Y\TÙ[XİÜŠÙ[XİÜŠHˆ[ÃBˆYˆ
+šY[
+HÃBˆšY[™›Øİ\ÊÈ™]™[ØÜ›ÛˆYHJNÃBˆYˆ
+Bˆ\[ÙˆšY[œÙ]Ù[Xİ[Û”˜[™ÙHOOH	Ù[˜İ[Û‰ÃBˆ	‰ˆ[X™\‹š\Ò[YÙ\Š™]š[İ\Ñ›Øİ\ËœÙ[Xİ[Û”İ\
+CBˆ
+HÃBˆšY[œÙ]Ù[Xİ[Û”˜[™ÙJ™]š[İ\Ñ›Øİ\ËœÙ[Xİ[Û”İ\™]š[İ\Ñ›Øİ\ËœÙ[Xİ[Û‘[™
+NÃBˆCBˆCBˆCBˆ™[™\™YšY]ÈHXİ]™UšY]ÎÃBˆ™[™\™Y™]š\Ú[ÛˆHİ]T™]š\Ú[ÛÃBˆYˆ
+\ÓÜ[ŠH\İÙY[”™]š\Ú[ÛˆHX]›X^
+\İÙY[”™]š\Ú[Û‹İ]T™]š\Ú[ÛŠNÃBˆCBƒBˆ[˜İ[ÛˆÜÚ][Û“Ü˜‘[[Y[ÊJHÃBˆÛÛœİXÙYHÛ[\Ü˜”ÜÚ][ÛŠÈHJNÃBˆYˆ
+\XÙY
+H™]\›ˆ[ÃBˆÛÛœİÜ˜ˆH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹]ÛÜ›[Ü˜‰ÊNÃBˆÛÛœİØ\[ÛˆH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹[Ü˜‹XØ\[Û‰ÊNÃBˆYˆ
+Ü˜ŠHÃBˆÜ˜‹œİ[K›YH	ÜXÙY\ÃBˆÜ˜‹œİ[KÜH	ÜXÙY_\ÃBˆÜ˜‹œİ[KœšYÚH	Ø]]ÉÎÃBˆÜ˜‹œİ[K˜›İÛHH	Ø]]ÉÎÃBˆCBˆYˆ
+Ø\[ÛŠHÃBˆÛÛœİØ\[Û•ÚYHŒÎÃBˆÛÛœİØ\[Û–HXÙYˆØ\[Û•ÚY
+ÈBˆÈXÙYHØ\[Û•ÚYHLBˆˆXÙY
+ÈXÙYœÚ^™H
+ÈLÃBˆØ\[Û‹œİ[K›YH	ÓX]›X^
+X]›Z[ŠÚ[™İËš[›™\•ÚYHØ\[Û•ÚYHØ\[Û–
+J_\ÃBˆØ\[Û‹œİ[KÜH	ÜXÙYH
+È_\ÃBˆØ\[Û‹œİ[KœšYÚH	Ø]]ÉÎÃBˆØ\[Û‹œİ[K˜›İÛHH	Ø]]ÉÎÃBˆCBˆ™]\›ˆXÙYÃBˆCBƒBˆ[˜İ[ÛˆÜÚ][Û“Ü˜‘œ›ÛTÙ][™ÜÊÙ][™ÜÈHÙ]Ù][™ÜÊ
+JHÃBˆÛÛœİÜÚ][ÛˆHÙ][™ÜÏË›Ü˜”ÜÚ][ÛÃBˆYˆ
+\ÜÚ][ÛŠH™]\›ˆ[ÃBˆYˆ
+Ù][™ÜË›Ü˜‘YÙRYH	‰ˆZ\ÓÜ[ŠHÃBˆÛÛœİÜ˜ˆH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹]ÛÜ›[Ü˜‰ÊNÃBˆYˆ
+[Ü˜ŠH™]\›ˆ[ÃBˆÛÛœİXÙYH[‘ØÚÓÜ˜”ÜÚ][ÛŠÜÚ][Û‹™X\™\İÜ˜‘YÙTÚYJÜÚ][ÛŠJNÃBˆÜ˜‹œİ[K›YH	ÜXÙY\ÃBˆÜ˜‹œİ[KÜH	ÜXÙY_\ÃBˆÜ˜‹œİ[KœšYÚH	Ø]]ÉÎÃBˆÜ˜‹œİ[K˜›İÛHH	Ø]]ÉÎÃBˆ™]\›ˆXÙYÃBˆCBˆ™]\›ˆÜÚ][Û“Ü˜‘[[Y[ÊÜÚ][Û‹ÜÚ][Û‹JNÃBˆCBƒBˆ›Ûİ˜Y]™[\İ[™\Š	ÜÚ[\™İÛ‰Ë]™[OˆÃBˆÛÛœİÜ˜ˆH]™[\™Ù]˜ÛÜÙ\İ
+	ËØ‹]ÛÜ›[Ü˜‰ÊNÃBˆYˆ
+[Ü˜ˆ]™[˜]ÛˆOOH
+H™]\›ÃBˆYˆ
+Ü˜‹˜Û\ÜÓ\İ˜ÛÛZ[œÊ	Ú\ËYYÙKZY[‰ÊJHÃBˆÛÛœİÚYHHÜ˜‹˜Û\ÜÓ\İ˜ÛÛZ[œÊ	Ú\ËYYÙK[Y	ÊHÈ	ÛY	Èˆ	ÜšYÚ	ÎÃBˆÜ˜‹˜Û\ÜÓ\İœ™[[İ™J	Ú\ËYYÙKZY[‰Ë	Ú\ËYYÙK[Y	Ë	Ú\ËYYÙK\šYÚ	ÊNÃBˆÛÛœİØ]™YHÙ]Ù][™ÜÊ
+K›Ü˜”ÜÚ][ÛÃBˆÛÛœİš\ÚX›HHØ]™YY˜][š\ÚX›SÜ˜”ÜÚ][ÛŠÚYJNÃBˆÜÚ][Û“Ü˜‘[[Y[Êš\ÚX›Kš\ÚX›KJNÃBˆCBˆÛÛœİ™XİHÜ˜‹™Ù]›İ[™[™ĞÛY[™Xİ
+
+NÃBˆÜ˜‹œİ[KœÙ]›Ü\J	ÛY	Ë	Ü™Xİ›Y\	Ú[\Ü[	ÊNÃBˆÜ˜‹œİ[KœÙ]›Ü\J	İÜ	Ë	Ü™XİÜ\	Ú[\Ü[	ÊNÃBˆÜ˜‹œİ[KœÙ]›Ü\J	ÜšYÚ	Ë	Ø]]ÉË	Ú[\Ü[	ÊNÃBˆÜ˜‹œİ[KœÙ]›Ü\J	Ø›İÛIË	Ø]]ÉË	Ú[\Ü[	ÊNÃBˆÜ˜‹˜Û\ÜÓ\İ˜Y
+	Ú\ËXİ\İÛK\ÜÚ][Û‰ÊNÃBˆÜ˜‘˜YÈHÃBˆÚ[\’Yˆ]™[œÚ[\’YBˆİ\ˆ]™[˜ÛY[Bˆİ\Nˆ]™[˜ÛY[KBˆÜšYÚ[–ˆ™Xİ›YBˆÜšYÚ[–Nˆ™XİÜBˆ[İ™Yˆ˜[ÙKBˆˆ™Xİ›YBˆNˆ™XİÜBˆNÃBˆÜ˜‹œÙ]Ú[\Ø\\™OËŠ]™[œÚ[\’Y
+NÃBˆÜ˜‹˜Û\ÜÓ\İ˜Y
+	Ú\ËY˜YÙÚ[™ÉÊNÃBˆJNÃBƒBˆ›Ûİ˜Y]™[\İ[™\Š	ÜÚ[\›[İ™IË]™[OˆÃBˆYˆ
+[Ü˜‘˜YÈ]™[œÚ[\’YOOHÜ˜‘˜YËœÚ[\’Y
+H™]\›ÃBˆÛÛœİ[VH]™[˜ÛY[HÜ˜‘˜YËœİ\ÃBˆÛÛœİ[VHH]™[˜ÛY[HHÜ˜‘˜YËœİ\NÃBˆYˆ
+X]š\İ
+[V[VJHˆJHÜ˜‘˜YË›[İ™YHYNÃBˆYˆ
+[Ü˜‘˜YË›[İ™Y
+H™]\›ÃBˆÛÛœİXÙYHÜÚ][Û“Ü˜‘[[Y[ÊÜ˜‘˜YË›ÜšYÚ[–
+È[VÜ˜‘˜YË›ÜšYÚ[–H
+È[VJNÃBˆYˆ
+XÙY
+HÃBˆÜ˜‘˜YËHXÙYÃBˆÜ˜‘˜YËHHXÙYNÃBˆCBˆ]™[œ™]™[Y˜][
+
+NÃBˆJNÃBƒBˆÛÛœİš[š\ÚÜ˜‘˜YÈH\Ş[˜È]™[OˆÃBˆYˆ
+[Ü˜‘˜YÈ]™[œÚ[\’YOOHÜ˜‘˜YËœÚ[\’Y
+H™]\›ÃBˆÛÛœİÜ˜ˆH›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹]ÛÜ›[Ü˜‰ÊNÃBˆÜ˜Ë˜Û\ÜÓ\İœ™[[İ™J	Ú\ËY˜YÙÚ[™ÉÊNÃBˆÜ˜Ëœ™[X\ÙTÚ[\Ø\\™OËŠ]™[œÚ[\’Y
+NÃBˆÛÛœİÛÛ\]YHÜ˜‘˜YÎÃBˆÜ˜‘˜YÈH[ÃBˆYˆ
+XÛÛ\]Y›[İ™Y
+H™]\›ÃBƒBˆÛÛœİšY]ÜÜHš\İX[šY]ÜÜ›İ[™Ê
+NÃBˆÛÛœİÜ˜”Ú^™HH™\ÜÛœÚ]™SÜ˜”Ú^™JšY]ÜÜÚYšY]ÜÜšZYÚ
+NÃBˆÛÛœİX\™Ú[ˆHLÃBˆÛÛœİÛ˜\YHÛÛ\]Y
+ÈÜ˜”Ú^™HÈˆšY]ÜÜ›Y
+ÈšY]ÜÜÚYÈƒBˆÈšY]ÜÜ›Y
+ÈX\™Ú[ƒBˆˆšY]ÜÜœšYÚHÜ˜”Ú^™HHX\™Ú[ÃBˆÛÛœİXÙYHÜÚ][Û“Ü˜‘[[Y[ÊÛ˜\YÛÛ\]YJNÃBˆİ\™\ÜÓÜ˜ÛXÚÈHYNÃBˆÚ[™İËœÙ][Y[İ]
+
+
+HOˆÃBˆİ\™\ÜÓÜ˜ÛXÚÈH˜[ÙNÃBˆKŒ
+NÃBˆYˆ
+XÙY
+HÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÃBˆÜ˜”ÜÚ][ÛˆÈˆXÙYNˆXÙYHKBˆJNÃBˆCBˆNÃBˆ›Ûİ˜Y]™[\İ[™\Š	ÜÚ[\\	Ëš[š\ÚÜ˜‘˜YÊNÃBˆ›Ûİ˜Y]™[\İ[™\Š	ÜÚ[\˜Ø[˜Ù[	Ëš[š\ÚÜ˜‘˜YÊNÃBƒBˆ›Ûİ˜Y]™[\İ[™\Š	ØÛXÚÉË\Ş[˜È]™[OˆÃBˆÛÛœİ\™Ù]H]™[\™Ù]˜ÛÜÙ\İ
+	ÖÙ]K]Ø‹XXİ[Û—IÊNÃBˆYˆ
+]\™Ù]
+H™]\›ÃBˆYˆ
+Bˆ\™Ù]˜Û\ÜÓ\İ˜ÛÛZ[œÊ	İØ‹Y˜]Ù\‹\ØÜš[IÊCBˆ	‰ˆ]™[\™Ù]˜ÛÜÙ\İ
+	ËØ‹Y]™[Y›Ü›KØ‹\\œÛÛ‹Y˜]Ù\‰ÊCBˆ
+HÃBˆ™]\›ÃBˆCBˆÛÛœİXİ[ÛˆH\™Ù]™]\Ù]ØXİ[ÛÃBƒBˆYˆ
+Xİ[ÛˆOOH	ØÛÜÙK\[™[	ÊHÃBˆYˆ
+]™[\™Ù]OOH\™Ù]
+HÛÜÙJ
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	İÙÙÛK\[™[	ÊHÃBˆYˆ
+\™Ù]˜Û\ÜÓ\İ˜ÛÛZ[œÊ	İØ‹]ÛÜ›[Ü˜‰ÊH	‰ˆİ\™\ÜÓÜ˜ÛXÚÊHÃBˆİ\™\ÜÓÜ˜ÛXÚÈH˜[ÙNÃBˆ]™[œ™]™[Y˜][
+
+NÃBˆ™]\›ÃBˆCBˆ\ÓÜ[ˆÈÛÜÙJ
+HˆÜ[Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ù\ÛZ\ÜË[˜\œ˜]]™K\›Û\	ÊHÃBˆ\ÛZ\ÜÙY˜\œ˜]]™T›Û\Ù^HHİš[™Ê\™Ù]™]\Ù]œ›Û\Ù^H	ÉÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ]]šY]ÉÊHÂˆÛÛœİ™^šY]ÈH\™Ù]™]\Ù]šY]È	Û›İÉÎÃBˆYˆ
+Xİ]™UšY]ÈOOH	ÛY[[ÜIÈ	‰ˆ™^šY]ÈOOH	ÛY[[ÜIÊHY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆYˆ
+™^šY]ÈOOH	Û[™ÜZIÊHÃBˆ[™ÜZSX\ØÛİİ™\œšYHH	ÉÎÃBˆÚ[™İË˜ÛX\•[Y[İ]
+[™ÜZSX\ØÛİ[Y\ŠNÃBˆCBˆXİ]™UšY]ÈH™^šY]ÎÃBˆ[Ù[TÙ][™ÜÕšY]ÈH	ÉÎÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Û[™ÜZK\]	ÊHÃBˆÛÛœİ›İÈH]K››İÊ
+NÃBˆYˆ
+›İÈH[™ÜZT]Ú[™İĞ]N
+H[™ÜZT]Ûİ[
+ÏHNÃBˆ[ÙH[™ÜZT]Ûİ[HNÃBˆ[™ÜZT]Ú[™İĞ]H›İÎÃBƒBˆÛÛœİ™^İ]HH[™ÜZT]Ûİ[HBˆÈ	ÚÛ	ÃBˆˆ[™ÜZT]Ûİ[OOHÃBˆÈ	Ú\IÃBˆˆ	İØ]Ú	ÎÃBˆÚİÓ[™ÜZSX\ØÛİ™XXİ[ÛŠ™^İ]K™^İ]HOOH	ÚÛ	ÈÈMMLˆLL
+NÃBˆYˆ
+[™ÜZT]Ûİ[H
+H[™ÜZT]Ûİ[HÃBˆ™]\›ÃBˆCBƒBˆYˆ
+Xİ[ÛˆOOH	Û[™ÜZKXÛÜK\İ\Ü\XÚÉÊHÃBˆÛÛœİÛÜYYH]ØZ][›ÚÙPXİ[ÛŠ	Û[™ÜZKXÛÜK\İ\Ü\XÚÉËÃBˆY\ÜØYÙRYˆ\™Ù]™]\Ù]›Y\ÜØYÙRY	ÉËBˆJNÃBˆYˆ
+ÛÜYY
+HÚİÓ[™ÜZSX\ØÛİ™XXİ[ÛŠ	İØ]Ú	ËL
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+Xİ[ÛˆOOH	Û[™ÜZKXÛÛ™š\›K[›İIÊHÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Û[™ÜZKXÛÛ™š\›K[›İIÊNÃBˆYˆ
+ÛÛ\]Y
+HÃBˆ›İYJ	ø.!H:--9/cù.¡‰Ë	ÜİXØÙ\ÜÉÊNÃBˆÚİÓ[™ÜZSX\ØÛİ™XXİ[ÛŠ	Ú\IËLL
+NÃBˆH[ÙHÃBˆ™[™\Š
+NÃBˆCBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Û[™ÜZKY\ÛZ\ÜË[›İIÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Û[™ÜZKY\ÛZ\ÜË[›İIÊNÃBˆÚİÓ[™ÜZSX\ØÛİ™XXİ[ÛŠ	ÚÛ	ËL
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Û[™ÜZK\]\ÙK[›İIÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Û[™ÜZK\]\ÙK[›İIËÈ›İRYˆ\™Ù]™]\Ù]››İRY	ÉÈJNÃBˆÚİÓ[™ÜZSX\ØÛİ™XXİ[ÛŠ	ÚÛ	ËL
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Û[™ÜZK\™\İ[YK[›İIÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Û[™ÜZK\™\İ[YK[›İIËÈ›İRYˆ\™Ù]™]\Ù]››İRY	ÉÈJNÃBˆÚİÓ[™ÜZSX\ØÛİ™XXİ[ÛŠ	Û›İIËL
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Û[™ÜZKXØ[˜Ù[[›İIÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Û[™ÜZKXØ[˜Ù[[›İIËÈ›İRYˆ\™Ù]™]\Ù]››İRY	ÉÈJNÃBˆÚİÓ[™ÜZSX\ØÛİ™XXİ[ÛŠ	ÚÛ	ËL
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹]ÛÜ›YY]Ü‰ÊHÃBˆÛÜ›Y]Ü“Ü[ˆHYNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛÜÙK]ÛÜ›YY]Ü‰ÊHÃBˆÛÜ›Y]Ü“Ü[ˆH˜[ÙNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹\™XÛÜ™YY]Ü‰ÊHÃBˆ™XÛÜ™Y]ÜˆHÃBˆÚ[™ˆ\™Ù]™]\Ù]œ™XÛÜ™Ú[™OOH	Ø\˜Ú]™IÈÈ	Ø\˜Ú]™IÈˆ	ÙXÚÉËBˆYˆ\™Ù]™]\Ù]œ™XÛÜ™Y	ÉËBˆNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛÜÙK\™XÛÜ™YY]Ü‰ÊHÃBˆ™XÛÜ™Y]ÜˆH[ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ù[]K\™XÛÜ™	ÊHÃBˆÛÛœİÚ[™H\™Ù]™]\Ù]œ™XÛÜ™Ú[™OOH	Ø\˜Ú]™IÈÈ	Ø\˜Ú]™IÈˆ	ÙXÚÉÎÃBˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠ
+8àî×øàîÎÊH9èk¹k¦¹b(:fi:/æy§hIÚÚ[™OOH	ÙXÚÉÈÈ	ùfç¹hì	Èˆ	ùîª¹.¢Éßyd%ûï'ùb(:fi9d#¹cëù.éyå*9n¥z`ê9¤©:e 9 h¹i#xà ˜
+NÃBˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Ù[]K\™XÛÜ™	ËÃBˆÚ[™BˆYˆ\™Ù]™]\Ù]œ™XÛÜ™Y	ÉËBˆJNÃBˆYˆ
+ÛÛ\]Y	‰ˆ™XÛÜ™Y]ÜËšYOOH
+\™Ù]™]\Ù]œ™XÛÜ™Y	ÉÊJH™XÛÜ™Y]ÜˆH[ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ù^[™Y›ÛÉÈXİ[ÛˆOOH	ØÛÛ\ÙKY›ÛÉÊHÃBˆÛÛœİ™Yš^H\™Ù]™]\Ù]™›Û™Yš^	ÉÎÃBˆÛÛœİÚİ[Ü[ˆHXİ[ÛˆOOH	Ù^[™Y›ÛÉÎÃBˆË‹‹œ›Ûİœ]Y\TÙ[XİÜ[
+	ËØ‹Y›ÛÙ]KY›ÛZÙ^WIÊWCBˆ™š[\Š][HOˆ\™Yš^İš[™Ê][K™]\Ù]™›ÛÙ^H	ÉÊKœİ\ÕÚ]
+™Yš^
+JCBˆ™›Ü‘XXÚ
+][HOˆÃBˆ][K›Ü[ˆHÚİ[Ü[ÃBˆÛÛœİÙ^HH][K™]\Ù]™›ÛÙ^NÃBˆYˆ
+ZÙ^JH™]\›ÃBˆYˆ
+Úİ[Ü[ŠHÜ[ÛÛ[›ÛË˜Y
+Ù^JNÃBˆ[ÙHÜ[ÛÛ[›ÛË™[]JÙ^JNÃBˆJNÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ][Y[[ÜKYš[\‰ÊHÃBˆY[[ÜQš[\ˆH\™Ù]™]\Ù]™š[\ˆ	ØXİ]™IÎÃBˆY[[ÜUš\ÚX›PÛİ[HLÃBˆY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹[Y[[ÜKYY]Ü‰ÊHÃBˆY[[ÜQY]ÜˆHÃBˆÚ[™ˆ\™Ù]™]\Ù]›Y[[ÜRÚ[™	Ù˜Xİ	ËBˆYˆ\™Ù]™]\Ù]›Y[[ÜRY	ÉËBˆNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛÜÙK[Y[[ÜKYY]Ü‰ÊHÃBˆY[[ÜQY]ÜˆH[ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ]XÛYKX\˜Ú]™K\İ]IÊHÃBˆÛÛœİ\˜Ú]™YH\™Ù]™]\Ù]˜\˜Ú]™YOOH	İYIÎÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜÙ]XÛYKX\˜Ú]™K\İ]IËÃBˆYˆ\™Ù]™]\Ù]˜ÛYRY	ÉËBˆ\˜Ú]™YBˆJNÃBˆYˆ
+ÛÛ\]YOOH˜[ÙH	‰ˆ\˜Ú]™Y	‰ˆY[[ÜQš[\ˆOOH	Ü™\ÛÛ™YXÛY\ÉÊHÃBˆY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	İÙÙÛK[Y[[ÜKY›YÉÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İÙÙÛK[Y[[ÜKY›YÉËÃBˆÚ[™ˆ\™Ù]™]\Ù]›Y[[ÜRÚ[™	Ù˜Xİ	ËBˆYˆ\™Ù]™]\Ù]›Y[[ÜRY	ÉËBˆšY[ˆ\™Ù]™]\Ù]›Y[[ÜQšY[	Ú[\Ü[	ËBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ[Xİ]š\ÚX›K[Y[[ÜIÊHÃBˆ]][\ÈH×NÃBˆHÃBˆ][\ÈH”ÓÓ‹œ\œÙJ\™Ù]™]\Ù]›Y[[ÜR][\È	Ö×IÊNÃBˆHØ]ÚÃBˆ][\ÈH×NÃBˆCBˆY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+Bˆ][\Ë›X\
+][HOˆ	Ú][KšÚ[™N‰Ú][KšYX
+KBˆ
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛX\‹[Y[[ÜK\Ù[Xİ[Û‰ÊHÃBˆY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ø[ËY[]K[Y[[ÜIÊHÃBˆÛÛœİ][\ÈHË‹‹›Y[[ÜTÙ[XİYÙ^\×K›X\
+Ù^HOˆÃBˆÛÛœİÙ\\˜]ÜˆHÙ^Kš[™^ÙŠ	Î‰ÊNÃBˆ™]\›ˆÃBˆÚ[™ˆÙ\\˜]ÜˆHÈÙ^KœÛXÙJÙ\\˜]ÜŠHˆ	Ù˜Xİ	ËBˆYˆÙ\\˜]ÜˆHÈÙ^KœÛXÙJÙ\\˜]Üˆ
+ÈJHˆÙ^KBˆNÃBˆJNÃBˆYˆ
+Z][\Ë›[™İ
+H™]\›ÃBˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠBˆ
+8àî×øàîÎÊH9èk¹k¦¹b(:fi:`"y.+yæ¡	Ú][\Ë›[™İH9§hz+¬9oá¹d%ûï'×¹b(:fi9bcy/&º!ê¹bª9nî¹êâù h¹i#yà®{ï#:e yk¦º+¬9oá¹.#y/&º(ªùb(8à ˜Bˆ
+NÃBˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Ø[ËY[]K[Y[[ÜIËÈ][\ÈJNÃBˆYˆ
+ÛÛ\]YOOH˜[ÙJHY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛX\‹Yš[\™Y[Y[[ÜIÊHÃBˆÛÛœİİ]HHÙ]İ]J
+NÃBˆÛÛœİY[[ÜHHİ]KœİÜSY[[ÜHÈ˜XİÎˆ×KÛY\Îˆ×Kİ[[X\šY\Îˆ×HNÃBˆÛÛœİ›Ü›X[^™Yš[\ˆHÉØXİ]™IË	Ù˜XİÉË	ØÛY\ÉË	Ü™\ÛÛ™YXÛY\ÉË	Ø\˜Ú]™YXÛY\ÉË	Ù\\ÛÙ\ÉË	Ø[	×Kš[˜ÛY\ÊY[[ÜQš[\ŠCBˆÈY[[ÜQš[\ƒBˆˆ	ØXİ]™IÎÃBˆÛÛœİš\ÚX›Q˜XİH˜XİOˆ
+Bˆ
+ØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈ˜Xİš\ÚXš[]HOOH	ÚY[‰ÊCBˆ	‰ˆY˜Xİ›ØÚÙYBˆ	‰ˆY[[ÜR][SX]Ú\Ê˜XİY[[ÜT]Y\JCBˆ	‰ˆ
+Bˆ›Ü›X[^™Yš[\ˆOOH	Ø[	ÃBˆ›Ü›X[^™Yš[\ˆOOH	Ù˜XİÉÃBˆ
+›Ü›X[^™Yš[\ˆOOH	ØXİ]™IÈ	‰ˆÉØXİ]™IË	Ù\Ü]Y	×Kš[˜ÛY\Ê˜Xİœİ]\ÊJCBˆ
+CBˆ
+NÃBˆÛÛœİš\ÚX›PÛYHHÛYHOˆ
+Bˆ
+ØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÈÛYKš\ÚXš[]HOOH	ÚY[‰ÊCBˆ	‰ˆXÛYK›ØÚÙYBˆ	‰ˆY[[ÜR][SX]Ú\ÊÛYKY[[ÜT]Y\JCBˆ	‰ˆY[[ÜPÛYT™[][Û“X]Ú\ÊÛYKY[[ÜPÛYT™[][Û‘š[\‹İ]JCBˆ	‰ˆ
+Bˆ›Ü›X[^™Yš[\ˆOOH	Ø[	ÃBˆ
+›Ü›X[^™Yš[\ˆOOH	ØÛY\ÉÈ	‰ˆXÛYK˜\˜Ú]™Y
+CBˆ
+›Ü›X[^™Yš[\ˆOOH	Ü™\ÛÛ™YXÛY\ÉÈ	‰ˆXÛYK˜\˜Ú]™Y	‰ˆÉÜ™\ÛÛ™Y	Ë	Ù\ØØ\™Y	×Kš[˜ÛY\ÊÛYKœİ]\ÊJCBˆ
+›Ü›X[^™Yš[\ˆOOH	Ø\˜Ú]™YXÛY\ÉÈ	‰ˆÛYK˜\˜Ú]™Y
+CBˆ
+Bˆ›Ü›X[^™Yš[\ˆOOH	ØXİ]™IÃBˆ	‰ˆXÛYK˜\˜Ú]™YBˆ	‰ˆÉÛÜ[‰Ë	Ù]™[Ü[™ÉË	ÙXÚÙY	Ë	İšYÙÙ\™Y	×Kš[˜ÛY\ÊÛYKœİ]\ÊCBˆ
+CBˆ
+CBˆ
+NÃBˆÛÛœİš\ÚX›Tİ[[X\HHİ[[X\HOˆ
+BˆØœÙ\™\“[ÙHOOH	Ø˜XÚÜİYÙIÃBˆ	‰ˆ\İ[[X\K›ØÚÙYBˆ	‰ˆY[[ÜR][SX]Ú\Êİ[[X\KY[[ÜT]Y\JCBˆ	‰ˆÉØ[	Ë	Ù\\ÛÙ\É×Kš[˜ÛY\Ê›Ü›X[^™Yš[\ŠCBˆ
+NÃBˆÛÛœİ][\ÈHÃBˆ‹‹ŠY[[ÜK™˜XİÈ×JK™š[\Šš\ÚX›Q˜Xİ
+K›X\
+][HOˆ
+ÈÚ[™ˆ	Ù˜Xİ	ËYˆ][KšYJJKBˆ‹‹ŠY[[ÜK˜ÛY\È×JK™š[\Šš\ÚX›PÛYJK›X\
+][HOˆ
+ÈÚ[™ˆ	ØÛYIËYˆ][KšYJJKBˆ‹‹ŠY[[ÜKœİ[[X\šY\È×JK™š[\Šš\ÚX›Tİ[[X\JK›X\
+][HOˆ
+ÈÚ[™ˆ	Üİ[[X\IËYˆ][KšYJJKBˆNÃBˆYˆ
+Z][\Ë›[™İ
+HÃBˆ›İYJ	ú/æy.*¹ëfú`"zaã9¬¨y§"ycëùb(:fi9æ¡9§*ºe yk¦º+¬9oá»ïg‰Ë	Ú[™›ÉÊNÃBˆ™]\›ÃBˆCBˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠBˆ
+8àî×øàîÎÊH9l!¹®!yä!¹odùbcz# ùfí9a¡H	Ú][\Ë›[™İH9§hy§*ºe yk¦º+¬9oá¸à —ºe yk¦º+¬9oá¹/&¹/çyåf{ï#9®!yä!¹bcy/&º!ê¹bª9nî¹êâù h¹i#yà®xà ˜Bˆ
+NÃBˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Ø[ËY[]K[Y[[ÜIËÈ][\ÈJNÃBˆYˆ
+ÛÛ\]YOOH˜[ÙJHY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+Xİ[ÛˆOOH	Ù[]K[Y[[ÜKZ][IÊHÃBˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠ	Ê8àî×øàîÎÊH9èk¹k¦¹b(:fi:/æy§hz+¬9oá¹d%ûï'ù«i9¤ãy/g9cëù.éyå*9n¥z`ê9¤©:e 9 h¹i#xà ‰ÊNÃBˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Ù[]K[Y[[ÜKZ][IËÃBˆÚ[™ˆ\™Ù]™]\Ù]›Y[[ÜRÚ[™	Ù˜Xİ	ËBˆYˆ\™Ù]™]\Ù]›Y[[ÜRY	ÉËBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÛØY[[Ü™K[Y[[ÜIÊHÃBˆY[[ÜUš\ÚX›PÛİ[
+ÏHLÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	İÙÙÛK\Ù][™ÜÉÊHÃBˆÛÛœİÜ[š[™ÈH\Ù][™ÜÓÜ[ÃBˆÙ][™ÜÓÜ[ˆHÜ[š[™ÎÃBˆYˆ
+Ü[š[™ÊHÃBˆ[Ù[TÙ][™ÜÕšY]ÈH	ÉÎÃBˆYˆ
+VÉØÛÛ[[Û‰Ë	Ú[š™Xİ[Û‰Ë	ØÛÛ›™Xİ[Û‰Ë	ØY˜[˜ÙY	×Kš[˜ÛY\ÊÙ][™ÜÔÙXİ[ÛŠJHÃBˆÙ][™ÜÔÙXİ[ÛˆH	ØÛÛ[[Û‰ÎÃBˆCBˆÜ[”Ù][™ÜÑÜ›İ\ÈH™]ÈÙ]
+
+NÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\ÈH™]ÈÙ]
+
+NÃBˆÙ][™ÜÔØÜ›ÛÜHÃBˆH[ÙHÃBˆÛØÚÑ›Ü›Q˜YH[ÃBˆYÑš[\‘˜Y[\ÈH[ÃBˆYÑš[\Ø[™Y]\ÈH×NÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ][™ÜË\ÙXİ[Û‰ÊHÃBˆÛÛœİ™\]Y\İYHİš[™Ê\™Ù]™]\Ù]œÙXİ[Ûˆ	ØÛÛ[[Û‰ÊNÃBˆÙ][™ÜÔÙXİ[ÛˆHÉØÛÛ[[Û‰Ë	Ú[š™Xİ[Û‰Ë	ØÛÛ›™Xİ[Û‰Ë	ØY˜[˜ÙY	×Kš[˜ÛY\Ê™\]Y\İY
+CBˆÈ™\]Y\İYBˆˆ	ØÛÛ[[Û‰ÎÃBˆÙ][™ÜÔØÜ›ÛÜHÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹YÛØ˜[\Ù][™ÜË\ÙXİ[Û‰ÊHÃBˆÛÛœİ™\]Y\İYHİš[™Ê\™Ù]™]\Ù]œÙXİ[Ûˆ	ØÛÛ[[Û‰ÊNÃBˆÙ][™ÜÔÙXİ[ÛˆHÉØÛÛ[[Û‰Ë	Ú[š™Xİ[Û‰Ë	ØÛÛ›™Xİ[Û‰Ë	ØY˜[˜ÙY	×Kš[˜ÛY\Ê™\]Y\İY
+CBˆÈ™\]Y\İYBˆˆ	ØÛÛ[[Û‰ÎÃBˆ[Ù[TÙ][™ÜÕšY]ÈH	ÉÎÃBˆÙ][™ÜÓÜ[ˆHYNÃBˆÜ[”Ù][™ÜÑÜ›İ\ÈH™]ÈÙ]
+
+NÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\ÈH™]ÈÙ]
+
+NÃBˆÙ][™ÜÔØÜ›ÛÜHÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	İÙÙÛK[[Ù[K\Ù][™ÜÉÊHÃBˆÛÛœİ™\]Y\İYšY]ÈH\™Ù]™]\Ù]šY]È[Ù[TÙ][™ÜÕšY]ÈXİ]™UšY]ÎÃBˆÛÛœİÜ[š[™ÈH[Ù[TÙ][™ÜÕšY]ÈOOH™\]Y\İYšY]ÎÃBˆ[Ù[TÙ][™ÜÕšY]ÈHÜ[š[™ÈÈ™\]Y\İYšY]Èˆ	ÉÎÃBˆYˆ
+Ü[š[™ÊHÃBˆÙ][™ÜÓÜ[ˆH˜[ÙNÃBˆÙ][™ÜÔØÜ›ÛÜHÃBˆËÈ9§oùgeú+¯¹ïk¹mì¹îãù¦+ù¢`ynlùîäù§¡;ïg¹.#ya£y..¹.¡¹¥éù .ú+¯¹ïk¹l`¹î©úh¡9leyo 9. 9h!¹ieùj øà ƒBˆÜ[”Ù][™ÜÑÜ›İ\ÈH™]ÈÙ]
+
+NÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\ÈH™]ÈÙ]
+
+NÃBˆH[ÙHÃBˆÛØÚÑ›Ü›Q˜YH[ÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØY]YËYš[\‹\[IÊHÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİİ\œ™[Hš\ÚX›UYÑš[\”[\ÊÙ][™ÜÊNÃBˆYÑš[\‘˜Y[\ÈHË‹‹˜İ\œ™[ÈÜ[ˆ	ÉËÛÜÙNˆ	ÉÈWNÃBˆÚÚ\YÑš[\‘˜YØ\\™HHYNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ü™[[İ™K]YËYš[\‹\[IÊHÃBˆÛÛœİ[™^H[X™\Š\™Ù]™]\Ù]š[™^
+NÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİİ\œ™[Hš\ÚX›UYÑš[\”[\ÊÙ][™ÜÊK™š[\Š
+ËJHOˆHOOH[™^
+NÃBˆÚÚ\YÑš[\‘˜YØ\\™HHYNÃBˆ]ØZ]\œÚ\İYÑš[\”[\Êİ\œ™[
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜØØ[‹]YËXØ[™Y]\ÉÊHÃBˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÜØØ[‹]YËXØ[™Y]\ÉËÃBˆÛİ[ˆ[X™\Š\™Ù]™]\Ù]˜Ûİ[
+HKBˆJNÃBˆYÑš[\Ø[™Y]\ÈH\œ˜^Kš\Ğ\œ˜^J™\İ[
+HÈ™\İ[ˆ×NÃBˆÜ[”Ù][™ÜÑÜ›İ\Ë˜Y
+	ØY˜[˜ÙY	ÊNÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\Ë˜Y
+	ØY˜[˜ÙY]YÙš[\‰ÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ø\K]YËXØ[™Y]\ÉÊHÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİİ\œ™[Hš\ÚX›UYÑš[\”[\ÊÙ][™ÜÊK›X\
+[HOˆ
+È‹‹œ[HJJNÃBˆÛÛœİÙ[XİYHË‹‹œ›Ûİœ]Y\TÙ[XİÜ[
+	ÖÙ]K]Ø‹]YËXØ[™Y]KZ[™^N˜ÚXÚÙY	ÊWCBˆ›X\
+[œ]OˆYÑš[\Ø[™Y]\ÖÓ[X™\Š[œ]™]\Ù]Ø•YĞØ[™Y]R[™^
+WJCBˆ™š[\Š›ÛÛX[ŠCBˆ™š[\Š][HOˆZ][K˜[™XYPYY
+NÃBˆÛÛœİÙY[ˆH™]ÈÙ]
+İ\œ™[›X\
+[HOˆ	Ôİš[™Ê[K›Ü[ˆ	ÉÊKš[J
+_WL	Ôİš[™Ê[K˜ÛÜÙH	ÉÊKš[J
+_X
+JNÃBˆ]YYHÃBˆ›Üˆ
+ÛÛœİ][HÙˆÙ[XİY
+HÃBˆÛÛœİÙ^HH	Ú][K›Ü[ŸWL	Ú][K˜ÛÜÙ_XÃBˆYˆ
+ÙY[‹š\ÊÙ^JHİ\œ™[›[™İHÌ
+HÛÛ[YNÃBˆİ\œ™[œ\Ú
+ÈÜ[ˆ][K›Ü[‹ÛÜÙNˆ][K˜ÛÜÙHJNÃBˆÙY[‹˜Y
+Ù^JNÃBˆYY
+ÏHNÃBˆCBˆ]ØZ]\œÚ\İYÑš[\”[\Êİ\œ™[
+NÃBˆYÑš[\Ø[™Y]\ÈHYÑš[\Ø[™Y]\Ë›X\
+][HOˆ
+ÃBˆ‹‹š][KBˆ[™XYPYYˆ][K˜[™XYPYYÙY[‹š\Ê	Ú][K›Ü[ŸWL	Ú][K˜ÛÜÙ_X
+KBˆ™XÛÛ[Y[™Yˆ˜[ÙKBˆJJNÃBˆ›İYJYYÈ9mì¹b¨9aiH	ØYYH9§hz/áù®é:)á9b&xà ˜ˆ	ù¬¨y§"y¥¬9æ¡9`&z`"zg :) yb¨9aixà ‰ËYYÈ	ÜİXØÙ\ÜÉÈˆ	Ú[™›ÉÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ]\X›XË[Ü[š[Û‹[[ÙIÊHÃBˆX›XÓÜ[š[Û“[ÙHHÉÙ›Ü[IË	ÜØ[™›Ş	×Kš[˜ÛY\Ê\™Ù]™]\Ù]›[ÙJHÈ\™Ù]™]\Ù]›[ÙHˆ	Û™]ÜÉÎÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÙÙ[™\˜]K\X›XË[Ü[š[Û‰ÊHÃBˆYˆ
+X›XÓÜ[š[ÛXİ[Û\ŞJH™]\›ÃBˆX›XÓÜ[š[ÛXİ[Û\ŞHHYNÃBˆ™[™\Š
+NÃBˆHÃBˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÙÙ[™\˜]K\X›XË[Ü[š[Û‰ÊNÃBˆYˆ
+™\İ[
+HÃBˆ›İYJ	ù.%¹åc:"!¹ áy¨à9§éyk£9¢$;ïg‰Ë	ÜİXØÙ\ÜÉÊNÃBˆCBˆHš[˜[HÃBˆX›XÓÜ[š[ÛXİ[Û\ŞHH˜[ÙNÃBˆ™[™\Š
+NÃBˆCBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÙÙ[™\˜]K\X›XË[Ü[š[Û‹\Ø[™›Ş	ÊHÃBˆYˆ
+X›XÓÜ[š[Û”Ø[™›ŞXİ[Û\ŞJH™]\›ÃBˆX›XÓÜ[š[Û”Ø[™›ŞXİ[Û\ŞHHYNÃBˆ™[™\Š
+NÃBˆHÃBˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÙÙ[™\˜]K\X›XË[Ü[š[Û‹\Ø[™›Ş	ÊNÃBˆYˆ
+™\İ[
+HÃBˆX›XÓÜ[š[Û“[ÙHH	ÜØ[™›Ş	ÎÃBˆ›İYJ	úf£ù/¯ú`&ùb,9. :e!y¥¬:l§9äç;ïg¹¥/¹oàûï#:/æy.¦ù.#yë¥ù«hùcìˆ
+8¢iø¥¯x¢iŠX	Ë	ÜİXØÙ\ÜÉÊNÃBˆCBˆHš[˜[HÃBˆX›XÓÜ[š[Û”Ø[™›ŞXİ[Û\ŞHH˜[ÙNÃBˆ™[™\Š
+NÃBˆCBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛX\‹\X›XË[Ü[š[Û‹\Ø[™›Ş	ÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	ØÛX\‹\X›XË[Ü[š[Û‹\Ø[™›Ş	ÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛX\‹\X›XË[Ü[š[Û‰ÊHÃBˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠ	Ê8àî×øàîÎÊH9®!yên¹odùbcz"!¹ áyoêùáiùd%ûï'ù.%¹åc9â­¹  y.#y/&¹cåùb,9olydãxà ‰ÊNÃBˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	ØÛX\‹\X›XË[Ü[š[Û‰ÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ù\ÛZ\ÜË\X›XË[Ü[š[Û‹Z][IÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Ù\ÛZ\ÜË\X›XË[Ü[š[Û‹Z][IËÃBˆÚ[™ˆ\™Ù]™]\Ù]›Ü[š[Û’Ú[™OOH	Ù›Ü[IÈÈ	Ù›Ü[IÈˆ	Û™]ÜÉËBˆ][RYˆ\™Ù]™]\Ù]š][RY	ÉËBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ][ØœÙ\™\‰ÊHÃBˆØœÙ\™\“[ÙHH\™Ù]™]\Ù]›[ÙHOOH	ÚÛ›İÛ‰ÈÈ	ÚÛ›İÛ‰Èˆ	Ø˜XÚÜİYÙIÎÃBˆÙ[XİY\œÛÛ’YH[ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ[Xİ\\œÛÛ‰ÊHÂˆYˆ
+Ù[XİY\œÛÛ’YOOH
+\™Ù]™]\Ù]œ\œÛÛ’Y[
+JHÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH[ÃBˆCBˆÙ[XİY\œÛÛ’YH\™Ù]™]\Ù]œ\œÛÛ’Y[ÃBˆYˆ
+Ù[XİY\œÛÛ’Y
+HÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH]ØZ][›ÚÙPXİ[ÛŠ	ÙÙ]\\œÛÛ‹[ØœÙ\˜][Û‰ËÃBˆ\œÛÛ’YˆÙ[XİY\œÛÛ’YBˆJH[ÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛÜÙK\\œÛÛ‰ÊHÃBˆÙ[XİY\œÛÛ’YH[ÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH[ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹\\œÛÛ‹YY]Ü‰ÊHÂˆ\œÛÛ‘Y]ÜˆHÈYˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉË˜[YNˆ\™Ù]™]\Ù]œ\œÛÛ“˜[YH	ÉÈNÂˆÙ[XİY\œÛÛ’YH[ÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH[ÃBˆ™[™\Š
+NÃBˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[]ÙÙÛKYÜ›İ\	ÊHÂˆÛØÚX[Ü›İ\Ü[ˆH\ÛØÚX[Ü›İ\Ü[ÂˆYˆ
+\ÛØÚX[Ü›İ\Ü[ŠHÛØÚX[Ü›İ\Ù[XİYYÈH™]ÈÙ]
+
+NÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[[Ü[‹[›İXÙIÊHÂˆÛÛœİYÙHHİš[™Ê\™Ù]™]\Ù]œYÙH	ØÛÛXİÉÊNÂˆÛÛœİÛÛ™\œØ][Û’YHİš[™Ê\™Ù]™]\Ù]˜ÛÛ™\œØ][Û’Y	ÉÊNÂˆÛØÚX[›İXÙUš\ÚX›RYH	ÉÎÂˆÚ[™İË˜ÛX\•[Y[İ]
+ÛØÚX[›İXÙU[Y\ŠNÂˆÛØÚX[›İXÙU[Y\ˆH[Âˆ\™Ù]˜ÛÜÙ\İ
+	ËØ‹\ÛØÚX[[›İXÙIÊOËœ™[[İ™J
+NÂˆ]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\™XY[›İXÙIËÈ›İXÙRYˆ\™Ù]™]\Ù]››İXÙRY	ÉÈJNÂˆYˆ
+ÛÛ™\œØ][Û’Y
+HÂˆ]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\Ù[XİXÛÛ™\œØ][Û‰ËÈÛÛ™\œØ][Û’YJNÂˆBˆXİ]™UšY]ÈH	ÜÛØÚX[	ÎÂˆÛØÚX[YÙHHÉÛY\ÜØYÙ\ÉË	ØÛÛXİÉË	Û[ÛY[É×Kš[˜ÛY\ÊYÙJHÈYÙHˆ	ØÛÛXİÉÎÂˆÛØÚX[Ú]ØÜ›Ûİ]HHÈÜˆ]›İÛNˆYK[š]X[^™Yˆ˜[ÙHNÂˆÜ[Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[Y\ÛZ\ÜË[›İXÙIÊHÂˆÛØÚX[›İXÙUš\ÚX›RYH	ÉÎÂˆÚ[™İË˜ÛX\•[Y[İ]
+ÛØÚX[›İXÙU[Y\ŠNÂˆÛØÚX[›İXÙU[Y\ˆH[Âˆ\™Ù]˜ÛÜÙ\İ
+	ËØ‹\ÛØÚX[[›İXÙIÊOËœ™[[İ™J
+NÂˆ]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\™XY[›İXÙIËÈ›İXÙRYˆ\™Ù]™]\Ù]››İXÙRY	ÉÈJNÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[\Ù]\YÙIÊHÂˆÛÛœİ™^YÙHHİš[™Ê\™Ù]™]\Ù]œYÙH	ÛY\ÜØYÙ\ÉÊNÂˆÛØÚX[YÙHHÉÛY\ÜØYÙ\ÉË	ØÛÛXİÉË	Û[ÛY[É×Kš[˜ÛY\Ê™^YÙJHÈ™^YÙHˆ	ÛY\ÜØYÙ\ÉÎÂˆÛØÚX[Ü›İ\Ü[ˆH˜[ÙNÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[YÛË\[ÜIÊHÂˆXİ]™UšY]ÈH	Ü[ÜIÎÂˆ[Ù[TÙ][™ÜÕšY]ÈH	ÉÎÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[Z[\Ü\[ÜIÊHÂˆXİ]™UšY]ÈH	Ü[ÜIÎÂˆÙ][™ÜÓÜ[ˆH˜[ÙNÂˆ[Ù[TÙ][™ÜÕšY]ÈH	Ü[ÜIÎÂˆÜ[”Ù][™ÜÔİX™Ü›İ\ÈH™]ÈÙ]
+ÉÜ[ÜK]ÛÜ››ÛÚÉ×JNÂˆÙ][™ÜÔØÜ›ÛÜHÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[[Ü[‹\\œÛÛ‰ÊHÂˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[[Ü[‹\\œÛÛ‰ËÂˆ\œÛÛ’Yˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËˆJNÂˆYˆ
+ÛÛ\]Y
+HÂˆXİ]™UšY]ÈH	ÜÛØÚX[	ÎÂˆÛØÚX[YÙHH	ÛY\ÜØYÙ\ÉÎÂˆÙ[XİY\œÛÛ’YH[ÂˆÛØÚX[˜YH	ÉÎÂˆÛØÚX[Ú]ØÜ›Ûİ]HHÈÜˆ]›İÛNˆYK[š]X[^™Yˆ˜[ÙHNÂˆBˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[\™\ÜÛ™YœšY[™\™\]Y\İ	ÊHÂˆÛÛœİXØÙ\H\™Ù]™]\Ù]˜XØÙ\OOH	İYIÎÂˆYˆ
+XXØÙ\
+HÂˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠ	Ê8àî×øàîÎÊH:) y¢ä¹îçz/æy§hyioycâùå,ú+íùd%ûï'ùkîy¥®y/&¹/çyåfz!ê¹mìyæ¡9cãyn¥;ï#9/a¹.#y/&º/æùaiz`&º+«ùoexà ‰ÊNÂˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÂˆBˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\™\ÜÛ™YœšY[™\™\]Y\İ	ËÂˆ\œÛÛ’Yˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËˆXØÙ\ˆJNÂˆYˆ
+™\İ[
+H›İYJXØÙ\È9mì¹£©ycåÈ	Ü™\İ[œ\œÛÛ“˜[Y_H9æ¡9ioycâùå,ú+íøà ˜ˆ9mì¹¢ä¹îçH	Ü™\İ[œ\œÛÛ“˜[Y_H9æ¡9ioycâùå,ú+íøà ˜XØÙ\È	ÜİXØÙ\ÜÉÈˆ	Ú[™›ÉÊNÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[\™[[İ™KYœšY[™	ÊHÂˆÛÛœİ\œÛÛ“˜[YHHİš[™Ê\™Ù]™]\Ù]œ\œÛÛ“˜[YH	ú/æy/cyioycâÉÊNÂˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠˆ
+8àî×øàîÎÊH9èk¹k¦¹b(:fi	Ü\œÛÛ“˜[Y_H9d%ûï'×¹éàz bº+¬9oey/&¹/çyåf{ï#9/a¹.#z ïyîéùîëycäz` {ï&ùalyd#9ï©: b¹.#y/&º!ê¹bª:` 9aî¸à ¹.bùd#¹.ãycëúaãy¥¬9å,ú+íùioycâøà ˜ˆ
+NÂˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÂˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\™[[İ™KYœšY[™	ËÈ\œÛÛ’Yˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉÈJNÂˆYˆ
+™\İ[
+H›İYJ9mì¹.ãº`&º+«ùoeyb(:fi	Ü™\İ[œ\œÛÛ“˜[Y_xà ˜	Ú[™›ÉÊNÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[\™Yœ™\Ú[[ÛY[ÉÊHÂˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\™Yœ™\Ú[[ÛY[ÉÊNÂˆYˆ
+™\İ[	‰ˆ\[Ùˆ™\İ[OOH	ÛØš™Xİ	ÊHÂˆ›İYJ™\İ[œÜİÛİ[ˆÈ9§"ùcâùg"9¥¬9h§ˆ	Ü™\İ[œÜİÛİ[H9§hybª9  IÜ™\İ[š[XYÙPÛİ[È	ûï#9§"HH9§hzacyfï‰Èˆ	Éßxà ˜ˆˆ	ú/æy«(y¬¨y§"yioycâù ìùcäybª9  xà ‰Ë™\İ[œÜİÛİ[È	ÜİXØÙ\ÜÉÈˆ	Ú[™›ÉÊNÂˆBˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[]ÙÙÛK[[ÛY[[ZÙIÊHÂˆ]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[]ÙÙÛK[[ÛY[[ZÙIËÈ[ÛY[Yˆ\™Ù]™]\Ù]›[ÛY[Y	ÉÈJNÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[\™\]Y\İ\™\IÊHÃBˆÛÛœİÛÛ™\œØ][Û’YHİš[™Ê\™Ù]™]\Ù]˜ÛÛ™\œØ][Û’Y	ÉÊNÃBˆYˆ
+XÛÛ™\œØ][Û’Y
+H™]\›ÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\™\]Y\İ\™\IËÈÛÛ™\œØ][Û’YJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÛØÚX[\Ù[XİXÛÛ™\œØ][Û‰ÊHÂˆ]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\Ù[XİXÛÛ™\œØ][Û‰ËÂˆÛÛ™\œØ][Û’Yˆ\™Ù]™]\Ù]˜ÛÛ™\œØ][Û’Y	ÉËˆJNÂˆÛØÚX[˜YH	ÉÎÂˆÛØÚX[Ú]ØÜ›Ûİ]HHÈÜˆ]›İÛNˆYK[š]X[^™Yˆ˜[ÙHNÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	İÙÙÛK\[ÜKX˜]Ú	ÊHÂˆ[ÜTÙ[Xİ[Û“[ÙHH\[ÜTÙ[Xİ[Û“[ÙNÂˆ[ÜTÙ[XİYYÈH™]ÈÙ]
+
+NÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÜÙ[XİX[\[ÜIÊHÂˆ[ÜTÙ[XİYYÈH™]ÈÙ]
+ˆË‹‹œ›Ûİœ]Y\TÙ[XİÜ[
+	ÖÙ]K]Ø‹\\œÛÛ‹\Ù[XİN››İ
+™\ØX›Y
+IÊWBˆ›X\
+[œ]Oˆİš[™Ê[œ]˜[YH	ÉÊJBˆ™š[\Š›ÛÛX[ŠKˆ
+NÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ØÛX\‹\[ÜK\Ù[Xİ[Û‰ÊHÂˆ[ÜTÙ[XİYYÈH™]ÈÙ]
+
+NÂˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	Ù[]K\Ù[XİY\[ÜIÊHÂˆÛÛœİYÈHË‹‹œ[ÜTÙ[XİYY×NÂˆÛÛœİÙ[XİYHÙ]İ]J
+Kœ[ÜK™š[\Š\œÛÛˆOˆYËš[˜ÛY\Ê\œÛÛ‹šY
+JNÂˆYˆ
+\Ù[XİY›[™İ
+H™]\›ÂˆÛÛœİ™]šY]ÈHÙ[XİYœÛXÙJL
+K›X\
+\œÛÛˆOˆ8 (ˆ	Ü\œÛÛ‹›˜[Y_X
+Kš›Ú[Š	×‰ÊNÂˆÛÛœİ™[XZ[™\ˆHÙ[XİY›[™İˆLÈ¸ )¸ )¹cé¹§"H	ÜÙ[XİY›[™İHLH9.®˜ˆ	ÉÎÂˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠˆ
+8àî×øàîÎÊH9èk¹k¦¹¢nzaãùb(:fi:/æH	ÜÙ[XİY›[™İH9.*¹.®¹âjyd%ûï'×—‰Ü™]šY]ßIÜ™[XZ[™\ŸW—¹/&¹. 9nm¹®!y£¢z/æy.¦ù.®¹âjyæ¡9clù¥íº)à¹­bùï$ùkf;ï&ù.#y/&¹b(:fi: b¹i*y«hù¥¡ù¢%¹«hùo#ù.%¹åc:+¬9oá¸à ¹b(:fi9d#¹.ãycëùå*9n¥z`ê8 '9¤©:e 8 'y h¹i#xà ˜ˆ
+NÂˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÂˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Ù[]K[X[X[\[ÜIËÈYÈJNÂˆYˆ
+ÛÛ\]Y
+HÂˆ[ÜTÙ[XİYYÈH™]ÈÙ]
+
+NÂˆ[ÜTÙ[Xİ[Û“[ÙHH˜[ÙNÂˆBˆ™[™\Š
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ØÛÜÙK\\œÛÛ‹YY]Ü‰ÊHÂˆ\œÛÛ‘Y]ÜˆH[ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛX\‹\\œÛÛ‹X]˜]\‰ÊHÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ØÛX\‹\\œÛÛ‹X]˜]\‰ËÃBˆYˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËBˆJNÃBˆYˆ
+ÛÛ\]Y
+H›İYJ	ùi-9`ãù¥-º-mù§iyei»ïg¹câ9cæ9fç¹¥¡ùkeùi-9`ãù.¡ˆ
+;ïhx (³ 8m%ËJx§)ÉË	ÜİXØÙ\ÜÉÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ù[]K[X[X[\\œÛÛ‰ÊHÃBˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠ	Ê8àî×øàîÎÊH9èk¹k¦¹.ã¹d#¹cì9.®¹âjyd#ycey.+yb(:fi:/æy.*ˆ”È9d%ûï'ÉÊNÃBˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Ù[]K[X[X[\\œÛÛ‰ËÃBˆYˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËBˆJNÃBˆYˆ
+ÛÛ\]Y
+H\œÛÛ‘Y]ÜˆH[ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹Y]™[Y›Ü›IÊHÂˆ]™[Y]Ü’YH	ÉÎÃBˆ]™[›Ü›Q˜YH[ÃBˆ]™[›Ü›SÜ[ˆHYNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹]\›Z[˜[\\œÛÛ‰ÊHÂˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[[Ü[‹\\œÛÛ‰ËÂˆ\œÛÛ’Yˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËˆJNÂˆYˆ
+ÛÛ\]Y
+HÂˆXİ]™UšY]ÈH	ÜÛØÚX[	ÎÂˆÙ[XİY\œÛÛ’YH[ÂˆÛØÚX[˜YH	ÉÎÂˆÛØÚX[Ú]ØÜ›Ûİ]HHÈÜˆ]›İÛNˆYK[š]X[^™Yˆ˜[ÙHNÂˆ™[™\Š
+NÂˆBˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹]\›Z[˜[Y]™[	ÊHÂˆÛØ˜[\ËÛÜ›\›Z[˜[ÜİË›Ü[‘]™[\Øİ\ÜÚ[ÛËŠ\™Ù]™]\Ù]™]™[Y	ÉÊNÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	ÛÜ[‹Y]™[YY]Ü‰ÊHÃBˆ]™[Y]Ü’YH\™Ù]™]\Ù]™]™[Y	ÉÎÃBˆ]™[›Ü›Q˜YH[ÃBˆ]™[›Ü›SÜ[ˆH›ÛÛX[Š]™[Y]Ü’Y
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ù[]KY]™[	ÊHÃBˆÛÛœİ]™[YH\™Ù]™]\Ù]™]™[Y	ÉÎÃBˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠ	Ê8àî×øàîÎÊH9èk¹k¦¹b(:fi:/æy§hy¦¥ù­`yd%ûï'ùb(:fi9d#¹cëù.éyå*9n¥z`ê9¤©:e 9 h¹i#xà ‰ÊNÃBˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Ù[]KY]™[	ËÈ]™[YJNÃBˆYˆ
+ÛÛ\]Y	‰ˆ]™[Y]Ü’YOOH]™[Y
+HÃBˆ]™[Y]Ü’YH	ÉÎÃBˆ]™[›Ü›SÜ[ˆH˜[ÙNÃBˆ]™[›Ü›Q˜YH[ÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØÛÜÙKY]™[Y›Ü›IÊHÃBˆ]™[Y]Ü’YH	ÉÎÃBˆ]™[›Ü›Q˜YH[ÃBˆ]™[›Ü›SÜ[ˆH˜[ÙNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ][™ËX]Û‰ÊHÃBˆÛÛœİÙ][™ÈH\™Ù]™]\Ù]œÙ][™ÎÃBˆÛÛœİ˜[YHH\™Ù]™]\Ù]˜[YNÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÃBˆÜÙ][™×Nˆ˜[YKBˆJNÃBˆ™[™\Š
+NÃBˆËÈ:`"y¢êx '9âë9êâù£©ycèø 'yd#¹êâùclùleyo 9hjùa¦yc.»ï#9 h¹i#y. :e+º/æùaizacyïk¹æ¡9hjùa¦y/dúj£8à ƒBˆËÈ9å*9¢-ù.bùd#¹.ãycëù¢bùbª9¥-º-mûï&ù¦kº`&ºaãy®,¹§äù.#y/&¹o.¹b-¹a£y«(yleyo 8à ƒBˆYˆ
+Ù][™ÈOOH	Ø\S[ÙIÈ	‰ˆ˜[YHOOH	İ]™\›‹\›Ùš[IÊHÃBˆÙ][™ÜÔÙXİ[ÛˆH	ØÛÛ›™Xİ[Û‰ÎÃBˆÜ[”Ù][™ÜÑÜ›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‰ÊNÃBˆ™[™\Š
+NÃBˆÚ[™İËœÙ][Y[İ]
+
+
+HOˆÃBˆ›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹]]™\›‹\›Ùš[K\Ù[XİIÊOË™›Øİ\Ê
+NÃBˆK
+NÃBˆCBˆYˆ
+Ù][™ÈOOH	Ø\S[ÙIÈ	‰ˆ˜[YHOOH	Øİ\İÛIÊHÃBˆÙ][™ÜÔÙXİ[ÛˆH	ØÛÛ›™Xİ[Û‰ÎÃBˆÚ[™İËœÙ][Y[İ]
+
+
+HOˆÃBˆÛÛœİÛÛ›™Xİ[Û‘Ü›İ\H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\Ù][™ÜËYÜ›İ\Ù]K\Ù][™ÜËYÜ›İ\H˜ÛÛ›™Xİ[Ûˆ—IÊNÃBˆÛÛœİİ\İÛQÜ›İ\H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\Ù][™ÜË\İX™Ü›İ\Ù]K\Ù][™ÜË\İX™Ü›İ\H˜ÛÛ›™Xİ[Û‹Xİ\İÛH—IÊNÃBˆYˆ
+ÛÛ›™Xİ[Û‘Ü›İ\
+HÛÛ›™Xİ[Û‘Ü›İ\›Ü[ˆHYNÃBˆYˆ
+İ\İÛQÜ›İ\
+Hİ\İÛQÜ›İ\›Ü[ˆHYNÃBˆÜ[”Ù][™ÜÑÜ›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‰ÊNÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‹Xİ\İÛIÊNÃBˆÛÛœİ›Ü›HH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH˜\H—IÊNÃBˆYˆ
+Y›Ü›JH™]\›ÃBˆÛÛœİ\›H›Ü›K™[[Y[ÏË˜İ\İÛP\U\›ÃBˆÛÛœİÙ^HH›Ü›K™[[Y[ÏË˜İ\İÛP\PÜ™Y[X[ÃBˆÛÛœİ[Ù[H›Ü›K™[[Y[ÏË˜İ\İÛP\S[Ù[ÃBˆYˆ
+Tİš[™Ê\›Ë˜[YH	ÉÊKš[J
+JH\›Ë™›Øİ\Ê
+NÃBˆ[ÙHYˆ
+YÙ]Ù][™ÜÊ
+K˜İ\İÛP\RÙ^H	‰ˆTİš[™ÊÙ^OË˜[YH	ÉÊKš[J
+JHÙ^OË™›Øİ\Ê
+NÃBˆ[ÙHYˆ
+Tİš[™Ê[Ù[Ë˜[YH	ÉÊKš[J
+JH[Ù[Ë™›Øİ\Ê
+NÃBˆK
+NÃBˆCBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØŞXÛK][YIÊHÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİİ]HHÙ]İ]J
+NÃBˆËÈ:hm¹¨#ùoêù£múe+¹cê¹`f¸ '9¥ézeí8¡¥9i':eí8 'yæí9b!ûï&ú!ê¹bª9ª(yo#ù.ãycëùg*:+¯¹ïkºhmz`"y¢êxà ƒBˆËÈ9¥éú`.ú/¤y/&¹îãú/áÈ]]ûï#:"éH]]È9 l9ioz)èù§¤9¢$9odùbcy..úh¦;ï#:)áº)ây."¹`ãù£"zd«¹i,yàmxà ƒBˆÛÛœİİ\œ™[[YHH[YQ›ÜŠİ]KÙ][™ÜÊNÃBˆÛÛœİ™^Hİ\œ™[[YHOOH	Ù^IÈÈ	ÛšYÚ	Èˆ	Ù^IÎÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÈ[YNˆ™^JNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜŞ[˜ËXÛØÚËYœ›ÛK\İÜIÊHÃBˆÛØÚÑ›Ü›Q˜YH[ÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	ÜŞ[˜ËXÛØÚËYœ›ÛK\İÜIÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØY˜[˜ÙKXÛØÚÉÊHÃBˆÛØÚÑ›Ü›Q˜YH[ÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	ØY˜[˜ÙKXÛØÚÉËÈZ[]\Îˆ[X™\Š\™Ù]™]\Ù]›Z[]\ÊHJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÛX\Z[\Ü]ÛÜ››ÛÚË\[ÜIÊHÂˆÛÛœİ›Ü›HH\™Ù]˜ÛÜÙ\İ
+	ÖÙ]K]Ø‹Y›Ü›OHÛÜ››ÛÚÈ—IÊNÂˆÛÜ››ÛÚÔÙ[XİYYÈH™]ÈÙ]
+
+NÂˆÛÜ››ÛÚÓ\İØÜ›ÛÜHÂˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÜÛX\Z[\Ü]ÛÜ››ÛÚË\[ÜIËÃBˆ›ÛÚÓ˜[YNˆ›Ü›OË™[[Y[ÏË˜›ÛÚÓ˜[YOË˜[YH	ÉËBˆJNÃBˆYˆ
+™\İ[	‰ˆ\[Ùˆ™\İ[OOH	ÛØš™Xİ	ÊHÃBˆÛÛœİ[\ÜYH[X™\Š™\İ[˜Ü™X]Y
+H
+È[X™\Š™\İ[\]Y
+NÃBˆYˆ
+™\İ[›™YYÔ™]šY]ÊHÃBˆÛÜ››ÛÚÓÛ›T[ÜHHYNÃBˆ›İYJ:!ê¹bª9kï9aiy¬¨y§"z-.9á-¹."ù¢bûïgº/æ9§"H	Ó[X™\Š™\İ[œ™]šY]ĞÛİ[
+HH9.*¹.®¹âjy`&z`"zg :) y/h9èkº+©8à ˜	Ú[™›ÉÊNÃBˆH[ÙHÃBˆÛÛœİZ[H[X™\Š™\İ[œ™]šY]ĞÛİ[
+HˆBˆÈ;ï#9cé¹§"H	Ü™\İ[œ™]šY]ĞÛİ[H9.*¹.#yi*¹èk¹k¦¹æ¡9`&z`"yåfyg*9."úgh˜Bˆˆ	ÉÎÃBˆ›İYJ9.%¹åc9.i¹.®¹âjykï9aiyk£9¢$;ï&¹i!9ä!ˆ	Ú[\ÜYH9.®‰İZ[xà ˜	ÜİXØÙ\ÜÉÊNÃBˆÛÜ››ÛÚÓÛ›T[ÜHH[X™\Š™\İ[œ™]šY]ĞÛİ[
+HˆÃBˆCBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜØØ[‹]ÛÜ››ÛÚÉÊHÂˆÛÛœİ›Ü›HH\™Ù]˜ÛÜÙ\İ
+	ÖÙ]K]Ø‹Y›Ü›OHÛÜ››ÛÚÈ—IÊNÂˆÛÜ››ÛÚÔÙ[XİYYÈH™]ÈÙ]
+
+NÂˆÛÜ››ÛÚÓ\İØÜ›ÛÜHÂˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÜØØ[‹]ÛÜ››ÛÚÉËÃBˆ›ÛÚÓ˜[YNˆ›Ü›OË™[[Y[ÏË˜›ÛÚÓ˜[YOË˜[YH	ÉËBˆJNÃBˆËÈ:jæ9î©ù¢bùbª9£$z`"yoázhnùab9leyé.¹k£9¥m9§hyæë¸à ¹¥éú`.ú/¤z!ê¹bª9b!ùb,8 '9cê¹ç"ùå¤y//9.®¹âjx '{ï#ˆËÈ9. 9¥éº+á¹b*ù¯#ù.®»ï#9å*9¢-ú/ç¹¯#ù£¢yæ¡9§hyæëº`ïyç"ù.#yb,;ï#9¦í9.#ycëú ïy¢bùbª9î¨9«høà ‚ˆYˆ
+™\İ[	‰ˆ\œ˜^Kš\Ğ\œ˜^J™\İ[™[šY\ÊJHÛÜ››ÛÚÓÛ›T[ÜHH˜[ÙNÂˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜÙ[Xİ]ÛÜ››ÛÚË]š\ÚX›IÈXİ[ÛˆOOH	ØÛX\‹]ÛÜ››ÛÚË]š\ÚX›IÊHÃBˆÛÛœİ[šY\ÈH\œ˜^Kš\Ğ\œ˜^JÙ]Ş[˜Ôİ]\Ê
+OËÛÜ››ÛÚÏË™[šY\ÊCBˆÈÙ]Ş[˜Ôİ]\Ê
+KÛÜ››ÛÚË™[šY\ÃBˆˆ×NÃBˆÛÛœİš\ÚX›HHš[\•ÛÜ››ÛÚÑ[šY\Ê[šY\ËÃBˆ]Y\NˆÛÜ››ÛÚÔ]Y\KBˆÛ›T[ÜNˆÛÜ››ÛÚÓÛ›T[ÜKBˆÛ›Q[˜X›YˆÛÜ››ÛÚÓÛ›Q[˜X›YBˆJNÃBˆÛÛœİ™^H™]ÈÙ]
+ÛÜ››ÛÚÔÙ[XİYYÊNÃBˆ›Üˆ
+ÛÛœİ[HÙˆš\ÚX›JHÃBˆYˆ
+Xİ[ÛˆOOH	ÜÙ[Xİ]ÛÜ››ÛÚË]š\ÚX›IÊHÃBˆYˆ
+[Kš[\ÜX›T\œÛÛˆÏÈ[K›ZÙ[T\œÛÛŠH™^˜Y
+İš[™Ê[KZY
+JNÃBˆH[ÙHÃBˆ™^™[]Jİš[™Ê[KZY
+JNÃBˆCBˆCBˆÛÜ››ÛÚÔÙ[XİYYÈH™^ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	İÙÙÛKY]™[Y[]™\IÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İÙÙÛKY]™[Y[]™\IËÃBˆ]™[Yˆ\™Ù]™]\Ù]™]™[Y	ÉËBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ú[\Ü\İ]IÊHÃBˆ›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹Z[\ÜZ[œ]	ÊOË˜ÛXÚÊ
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ØØ]Ú]\\\œÛÛ‰ÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	ØØ]Ú]\\\œÛÛ‰ËÃBˆ\œÛÛ’Yˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Üš[Üš]^™K\\œÛÛ‰ÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Üš[Üš]^™K\\œÛÛ‰ËÃBˆ\œÛÛ’Yˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËBˆ[˜X›Yˆ\™Ù]™]\Ù]™[˜X›YOOH	Ù˜[ÙIËBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÛØœÙ\™K\\œÛÛ‰ÊHÃBˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÛØœÙ\™K\\œÛÛ‰ËÃBˆ\œÛÛ’Yˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËBˆ›Ü˜ÙNˆ\™Ù]™]\Ù]™›Ü˜ÙHOOH	İYIËBˆJNÃBˆYˆ
+™\İ[	‰ˆ\[Ùˆ™\İ[OOH	ÛØš™Xİ	È	‰ˆ™\İ[^
+HÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH™\İ[ÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ü]Y]YK\\œÛÛ‹[ØœÙ\˜][Û‰ÊHÃBˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	Ü]Y]YK\\œÛÛ‹[ØœÙ\˜][Û‰ËÃBˆ\œÛÛ’Yˆ\™Ù]™]\Ù]œ\œÛÛ’Y	ÉËBˆJNÃBˆYˆ
+™\İ[	‰ˆ\[Ùˆ™\İ[OOH	ÛØš™Xİ	ÊH\œÛÛ“ØœÙ\˜][ÛˆH™\İ[ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ü™\ÛÛ™K[Y\ÜØYÙKYY]	ÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Ü™\ÛÛ™K[Y\ÜØYÙKYY]	ËÃBˆ[ÙNˆ\™Ù]™]\Ù]›[ÙHOOH	ÚÙY\	ÈÈ	ÚÙY\	Èˆ	Ü™\[‰ËBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÜØ]™KX\K\›Ùš[KYœ›ÛKY›Ü›IÊHÃBˆÛÛœİ›Ü›HH\™Ù]˜ÛÜÙ\İ
+	ÖÙ]K]Ø‹Y›Ü›OH˜\H—IÊNÃBˆYˆ
+Y›Ü›JH™]\›ÃBˆÛÛœİ\›šY[H›Ü›K™[[Y[ÏË˜İ\İÛP\U\›ÃBˆÛÛœİ[Ù[šY[H›Ü›K™[[Y[ÏË˜İ\İÛP\S[Ù[ÃBˆYˆ
+\›šY[	‰ˆ]\›šY[˜ÚXÚÕ˜[Y]J
+JHÃBˆ\›šY[œ™\Ü˜[Y]J
+NÃBˆ™]\›ÃBˆCBˆYˆ
+[Ù[šY[	‰ˆTİš[™Ê[Ù[šY[˜[YH	ÉÊKš[J
+JHÃBˆ[Ù[šY[™›Øİ\Ê
+NÃBˆ›İYJ	ùab:`"y.*¹ª(yg¢ùa£y/çykf9¥®y¨b9d)ûïg‰Ë	Ù\œ›Ü‰ÊNÃBˆ™]\›ÃBˆCBˆÛÛœİ]HH™XY\Q›Ü›J›Ü›JNÃBˆÛÛœİ›Ùš[RYHİš[™Ê]Kœ›Ùš[RY	ÉÊKš[J
+NÃBˆÛÛœİ^\İ[™Ô›Ùš[HH
+Ù]Ù][™ÜÊ
+K˜\T›Ùš[\È×JK™š[™
+][HOˆ][KšYOOH›Ùš[RY
+NÃBˆÛÛœİÙ^HHİš[™Ê]K˜İ\İÛP\PÜ™Y[X[	ÉÊKš[J
+CBˆ^\İ[™Ô›Ùš[OËšÙ^CBˆ
+\›Ùš[RYÈÙ]Ù][™ÜÊ
+K˜İ\İÛP\RÙ^Hˆ	ÉÊNÃBˆYˆ
+ZÙ^JHÃBˆ›İYJ	ú/æy.*¹¥®y¨b:/æ9ï.ˆTHÙ^H9dé»ïg‰Ë	Ù\œ›Ü‰ÊNÃBˆ›Ü›K™[[Y[ÏË˜İ\İÛP\PÜ™Y[X[Ë™›Øİ\Ê
+NÃBˆ™]\›ÃBˆCBˆÛÛœİ˜[YHHİš[™Ê]Kœ›Ùš[S˜[YH	ÉÊKš[J
+CBˆİš[™Ê]K˜İ\İÛP\S[Ù[	ÉÊKš[J
+CBˆ	ù¢$yæ¡9âë9êâÈTIÎÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜØ]™KX\K\›Ùš[IËÃBˆYˆ›Ùš[RYBˆ˜[YKBˆ\›ˆ]K˜İ\İÛP\U\›BˆÙ^Nˆİš[™Ê]K˜İ\İÛP\PÜ™Y[X[	ÉÊKš[J
+KBˆ[Ù[ˆ]K˜İ\İÛP\S[Ù[Bˆ˜[œÜÜˆ]K˜İ\İÛP\U˜[œÜÜBˆJNÃBˆYˆ
+ÛÛ\]Y
+HÃBˆ›Ü™Ù]\RÙ^Q˜Y
+]JNÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‹\›Ùš[\ÉÊNÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	ÙY]X\K\›Ùš[IÊHÃBˆÛÛœİ›Ùš[RYHİš[™Ê\™Ù]™]\Ù]œ›Ùš[RY	ÉÊNÃBˆÛÛœİ›Ùš[HH
+Ù]Ù][™ÜÊ
+K˜\T›Ùš[\È×JK™š[™
+][HOˆ][KšYOOH›Ùš[RY
+NÃBˆYˆ
+\›Ùš[JHÃBˆ›İYJ	ú/æy.*ˆTH9¥®y¨b9ioy`ãùmì¹îãù.#yg*9ei»ïg‰Ë	Ù\œ›Ü‰ÊNÃBˆ™]\›ÃBˆCBˆ\Q›Ü›Q˜YHÃBˆ›Ùš[RYˆ›Ùš[KšYBˆ›Ùš[S˜[YNˆ›Ùš[K›˜[YH	ÉËBˆİ\İÛP\U\›ˆ›Ùš[K\›	ÉËBˆİ\İÛP\PÜ™Y[X[ˆ	ÉËBˆİ\İÛP\S[Ù[ˆ›Ùš[K›[Ù[	ÉËBˆİ\İÛP\U˜[œÜÜˆ›Ùš[K˜[œÜÜ	Ü›ŞIËBˆNÃBˆÚÚ\\Q˜YØ\\™HHYNÃBˆÙ][™ÜÔÙXİ[ÛˆH	ØÛÛ›™Xİ[Û‰ÎÃBˆÜ[”Ù][™ÜÑÜ›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‰ÊNÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‹Xİ\İÛIÊNÃBˆ™[™\Š
+NÃBˆÚ[™İËœÙ][Y[İ]
+
+
+HOˆÃBˆÛÛœİÜ›İ\H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\Ù][™ÜËYÜ›İ\Ù]K\Ù][™ÜËYÜ›İ\H˜ÛÛ›™Xİ[Ûˆ—IÊNÃBˆÛÛœİİX™Ü›İ\H›Ûİœ]Y\TÙ[XİÜŠ	ËØ‹\Ù][™ÜË\İX™Ü›İ\Ù]K\Ù][™ÜË\İX™Ü›İ\H˜ÛÛ›™Xİ[Û‹Xİ\İÛH—IÊNÃBˆYˆ
+Ü›İ\
+HÜ›İ\›Ü[ˆHYNÃBˆYˆ
+İX™Ü›İ\
+HİX™Ü›İ\›Ü[ˆHYNÃBˆ›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH˜\H—HÛ˜[YOHœ›Ùš[S˜[YH—IÊOË™›Øİ\Ê
+NÃBˆK
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	İ\İX\K\›Ùš[IÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\İX\K\›Ùš[IËÈ›Ùš[RYˆ\™Ù]™]\Ù]œ›Ùš[RY	ÉÈJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ü[X\K\›Ùš[K[[Ù[ÉÊHÂˆÛÛœİ›Ùš[RYHİš[™Ê\™Ù]™]\Ù]œ›Ùš[RY	ÉÊNÂˆÛÛœİ›Ùš[HH
+Ù]Ù][™ÜÊ
+K˜\T›Ùš[\È×JK™š[™
+][HOˆ][KšYOOH›Ùš[RY
+NÂˆYˆ
+›Ùš[JHÂˆ\Q›Ü›Q˜YHÂˆ›Ùš[RYˆ›Ùš[KšYˆ›Ùš[S˜[YNˆ›Ùš[K›˜[YH	ÉËˆİ\İÛP\U\›ˆ›Ùš[K\›	ÉËˆİ\İÛP\PÜ™Y[X[ˆ	ÉËˆİ\İÛP\S[Ù[ˆ›Ùš[K›[Ù[	ÉËˆİ\İÛP\U˜[œÜÜˆ›Ùš[K˜[œÜÜ	Ü›ŞIËˆNÂˆÚÚ\\Q˜YØ\\™HHYNÂˆÙ][™ÜÔÙXİ[ÛˆH	ØÛÛ›™Xİ[Û‰ÎÂˆÜ[”Ù][™ÜÑÜ›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‰ÊNÂˆÜ[”Ù][™ÜÔİX™Ü›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‹Xİ\İÛIÊNÂˆBˆ]ØZ][›ÚÙPXİ[ÛŠ	Ü[X\K\›Ùš[K[[Ù[ÉËÈ›Ùš[RYJNÂˆ™[™\Š
+NÂˆÚ[™İËœÙ][Y[İ]
+
+
+HOˆÂˆÛÛœİXÚÙ\ˆH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹X\K[[Ù[\XÚÙ\—IÊNÂˆXÚÙ\ËœØÜ›Û[ÕšY]ÏËŠÈ›ØÚÎˆ	ØÙ[\‰Ë™Z]š[Üˆ	ÜÛ[Ûİ	ÈJNÂˆXÚÙ\Ë™›Øİ\Ê
+NÂˆK
+NÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	Ù\XØ]KX\K\›Ùš[IÊHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Ù\XØ]KX\K\›Ùš[IËÈ›Ùš[RYˆ\™Ù]™]\Ù]œ›Ùš[RY	ÉÈJNÃBˆÜ[”Ù][™ÜÔİX™Ü›İ\Ë˜Y
+	ØÛÛ›™Xİ[Û‹\›Ùš[\ÉÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ù[]KX\K\›Ùš[IÊHÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİ›Ùš[HH
+Ù][™ÜË˜\T›Ùš[\È×JK™š[™
+][HOˆ][KšYOOHİš[™Ê\™Ù]™]\Ù]œ›Ùš[RY	ÉÊJNÃBˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠ
+8àî×øàîÎÊH:) yb(9£¢HTH9¥®y¨b8 '	Ü›Ùš[OË›˜[YH	ú/æy.*¹¥®y¨b	ßx 'yd%ûï'×¹/oùå*9k ùæ¡9ª(ygeù/&º!ê¹bª:` 9fç¸ ':-çúf£únæ:+©8 'xà ˜
+NÃBˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Ù[]KX\K\›Ùš[IËÈ›Ùš[RYˆ\™Ù]™]\Ù]œ›Ùš[RY	ÉÈJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	İ\İX\IÊHÂˆÛÛœİ›Ü›HH\™Ù]˜ÛÜÙ\İ
+	ÖÙ]K]Ø‹Y›Ü›OH˜\H—IÊNÃBˆYˆ
+Y›Ü›JH™]\›ÃBˆÛÛœİ\›šY[H›Ü›K™[[Y[ÏË˜İ\İÛP\U\›ÃBˆÛÛœİ[Ù[šY[H›Ü›K™[[Y[ÏË˜İ\İÛP\S[Ù[ÃBˆYˆ
+\›šY[	‰ˆ]\›šY[˜ÚXÚÕ˜[Y]J
+JHÃBˆ\›šY[œ™\Ü˜[Y]J
+NÃBˆ™]\›ÃBˆCBˆYˆ
+[Ù[šY[	‰ˆTİš[™Ê[Ù[šY[˜[YH	ÉÊKš[J
+JHÃBˆ[Ù[šY[™›Øİ\Ê
+NÃBˆ›İYJ	ùab:`"y.*¹ª(yg¢ùa£y­bú+åyd)ûïg‰Ë	Ù\œ›Ü‰ÊNÃBˆ™]\›ÃBˆCBˆÛÛœİ]HH™XY\Q›Ü›J›Ü›JNÃBˆ]™\]Y\İÃBˆHÃBˆ™\]Y\İH\T™\]Y\İœ›ÛQ˜Y
+]KÈ™\]Z\™S[Ù[ˆYHJNÃBˆHØ]Ú
+\œ›ÜŠHÃBˆ›İYJİš[™Ê\œ›ÜË›Y\ÜØYÙH\œ›ÜŠK	Ù\œ›Ü‰ÊNÃBˆ™]\›ÃBˆCBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\İX\KY˜Y	Ë™\]Y\İ
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	Ü[X\K[[Ù[ÉÊHÂˆÛÛœİ›Ü›HH\™Ù]˜ÛÜÙ\İ
+	ÖÙ]K]Ø‹Y›Ü›OH˜\H—IÊNÃBˆYˆ
+Y›Ü›JH™]\›ÃBˆËÈ9¢âyª(yg¢ùcêº+îùcå¹odùbcz#byê/ûï#9.#ya£y`mù`mù¥.znæ:+©9âë9êâù£©ycèøà ¹ï%º/¤ymì¹/çykf9¥®y¨b9¥í»ï#BˆËÈÙ^H9åfyên¹/&¹k¢yaj9¬¯ùå*:+éy¥®y¨b:!ê¹mìyæ¡Ù^{ï#: #9.#y¦+ù.,¹b,:næ:+©:acyïk¸à ƒBˆÛÛœİ\›šY[H›Ü›K™[[Y[ÏË˜İ\İÛP\U\›ÃBˆÛÛœİÙ^QšY[H›Ü›K™[[Y[ÏË˜İ\İÛP\PÜ™Y[X[ÃBˆYˆ
+\›šY[	‰ˆ]\›šY[˜ÚXÚÕ˜[Y]J
+JHÃBˆ\›šY[œ™\Ü˜[Y]J
+NÃBˆ™]\›ÃBˆCBˆÛÛœİ]HH™XY\Q›Ü›J›Ü›JNÃBˆ]™\]Y\İÃBˆHÃBˆ™\]Y\İH\T™\]Y\İœ›ÛQ˜Y
+]KÈ™\]Z\™S[Ù[ˆ˜[ÙHJNÃBˆHØ]Ú
+\œ›ÜŠHÃBˆ›İYJİš[™Ê\œ›ÜË›Y\ÜØYÙH\œ›ÜŠK	Ù\œ›Ü‰ÊNÃBˆÙ^QšY[Ë™›Øİ\Ê
+NÃBˆ™]\›ÃBˆCBˆÛÛœİ[Ù[ÈH]ØZ][›ÚÙPXİ[ÛŠ	Ü[X\KY˜Y[[Ù[ÉË™\]Y\İ
+NÂˆYˆ
+\œ˜^Kš\Ğ\œ˜^J[Ù[ÊH	‰ˆ[Ù[Ë›[™İOOHH	‰ˆTİš[™Ê›Ü›K™[[Y[ÏË˜İ\İÛP\S[Ù[Ë˜[YH	ÉÊKš[J
+JHÂˆ›Ü›K™[[Y[Ë˜İ\İÛP\S[Ù[˜[YHH[Ù[ÖÌNÂˆ™XY\Q›Ü›J›Ü›JNÂˆ›İYJ9cê¹¢o¹b,9. 9.*¹ª(yg¢ûï#9mì¹îãù¦ïù/h:`"yio{ï&‰Û[Ù[ÖÌ_X	ÜİXØÙ\ÜÉÊNÂˆBˆ™[™\Š
+NÂˆÚ[™İËœÙ][Y[İ]
+
+
+HOˆÂˆ›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹X\K[[Ù[\XÚÙ\—IÊOË™›Øİ\Ê
+NÂˆK
+NÂˆ™]\›ÂˆCBˆYˆ
+Xİ[ÛˆOOH	Ü™\Ù]X\KY˜Y	ÊHÃBˆ\Q›Ü›Q˜YHÃBˆİ\İÛP\U\›ˆ	ÉËBˆİ\İÛP\PÜ™Y[X[ˆ	ÉËBˆİ\İÛP\S[Ù[ˆ	ÉËBˆİ\İÛP\U˜[œÜÜˆÙ]Ù][™ÜÊ
+K˜İ\İÛP\U˜[œÜÜBˆ›Ùš[S˜[YNˆ	ÉËBˆ›Ùš[RYˆ	ÉËBˆNÃBˆÚÚ\\Q˜YØ\\™HHYNÃBˆ™[™\Š
+NÃBˆÚ[™İËœÙ][Y[İ]
+
+
+HOˆÃBˆ›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹Y›Ü›OH˜\H—HÛ˜[YOH˜İ\İÛP\U\›—IÊOË™›Øİ\Ê
+NÃBˆK
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Xİ[ÛˆOOH	İÙÙÛKX\KZÙ^K]š\ÚXš[]IÊHÃBˆÛÛœİšY[H\™Ù]˜ÛÜÙ\İ
+	ËØ‹X\K\ÙXÜ™]YšY[	ÊOËœ]Y\TÙ[XİÜŠ	ËØ‹\ÙXÜ™]Z[œ]	ÊNÃBˆYˆ
+YšY[
+H™]\›ÃBˆÛÛœİš\ÚX›HHšY[˜Û\ÜÓ\İÙÙÛJ	Ú\Ë]š\ÚX›IÊNÃBˆ\™Ù]œÙ]]šX]J	Ø\šXK\™\ÜÙY	Ëİš[™Êš\ÚX›JJNÃBˆ\™Ù]^ÛÛ[Hš\ÚX›HÈ	úf¤:%ãÉÈˆ	ù¦/¹é.‰ÎÃBˆšY[™›Øİ\Ê
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+Xİ[ÛˆOOH	ØÛX\‹Xİ\œ™[XÚ]XØXÚIÊHÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ØÛX\‹Xİ\œ™[XÚ]XØXÚIÊNÃBˆYˆ
+ÛÛ\]Y
+HÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH[ÃBˆÛÜ››ÛÚÔÙ[XİYYÈH™]ÈÙ]
+
+NÃBˆ›İYJ	ùodùbcz b¹i*yæ¡9cëúaãynî¹ï$ùkf9mì¹îãù®!ynl¹aà9ei»ïg¹.%¹åc9¥l9£k¹d£TH:`ïy¬¨ybª8à ‰Ë	ÜİXØÙ\ÜÉÊNÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+Xİ[ÛˆOOH	ØÚXÚËXÛÜœ™Xİ]ÛÜ›\İ]IÊHÃBˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ØÚXÚËXÛÜœ™Xİ]ÛÜ›\İ]IÊNÃBˆYˆ
+™\İ[
+HÃBˆÛÛœİÛÜœ™XİYH[X™\Š™\İ[˜\YYË›[™İ
+NÃBˆÛÛœİ™[[İ™YH[X™\Š™\İ[œ™[[İ™Y]™[YÏË›[™İ
+NÃBˆÛÛœİÚÚ\YH[X™\Š™\İ[œÚÚ\Y
+NÃBˆ›İYJBˆÛÜœ™XİY™[[İ™YBˆÈ9¨à9§éyk£9¢$;ï&¹/ë¹«hÈ	ØÛÜœ™XİYH:hnIÜ™[[İ™YÈ;ï#9¤©:e 	Ü™[[İ™YH9§hy§*¹cäyå'ù­/¹å'Øˆ	Éßxà ˜BˆˆÚÚ\YBˆÈ9¨à9§éyk£9¢$;ï&‰ÜÚÚ\YH:hny¬¨y§"z-¬ùi'ú+ày£k»ï#9mì¹îãù/çyk¢:-ìú/áûï#9¬¨y§"y.ly¥.xà ˜Bˆˆ	ù¨à9§éyk£9¢$;ï&¹¬¨y§"ycäyã¬:g :) y/ë¹«hùæ¡9¦#¹èk¹çæùæï¸à ‰ËBˆÛÜœ™XİY™[[İ™YÈ	ÜİXØÙ\ÜÉÈˆ	Ú[™›ÉËBˆ
+NÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+Xİ[ÛˆOOH	Ü™\Ù]Xİ\œ™[XÚ]Y]IÊHÃBˆÛÛœİš\œİHÛØ˜[\Ë˜ÛÛ™š\›OËŠBˆ	ùèk¹k¦º) zaãyïk¸ '9odùbcz b¹i*x 'yæ¡9aj:`ê9.%¹åc: ã:gh¹¥l9£k¹d%ûï'×—‰ÃBˆ
+È	ù/&¹®!zfi9.®¹âjxà y.¢ù.í¸à y¦¥ù­`xà yfç¹hì8à z+¬9oá¸à z"!¹ áxà z)à¹­bøà y h¹i#yà®y.#¹b!¹¥+ùoêùáiøà —‰ÃBˆ
+È	ú b¹i*y«hù¥¡ùd£THÈ9ª(yg¢úacyïk¹.#y/&º(ªùb(:fi8à ‰ËBˆ
+NÃBˆYˆ
+š\œİOOH˜[ÙJH™]\›ÃBˆÛÛœİÙXÛÛ™HÛØ˜[\Ë˜ÛÛ™š\›OËŠBˆ	ù§ 9d#¹èkº+©;ï&º/æy«(zaãyïk¹.#y/&¹b&ùnî¹ h¹i#yà®{ï#9¥éù.%¹åc9¥l9£k¹l!¹.#z ïy.ã¹.%¹åc: ã:gh¹ h¹i#xà ——¹èk¹k¦¹îéùîëyd%ûï'ÉËBˆ
+NÃBˆYˆ
+ÙXÛÛ™OOH˜[ÙJH™]\›ÃBƒBˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	Ü™\Ù]Xİ\œ™[XÚ]Y]IÊNÃBˆYˆ
+™\İ[
+HÃBˆÙ[XİY\œÛÛ’YH[ÃBˆ\œÛÛ“ØœÙ\˜][ÛˆH[ÃBˆY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆY[[ÜQY]ÜˆH[ÃBˆ\œÛÛ‘Y]ÜˆH[ÃBˆ™XÛÜ™Y]ÜˆH[ÃBˆ]™[›Ü›SÜ[ˆH˜[ÙNÃBˆ]™[Y]Ü’YH	ÉÎÃBˆÛÜ›Y]Ü“Ü[ˆH˜[ÙNÃBˆÛÜ››ÛÚÔÙ[XİYYÈH™]ÈÙ]
+
+NÃBˆÛÜ››ÛÚÔ]Y\HH	ÉÎÃBˆÛÜ››ÛÚÓÛ›T[ÜHH˜[ÙNÃBˆÛÜ››ÛÚÓÛ›Q[˜X›YH˜[ÙNÃBˆ›İYJBˆ9odùbcz b¹i*ymì¹îãúaãyïk¹..¹ên¹æoy.%¹åc	Ó[X™\Š™\İ[œ™[[İ™YÛ˜\ÚİÊHˆÈ;ï#9nm¹®!y£¢H	Ü™\İ[œ™[[İ™YÛ˜\ÚİßH9.ïy¥éùb!¹¥+ùoêùáiØˆ	Éßxà TH:acyïk¹d£: b¹i*y«hù¥¡ú`ïy/çyåfxà ˜Bˆ	ÜİXØÙ\ÜÉËBˆ
+NÃBˆCBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆ]ØZ][›ÚÙPXİ[ÛŠXİ[Û‹ßJNÃBˆ™[™\Š
+NÃBˆJNÃBƒBˆ›Ûİ˜Y]™[\İ[™\Š	ØÚ[™ÙIË\Ş[˜È]™[OˆÂˆÛÛœİ\Q›Ü›HH]™[\™Ù]˜ÛÜÙ\İËŠ	ÖÙ]K]Ø‹Y›Ü›OH˜\H—IÊNÂˆYˆ
+\Q›Ü›JHÂˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹X\K[[Ù[\XÚÙ\—IÊJHÂˆÛÛœİ[Ù[Hİš[™Ê]™[\™Ù]˜[YH	ÉÊKš[J
+NÂˆÛÛœİ[Ù[šY[H\Q›Ü›K™[[Y[ÏË˜İ\İÛP\S[Ù[ÂˆYˆ
+[Ù[	‰ˆ[Ù[šY[
+HÂˆ[Ù[šY[˜[YHH[Ù[Âˆ™XY\Q›Ü›J\Q›Ü›JNÂˆ›İYJ9ª(yg¢ùmìº`"{ï&‰Û[Ù[X	ÜİXØÙ\ÜÉÊNÂˆBˆ™]\›ÂˆBˆ™XY\Q›Ü›J\Q›Ü›JNÂˆ™]\›ÂˆBˆYˆ
+Xİ[ÛˆOOH	İ\İZ[XYÙKX\IÊHÂˆÛÛœİ›Ü›HH\™Ù]˜ÛÜÙ\İ
+	ÖÙ]K]Ø‹Y›Ü›OHš[XYÙKX\H—IÊNÂˆYˆ
+Y›Ü›JH™]\›ÂˆÛÛœİÛÛ™š\›YYHÛØ˜[\Ë˜ÛÛ™š\›OËŠ	Ê8àî×øàîÎÊH9­bú+åy/&¹ç'ùæ¡9å'ù¢$9. 9o(LL°åÍLLˆ9fï¹âaûï#9cëú ïy.©ùå'ù. 9«(HTH:-.yå*8à ¹îéùîëyd%ûï'ÉÊNÂˆYˆ
+ÛÛ™š\›YYOOH˜[ÙJH™]\›ÂˆÛÛœİ]HHØš™Xİ™œ›ÛQ[šY\Ê™]È›Ü›Q]J›Ü›JK™[šY\Ê
+JNÂˆÛÛœİÙ^HHİš[™Ê]Kš[XYÙP\PÜ™Y[X[	ÉÊKš[J
+HÙ]Ù][™ÜÊ
+Kš[XYÙP\RÙ^NÂˆYˆ
+Tİš[™Ê]Kš[XYÙP\U\›	ÉÊKš[J
+HZÙ^HTİš[™Ê]Kš[XYÙP\S[Ù[	ÉÊKš[J
+JHÂˆ›İYJ	ùab9¢¢¹å'ùfï¹g,9g`8à RÙ^H9d£9ª(yg¢ùhjùk£9¥m8à ‰Ë	Ù\œ›Ü‰ÊNÂˆ™]\›ÂˆBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	İ\İZ[XYÙKX\IËÂˆ[XYÙP\U\›ˆ]Kš[XYÙP\U\›ˆ[XYÙP\RÙ^NˆÙ^Kˆ[XYÙP\S[Ù[ˆ]Kš[XYÙP\S[Ù[ˆJNÂˆYˆ
+ÛÛ\]Y
+H›İYJ	ù­bú+åyfï¹å'ù¢$9¢$9b§ûï#9£©ycèùcëù.éyå*8à ‰Ë	ÜİXØÙ\ÜÉÊNÂˆ™]\›ÂˆB‚ˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹\\œÛÛ‹\Ù[XİIÊJHÂˆÛÛœİYHİš[™Ê]™[\™Ù]˜[YH	ÉÊNÂˆÛÛœİ™^H™]ÈÙ]
+[ÜTÙ[XİYYÊNÂˆYˆ
+]™[\™Ù]˜ÚXÚÙY
+H™^˜Y
+Y
+NÂˆ[ÙH™^™[]JY
+NÂˆ[ÜTÙ[XİYYÈH™^Âˆ™[™\Š
+NÂˆ™]\›ÂˆB‚ˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹XÛYK\™[][Û‹Yš[\—IÊJHÂˆY[[ÜPÛYT™[][Û‘š[\ˆHİš[™Ê]™[\™Ù]˜[YH	Ø[	ÊNÃBˆY[[ÜUš\ÚX›PÛİ[HLÃBˆY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹[Y[[ÜK\Ù[XİIÊJHÃBˆÛÛœİÚ[™Hİš[™Ê]™[\™Ù]™]\Ù]›Y[[ÜRÚ[™	Ù˜Xİ	ÊNÃBˆÛÛœİYHİš[™Ê]™[\™Ù]™]\Ù]›Y[[ÜRY	ÉÊNÃBˆÛÛœİÙ^HH	ÚÚ[™N‰ÚYXÃBˆÛÛœİ™^H™]ÈÙ]
+Y[[ÜTÙ[XİYÙ^\ÊNÃBˆYˆ
+]™[\™Ù]˜ÚXÚÙY
+H™^˜Y
+Ù^JNÃBˆ[ÙH™^™[]JÙ^JNÃBˆY[[ÜTÙ[XİYÙ^\ÈH™^ÃBˆÛÛœİ[]P]ÛˆH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹[Y[[ÜK\Ù[XİYXÛİ[IÊNÃBˆYˆ
+[]P]ÛŠHÃBˆ[]P]Û‹™\ØX›YHY[[ÜTÙ[XİYÙ^\ËœÚ^™HOOHÃBˆ[]P]Û‹^ÛÛ[H9b(:fi:`"y.+IÛY[[ÜTÙ[XİYÙ^\ËœÚ^™HÈ0­È	ÛY[[ÜTÙ[XİYÙ^\ËœÚ^™_Xˆ	ÉßXÃBˆCBˆÛÛœİÛX\]ÛˆH›Ûİœ]Y\TÙ[XİÜŠ	ÖÙ]K]Ø‹XXİ[ÛH˜ÛX\‹[Y[[ÜK\Ù[Xİ[Ûˆ—IÊNÃBˆYˆ
+ÛX\]ÛŠHÛX\]Û‹™\ØX›YHY[[ÜTÙ[XİYÙ^\ËœÚ^™HOOHÃBˆ™]\›ÃBˆCBƒBˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹]ÛÜ››ÛÚËY[KZYIÊJHÃBˆÛÛœİZYHİš[™Ê]™[\™Ù]™]\Ù]Ø•ÛÜ››ÛÚÑ[RY	ÉÊNÃBˆÛÛœİ™^H™]ÈÙ]
+ÛÜ››ÛÚÔÙ[XİYYÊNÃBˆYˆ
+]™[\™Ù]˜ÚXÚÙY
+H™^˜Y
+ZY
+NÃBˆ[ÙH™^™[]JZY
+NÃBˆÛÜ››ÛÚÔÙ[XİYYÈH™^ÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBˆÛÛœİÛÜ››ÛÚÑš[\ˆH]™[\™Ù]™]\Ù]ËØ•ÛÜ››ÛÚÑš[\ÃBˆYˆ
+ÛÜ››ÛÚÑš[\ˆOOH	Ü[ÜIÈÛÜ››ÛÚÑš[\ˆOOH	Ù[˜X›Y	ÊHÃBˆYˆ
+ÛÜ››ÛÚÑš[\ˆOOH	Ü[ÜIÊHÛÜ››ÛÚÓÛ›T[ÜHH›ÛÛX[Š]™[\™Ù]˜ÚXÚÙY
+NÃBˆYˆ
+ÛÜ››ÛÚÑš[\ˆOOH	Ù[˜X›Y	ÊHÛÜ››ÛÚÓÛ›Q[˜X›YH›ÛÛX[Š]™[\™Ù]˜ÚXÚÙY
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹]]™\›‹\›Ùš[K\Ù[XİIÊJHÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÃBˆ]™\›\T›Ùš[RYˆİš[™Ê]™[\™Ù]˜[YH	ÉÊKBˆJNÃBˆ›İYJ]™[\™Ù]˜[YHÈ	úadºi¡¹¥®y¨b9âc9âc:+¬9/cùei»ïg‰Èˆ	ùab9.#yîäzadºi¡¹¥®y¨b9.¡»ïg‰Ë]™[\™Ù]˜[YHÈ	ÜİXØÙ\ÜÉÈˆ	Ú[™›ÉÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆÛÛœİ\T›İ]RÙ^HH]™[\™Ù]™]\Ù]ËØ\T›İ]NÃBˆYˆ
+\T›İ]RÙ^H	‰ˆÉÜÚ[][][Û‰Ë	ÛØœÙ\˜][Û‰Ë	Ú\İÜIË	ÛÜ[š[Û‰×Kš[˜ÛY\Ê\T›İ]RÙ^JJHÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİ›İ]\ÈHÃBˆ‹‹ŠÙ][™ÜË˜\S[Ù[T›İ]\ÈßJKBˆØ\T›İ]RÙ^WNˆİš[™Ê]™[\™Ù]˜[YH	ÙY˜][	ÊKBˆNÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÈ\S[Ù[T›İ]\Îˆ›İ]\ÈJNÃBˆ›İYJ	ú/æygeùæ¡TH:-ëùî¯ú+¬9ioyei»ïg‰Ë	ÜİXØÙ\ÜÉÊNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆÛÛœİYÑšY[H]™[\™Ù]™]\Ù]ËØ•YÑš[\‘šY[ÃBˆYˆ
+YÑšY[OOH	ÛÜ[‰ÈYÑšY[OOH	ØÛÜÙIÊHÃBˆÛÛœİ[™^H[X™\Š]™[\™Ù]™]\Ù]š[™^
+NÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİİ\œ™[Hš\ÚX›UYÑš[\”[\ÊÙ][™ÜÊK›X\
+[HOˆ
+È‹‹œ[HJJNÃBˆYˆ
+Xİ\œ™[Ú[™^JH™]\›ÃBˆİ\œ™[Ú[™^HHÃBˆ‹‹˜İ\œ™[Ú[™^KBˆİYÑšY[Nˆİš[™Ê]™[\™Ù]˜[YH	ÉÊKœÛXÙJ
+KBˆNÃBˆ]ØZ]\œÚ\İYÑš[\”[\Êİ\œ™[
+NÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆÛÛœİÙ][™ÔÙXÛÛ™ÈH]™[\™Ù]™]\Ù]Ø”Ù][™ÔÙXÛÛ™ÎÃBˆYˆ
+Ù][™ÔÙXÛÛ™ÊHÃBˆÛÛœİÙXÛÛ™ÈHX]›X^
+[X™\Š]™[\™Ù]˜[YJH
+NÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÃBˆÜÙ][™ÔÙXÛÛ™×NˆÙXÛÛ™ÈˆÈX]œ›İ[™
+ÙXÛÛ™È
+ˆL
+HˆBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆÛÛœİÙ[™\˜][Û“[Z]šY[H]™[\™Ù]™]\Ù]Ø‘Ù[™\˜][Û“[Z]ÃBˆÛÛœİÙ[™\˜][Û“[Z][Ù[HH]™[\™Ù]™]\Ù]›[Ù[NÃBˆYˆ
+BˆÙ[™\˜][Û“[Z]šY[Bˆ	‰ˆÉÜÚ[][][Û‰Ë	ÛØœÙ\˜][Û‰Ë	Ú\İÜIË	ÛÜ[š[Û‰×Kš[˜ÛY\ÊÙ[™\˜][Û“[Z][Ù[JCBˆ
+HÃBˆÛÛœİÙ][™ÜÈHÙ]Ù][™ÜÊ
+NÃBˆÛÛœİİ\œ™[HÙ][™ÜË™Ù[™\˜][Û“[Ù[S[Z]È	‰ˆ\[ÙˆÙ][™ÜË™Ù[™\˜][Û“[Ù[S[Z]ÈOOH	ÛØš™Xİ	ÃBˆÈÙ][™ÜË™Ù[™\˜][Û“[Ù[S[Z]ÃBˆˆßNÃBˆÛÛœİ[Ù[S[Z]HÃBˆ‹‹Šİ\œ™[ÙÙ[™\˜][Û“[Z][Ù[WHÈX^ÚÙ[œÎˆ[Y[İ]\ÎˆJKBˆNÃBˆYˆ
+Ù[™\˜][Û“[Z]šY[OOH	ÛX^ÚÙ[œÉÊHÃBˆ[Ù[S[Z]›X^ÚÙ[œÈHX]›X^
+[X™\‹œ\œÙR[
+]™[\™Ù]˜[YKL
+H
+NÃBˆH[ÙHYˆ
+Ù[™\˜][Û“[Z]šY[OOH	İ[Y[İ]ÙXÛÛ™ÉÊHÃBˆÛÛœİÙXÛÛ™ÈHX]›X^
+[X™\Š]™[\™Ù]˜[YJH
+NÃBˆ[Ù[S[Z][Y[İ]\ÈHÙXÛÛ™ÈˆÈX]œ›İ[™
+ÙXÛÛ™È
+ˆL
+HˆÃBˆH[ÙHÃBˆ™]\›ÃBˆCBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÃBˆÙ[™\˜][Û“[Ù[S[Z]ÎˆÃBˆ‹‹˜İ\œ™[BˆÙÙ[™\˜][Û“[Z][Ù[WNˆ[Ù[S[Z]BˆKBˆJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆÛÛœİÙ][™ÈH]™[\™Ù]™]\Ù]Ø”Ù][™ÎÃBˆYˆ
+Ù][™ÊHÃBˆÛÛœİ˜[YHH]™[\™Ù]\HOOH	ØÚXÚØ›Ş	ÃBˆÈ]™[\™Ù]˜ÚXÚÙYBˆˆ]™[\™Ù]˜[YNÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉËÈÜÙ][™×Nˆ˜[YHJNÃBˆ™[™\Š
+NÃBˆ™]\›ÃBˆCBƒBˆYˆ
+]™[\™Ù]˜Û\ÜÓ\İ˜ÛÛZ[œÊ	İØ‹Z[\ÜZ[œ]	ÊJHÃBˆÛÛœİš[HH]™[\™Ù]™š[\ÏË–ÌNÃBˆYˆ
+Yš[JH™]\›ÃBˆ]ØZ][›ÚÙPXİ[ÛŠ	Ú[\Ü\İ]KY]IËÃBˆ˜[YNˆš[K›˜[YKBˆ^ˆ]ØZ]š[K^
+
+KBˆJNÃBˆ]™[\™Ù]˜[YHH	ÉÎÃBˆ™[™\Š
+NÃBˆCBˆJNÃBƒBˆ›Ûİ˜Y]™[\İ[™\Š	Ú[œ]	Ë]™[OˆÂˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹Y›Ü›OHœÛØÚX[[Y\ÜØYÙH—H^\™XVÛ˜[YOH^—IÊJHÂˆÛØÚX[˜YHİš[™Ê]™[\™Ù]˜[YH	ÉÊKœÛXÙJMŒ
+NÂˆ™]\›ÂˆBˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹\ÛØÚX[\ÙX\˜ÚIÊJHÂˆÛØÚX[ÙX\˜Ú]Y\HHİš[™Ê]™[\™Ù]˜[YH	ÉÊKœÛXÙJ
+NÂˆÚ[™İË˜ÛX\•[Y[İ]
+ÛØÚX[ÙX\˜Ú[Y\ŠNÂˆÛØÚX[ÙX\˜Ú[Y\ˆHÚ[™İËœÙ][Y[İ]
+™[™\‹LŒ
+NÂˆ™]\›ÂˆBˆÛÛœİ\Q›Ü›HH]™[\™Ù]˜ÛÜÙ\İËŠ	ÖÙ]K]Ø‹Y›Ü›OH˜\H—IÊNÂˆYˆ
+\Q›Ü›JHÃBˆ™XY\Q›Ü›J\Q›Ü›JNÃBˆ™]\›ÃBˆCBƒBˆYˆ
+]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹]ÛÜ››ÛÚË\ÙX\˜ÚIÊJHÃBˆÛÜ››ÛÚÔ]Y\HHİš[™Ê]™[\™Ù]˜[YH	ÉÊKœÛXÙJLŒ
+NÃBˆÚ[™İË˜ÛX\•[Y[İ]
+ÛÜ››ÛÚÔÙX\˜Ú[Y\ŠNÃBˆÛÜ››ÛÚÔÙX\˜Ú[Y\ˆHÚ[™İËœÙ][Y[İ]
+™[™\‹L
+NÃBˆ™]\›ÃBˆCBˆYˆ
+Y]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹[Y[[ÜK\ÙX\˜ÚIÊJH™]\›ÃBˆÛÛœİ™^Y[[ÜT]Y\HHİš[™Ê]™[\™Ù]˜[YH	ÉÊKœÛXÙJ
+NÃBˆYˆ
+™^Y[[ÜT]Y\HOOHY[[ÜT]Y\JHY[[ÜTÙ[XİYÙ^\ÈH™]ÈÙ]
+
+NÃBˆY[[ÜT]Y\HH™^Y[[ÜT]Y\NÃBˆY[[ÜUš\ÚX›PÛİ[HLÃBˆÚ[™İË˜ÛX\•[Y[İ]
+Y[[ÜTÙX\˜Ú[Y\ŠNÃBˆY[[ÜTÙX\˜Ú[Y\ˆHÚ[™İËœÙ][Y[İ]
+™[™\‹LŒ
+NÃBˆJNÃBƒBˆ›Ûİ˜Y]™[\İ[™\Š	ÜİX›Z]	Ë\Ş[˜È]™[OˆÃBˆÛÛœİ›Ü›HH]™[\™Ù]˜ÛÜÙ\İ
+	ÖÙ]K]Ø‹Y›Ü›WIÊNÃBˆYˆ
+Y›Ü›JH™]\›ÃBˆ]™[œ™]™[Y˜][
+
+NÃBˆÛÛœİ]HHØš™Xİ™œ›ÛQ[šY\Ê™]È›Ü›Q]J›Ü›JK™[šY\Ê
+JNÃBƒBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	Û[™ÜZKXÚ]	ÊHÂˆÛÛœİ^Hİš[™Ê]K^	ÉÊKš[J
+NÃBˆYˆ
+]^
+H™]\›ÃBˆYˆ
+›Ü›K™[[Y[Ë^
+H›Ü›K™[[Y[Ë^˜[YHH	ÉÎÃBˆ[™ÜZQ˜YH	ÉÎÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Û[™ÜZK\Ù[™[Y\ÜØYÙIËÈ^JNÃBˆYˆ
+ÛÛ\]YOOH˜[ÙJH[™ÜZQ˜YH^ÂˆBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	ÜÛØÚX[[Y\ÜØYÙIÊHÂˆÛÛœİ^Hİš[™Ê]K^	ÉÊKš[J
+NÂˆÛÛœİÛÛ™\œØ][Û’YHİš[™Ê]K˜ÛÛ™\œØ][Û’Y	ÉÊKš[J
+NÂˆYˆ
+]^XÛÛ™\œØ][Û’Y
+H™]\›ÂˆÛØÚX[˜YH	ÉÎÂˆYˆ
+›Ü›K™[[Y[Ë^
+H›Ü›K™[[Y[Ë^˜[YHH	ÉÎÂˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\Ù[™[Y\ÜØYÙIËÈÛÛ™\œØ][Û’Y^JNÂˆYˆ
+ÛÛ\]YOOH˜[ÙJHÛØÚX[˜YH^ÂˆBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	ÜÛØÚX[YÜ›İ\	ÊHÂˆÛÛœİY[X™\’YÈH™]È›Ü›Q]J›Ü›JK™Ù][
+	ÛY[X™\’YÉÊK›X\
+İš[™ÊK™š[\Š›ÛÛX[ŠNÂˆÛØÚX[Ü›İ\Ù[XİYYÈH™]ÈÙ]
+Y[X™\’YÊNÂˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[XÜ™X]KYÜ›İ\	ËÂˆ]Nˆİš[™Ê]K]H	ÉÊKˆY[X™\’YËˆJNÂˆYˆ
+ÛÛ\]Y
+HÂˆÛØÚX[Ü›İ\Ü[ˆH˜[ÙNÂˆÛØÚX[Ü›İ\Ù[XİYYÈH™]ÈÙ]
+
+NÂˆÛØÚX[˜YH	ÉÎÂˆBˆBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	ÜÛØÚX[YœšY[™\™\]Y\İ	ÊHÂˆÛÛœİ\œÛÛ’YHİš[™Ê]Kœ\œÛÛ’Y	ÉÊKš[J
+NÂˆYˆ
+\\œÛÛ’Y
+H™]\›ÂˆÛÛœİ™\İ[H]ØZ][›ÚÙPXİ[ÛŠ	ÜÛØÚX[\™\]Y\İYœšY[™	ËÂˆ\œÛÛ’YˆY\ÜØYÙNˆİš[™Ê]K›Y\ÜØYÙH	ÉÊKš[J
+KˆJNÂˆYˆ
+™\İ[	‰ˆ\[Ùˆ™\İ[OOH	ÛØš™Xİ	ÊHÂˆÛÛœİš\ÚX›HH™\İ[œ™\HÈ;ï&‰Ü™\İ[œ™\_Xˆ	ÉÎÂˆ›İYJˆ™\İ[™XÚ\Ú[ÛˆOOH	ØXØÙ\Y	ÂˆÈ	Ü™\İ[œ\œÛÛ“˜[Y_H:`&º/áù.¡¹ioycâùå,ú+íÉİš\ÚX›_Xˆˆ™\İ[™XÚ\Ú[ÛˆOOH	ÙXÛ[™Y	ÂˆÈ	Ü™\İ[œ\œÛÛ“˜[Y_H9¬¨y§"z`&º/áùå,ú+íÉİš\ÚX›_Xˆˆ	Ü™\İ[œ\œÛÛ“˜[Y_H9¦ ¹¥í¹¬¨y§"yi!9ä!¹å,ú+íÉİš\ÚX›_Xˆ™\İ[™XÚ\Ú[ÛˆOOH	ØXØÙ\Y	ÈÈ	ÜİXØÙ\ÜÉÈˆ	Ú[™›ÉËˆ
+NÂˆBˆ™[™\Š
+NÂˆBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	ØÛØÚÉÊHÃBˆÛØÚÑ›Ü›Q˜YHÈ‹‹™]HNÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜÙ]XÛØÚÉË]JNÃBˆYˆ
+ÛÛ\]Y
+HÛØÚÑ›Ü›Q˜YH[ÃBˆCBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	Ø\IÊHÂˆ\Q›Ü›Q˜YHÈ‹‹™]HNÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉË\TÙ][™ÜÑœ›ÛQ˜Y
+]JJNÃBˆYˆ
+ÛÛ\]Y
+HÃBˆ›Ü™Ù]\RÙ^Q˜Y
+]JNÃBˆ›İYJ	ùâë9êâù£©ycèùkf9ioyei»ïg¹¥éÈÙ^H:/æ9¦+ù.#y/&¹`mù`mùfç¹hjùdé¸à ‰Ë	ÜİXØÙ\ÜÉÊNÃBˆBˆBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	Ú[XYÙKX\IÊHÂˆÛÛœİ™\XÙ[Y[Ù^HHİš[™Ê]Kš[XYÙP\PÜ™Y[X[	ÉÊKš[J
+NÂˆÛÛœİ[˜X›YH›ÛÛX[Š›Ü›K™[[Y[Ëš[XYÙP\Q[˜X›YË˜ÚXÚÙY
+NÂˆÛÛœİ]ÚHÂˆ[XYÙP\Q[˜X›Yˆ[˜X›Yˆ[XYÙP\U\›ˆİš[™Ê]Kš[XYÙP\U\›	ÉÊKš[J
+Kˆ[XYÙP\RÙ^Nˆ™\XÙ[Y[Ù^HÙ]Ù][™ÜÊ
+Kš[XYÙP\RÙ^Kˆ[XYÙP\S[Ù[ˆİš[™Ê]Kš[XYÙP\S[Ù[	ÉÊKš[J
+Kˆ[XYÙP\TÚ^™Nˆİš[™Ê]Kš[XYÙP\TÚ^™H	ÌLL	ÊKˆNÂˆYˆ
+[˜X›Y	‰ˆ
+\]Úš[XYÙP\U\›\]Úš[XYÙP\RÙ^H\]Úš[XYÙP\S[Ù[
+JHÂˆ›İYJ	ú) yo 9d+ùå'ùfï»ï#9g,9g`8à RÙ^H9d£9ª(yg¢ú`ïyo¥ùhjùk£9¥m8à ‰Ë	Ù\œ›Ü‰ÊNÂˆH[ÙHÂˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	İ\]K\Ù][™ÜÉË]Ú
+NÂˆYˆ
+ÛÛ\]Y
+HÂˆ›Ü›K™[[Y[Ëš[XYÙP\PÜ™Y[X[˜[YHH	ÉÎÂˆ›İYJ[˜X›YÈ	ù§"ùcâùg"9å'ùfï¹£©ycèùmì¹o 9d+øà ‰Èˆ	ùå'ùfïºacyïk¹mì¹/çykf;ï#9æë¹bcy/çy£ yalúeëxà ‰Ë	ÜİXØÙ\ÜÉÊNÂˆBˆBˆBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	İÛÜ›	ÊHÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜØ]™K]ÛÜ›\İ[[X\IËÃBˆ]Nˆ]K]H	ÉËBˆ]Z[ˆ]K™]Z[	ÉËBˆ˜XÚÙÜ›İ[™ˆ]K˜˜XÚÙÜ›İ[™	ÉËBˆJNÃBˆYˆ
+ÛÛ\]Y
+HÛÜ›Y]Ü“Ü[ˆH˜[ÙNÃBˆCBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	Ü™XÛÜ™	ÊHÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜØ]™K\™XÛÜ™	ËÃBˆÚ[™ˆ]KšÚ[™	ÙXÚÉËBˆYˆ]KšY	ÉËBˆ]Nˆ]K]H	ÉËBˆ^ˆ]K^	ÉËBˆXÙNˆ]KœXÙH	ÉËBˆš\ÚXš[]Nˆ]Kš\ÚXš[]H	ÚY[‰ËBˆ[]™\Tİ]Nˆ]K™[]™\Tİ]H	Û›Û™IËBˆJNÃBˆYˆ
+ÛÛ\]Y
+H™XÛÜ™Y]ÜˆH[ÃBˆCBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	Ù]™[	ÊHÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ]KšYÈ	İ\]KY]™[	Èˆ	ØYY]™[	Ë]JNÃBˆYˆ
+ÛÛ\]Y
+HÃBˆ]™[›Ü›SÜ[ˆH˜[ÙNÃBˆ]™[Y]Ü’YH	ÉÎÃBˆ]™[›Ü›Q˜YH[ÃBˆCBˆCBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	ÛY[[ÜIÊHÃBˆÛÛœİ\œÙT™[][Û“\İH˜[YHOˆË‹‹›™]ÈÙ]
+Bˆİš[™Ê˜[YH	ÉÊCBˆœÜ]
+Öøà K;ï#ûï&×—JËÊCBˆ›X\
+][HOˆ][Kš[J
+JCBˆ™š[\Š›ÛÛX[ŠKBˆ
+WNÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜØ]™K[Y[[ÜKZ][IËÃBˆYˆ]KšY	ÉËBˆÚ[™ˆ]KšÚ[™	Ù˜Xİ	ËBˆ]Nˆ]K]H	ÉËBˆ™[][Ûˆ]Kœ™[][Ûˆ	ÉËBˆÛÛ[ˆ]K˜ÛÛ[	ÉËBˆ[ÜNˆ\œÙT™[][Û“\İ
+]Kœ[ÜJKBˆ]™[Îˆ\œÙT™[][Û“\İ
+]K™]™[ÊKBˆØØ][ÛœÎˆ\œÙT™[][Û“\İ
+]K›ØØ][ÛœÊKBˆ[\Ü[ˆ›Ü›K™[[Y[Ëš[\Ü[Ë˜ÚXÚÙY˜[ÙKBˆØÚÙYˆ›Ü›K™[[Y[Ë›ØÚÙYË˜ÚXÚÙY˜[ÙKBˆJNÃBˆYˆ
+ÛÛ\]Y
+HY[[ÜQY]ÜˆH[ÃBˆCBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	Ü\œÛÛ‰ÊHÃBˆÛÛœİ]˜]\‘š[HH›Ü›K™[[Y[Ë˜]˜]\‘š[OË™š[\ÏË–ÌH[ÃBˆ]]˜]\‘]U\›H[ÃBˆYˆ
+]˜]\‘š[JHÃBˆ›İYJ	ù«hùg*9¢¢¹i-9`ãùï*y¢$9l#ùl#ù. 9cê»ïg‰Ë	Ú[™›ÉÊNÃBˆHÃBˆ]˜]\‘]U\›H]ØZ]™XY\œÛÛ]˜]\‘š[J]˜]\‘š[JNÃBˆHØ]Ú
+\œ›ÜŠHÃBˆ›İYJİš[™Ê\œ›ÜË›Y\ÜØYÙH\œ›Üˆ	ùi-9`ãù¬¨y§"yi!9ä!¹¢$9b§ûïg‰ÊK	Ù\œ›Ü‰ÊNÃBˆ™]\›ÃBˆCBˆCBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	ÜØ]™K[X[X[\\œÛÛ‰ËÃBˆYˆ]KšY	ÉËBˆÜšYÚ[˜[˜[YNˆ]K›ÜšYÚ[˜[˜[YH	ÉËBˆ˜[YNˆ]K›˜[YH	ÉËBˆ]˜]\‘]U\›BˆØØ][Ûˆ]K›ØØ][Ûˆ	ÉËBˆXİ[Ûˆ]K˜Xİ[Ûˆ	ÉËBˆ[[ˆ]Kš[[	ÉËBˆÛ™Õ\›QÛØ[ˆ]K›Û™Õ\›QÛØ[	ÉËBˆ[›™\•›ÚXÙNˆ]Kš[›™\•›ÚXÙH	ÉËBˆY[]P[˜ÚÜˆ]KšY[]P[˜ÚÜˆ	ÉËBˆ\œÛÛ˜[]P[˜ÚÜˆ]Kœ\œÛÛ˜[]P[˜ÚÜˆ	ÉËBˆ\X\˜[˜ÙT›Ùš[Nˆ]K˜\X\˜[˜ÙT›Ùš[H	ÉËBˆ˜XÚÙÜ›İ[™›Ùš[Nˆ]K˜˜XÚÙÜ›İ[™›Ùš[H	ÉËBˆÜXZÚ[™Ôİ[Nˆ]KœÜXZÚ[™Ôİ[H	ÉËBˆ™Z]š[Ü›İ[™\šY\Îˆ]K˜™Z]š[Ü›İ[™\šY\È	ÉËBˆÛ›İÛYÙNˆ]KšÛ›İÛYÙH	Ø˜XÚÜİYÙIËBˆ™[]˜[˜ÙNˆ]Kœ™[]˜[˜ÙH‹BˆÚ[][][Û‘[˜X›Yˆ›Ü›K™[[Y[ËœÚ[][][Û‘[˜X›YË˜ÚXÚÙY˜[ÙKBˆØÚÙYˆ›Ü›K™[[Y[Ë›ØÚÙYË˜ÚXÚÙY˜[ÙKBˆJNÃBˆYˆ
+ÛÛ\]Y
+H\œÛÛ‘Y]ÜˆH[ÃBˆCBˆYˆ
+›Ü›K™]\Ù]Ø‘›Ü›HOOH	İÛÜ››ÛÚÉÊHÃBˆÛÛœİ›Ü›Q]HH™]È›Ü›Q]J›Ü›JNÃBˆÛÛœİÛÛ\]YH]ØZ][›ÚÙPXİ[ÛŠ	Ú[\Ü]ÛÜ››ÛÚË\[ÜIËÃBˆ›ÛÚÓ˜[YNˆİš[™Ê›Ü›Q]K™Ù]
+	Ø›ÛÚÓ˜[YIÊH	ÉÊKBˆ[RYÎˆË‹‹ÛÜ››ÛÚÔÙ[XİYY×KBˆJNÃBˆYˆ
+ÛÛ\]Y
+HÛÜ››ÛÚÔÙ[XİYYÈH™]ÈÙ]
+
+NÃBˆCBˆ™[™\Š
+NÃBˆJNÃBƒBˆÛÛœİÛ’Ù^YİÛˆH]™[OˆÃBˆÛÛœİ[™ÜZU^\™XHH]™[\™Ù]›X]Ú\ÏËŠ	ÖÙ]K]Ø‹Y›Ü›OH›[™ÜZKXÚ]—H^\™XVÛ˜[YOH^—IÊCBˆÈ]™[\™Ù]Bˆˆ[ÃBˆYˆ
+Bˆ[™ÜZU^\™XCBˆ	‰ˆ]™[šÙ^HOOH	Ñ[\‰ÃBˆ	‰ˆY]™[œÚYÙ^CBˆ	‰ˆY]™[˜İ›Ù^CBˆ	‰ˆY]™[˜[Ù^CBˆ	‰ˆY]™[›Y]RÙ^CBˆ	‰ˆY]™[š\ĞÛÛ\ÜÚ[™ÃBˆ	‰ˆ]™[šÙ^PÛÙHOOHŒCBˆ
+HÃBˆ]™[œ™]™[Y˜][
+
+NÃBˆ[™ÜZU^\™XK™›Ü›OËœ™\]Y\İİX›Z]
+
+NÃBˆ™]\›ÃBˆCBˆYˆ
+BˆÉÑ[\‰Ë	È	×Kš[˜ÛY\Ê]™[šÙ^JCBˆ	‰ˆ]™[\™Ù]›X]Ú\ÏËŠ	ÖÜ›ÛOH˜]Ûˆ—VÙ]K]Ø‹XXİ[Û—IÊCBˆ
+HÃBˆ]™[œ™]™[Y˜][
+
+NÃBˆ]™[\™Ù]˜ÛXÚÊ
+NÃBˆ™]\›ÃBˆCBˆYˆ
+]™[šÙ^HOOH	Ñ\ØØ\IÊH™]\›ÃBˆYˆ
+™XÛÜ™Y]ÜŠH™XÛÜ™Y]ÜˆH[ÃBˆ[ÙHYˆ
+ÛÜ›Y]Ü“Ü[ŠHÛÜ›Y]Ü“Ü[ˆH˜[ÙNÃBˆ[ÙHYˆ
+Ù[XİY\œÛÛ’Y
+HÙ[XİY\œÛÛ’YH[ÃBˆ[ÙHYˆ
+]™[›Ü›SÜ[ŠHÃBˆ]™[›Ü›SÜ[ˆH˜[ÙNÃBˆ]™[Y]Ü’YH	ÉÎÃBˆ]™[›Ü›Q˜YH[ÃBˆCBˆ[ÙHYˆ
+[Ù[TÙ][™ÜÕšY]ÊHÃBˆ[Ù[TÙ][™ÜÕšY]ÈH	ÉÎÃBˆÛØÚÑ›Ü›Q˜YH[ÃBˆCBˆ[ÙHYˆ
+Ù][™ÜÓÜ[ŠHÃBˆÙ][™ÜÓÜ[ˆH˜[ÙNÃBˆÛØÚÑ›Ü›Q˜YH[ÃBˆYÑš[\‘˜Y[\ÈH[ÃBˆCBˆ[ÙHYˆ
+\ÓÜ[ŠHÃBˆÛÜÙJ
+NÃBˆ™]\›ÃBˆCBˆ™[™\Š
+NÃBˆNÃBˆÛÛœİÛ”™\Ú^™HH
+
+HOˆÃBˆŞ[˜Õš\İX[šY]ÜÜ[œÙ]Ê
+NÃBˆÜÚ][Û“Ü˜‘œ›ÛTÙ][™ÜÊ
+NÃBˆNÃBˆÛÛœİÙ[’X[[Y\ˆHÚ[™İËœÙ][\˜[
+[œİ\™S[İ[YN
+NÃBˆÛÛœİÛ”YÙUš\ÚX›HH
+
+HOˆ[œİ\™S[İ[Y
+
+NÃBˆØİ[Y[˜Y]™[\İ[™\Š	ÚÙ^YİÛ‰ËÛ’Ù^YİÛŠNÃBˆØİ[Y[˜Y]™[\İ[™\Š	İš\ÚXš[]XÚ[™ÙIËÛ”YÙUš\ÚX›JNÃBˆÚ[™İË˜Y]™[\İ[™\Š	Ù›Øİ\ÉËÛ”YÙUš\ÚX›JNÃBˆÚ[™İË˜Y]™[\İ[™\Š	ÜYÙ\ÚİÉËÛ”YÙUš\ÚX›JNÃBˆÚ[™İË˜Y]™[\İ[™\Š	Ü™\Ú^™IËÛ”™\Ú^™JNÃBˆÚ[™İËš\İX[šY]ÜÜË˜Y]™[\İ[™\Š	Ü™\Ú^™IËÛ”™\Ú^™JNÃBˆÚ[™İËš\İX[šY]ÜÜË˜Y]™[\İ[™\Š	ÜØÜ›Û	ËÛ”™\Ú^™JNÃBƒBˆ™[™\Š
+NÃBˆ™]\›ˆÃBˆ™[™\‹Bˆ[œİ\™S[İ[YBˆ›İYKBˆÙ]\ŞKBˆÜ[‹ˆÜ[‘]™[ˆÛÜÙKˆ™\Ù]ÛÛ^Bˆ\İ›ŞJ
+HÃBˆÚ[™İË˜ÛX\•[Y[İ]
+Ø\İ[Y\ŠNÃBˆÚ[™İË˜ÛX\•[Y[İ]
+Y[[ÜTÙX\˜Ú[Y\ŠNÃBˆÚ[™İË˜ÛX\•[Y[İ]
+ÛÜÙU[Y\ŠNÃBˆÚ[™İË˜ÛX\•[Y[İ]
+[™ÜZSX\ØÛİ[Y\ŠNÂˆÚ[™İË˜ÛX\•[Y[İ]
+ÛØÚX[›İXÙU[Y\ŠNÂˆÚ[™İË˜Ø[˜Ù[[š[X][Û‘œ˜[YOËŠœ™\ÚÜ[ÚXÚÑœ˜[YJNÃBˆÚ[™İË˜ÛX\’[\˜[
+Ù[’X[[Y\ŠNÃBˆØİ[Y[œ™[[İ™Q]™[\İ[™\Š	ÚÙ^YİÛ‰ËÛ’Ù^YİÛŠNÃBˆØİ[Y[œ™[[İ™Q]™[\İ[™\Š	İš\ÚXš[]XÚ[™ÙIËÛ”YÙUš\ÚX›JNÃBˆÚ[™İËœ™[[İ™Q]™[\İ[™\Š	Ù›Øİ\ÉËÛ”YÙUš\ÚX›JNÃBˆÚ[™İËœ™[[İ™Q]™[\İ[™\Š	ÜYÙ\ÚİÉËÛ”YÙUš\ÚX›JNÃBˆÚ[™İËœ™[[İ™Q]™[\İ[™\Š	Ü™\Ú^™IËÛ”™\Ú^™JNÃBˆÚ[™İËš\İX[šY]ÜÜËœ™[[İ™Q]™[\İ[™\Š	Ü™\Ú^™IËÛ”™\Ú^™JNÃBˆÚ[™İËš\İX[šY]ÜÜËœ™[[İ™Q]™[\İ[™\Š	ÜØÜ›Û	ËÛ”™\Ú^™JNÃBˆ›Ûİœ™[[İ™J
+NÃBˆKBˆNÃBŸCB

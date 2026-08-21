@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const [uiSource, styleSource, indexSource, bootstrapSource, hotfixSource, storageGuardSource] = await Promise.all([
+const [uiSource, styleSource, indexSource, bootstrapSource, hotfixSource, storageGuardSource, socialAdapterSource] = await Promise.all([
     readFile(new URL('../ui.js', import.meta.url), 'utf8'),
     readFile(new URL('../style.css', import.meta.url), 'utf8'),
     readFile(new URL('../index.js', import.meta.url), 'utf8'),
     readFile(new URL('../bootstrap.js', import.meta.url), 'utf8'),
     readFile(new URL('../ui-hotfix.js', import.meta.url), 'utf8'),
     readFile(new URL('../storage-guard.js', import.meta.url), 'utf8'),
+    readFile(new URL('../social-responsive-adapter.js', import.meta.url), 'utf8'),
 ]);
 
 test('long memory UI uses filtering, search and progressive loading', () => {
@@ -208,6 +209,12 @@ test('bootstrap loads one social adapter and one community-note entry only', () 
     assert.match(bootstrapSource, /community-note\.js/);
     assert.doesNotMatch(bootstrapSource, /mobile-social-fix\.js/);
     assert.doesNotMatch(bootstrapSource, /community-note-entry-fix\.js/);
+});
+
+test('responsive social thread keeps its vertical grid in single and split layouts', () => {
+    assert.match(socialAdapterSource, /wb-social-adaptive-thread > \.wb-social-thread \{[\s\S]*?display: grid !important/);
+    assert.match(socialAdapterSource, /wb-social-adaptive-split > \.wb-social-thread \{[\s\S]*?display: grid !important/);
+    assert.doesNotMatch(socialAdapterSource, /wb-social-adaptive-(?:thread|split) > \.wb-social-thread \{[\s\S]*?display: flex !important/);
 });
 
 test('UI safeguards avoid whole-document mutation scans and periodic full serialization', () => {

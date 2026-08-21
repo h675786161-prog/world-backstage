@@ -44,7 +44,7 @@ function installStyle() {
     display: none !important;
 }
 #world-backstage-root .wb-social-layout.wb-social-adaptive-thread > .wb-social-thread {
-    display: flex !important;
+    display: grid !important;
     width: 100% !important;
 }
 
@@ -71,7 +71,7 @@ function installStyle() {
     display: grid !important;
 }
 #world-backstage-root .wb-social-layout.wb-social-adaptive-split > .wb-social-thread {
-    display: flex !important;
+    display: grid !important;
 }
 
 #world-backstage-root .wb-social-layout:not(.wb-social-adaptive-thread) .wb-adaptive-social-back {

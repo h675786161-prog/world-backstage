@@ -17,8 +17,8 @@ void import('./presentation-polish.js?v=251')
         console.error('[世界背面] 自适应表现层加载失败', error);
     });
 
-void import('./orb-motion-randomizer.js?v=3').catch(error => {
-    console.error('[世界背面] 悬浮球生命动态加载失败', error);
+void import('./orb-motion-randomizer.js?v=2').catch(error => {
+    console.error('[世界背面] 悬浮球随机运转加载失败', error);
 });
 
 void import('./community-note.js?v=3').catch(error => {

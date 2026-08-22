@@ -228,18 +228,6 @@ test('UI safeguards avoid whole-document mutation scans and periodic full serial
     assert.match(storageGuardSource, /fingerprint === lastCheckedFingerprint/);
 });
 
-test('world orb uses continuous living-world layers instead of shuffled motion profiles', async () => {
-    const orbSource = await readFile(new URL('../orb-motion-randomizer.js', import.meta.url), 'utf8');
-    assert.match(uiSource, /wb-orb-globe/);
-    assert.match(uiSource, /wb-orb-land/);
-    assert.match(uiSource, /wb-orb-clouds/);
-    assert.match(uiSource, /wb-orb-terminator/);
-    assert.match(orbSource, /wb-orb-world-turn/);
-    assert.match(orbSource, /animationDelay=`\$\{\-\(elapsedSeconds%duration\)\}s`/);
-    assert.doesNotMatch(orbSource, /PROFILES|chooseProfile|scheduleLongRunShuffle/);
-    assert.doesNotMatch(orbSource, /setTimeout/);
-});
-
 test('long history scans durably commit every completed batch before continuing', () => {
     assert.match(indexSource, /return Promise\.resolve\(context\.saveMetadata\(\)\)/);
     assert.match(indexSource, /await saveHistoryBootstrapCheckpoint\(\{/);

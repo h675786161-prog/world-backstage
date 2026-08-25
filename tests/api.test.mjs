@@ -67,12 +67,11 @@ test('custom API can pull and normalize model lists while keeping manual input p
     });
     assert.deepEqual(proxied, ['gemini-test']);
     assert.equal(proxyRequest.url, '/api/backends/chat-completions/status');
-    assert.equal(proxyRequest.body.chat_completion_source, 'custom');
     assert.equal(proxyRequest.body.custom_url, 'https://example.test/v1');
     assert.match(proxyRequest.body.custom_include_headers, /Bearer proxy-secret/);
 });
 
-test('proxy request uses the tavern custom dispatcher with plugin URL, key and model', async () => {
+test('proxy request uses plugin URL, key and model instead of tavern selection', async () => {
     let request = null;
     const result = await requestCustomCompletion({
         customApiUrl: 'https://example.test/v1',

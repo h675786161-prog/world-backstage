@@ -116,12 +116,13 @@ function worldClockLabel(state, clock = formatWorldCalendar(state)) {
 function pluginReleaseStage(version = '') {
     const text = String(version || '');
     if (/-rc\./i.test(text)) return '候选版';
-    if (/-alpha|dev\./i.test(text)) return '测试版';
+    if (/-alpha|-beta|dev\./i.test(text)) return '测试版';
     return '正式版';
 }
 
 function pluginDisplayVersion(version = '') {
     const text = String(version || '');
+    if (/^2\.5\.\d+$/i.test(text)) return '小猫版 V2.5';
     if (/^2\.4\.\d+(?:-|$)/i.test(text)) return '小猫版 V2.4';
     if (/^2\.3\.0-alpha\.\d+$/i.test(text)) return '小猫版 V2.3 · 体验版';
     if (/^2\.2\.\d+$/i.test(text)) return '小猫版 V2.2';
@@ -955,18 +956,15 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                             <span>钟我还是抱着，不会丢。这里只决定要不要把时间递给正文。</span>
                         </div>
                         <div class="wb-time-mode-picker" role="group" aria-label="世界时间注入方式">
-                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
-                                data-wb-setting-button="injectionTimeMode" data-value="full"
+                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode" data-value="full"
                                 class="${settings.injectionTimeMode === 'full' ? 'is-active' : ''}">
                                 <strong>完整</strong><small>日期 + 时段 + 具体时间</small>
                             </button>
-                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
-                                data-wb-setting-button="injectionTimeMode" data-value="anchor"
+                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode" data-value="anchor"
                                 class="${settings.injectionTimeMode === 'anchor' ? 'is-active' : ''}">
                                 <strong>最小锚点</strong><small>只留连续性需要的时间</small>
                             </button>
-                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode"
-                                data-wb-setting-button="injectionTimeMode" data-value="off"
+                            <button type="button" data-wb-action="setting-button" data-setting="injectionTimeMode" data-value="off"
                                 class="${settings.injectionTimeMode === 'off' ? 'is-active' : ''}">
                                 <strong>关闭</strong><small>时间不递给正文</small>
                             </button>
@@ -6520,6 +6518,25 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'test-image-api') {
+            const form = target.closest('[data-wb-form="image-api"]');
+            if (!form) return;
+            const confirmed = globalThis.confirm?.('(・_・;)  测试会真的生成一张 512×512 图片，可能产生一次 API 费用。继续吗？');
+            if (confirmed === false) return;
+            const data = Object.fromEntries(new FormData(form).entries());
+            const key = String(data.imageApiCredential || '').trim() || getSettings().imageApiKey;
+            if (!String(data.imageApiUrl || '').trim() || !key || !String(data.imageApiModel || '').trim()) {
+                notify('先把生图地址、Key 和模型填完整。', 'error');
+                return;
+            }
+            const completed = await invokeAction('test-image-api', {
+                imageApiUrl: data.imageApiUrl,
+                imageApiKey: key,
+                imageApiModel: data.imageApiModel,
+            });
+            if (completed) notify('测试图生成成功，接口可以用。', 'success');
+            return;
+        }
         if (action === 'test-api') {
             const form = target.closest('[data-wb-form="api"]');
             if (!form) return;
@@ -6690,26 +6707,6 @@ export function createWorldBackstageUI({
             readApiForm(apiForm);
             return;
         }
-        if (action === 'test-image-api') {
-            const form = target.closest('[data-wb-form="image-api"]');
-            if (!form) return;
-            const confirmed = globalThis.confirm?.('(・_・;)  测试会真的生成一张 512×512 图片，可能产生一次 API 费用。继续吗？');
-            if (confirmed === false) return;
-            const data = Object.fromEntries(new FormData(form).entries());
-            const key = String(data.imageApiCredential || '').trim() || getSettings().imageApiKey;
-            if (!String(data.imageApiUrl || '').trim() || !key || !String(data.imageApiModel || '').trim()) {
-                notify('先把生图地址、Key 和模型填完整。', 'error');
-                return;
-            }
-            const completed = await invokeAction('test-image-api', {
-                imageApiUrl: data.imageApiUrl,
-                imageApiKey: key,
-                imageApiModel: data.imageApiModel,
-            });
-            if (completed) notify('测试图生成成功，接口可以用。', 'success');
-            return;
-        }
-
         if (event.target.matches?.('[data-wb-person-select]')) {
             const id = String(event.target.value || '');
             const next = new Set(peopleSelectedIds);

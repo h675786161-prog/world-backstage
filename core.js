@@ -4713,6 +4713,14 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
 
     authorityLines.push(...buildClockAuthorityLines(state, clock, timeMode));
 
+    if (worldRunning) {
+        authorityLines.push(
+            '时间与因果边界：本注入中标为“已结算”“当前”“正在持续”或已经带有结果的内容，都是此前已经成立的世界事实，不是要求正文重新生成的剧情指令。',
+            '正文只能承接角色获知、现场后果、反应、余波或从当前阶段继续发展的新变化；事件本体不可重新开演，不得把事件的起因、发生过程或既有结果再演一次。',
+            '新闻出现只表示一条信息经公开渠道传播，不等于新闻所报道的事件在本轮重新发生。若角色尚未知情，只能在她通过合理渠道接触后新增认知，不能倒改事件发生时间。',
+        );
+    }
+
     if (people.length) {
         if (state.needsReconciliation) {
             authorityLines.push(
@@ -4760,14 +4768,14 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
 
     if (ongoingEvents.length) {
         authorityLines.push(
-            '当前相关进行中事件 / 暗流（它们在世界里客观存在，但不等于任何角色已经知道）：',
+            '此前已开始、当前仍在持续的事件 / 暗流（承接当前阶段，不得重演起因或已经发生的过程；它们客观存在，但不等于任何角色已经知道）：',
         );
         for (const event of ongoingEvents) {
             authorityLines.push(
                 `- [${event.id}] ${event.title}｜${event.place}｜${event.summary || event.expectedResult || event.cause || '正在发展'}｜显露=${event.visibility}`,
             );
         }
-        authorityLines.push('这些进行中事件只约束世界连续性；隐藏事件不得因此直接泄漏成角色知识或后台播报。');
+        authorityLines.push('这些进行中事件只约束世界连续性；只能从当前阶段继续发展或产生后果，不能把它们当成新事件再演一遍。隐藏事件不得因此直接泄漏成角色知识或后台播报。');
     }
 
     if (contextReality.length) {
@@ -4777,7 +4785,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         );
         for (const reality of contextReality) {
             const sourceLabel = {
-                'public-event': reality.temporalState === 'upcoming' ? '即将发生的公开预告' : '当前公开世界事件',
+                'public-event': reality.temporalState === 'upcoming' ? '即将发生的公开预告' : '此前已发生或正在持续的公开世界事件',
                 'world-pulse': '当前世界环境',
                 'world-fact': reality.temporalState === 'historical'
                     ? '当前对话明确重新提及的历史事实'
@@ -4823,7 +4831,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
             supportLines.push(`- [${event.id}] ${event.title}：${route}（${event.visibility}；${request}）`);
         }
         supportLines.push(`显露节奏：${sceneTiming}`);
-        supportLines.push('只把真正写进正文、被角色感知或留下可见痕迹的结果视为已承接；不要声称“后台已递交”。');
+        supportLines.push('只把真正写进正文、被角色感知或留下可见痕迹的新后果视为已承接；公开新闻只允许新增获知、反应与后果，不能把报道对象重新发生一次。不要声称“后台已递交”。');
     }
 
     if (authorityLines.length > 1) {
@@ -7029,6 +7037,7 @@ const activeDirectorNotes = asArray(directorNotes)
     const newAssistantRule = newAssistantIndexSet.size === 1
         ? '11. 较早轮次只用于理解因果，不得重复计算；本次只推演最后一个 assistant_turn（new="true"）。'
         : `11. 只处理标记 new="true" 的最后 ${newAssistantIndexSet.size} 个 assistant_turn，并按消息顺序合并变化；new="false" 的轮次只用于理解因果，不得重复计算。`;
+    const causalReplayRule = '因果去重：正文若只是报道、回忆、转述或角色刚刚得知 current_state 中已经存在的事件/事实，只更新对应人物认知、反应或原事件的后续阶段；不得另建一条近义事件，不得把既有事件的发生时间改成本轮。只有正文明确写出此前不存在的新升级、新地点扩散或新后果时，才更新原事件或创建带 caused_by 的后续事件。';
 
     return [
         '你是“世界背面”的世界状态引擎。你维护一个持续运转的世界，不是正文纪要器。正文只是当前镜头；镜头外已经结算的结果同样属于真实世界。你不续写小说正文，只处理标记为 new="true" 的正文变化，并继续维护必要的镜头外因果。',
@@ -7044,6 +7053,7 @@ const activeDirectorNotes = asArray(directorNotes)
         '1B. 正文里的“明天见/下周约”等未来承诺不是当前时间已经跳转；只把本批真正发生的等待、睡眠、路程、工作与明确转场计入 elapsed_minutes。',
         '1C. clock_anchor 只是兼容返回字段，必须保持 mode=none。模型没有权限初始化或重新校准绝对世界日期。',
         `本次尺度：${simulationRule}`,
+        causalReplayRule,
         '2. 玩家/用户的行动只能来自正文已经发生的内容，不得替玩家新增行动。',
         `3. 先做“前台事实协调”：new="true" 正文明确写出的时间、人物位置/移动、行动、身体状态、物品或环境变化必须回写。这个步骤不受后台 NPC 预算限制。完成前台协调后，本次最多更新 ${npcBudget} 名镜头外 NPC。`,
         '3A. 推演前权威状态不是可选建议。若新正文没有描写移动/返回/离场等过渡，却把人物放到与权威位置矛盾的地方，不要默默覆盖世界状态；把它写入 consistency_conflicts，并保持原世界事实。只有正文明确建立了新的过渡或可靠新事实，才接受正文并更新状态。',

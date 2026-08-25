@@ -228,6 +228,11 @@ test('UI safeguards avoid whole-document mutation scans and periodic full serial
     assert.match(storageGuardSource, /fingerprint === lastCheckedFingerprint/);
 });
 
+test('image API test button reads the visible form before invoking the paid request', () => {
+    assert.match(uiSource, /if \(action === 'test-image-api'\) \{[\s\S]*?target\.closest\('\[data-wb-form="image-api"\]'\)/);
+    assert.match(uiSource, /invokeAction\('test-image-api', \{[\s\S]*?imageApiUrl: data\.imageApiUrl,[\s\S]*?imageApiKey: key,[\s\S]*?imageApiModel: data\.imageApiModel/);
+});
+
 test('long history scans durably commit every completed batch before continuing', () => {
     assert.match(indexSource, /return Promise\.resolve\(context\.saveMetadata\(\)\)/);
     assert.match(indexSource, /await saveHistoryBootstrapCheckpoint\(\{/);

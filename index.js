@@ -79,12 +79,14 @@ import {
     emptySocialState,
     markSocialNoticeRead,
     normalizeSocialState,
+    pendingSocialConversations,
     openDirectConversation,
     reconcileSocialRelationships,
     removeSocialFriend,
     respondIncomingFriendRequest,
     selectSocialConversation,
     setSocialConversationError,
+    settleSocialConversations,
     toggleMomentLike,
 } from './social-terminal.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
@@ -146,7 +148,7 @@ import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.5.1';
+const PLUGIN_VERSION = '2.5.2';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 30,
     enabled: true,
@@ -2405,12 +2407,20 @@ function retryJsonPrompt(prompt, attempt) {
     return `${prompt}\n\n<json_retry>\n这是第 ${attempt} 次格式重试。上一次返回无法解析或达到输出上限。请重新生成一个完整、严格、闭合的 JSON 对象；不要沿用被截断的句子，不要代码围栏或解释。优先省略没有变化的可选条目，绝不能省略结尾括号。\n</json_retry>`;
 }
 
+function retrySimulationPrompt(prompt, attempt) {
+    if (!(attempt > 0)) return prompt;
+    return `${prompt}\n\n<json_retry>\n这是第 ${attempt} 次世界推演格式重试。上一次结果过长或没有闭合，本次必须改用精简增量 JSON，不能原样重写。只返回本轮真实变化；不变字段用空数组或直接省略，禁止复述权威状态、旧人物、旧事件和示例占位项。硬上限：people_upsert 8 项、events_create 4 项、events_update 8 项、world_facts_upsert 10 项、world_pulse_upsert 6 项、memory_update 每类 8 项。每个说明字段只写一句完整短句。宁可减少可选变化，也必须先闭合所有字符串、数组与对象。只输出一个合法 JSON 对象。\n</json_retry>`;
+}
+
 function retryTokenBudget(base, attempt) {
     return Math.max(64, Number(base) || 3200) + Math.max(0, attempt) * 1800;
 }
 
 function approximateTokens(text) {
-    return Math.max(0, Math.ceil(String(text || '').length / 2));
+    const value = String(text || '');
+    const cjkCharacters = (value.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+    const remainingCharacters = Math.max(0, value.length - cjkCharacters);
+    return Math.max(0, Math.ceil(cjkCharacters + remainingCharacters / 4));
 }
 
 function changedItems(beforeItems = [], afterItems = [], fields = []) {
@@ -3193,11 +3203,11 @@ function publicOpinionRevealInjection(state, cache, settings, recentText = '') {
     if (!news.length && !forums.length) return '';
     const lines = [
         '<world_public_opinion>',
-        '以下是与当前镜头确实相关的公开舆情候选。只有角色存在自然接触渠道（手机、电视、路人讨论、工作消息等）时才允许顺手显露；不得为了播报而打断当前剧情，也不得把论坛猜测当成世界事实。',
+        '以下是与当前镜头确实相关的公开信息记录，不是要求本轮重新发生的剧情。新闻所报道的事件已经发生、正在持续或按条目文字明确属于未来预告；角色看到新闻只新增“获知与反应”，不得重演事件本体或篡改其发生时间。只有角色存在自然接触渠道（手机、电视、路人讨论、工作消息等）时才允许顺手显露；不得为了播报而打断当前剧情，也不得把论坛猜测当成世界事实。',
     ];
     for (const item of news) {
         const audience = (item.audienceTags || []).slice(0, 4).join('、');
-        lines.push(`新闻｜${item.headline}｜${item.summary}｜来源：${item.source || '公开信息'}｜来源层级：${item.sourceType || 'official'}${audience ? `｜可能关注：${audience}` : ''}`);
+        lines.push(`新闻记录（承接获知/后果，不重演报道对象）｜${item.headline}｜${item.summary}｜来源：${item.source || '公开信息'}｜来源层级：${item.sourceType || 'official'}${audience ? `｜可能关注：${audience}` : ''}`);
     }
     for (const item of forums) {
         const audience = (item.audienceTags || []).slice(0, 4).join('、');
@@ -3208,33 +3218,21 @@ function publicOpinionRevealInjection(state, cache, settings, recentText = '') {
 }
 
 function socialConversationInjection(social, state, settings) {
-    if (settings.injectionSocial !== true) return '';
-    const normalized = normalizeSocialState(social || emptySocialState(), state?.people || []);
-    const accepted = new Set(normalized.connections.filter(item => item.status === 'accepted').map(item => item.personId));
-    const peopleById = new Map((state?.people || []).map(person => [String(person?.id || ''), person]));
-    const conversations = [...normalized.conversations]
-        .filter(conversation => (
-            conversation.rawMessages.length
-            && (conversation.type === 'group' || accepted.has(conversation.memberIds[0]))
-        ))
-        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
-        .slice(0, 3);
+    if (settings.worldPromptInjection === false || settings.injectionSocial !== true) return '';
+    const conversations = pendingSocialConversations(social || emptySocialState(), state);
     if (!conversations.length) return '';
     const lines = conversations.flatMap(conversation => {
-        const members = conversation.memberIds
-            .map(id => peopleById.get(id)?.name)
-            .filter(Boolean)
-            .join('、');
-        const messages = conversation.rawMessages.slice(-6).map(message => (
-            `- ${message.senderId === 'user' ? '玩家' : message.senderName}：${String(message.text || '').trim().slice(0, 420)}`
+        const messages = conversation.messages.map(message => (
+            `- [${message.id}] ${message.senderId === 'user' ? '玩家' : message.senderName}：${String(message.text || '').trim()}`
         ));
-        return [`[通信｜${conversation.title}｜成员：${members || '未知'}]`, ...messages];
+        return [`[通信｜id=${conversation.conversationId}｜${conversation.title}｜成员：${conversation.members.join('、') || '未知'}]`, ...messages];
     });
     return [
         '<world_backstage_social_context>',
-        '以下是最近社交通信记录，仅代表人物说过或收到的内容，不是已结算的世界事实。',
+        '以下是尚未被正文承接的完整社交通信记录，仅代表人物说过或收到的内容，不是已结算的世界事实。',
         '可以用它保持语言和关系连续；不得因为聊天里有承诺、计划、位置或结果，就当成它已经发生。',
-        ...lines.slice(-24),
+        '只在当前场景、人物与话题自然相关时承接；不合适就暂时不提，禁止为了清空记录机械复述聊天。',
+        ...lines,
         '</world_backstage_social_context>',
     ].join('\n');
 }
@@ -4282,6 +4280,9 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
                     ...note,
                     consumed: Boolean(sourceKey && note.lastAppliedSourceKey === sourceKey),
                 })),
+            socialContext: settings.worldPromptInjection !== false && settings.injectionSocial === true
+                ? pendingSocialConversations(getStore().social, baseState)
+                : [],
         });
 
         const automaticMaxTokens = settings.autoSimulationMode === 'deep'
@@ -4297,7 +4298,7 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
                 'simulation',
                 retryTokenBudget(baseMaxTokens, attempt),
             ).maxTokens;
-            const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
+            const raw = await backgroundSimulation(retrySimulationPrompt(prompt, attempt), {
                 maxTokens: generationMetrics.tokenBudget,
                 temperature: attempt > 0
                     ? 0.08
@@ -4469,6 +4470,14 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             const store = getStore();
             store.currentState = ensureMonotonicRevision(resultState, store.currentState);
             resultState = store.currentState;
+            if (settings.worldPromptInjection !== false && settings.injectionSocial === true) {
+                store.social = settleSocialConversations(
+                    store.social,
+                    resultState,
+                    applicablePayload?.social_messages_settled ?? applicablePayload?.socialMessagesSettled,
+                    newAssistantTexts.join('\n'),
+                );
+            }
             store.lingqi = applyLingqiDirectorResult(
                 store.lingqi || emptyLingqiState(),
                 applicablePayload.director_note_updates || applicablePayload.directorNoteUpdates || [],
@@ -4527,11 +4536,8 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
         }
         const errorMessage = describeError(error);
         const issueType = error?.errorType || classifyDiagnosticIssue(errorMessage);
-        const pluginOutputLimited = Number(error?.effectiveMaxTokens || 0) > 0;
         const visibleError = issueType === 'output-limit'
-            ? pluginOutputLimited
-                ? '本次推演内容超过当前输出上限，模型返回被截断；本轮没有提交任何世界状态。可在「生成限制」提高世界推演 Token 上限后再试。'
-                : '本次推演在自动输出预算下仍被模型截断；本轮没有提交任何世界状态。可直接重试；若连续出现，请检查当前模型或服务端自身的最大输出限制。'
+            ? '本次推演内容超过当前输出上限，模型返回被截断；本轮没有提交任何世界状态。可在「生成限制」提高世界推演 Token 上限后再试。'
             : errorMessage;
         if (issueType === 'output-limit') {
             console.warn('[世界背面] 世界推演输出被截断，已丢弃未闭合结果：', errorMessage);
@@ -6920,9 +6926,6 @@ async function bootstrapWorldFromHistory() {
                 memoryEnabled: getSettings().memorySystemEnabled,
             });
             cursor = batch.nextCursor;
-            // A malformed/oversized response halves only the current working
-            // batch. Once smaller batches succeed, cautiously climb back toward
-            // the fast target instead of remaining slow for the entire archive.
             assistantBatchLimit = Math.min(
                 HISTORY_BATCH_TARGET_ASSISTANT_TURNS,
                 assistantBatchLimit + 1,
@@ -7241,10 +7244,6 @@ async function scanStoryMemoryHistory({
                 sourceKey: anchorKey,
                 kind: 'history-index',
             });
-            // A completed history batch is a durable checkpoint, not merely an
-            // in-memory UI update. Wait for metadata persistence before asking
-            // the model for the next batch so reloads/crashes cannot erase all
-            // earlier work in a long archive scan.
             await saveStore(store, { immediate: true });
             runtime.historyProgress.processed = Math.min(chatLength, cursor);
             runtime.historyProgress.message = `消息 ${batch.startMessageId}—${batch.endMessageId} 已安全保存～继续往后收拾`;
@@ -7384,7 +7383,17 @@ function cachedPersonObservation(personId) {
     const state = getState();
     const person = state.people.find(item => item.id === personId);
     if (!person) return null;
-    const cached = getStore().personObservations?.[personObservationCacheKey(state, person)];
+    const store = getStore();
+    const currentKey = personObservationCacheKey(state, person);
+    const current = store.personObservations?.[currentKey];
+    const activeFallback = Object.values(store.personObservations || {})
+        .reverse()
+        .find(item => (
+            item?.personId === personId
+            && item?.queuedEventId
+            && state.events.some(event => event.id === item.queuedEventId)
+        ));
+    const cached = current || activeFallback;
     if (!cached) return null;
     const queuedEvent = cached.queuedEventId
         ? state.events.find(event => event.id === cached.queuedEventId)
@@ -7415,7 +7424,15 @@ function queuePersonObservation(personId) {
     if (!person) throw new Error('没有找到这个人物');
     const cacheKey = personObservationCacheKey(state, person);
     const store = getStore();
-    const observation = store.personObservations?.[cacheKey];
+    const current = store.personObservations?.[cacheKey];
+    const activeFallback = Object.values(store.personObservations || {})
+        .reverse()
+        .find(item => (
+            item?.personId === personId
+            && item?.queuedEventId
+            && state.events.some(event => event.id === item.queuedEventId)
+        ));
+    const observation = current || activeFallback;
     if (!observation?.text) throw new Error('请先生成一次人物观测');
     const existing = state.events.find(event => event.id === observation.queuedEventId);
     if (existing?.delivery?.state === 'delivered') {
@@ -7451,14 +7468,15 @@ function queuePersonObservation(personId) {
         title: `${person.name}的镜头外片段`,
         place: person.location,
         summary: observation.text,
-        expected_result: observation.text,
-        result: observation.text,
-        consequence: observation.text,
+        expected_result: '',
+        result: '',
+        consequence: '',
         status: 'ready',
         clock_mode: 'condition',
         visibility: 'trace',
         delivery_queued: true,
-        delivery_route: observation.text,
+        delivery_mode: 'soft-observation',
+        delivery_route: '仅作人物动机与情绪的柔性线索；不是已发生事件，只能在当前语境自然相关时轻微呼应。',
     });
     const created = next.events.find(event => !previousIds.has(event.id));
     if (!created) throw new Error('没有成功建立自然显露候选');

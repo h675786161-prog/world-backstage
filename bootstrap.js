@@ -8,6 +8,10 @@ import './settings-persistence-guard.js';
 import './social-notice-stability.js?v=3';
 import './index.js';
 
+void import('./social-friend-request-fix.js?v=2').catch(error => {
+    console.error('[世界背面] 好友申请状态修复加载失败', error);
+});
+
 void import('./presentation-polish.js?v=251')
     .then(() => Promise.all([
         import('./social-responsive-adapter.js?v=1'),

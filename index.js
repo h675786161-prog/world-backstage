@@ -64,6 +64,7 @@ import {
     runWithRetries,
 } from './api.js';
 import { createWorldBackstageUI } from './ui.js';
+import { compactBranchDataMemory, compactSnapshotMemory, compactSnapshotMemoryLedgers } from './snapshot-memory-dedupe.js';
 import {
     appendUserSocialMessage,
     applyFriendDecisionPayload,
@@ -148,7 +149,7 @@ import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.5.2';
+const PLUGIN_VERSION = '2.5.4';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 30,
     enabled: true,
@@ -1094,10 +1095,14 @@ function mergeMemorySummaryArchive(store, state = store?.currentState) {
 
 function createBranchSnapshot(state, meta = {}, store = getStore()) {
     mergeMemorySummaryArchive(store, state);
-    return createCompactSnapshot(state, meta);
+    const snapshot = createCompactSnapshot(state, meta);
+    compactSnapshotMemory(snapshot, store);
+    saveStore(store);
+    return snapshot;
 }
 
 function restoreBranchSnapshot(snapshot, fallback = null, store = getStore()) {
+    compactSnapshotMemory(snapshot, store);
     const restored = restoreCompactSnapshot(
         snapshot,
         fallback || store?.initialState || null,
@@ -2516,12 +2521,14 @@ function unreadableJsonError(raw, subject = '模型') {
 
 function attachBranchData(message, swipeId, data) {
     if (!message || typeof message !== 'object') return;
+    const storedData = clone(data);
+    compactBranchDataMemory(storedData, getStore());
     message.extra ||= {};
 
     const swipeInfo = message.swipe_info?.[swipeId];
     if (swipeInfo && typeof swipeInfo === 'object') {
         swipeInfo.extra ||= {};
-        swipeInfo.extra[SNAPSHOT_KEY] = clone(data);
+        swipeInfo.extra[SNAPSHOT_KEY] = storedData;
 
         // Keep exactly one full copy. branchDataFromMessage reads swipe_info first.
         if (Number(message.swipe_id ?? 0) === Number(swipeId)) {
@@ -2532,7 +2539,7 @@ function attachBranchData(message, swipeId, data) {
 
     // Some ST message shapes do not expose swipe_info. Fall back to message.extra.
     if (Number(message.swipe_id ?? 0) === Number(swipeId)) {
-        message.extra[SNAPSHOT_KEY] = clone(data);
+        message.extra[SNAPSHOT_KEY] = storedData;
     }
 }
 
@@ -2541,6 +2548,9 @@ function compactBranchSnapshotStorage({
 } = {}) {
     const context = getContext();
     const chat = context?.chat || [];
+    const snapshotStore = getStore();
+    const memorySnapshotsCompacted = compactSnapshotMemoryLedgers(snapshotStore, chat, SNAPSHOT_KEY);
+    if (memorySnapshotsCompacted) saveStore(snapshotStore);
     const assistantIndexes = chat
         .map((message, index) => (!message?.is_user && !message?.is_system ? index : -1))
         .filter(index => index >= 0);
@@ -2548,7 +2558,7 @@ function compactBranchSnapshotStorage({
         ? assistantIndexes[assistantIndexes.length - keepRecentAssistant]
         : -1;
 
-    let changed = false;
+    let changed = memorySnapshotsCompacted;
     const compactCommitted = (data, historical = false) => {
         if (!data || typeof data !== 'object' || data.status !== 'committed') return;
         if (data.base) {

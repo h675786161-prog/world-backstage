@@ -24,307 +24,8 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Apply validated time and memory wiring
-        shell: bash
-        run: |
-          node <<'NODE'
-          const fs = require('fs');
-
-          function replaceOne(text, oldValue, newValue, label) {
-            if (text.includes(newValue)) return text;
-            if (!text.includes(oldValue)) throw new Error(`patch target missing: ${label}`);
-            return text.replace(oldValue, newValue);
-          }
-
-          function patchClock() {
-            const path = 'world-clock-authority.js';
-            let text = fs.readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
-
-            if (!text.startsWith("import { formatTraditionalTime, parseTraditionalClock } from './traditional-time.js';")) {
-              text = `import { formatTraditionalTime, parseTraditionalClock } from './traditional-time.js';\n\n${text}`;
-            }
-
-            text = text.replace("{ label: '早晨', minute: 420, pattern: /早晨/u },", "{ label: '早晨', minute: 420, pattern: /早晨|一早|早上/u },");
-            text = text.replace("{ label: '夜晚', minute: 1260, pattern: /夜晚/u },", "{ label: '夜晚', minute: 1260, pattern: /夜晚|夜里/u },");
-
-            text = replaceOne(text,
-`    const clocks = [...source.matchAll(/(?:^|[^\\d])([01]?\\d|2[0-3])\\s*[:：]\\s*([0-5]\\d)(?!\\d)/gu)];
-    if (!clocks.length) return null;
-    const match = clocks.at(-1);
-    return {
-        hour: Number(match[1]),
-        minute: Number(match[2]),
-        index: Number(match.index || 0),
-        sourceText: match[0].trim(),
-    };`,
-`    const clocks = [...source.matchAll(/(?:^|[^\\d])([01]?\\d|2[0-3])\\s*[:：]\\s*([0-5]\\d)(?!\\d)/gu)];
-    if (clocks.length) {
-        const match = clocks.at(-1);
-        return { hour: Number(match[1]), minute: Number(match[2]), index: Number(match.index || 0), sourceText: match[0].trim() };
-    }
-    const traditional = parseTraditionalClock(source);
-    if (!traditional?.precise) return null;
-    return {
-        hour: traditional.hour,
-        minute: traditional.minute,
-        index: traditional.index,
-        sourceText: traditional.sourceText,
-        traditional: true,
-        traditionalLabel: traditional.label,
-        traditionalPeriod: traditional.periodLabel,
-        traditionalCrossesMidnight: Boolean(traditional.crossesMidnight),
-    };`, 'latestExactClock traditional fallback');
-
-            text = replaceOne(text,
-`function daypartMinute(label) {
-    return DAYPARTS.find(item => item.label === label)?.minute ?? null;
-}`,
-`function canonicalDaypart(label = '') {
-    const source = String(label || '').trim();
-    if (!source) return '';
-    return DAYPARTS.find(item => item.pattern.test(source))?.label || '';
-}
-
-function daypartMinute(label) {
-    const canonical = canonicalDaypart(label);
-    return DAYPARTS.find(item => item.label === canonical)?.minute ?? null;
-}
-
-function traditionalCandidate(token, extra = {}) {
-    const parsed = parseTraditionalClock(token);
-    if (!parsed) return null;
-    return {
-        ...extra,
-        desiredMinuteOfDay: parsed.minuteOfDay,
-        traditionalPrecision: parsed.precision,
-        traditionalCrossesMidnight: Boolean(parsed.crossesMidnight),
-        daypart: parsed.periodLabel,
-        confidence: 'high',
-    };
-}`, 'traditional candidate helpers');
-
-            text = replaceOne(text,
-`    const daypart = '(凌晨|黎明|清晨|早晨|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|深夜)?';`,
-`    const requiredDaypart = '(凌晨|黎明|清晨|一早|早晨|早上|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|夜里|深夜)';
-    const daypart = \`${'${requiredDaypart}'}?\`;
-    const traditionalToken = '([子丑寅卯辰巳午未申酉戌亥](?:时(?:\\\\s*(?:初|正))?(?:\\\\s*(?:\\\\d+|[零〇一二两三四五六七八九])\\\\s*刻)?|(?:初|正)(?:\\\\s*(?:\\\\d+|[零〇一二两三四五六七八九])\\\\s*刻)?))';`, 'transition traditional token');
-
-            const weekdayMarker = `    add(new RegExp(\`${'${boundary}${sequencePrefix}'}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?)\\\\s*(下周|本周)?(?:周|星期)([一二三四五六日天])\\\\s*${'${daypart}'}\`, 'gu'), match => ({`;
-            if (!text.includes('traditionalCandidate(match[2], { dayDelta: 1 })')) {
-              if (!text.includes(weekdayMarker)) throw new Error('patch target missing: traditional transition insertion');
-              const addition = `    add(new RegExp(\`${'${boundary}${sequencePrefix}'}(次日|翌日|第二天|隔天)(?:的)?\\\\s*${'${traditionalToken}'}\\\\s*[，,]\`, 'gu'), match => traditionalCandidate(match[2], { dayDelta: 1 }));\n    add(new RegExp(\`${'${boundary}${sequencePrefix}'}当天\\\\s*${'${traditionalToken}'}\\\\s*[，,]\`, 'gu'), match => traditionalCandidate(match[1], { sameTraditional: true }));\n    add(new RegExp(\`${'${boundary}${sequencePrefix}'}(?:到了?|时间(?:来)?到(?:了)?|转眼(?:已经)?到了?)\\\\s*${'${traditionalToken}'}\\\\s*[，,]\`, 'gu'), match => traditionalCandidate(match[1], { sameTraditional: true }));\n\n`;
-              text = text.replace(weekdayMarker, addition + weekdayMarker);
-            }
-
-            text = replaceOne(text,
-`    const exact = narrativeAnchor?.hour !== null && narrativeAnchor?.hour !== undefined
-        && narrativeAnchor?.minute !== null && narrativeAnchor?.minute !== undefined
-        ? {
-            hour: Number(narrativeAnchor.hour),
-            minute: Number(narrativeAnchor.minute),
-            sourceText: narrativeAnchor.excerpt || '',
-        }
-        : (structuredScope ? latestExactClock(structuredScope) : null);
-    const anchorDaypart = String(narrativeAnchor?.daypart || '').trim();
-    const structuredDaypart = anchorDaypart || latestDaypart(structuredScope)?.label || '';
-    const structuredStoryDay = structuredScope && !calendarBound
-        ? latestStoryDayIndex(structuredScope)
-        : null;`,
-`    const structuredTraditional = structuredScope ? parseTraditionalClock(structuredScope) : null;
-
-    const exact = narrativeAnchor?.hour !== null && narrativeAnchor?.hour !== undefined
-        && narrativeAnchor?.minute !== null && narrativeAnchor?.minute !== undefined
-        ? { hour: Number(narrativeAnchor.hour), minute: Number(narrativeAnchor.minute), sourceText: narrativeAnchor.excerpt || '' }
-        : (structuredScope ? latestExactClock(structuredScope) : null);
-    const anchorDaypart = canonicalDaypart(narrativeAnchor?.daypart) || String(narrativeAnchor?.daypart || '').trim();
-    const structuredDaypart = anchorDaypart
-        || latestDaypart(structuredScope)?.label
-        || structuredTraditional?.periodLabel
-        || '';
-    const structuredStoryDay = structuredScope && !calendarBound ? latestStoryDayIndex(structuredScope) : null;`, 'structured traditional context');
-
-            text = replaceOne(text,
-`    if (structuredScope && exact) {
-        const targetDay = structuredStoryDay ?? dayIndex(baseAbsoluteMinute);
-        const target = targetDay * MINUTES_PER_DAY + exact.hour * 60 + exact.minute;
-        // Bare same-day clock evidence may improve precision only forward. A clock
-        // behind the authoritative minute is stale/ambiguous, never permission to
-        // rewrite already-lived world time.
-        if (target >= baseAbsoluteMinute) {
-            return {
-                kind: 'structured-clock',
-                targetAbsoluteMinute: target,
-                replaceCurrent: !calendarBound,
-                precision: 'minute',
-                daypart: structuredDaypart,
-                sourceText: exact.sourceText || structuredScope.slice(0, 160),
-                reason: calendarBound
-                    ? '正文时间栏给出更晚的明确钟点，推进世界时钟'
-                    : '正文时间栏给出明确钟点，向前校准相对世界时钟',
-            };
-        }
-    }`,
-`    if (structuredScope && exact) {
-        const targetDay = structuredStoryDay ?? dayIndex(baseAbsoluteMinute);
-        let target = targetDay * MINUTES_PER_DAY + exact.hour * 60 + exact.minute;
-        if (
-            exact.traditionalCrossesMidnight
-            && structuredStoryDay === null
-            && minuteOfDay(baseAbsoluteMinute) >= 23 * 60
-            && target < baseAbsoluteMinute
-        ) {
-            target += MINUTES_PER_DAY;
-        }
-        if (target >= baseAbsoluteMinute) {
-            return {
-                kind: exact.traditional ? 'structured-traditional-clock' : 'structured-clock',
-                targetAbsoluteMinute: target,
-                replaceCurrent: !calendarBound,
-                precision: 'minute',
-                daypart: exact.traditionalPeriod || structuredDaypart,
-                sourceText: exact.sourceText || structuredScope.slice(0, 160),
-                reason: exact.traditional
-                    ? '正文时间栏给出明确十二时辰刻点，换算为同一权威世界钟'
-                    : calendarBound
-                        ? '正文时间栏给出更晚的明确钟点，推进世界时钟'
-                        : '正文时间栏给出明确钟点，向前校准相对世界时钟',
-            };
-        }
-    }`, 'structured traditional settlement');
-
-            text = replaceOne(text,
-`            } else if (Number.isFinite(transition.dayDelta)) {
-                wholeDayShift = true;
-                nextTarget = targetMinuteForDay(target, transition.dayDelta, daypartMinute(transition.daypart));
-            } else if (Number.isFinite(transition.weekday) && calendarBound && currentDate) {`,
-`            } else if (Number.isFinite(transition.dayDelta)) {
-                wholeDayShift = true;
-                const desired = Number.isFinite(transition.desiredMinuteOfDay)
-                    ? transition.desiredMinuteOfDay
-                    : daypartMinute(transition.daypart);
-                nextTarget = targetMinuteForDay(target, transition.dayDelta, desired);
-            } else if (transition.sameTraditional && Number.isFinite(transition.desiredMinuteOfDay)) {
-                let candidate = dayIndex(target) * MINUTES_PER_DAY + transition.desiredMinuteOfDay;
-                if (
-                    transition.traditionalCrossesMidnight
-                    && minuteOfDay(target) >= 23 * 60
-                    && candidate < target
-                ) {
-                    candidate += MINUTES_PER_DAY;
-                }
-                if (candidate >= target) nextTarget = candidate;
-            } else if (Number.isFinite(transition.weekday) && calendarBound && currentDate) {`, 'traditional narrative transition settlement');
-
-            text = replaceOne(text,
-`            if (transition.daypart) {
-                precision = 'daypart';
-                resolvedDaypart = transition.daypart;`,
-`            if (transition.traditionalPrecision === 'minute') {
-                precision = 'minute';
-                resolvedDaypart = transition.daypart || '';
-            } else if (transition.daypart) {
-                precision = 'daypart';
-                resolvedDaypart = transition.daypart;`, 'traditional transition precision');
-
-            if (!text.includes("kind: 'structured-traditional-period'")) {
-              const marker = `    if (structuredScope && structuredDaypart && !exact) {`;
-              if (!text.includes(marker)) throw new Error('patch target missing: bare traditional period');
-              const block = `    if (structuredScope && structuredTraditional && !structuredTraditional.precise && !exact) {\n        const targetDay = structuredStoryDay ?? dayIndex(baseAbsoluteMinute);\n        const target = targetDay * MINUTES_PER_DAY + structuredTraditional.minuteOfDay;\n        if (target >= baseAbsoluteMinute) {\n            return {\n                kind: 'structured-traditional-period',\n                targetAbsoluteMinute: target,\n                replaceCurrent: !calendarBound,\n                precision: 'daypart',\n                daypart: structuredTraditional.periodLabel,\n                sourceText: structuredTraditional.sourceText,\n                reason: '正文时间栏只给出十二时辰，不伪造刻数；内部仅用该时辰起点作为结算坐标',\n            };\n        }\n    }\n\n`;
-              text = text.replace(marker, block + marker);
-            }
-
-            text = replaceOne(text,
-`    const daypart = latestDaypart(localTimingScope)?.label || implicitDaypart;
-    const exact = latestExactClock(localTimingScope);
-    const desiredMinute = exact
-        ? exact.hour * 60 + exact.minute
-        : daypartMinute(daypart);
-    const precision = exact ? 'minute' : daypart ? 'daypart' : 'date';`,
-`    const traditional = parseTraditionalClock(localTimingScope);
-    const exact = latestExactClock(localTimingScope);
-    const daypart = latestDaypart(localTimingScope)?.label || traditional?.periodLabel || implicitDaypart;
-    const desiredMinute = exact
-        ? exact.hour * 60 + exact.minute
-        : traditional
-            ? traditional.minuteOfDay
-            : daypartMinute(daypart);
-    const precision = exact ? 'minute' : traditional || daypart ? 'daypart' : 'date';`, 'future traditional timing');
-
-            text = text.replace("daypart: String(raw.daypart || '').trim().slice(0, 20),", "daypart: canonicalDaypart(raw.daypart) || String(raw.daypart || '').trim().slice(0, 20),");
-
-            text = replaceOne(text,
-`    const daypart = String(clock.daypart || '').trim();
-    const exactTime = \`${'${pad(Math.floor(minuteOfDay(absoluteMinute) / 60))}:${pad(minuteOfDay(absoluteMinute) % 60)}'}\`;`,
-`    const daypart = canonicalDaypart(clock.daypart) || String(clock.daypart || '').trim();
-    const exactTime = \`${'${pad(Math.floor(minuteOfDay(absoluteMinute) / 60))}:${pad(minuteOfDay(absoluteMinute) % 60)}'}\`;
-    const traditionalTime = formatTraditionalTime(absoluteMinute);
-    const exactWithTraditional = traditionalTime ? \`${'${formattedClock?.time || exactTime}'}（${'${traditionalTime}'}）\` : (formattedClock?.time || exactTime);`, 'clock authority traditional display');
-
-            text = text.replace("? `${dateText} ${formattedClock?.time || exactTime}`", "? `${dateText} ${exactWithTraditional}`");
-            text = text.replace("`权威主世界时间：${state?.world?.name || '主世界'} · ${formattedClock?.stamp || `${dateText} ${exactTime}`}`", "`权威主世界时间：${state?.world?.name || '主世界'} · ${formattedClock?.stamp || `${dateText} ${exactTime}`} · 十二时辰 ${traditionalTime}`");
-            text = text.replace("`权威日期字段：year=${formattedClock?.year}; month=${formattedClock?.month}; day=${formattedClock?.dayOfMonth}; time=${formattedClock?.time || exactTime}`", "`权威日期字段：year=${formattedClock?.year}; month=${formattedClock?.month}; day=${formattedClock?.dayOfMonth}; time=${formattedClock?.time || exactTime}; traditional_time=${traditionalTime}`");
-            text = text.replace("'时间一致性规则：主世界时间由世界背面维护，是本轮正文的事实源。若正文显示日期或钟点，必须与这里一致；不得保留旧日期、无因果倒退或自行另起一天。'", "'时间一致性规则：24小时制与十二时辰只是同一世界钟的两种表达。若正文使用子丑寅卯等时辰或“几刻”，必须与权威钟点一致；不得另起一套时间线。'");
-            text = text.replace("? `故事第 ${relativeDay} 日 ${exactTime}`", "? `故事第 ${relativeDay} 日 ${exactTime}${traditionalTime ? `（${traditionalTime}）` : ''}`");
-            text = text.replace("? '当前只知道时段，不要擅自补造精确钟点。'", "? '当前只知道时段或时辰，不要擅自补造精确钟点。'");
-            text = text.replace("? '当前相对钟点已经明确；除非剧情真实经过时间，否则保持连续。'", "? '当前相对钟点已经明确；24小时制与十二时辰可互换表达，但除非剧情真实经过时间，否则保持连续。'");
-
-            fs.writeFileSync(path, text);
-          }
-
-          function patchIndex() {
-            const path = 'index.js';
-            let text = fs.readFileSync(path, 'utf8');
-            const nl = text.includes('\r\n') ? '\r\n' : '\n';
-            if (!text.includes("from './snapshot-memory-dedupe.js'")) {
-              const needle = `import { createWorldBackstageUI } from './ui.js';`;
-              if (!text.includes(needle)) throw new Error('patch target missing: memory import');
-              text = text.replace(needle, `${needle}${nl}import { compactBranchDataMemory, compactSnapshotMemory, compactSnapshotMemoryLedgers } from './snapshot-memory-dedupe.js';`);
-            }
-
-            text = text.replace(/const PLUGIN_VERSION = '2\.5\.2';/, "const PLUGIN_VERSION = '2.5.4';");
-            if (!text.includes("const PLUGIN_VERSION = '2.5.4';")) throw new Error('plugin version update failed');
-
-            if (!text.includes('compactSnapshotMemory(snapshot, store);')) {
-              text = text.replace(/function createBranchSnapshot\(state, meta = \{\}, store = getStore\(\)\) \{\r?\n\s*mergeMemorySummaryArchive\(store, state\);\r?\n\s*return createCompactSnapshot\(state, meta\);\r?\n\}/,
-`function createBranchSnapshot(state, meta = {}, store = getStore()) {
-    mergeMemorySummaryArchive(store, state);
-    const snapshot = createCompactSnapshot(state, meta);
-    compactSnapshotMemory(snapshot, store);
-    saveStore(store);
-    return snapshot;
-}`);
-            }
-            if (!/function restoreBranchSnapshot\([^\n]+\) \{\r?\n\s*compactSnapshotMemory\(snapshot, store\);/.test(text)) {
-              text = text.replace(/(function restoreBranchSnapshot\(snapshot, fallback = null, store = getStore\(\)\) \{\r?\n)/, '$1    compactSnapshotMemory(snapshot, store);\n');
-            }
-            if (!text.includes('const storedData = clone(data);')) {
-              text = text.replace(/(function attachBranchData\(message, swipeId, data\) \{\r?\n\s*if \(!message \|\| typeof message !== 'object'\) return;\r?\n)/, '$1    const storedData = clone(data);\n    compactBranchDataMemory(storedData, getStore());\n');
-            }
-            text = text.replace(/swipeInfo\.extra\[SNAPSHOT_KEY\] = clone\(data\);/, 'swipeInfo.extra[SNAPSHOT_KEY] = storedData;');
-            text = text.replace(/message\.extra\[SNAPSHOT_KEY\] = clone\(data\);/, 'message.extra[SNAPSHOT_KEY] = storedData;');
-            if (!text.includes('const memorySnapshotsCompacted = compactSnapshotMemoryLedgers(snapshotStore, chat, SNAPSHOT_KEY);')) {
-              text = text.replace(/(function compactBranchSnapshotStorage\(\{\r?\n\s*keepRecentAssistant = 50,\r?\n\} = \{\}\) \{\r?\n\s*const context = getContext\(\);\r?\n\s*const chat = context\?\.chat \|\| \[\];\r?\n)/,
-'$1    const snapshotStore = getStore();\n    const memorySnapshotsCompacted = compactSnapshotMemoryLedgers(snapshotStore, chat, SNAPSHOT_KEY);\n    if (memorySnapshotsCompacted) saveStore(snapshotStore);\n');
-              text = text.replace(/(const recentStart = assistantIndexes\.length > keepRecentAssistant[\s\S]*?: -1;\r?\n\r?\n)\s*let changed = false;/, '$1    let changed = memorySnapshotsCompacted;');
-            }
-            for (const required of ['compactBranchDataMemory', 'compactSnapshotMemory(snapshot, store)', 'compactSnapshotMemoryLedgers(snapshotStore, chat, SNAPSHOT_KEY)']) {
-              if (!text.includes(required)) throw new Error(`index memory wiring missing: ${required}`);
-            }
-            fs.writeFileSync(path, text);
-          }
-
-          function patchManifest() {
-            const path = 'manifest.json';
-            const data = JSON.parse(fs.readFileSync(path, 'utf8'));
-            data.version = '2.5.4';
-            fs.writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
-          }
-
-          patchClock();
-          patchIndex();
-          patchManifest();
-          console.log('formal 2.5.4 patch prepared');
-          NODE
+      - name: Apply validated wiring
+        run: node scripts/release-2.5.4-time-memory.mjs
 
       - name: Syntax checks
         run: |
@@ -378,6 +79,15 @@ function traditionalCandidate(token, extra = {}) {
           });
           assert.equal(result, null);
 
+          const bare = resolveNarrativeTimeTransition('<time_format>时间：卯时</time_format>', {
+            currentAbsoluteMinute: day(4) + 240,
+            calendarBound: false,
+            currentPrecision: 'day',
+          });
+          assert.ok(bare);
+          assert.equal(bare.precision, 'daypart');
+          assert.equal(bare.targetAbsoluteMinute, day(4) + 300);
+
           const future = resolveFutureTimeExpression('她说：“明日卯时三刻见。”', {
             baseAbsoluteMinute: day(3) + 600,
             calendarBound: false,
@@ -425,8 +135,11 @@ function traditionalCandidate(token, extra = {}) {
           nohup node server.js --listen --port 8000 --disableCsrf > "$GITHUB_WORKSPACE/formal-runtime.log" 2>&1 &
           echo $! > /tmp/wb-formal-st.pid
           for i in $(seq 1 90); do
-            curl -fsS --max-time 2 http://127.0.0.1:8000/ >/dev/null 2>&1 && exit 0
-            kill -0 "$(cat /tmp/wb-formal-st.pid)" 2>/dev/null || { cat "$GITHUB_WORKSPACE/formal-runtime.log"; exit 1; }
+            if curl -fsS --max-time 2 http://127.0.0.1:8000/ >/dev/null 2>&1; then exit 0; fi
+            if ! kill -0 "$(cat /tmp/wb-formal-st.pid)" 2>/dev/null; then
+              cat "$GITHUB_WORKSPACE/formal-runtime.log"
+              exit 1
+            fi
             sleep 1
           done
           cat "$GITHUB_WORKSPACE/formal-runtime.log"
@@ -442,7 +155,7 @@ function traditionalCandidate(token, extra = {}) {
           npm install --no-audit --no-fund playwright-core@1.55.0
           cat > smoke.mjs <<'NODE'
           import { chromium } from 'playwright-core';
-          const executablePath = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+          const executablePath = process.env.CHROME_PATH;
           const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
           const page = await browser.newPage();
           const pageErrors = [];
@@ -455,12 +168,11 @@ function traditionalCandidate(token, extra = {}) {
           });
           await page.goto('http://127.0.0.1:8000/', { waitUntil: 'domcontentloaded', timeout: 60000 });
           await page.waitForSelector('#world-backstage-root', { timeout: 30000 });
-          const root = await page.locator('#world-backstage-root').count();
-          const report = { pluginRoot: root === 1, pluginErrors, pageErrors };
-          console.log(JSON.stringify(report, null, 2));
+          const pluginRoot = await page.locator('#world-backstage-root').count() === 1;
+          console.log(JSON.stringify({ pluginRoot, pluginErrors, pageErrors }, null, 2));
           await page.screenshot({ path: process.env.GITHUB_WORKSPACE + '/formal-runtime.png', fullPage: true });
           await browser.close();
-          if (!report.pluginRoot || pluginErrors.length || pageErrors.length) process.exit(1);
+          if (!pluginRoot || pluginErrors.length || pageErrors.length) process.exit(1);
           NODE
           CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" node smoke.mjs
 
@@ -476,6 +188,6 @@ function traditionalCandidate(token, extra = {}) {
           git config user.name 'World Backstage Release QA'
           git config user.email 'world-backstage-release@users.noreply.github.com'
           git add index.js world-clock-authority.js manifest.json
-          git diff --cached --check
+          git -c core.whitespace=cr-at-eol diff --cached --check
           git commit -m 'release: 2.5.4 time and memory stability'
           git push origin HEAD:main

@@ -25,7 +25,9 @@ jobs:
           node-version: '24'
 
       - name: Apply validated wiring
-        run: node scripts/release-2.5.4-time-memory.mjs
+        run: |
+          node scripts/release-2.5.4-time-memory.mjs
+          node scripts/release-2.5.4-time-words.mjs
 
       - name: Syntax checks
         run: |

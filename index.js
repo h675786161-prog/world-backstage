@@ -31,6 +31,7 @@ import {
     formatWorldCalendar,
     formatWorldClockFactLabel,
     isPersonObservationEligible,
+    personObservationSceneRelation,
     countSurvivingNewAssistantTurns,
     hashText,
     selectPendingAssistantMessageIds,
@@ -65,6 +66,16 @@ import {
 } from './api.js';
 import { createWorldBackstageUI } from './ui.js';
 import { compactBranchDataMemory, compactSnapshotMemory, compactSnapshotMemoryLedgers } from './snapshot-memory-dedupe.js';
+import { branchRecordMatchesSource, committedBranchMatchesSource, readBranchRecord } from './branch-history.js';
+import {
+    branchSurfaceKeyFromState,
+    captureBranchSurface,
+    ensureBranchSurfaceHistory,
+    hasBranchSurface,
+    inheritBranchSurface,
+    rebindBranchSurface,
+    restoreBranchSurface,
+} from './branch-surface-history.js';
 import {
     appendUserSocialMessage,
     applyFriendDecisionPayload,
@@ -149,7 +160,7 @@ import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.5.4';
+const PLUGIN_VERSION = '2.5.5';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 30,
     enabled: true,
@@ -1044,6 +1055,7 @@ function makeStore() {
         initialState,
         currentState: clone(initialState),
         branchOverrides: {},
+        branchSurfaceHistory: null,
         memorySummaryArchive: [],
         historyBootstrapCheckpoint: null,
         personObservations: {},
@@ -1539,6 +1551,8 @@ function prepareStore(rawStore, context = getContext()) {
     );
     store.publicOpinionListHidden = Boolean(store.publicOpinionListHidden);
     store.publicOpinionSandbox = normalizePublicOpinionSandbox(store.publicOpinionSandbox || emptyPublicOpinionSandbox());
+    ensureBranchSurfaceHistory(store);
+    captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
     store.recoveryPoints = Array.isArray(store.recoveryPoints) ? store.recoveryPoints.slice(-3) : [];
 
     runtime.preparedStores.add(store);
@@ -1588,6 +1602,7 @@ function saveStore(store, { immediate = false } = {}) {
             recentNarrative: recentNarrativeForSocial(context),
         },
     );
+    captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
     // 舆情/新闻只能通过自己的时间 + 公开事件调度器更新。普通世界状态保存
     // 绝不能顺手把 public event 直接塞进新闻，否则会绕过新闻时间门槛。
     store.updatedAt = new Date().toISOString();
@@ -1616,14 +1631,7 @@ function branchSourceKey(messageId, message, swipeId = message?.swipe_id ?? 0) {
 }
 
 function branchDataFromMessage(message, swipeId = message?.swipe_id ?? 0) {
-    // swipe_info is the canonical branch store when SillyTavern provides it.
-    // Older builds wrote the same full snapshot to both swipe_info and message.extra,
-    // doubling chat-file weight for the current swipe.
-    const swipeData = message?.swipe_info?.[swipeId]?.extra?.[SNAPSHOT_KEY];
-    if (swipeData && typeof swipeData === 'object') return swipeData;
-    const currentData = message?.extra?.[SNAPSHOT_KEY];
-    if (currentData && typeof currentData === 'object') return currentData;
-    return null;
+    return readBranchRecord(message, swipeId, SNAPSHOT_KEY);
 }
 
 function latestAssistantEntry() {
@@ -2604,16 +2612,9 @@ function compactBranchSnapshotStorage({
             const swipeInfo = message.swipe_info?.[swipeId];
             const data = swipeInfo?.extra?.[SNAPSHOT_KEY];
             if (!data) continue;
-
-            // For old floors keep the selected branch exact, but stop carrying
-            // every abandoned alternate swipe forever. Switching to such an old
-            // alternate can still be resynchronized from the nearest confirmed
-            // selected-world state.
-            if (historical && swipeId !== currentSwipe) {
-                delete swipeInfo.extra[SNAPSHOT_KEY];
-                changed = true;
-                continue;
-            }
+            // Historical alternate swipes are real branches, not disposable cache.
+            // Long-memory payloads are already deduplicated, so keep every committed
+            // branch and compact it instead of deleting the user's alternate history.
             compactCommitted(data, historical);
         }
     }
@@ -2629,8 +2630,10 @@ function findLatestResultSnapshot(beforeIndex = Infinity) {
     for (let index = start; index >= 0; index -= 1) {
         const message = chat[index];
         if (!message || message.is_user) continue;
-        const data = branchDataFromMessage(message);
-        if (data?.status === 'committed' && data.result && !data.stale) {
+        const swipeId = Number(message.swipe_id ?? 0);
+        const data = branchDataFromMessage(message, swipeId);
+        const sourceKey = branchSourceKey(index, message, swipeId);
+        if (committedBranchMatchesSource(data, sourceKey)) {
             return { snapshot: data.result, messageId: index, data };
         }
     }
@@ -2647,6 +2650,65 @@ function stateWithBranchOverride(snapshot, store = getStore()) {
 function currentAnchorKey() {
     const state = getState();
     return state.lastCommit?.sourceKey || 'root';
+}
+
+function restoreSurfaceForState(store, state, { seedFallback = true } = {}) {
+    const restored = restoreBranchSurface(store, branchSurfaceKeyFromState(state), {
+        fallbackSocial: emptySocialState(),
+        fallbackPublicOpinion: emptyPublicOpinionCache(),
+        seedFallback,
+    });
+    // Dismissed news/forum items are a global presentation choice, not branch
+    // history. Reapply that filter after restoring a historical feed so a user-
+    // hidden item cannot reappear merely because they switched swipes.
+    store.publicOpinionDismissed = normalizePublicOpinionDismissed(store.publicOpinionDismissed);
+    store.publicOpinion = filterDismissedPublicOpinion(
+        store.publicOpinion || emptyPublicOpinionCache(),
+        store.publicOpinionDismissed,
+    );
+    return restored;
+}
+
+function ensureResultBranchSurface(store, targetSourceKey, baseState) {
+    const baseKey = branchSurfaceKeyFromState(baseState);
+    if (!hasBranchSurface(store, baseKey) && branchSurfaceKeyFromState(store.currentState) === baseKey) {
+        captureBranchSurface(store, baseKey);
+    }
+    if (!inheritBranchSurface(store, targetSourceKey, baseKey)) {
+        inheritBranchSurface(store, targetSourceKey, baseKey, {
+            fallbackSocial: emptySocialState(),
+            fallbackPublicOpinion: emptyPublicOpinionCache(),
+        });
+    }
+}
+
+function settleResultBranchSurface(store, targetSourceKey, baseState, resultState, {
+    settledSocialMessages = null,
+    narrativeText = '',
+} = {}) {
+    ensureResultBranchSurface(store, targetSourceKey, baseState);
+    const settings = getSettings();
+    if (settings.worldPromptInjection === false || settings.injectionSocial !== true) return;
+
+    // A simulation may finish after a newer assistant reply has already appeared.
+    // Its core result is still a real historical branch, so settle the social
+    // messages into that branch sidecar even though it must not overwrite the
+    // currently active world's social state.
+    const activeSocial = store.social;
+    const activePublicOpinion = store.publicOpinion;
+    restoreBranchSurface(store, targetSourceKey, {
+        fallbackSocial: emptySocialState(),
+        fallbackPublicOpinion: emptyPublicOpinionCache(),
+    });
+    store.social = settleSocialConversations(
+        store.social,
+        resultState,
+        settledSocialMessages,
+        narrativeText,
+    );
+    captureBranchSurface(store, targetSourceKey);
+    store.social = activeSocial;
+    store.publicOpinion = activePublicOpinion;
 }
 
 function ensureMonotonicRevision(nextState, previousState = null) {
@@ -2675,10 +2737,6 @@ function setCurrentState(nextState, {
             sourceKey: overrideKey,
             kind: 'manual-override',
         });
-        const entries = Object.entries(store.branchOverrides);
-        if (entries.length > 48) {
-            store.branchOverrides = Object.fromEntries(entries.slice(-48));
-        }
     }
 
     if (save) saveStore(store, { immediate });
@@ -2689,6 +2747,7 @@ function setCurrentState(nextState, {
 
 function restoreLatestBranch({ pending = false } = {}) {
     const store = getStore();
+    captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
     const latest = findLatestResultSnapshot();
     let state = latest
         ? stateWithBranchOverride(latest.snapshot, store)
@@ -2699,6 +2758,7 @@ function restoreLatestBranch({ pending = false } = {}) {
         );
     if (pending) state = markPendingSync(state, true);
     store.currentState = trimState(state);
+    restoreSurfaceForState(store, store.currentState);
     saveStore(store);
     refreshInjection();
     runtime.ui?.render();
@@ -2867,9 +2927,11 @@ function pendingAssistantEntriesThrough(messageId) {
     for (let index = start; index <= target; index += 1) {
         const message = chat[index];
         if (!hasUsableAssistantText(message)) continue;
-        const branch = branchDataFromMessage(message);
+        const swipeId = Number(message.swipe_id ?? 0);
+        const branch = branchDataFromMessage(message, swipeId);
         if (!branch) continue;
-        if (branch?.status === 'committed' && !branch.stale) continue;
+        const sourceKey = branchSourceKey(index, message, swipeId);
+        if (committedBranchMatchesSource(branch, sourceKey)) continue;
         entries.push({ message, index });
     }
     return entries;
@@ -3301,7 +3363,8 @@ function rerollInjectionBase(type) {
 
     const swipeId = Number(target.message?.swipe_id ?? 0);
     const branch = branchDataFromMessage(target.message, swipeId);
-    if (branch?.base && !branch.stale) {
+    const sourceKey = branchSourceKey(target.index, target.message, swipeId);
+    if (branchRecordMatchesSource(branch, sourceKey) && branch?.base) {
         return {
             state: restoreBranchSnapshot(branch.base, getStore().initialState),
             chatBeforeIndex: target.index,
@@ -4229,6 +4292,7 @@ async function runSimulationForMessage(messageId, {
                 error: '',
                 summary,
             };
+            ensureResultBranchSurface(getStore(), sourceKey, baseState);
             attachBranchData(target.message, swipeId, committed);
             compactBranchSnapshotStorage();
             const branchIsCurrent = (
@@ -4468,6 +4532,10 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             error: '',
             summary,
         };
+        settleResultBranchSurface(getStore(), sourceKey, baseState, resultState, {
+            settledSocialMessages: applicablePayload?.social_messages_settled ?? applicablePayload?.socialMessagesSettled,
+            narrativeText: newAssistantTexts.join('\n'),
+        });
         attachBranchData(target.message, swipeId, committed);
         compactBranchSnapshotStorage();
 
@@ -5248,27 +5316,31 @@ function restoreExistingSwipe(messageId) {
     const swipeId = Number(message.swipe_id ?? 0);
     const swipesLength = Array.isArray(message.swipes) ? message.swipes.length : 0;
     const data = branchDataFromMessage(message, swipeId);
+    const sourceKey = branchSourceKey(Number(messageId), message, swipeId);
+    const dataMatchesSource = branchRecordMatchesSource(data, sourceKey);
     const store = getStore();
+    captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
 
     if (swipeId >= swipesLength) {
         const previous = findLatestResultSnapshot(Number(messageId));
-        const base = data?.base && !data.stale
+        const base = dataMatchesSource && data?.base
             ? restoreBranchSnapshot(data.base, store.initialState)
             : (previous
                 ? stateWithBranchOverride(previous.snapshot, store)
                 : clone(store.initialState));
         store.currentState = markPendingSync(base, true);
+        const pendingSourceKey = messageId + ':' + swipeId + ':pending';
         const pending = {
             schemaVersion: SCHEMA_VERSION,
             status: 'pending',
-            sourceKey: `${messageId}:${swipeId}:pending`,
+            sourceKey: pendingSourceKey,
             trigger: 'swipe',
             offeredEventIds: clone(runtime.injection.eventIds || []),
             offeredDirectorNoteIds: clone(runtime.injection.directorNoteIds || []),
             base: createBranchSnapshot(base, {
                 messageId: Number(messageId),
                 swipeId,
-                sourceKey: `${messageId}:${swipeId}:pending`,
+                sourceKey: pendingSourceKey,
                 kind: 'base',
             }),
             result: null,
@@ -5277,9 +5349,9 @@ function restoreExistingSwipe(messageId) {
         };
         message.extra ||= {};
         message.extra[SNAPSHOT_KEY] = pending;
-    } else if (data?.status === 'committed' && data.result && !data.stale) {
+    } else if (committedBranchMatchesSource(data, sourceKey)) {
         store.currentState = stateWithBranchOverride(data.result, store);
-    } else if (data?.base && !data.stale) {
+    } else if (dataMatchesSource && data?.base) {
         store.currentState = markPendingSync(
             restoreBranchSnapshot(data.base, store.initialState),
             true,
@@ -5292,20 +5364,30 @@ function restoreExistingSwipe(messageId) {
         );
     }
 
+    restoreSurfaceForState(store, store.currentState);
     saveStore(store);
     refreshInjection();
     runtime.ui?.render();
 }
 
-function markSnapshotsStaleFrom(messageId) {
+function markSnapshotsStaleFrom(messageId, {
+    preserveSiblingSwipesAtStart = false,
+    selectedSwipeId = null,
+} = {}) {
     const context = getContext();
     const chat = context?.chat || [];
-    for (let index = Number(messageId); index < chat.length; index += 1) {
+    const startIndex = Number(messageId);
+    for (let index = startIndex; index < chat.length; index += 1) {
         const message = chat[index];
+        const preserveSiblings = preserveSiblingSwipesAtStart && index === startIndex;
+        const selected = Number(selectedSwipeId ?? message?.swipe_id ?? 0);
         const current = message?.extra?.[SNAPSHOT_KEY];
-        if (current) current.stale = true;
-        for (const swipeInfo of message?.swipe_info || []) {
-            const data = swipeInfo?.extra?.[SNAPSHOT_KEY];
+        if (current && (!preserveSiblings || Number(message?.swipe_id ?? 0) === selected)) {
+            current.stale = true;
+        }
+        for (let swipeIndex = 0; swipeIndex < (message?.swipe_info?.length || 0); swipeIndex += 1) {
+            if (preserveSiblings && swipeIndex !== selected) continue;
+            const data = message.swipe_info?.[swipeIndex]?.extra?.[SNAPSHOT_KEY];
             if (data) data.stale = true;
         }
     }
@@ -5331,24 +5413,44 @@ function onMessageEdited(messageId) {
         runtime.editDecision = {
             chatToken: currentChatToken(),
             messageId: index,
+            swipeId,
+            previousSourceKey: existing.sourceKey,
         };
+        const store = getStore();
+        captureBranchSurface(
+            store,
+            String(runtime.editDecision?.previousSourceKey || branchSurfaceKeyFromState(store.currentState)),
+        );
+        const previous = findLatestResultSnapshot(index);
+        const safeBase = existing.base && !existing.stale
+            ? restoreBranchSnapshot(existing.base, store.initialState)
+            : (previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState));
+        store.currentState = markPendingSync(safeBase, true);
+        restoreSurfaceForState(store, store.currentState);
+        saveStore(store, { immediate: true });
+        refreshInjection();
         setSyncStatus({
             phase: 'pending',
-            message: '检测到已推演正文被编辑，正在等待你选择是否重推',
+            message: '已推演正文被编辑；世界先安全退回编辑前，等待你选择保留原推演或重新同步',
             error: '',
         });
         runtime.ui?.render();
         return;
     }
 
-    markSnapshotsStaleFrom(index);
+    markSnapshotsStaleFrom(index, {
+        preserveSiblingSwipesAtStart: true,
+        selectedSwipeId: swipeId,
+    });
 
     const previous = findLatestResultSnapshot(index);
     const store = getStore();
+    captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
     store.currentState = markPendingSync(
         previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState),
         true,
     );
+    restoreSurfaceForState(store, store.currentState);
     saveStore(store);
     refreshInjection();
     runtime.ui?.render();
@@ -5379,14 +5481,57 @@ async function resolveMessageEdit(mode) {
     }
 
     if (mode === 'keep') {
+        const swipeId = Number(message.swipe_id ?? decision.swipeId ?? 0);
+        const existing = branchDataFromMessage(message, swipeId);
+        if (!existing?.result || existing.stale) {
+            runtime.editDecision = null;
+            throw new Error('编辑前的世界快照已经不可用，请改用重新同步');
+        }
+        const store = getStore();
+        const keptState = stateWithBranchOverride(existing.result, store);
+        const sourceKey = branchSourceKey(decision.messageId, message, swipeId);
+        if (keptState?.lastCommit) {
+            keptState.lastCommit = {
+                ...keptState.lastCommit,
+                messageId: decision.messageId,
+                swipeId,
+                sourceKey,
+            };
+        }
+        rebindBranchSurface(store, decision.previousSourceKey, sourceKey);
+        const rebound = {
+            ...existing,
+            sourceKey,
+            base: existing.base
+                ? createBranchSnapshot(restoreBranchSnapshot(existing.base, store.initialState), {
+                    messageId: decision.messageId,
+                    swipeId,
+                    sourceKey,
+                    kind: 'base',
+                })
+                : null,
+            result: createBranchSnapshot(keptState, {
+                messageId: decision.messageId,
+                swipeId,
+                sourceKey,
+                kind: 'result',
+            }),
+            stale: false,
+        };
+        attachBranchData(message, swipeId, rebound);
+        store.currentState = trimState(keptState);
+        restoreSurfaceForState(store, store.currentState);
+        saveStore(store, { immediate: true });
+        void context?.saveChat?.();
         runtime.editDecision = null;
+        refreshInjection();
         setSyncStatus({
             phase: 'success',
-            message: '已保留编辑前的世界推演结果',
+            message: '已确认编辑只改文字；原世界推演已绑定到编辑后的正文',
             error: '',
         });
         runtime.ui?.render();
-        toast('已保留原推演，适合仅修改错字、标点或措辞的情况。', 'success');
+        toast('已保留原推演，并重新绑定到编辑后的正文。', 'success');
         return;
     }
 
@@ -5394,13 +5539,17 @@ async function resolveMessageEdit(mode) {
         throw new Error('世界推演模块当前已停用，无法按修改后的正文重推');
     }
     runtime.editDecision = null;
-    markSnapshotsStaleFrom(decision.messageId);
+    markSnapshotsStaleFrom(decision.messageId, {
+        preserveSiblingSwipesAtStart: true,
+        selectedSwipeId: Number(message.swipe_id ?? decision.swipeId ?? 0),
+    });
     const store = getStore();
     const previous = findLatestResultSnapshot(decision.messageId);
     store.currentState = markPendingSync(
         previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState),
         true,
     );
+    restoreSurfaceForState(store, store.currentState);
     saveStore(store);
     refreshInjection();
     runtime.ui?.render();
@@ -5427,11 +5576,13 @@ function onMessageDeleted(messageId) {
     // 已经不再指向同一段正文。先作废删除点之后的快照，再退回删除点之前。
     markSnapshotsStaleFrom(index);
     const store = getStore();
+    captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
     const previous = findLatestResultSnapshot(index);
     store.currentState = markPendingSync(
         previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState),
         true,
     );
+    restoreSurfaceForState(store, store.currentState);
     saveStore(store, { immediate: true });
     refreshInjection();
     runtime.ui?.render();
@@ -7432,6 +7583,7 @@ function queuePersonObservation(personId) {
     const state = getState();
     const person = state.people.find(item => item.id === personId);
     if (!person) throw new Error('没有找到这个人物');
+    const sceneRelation = personObservationSceneRelation(state, person, getContext()?.name1 || '');
     const cacheKey = personObservationCacheKey(state, person);
     const store = getStore();
     const current = store.personObservations?.[cacheKey];
@@ -7486,7 +7638,9 @@ function queuePersonObservation(personId) {
         visibility: 'trace',
         delivery_queued: true,
         delivery_mode: 'soft-observation',
-        delivery_route: '仅作人物动机与情绪的柔性线索；不是已发生事件，只能在当前语境自然相关时轻微呼应。',
+        delivery_route: sceneRelation.kind === 'same_place'
+            ? '权威状态显示人物与玩家当前同地点，但同地点不等于已感知或已互动。只允许在正文当前镜头真的自然接触该人物时，通过可观察言行轻微呼应；不得照搬内心独白，不得凭观测制造相遇或让角色突然知道玩家。'
+            : '仅作人物动机与情绪的柔性线索；不是已发生事件，只能在当前语境自然相关时轻微呼应，不得据此改变地点、制造相遇或泄漏内心独白。',
     });
     const created = next.events.find(event => !previousIds.has(event.id));
     if (!created) throw new Error('没有成功建立自然显露候选');

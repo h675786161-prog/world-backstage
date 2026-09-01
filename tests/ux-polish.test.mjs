@@ -97,7 +97,7 @@ test('editing a committed latest reply asks before rerunning or keeping state', 
     assert.match(indexSource, /editDecision: null/);
     assert.match(indexSource, /async function resolveMessageEdit/);
     assert.match(indexSource, /trigger: 'edited-reply'/);
-    assert.match(indexSource, /已保留编辑前的世界推演结果/);
+    assert.match(indexSource, /已保留原推演，并重新绑定到编辑后的正文/);
     assert.match(uiSource, /检测到已推演正文被修改/);
     assert.match(uiSource, /按修改后正文重推/);
     assert.match(uiSource, /保留原推演/);

@@ -1989,28 +1989,26 @@ function normalizeMemoryFact(raw, existing = null, worldMinute = 0, {
 
 function retainMemoryFacts(items) {
     const normalized = asArray(items);
-    const protectedItems = normalized.filter(item => (
-        item?.locked
-        || item?.important
-        || item?.manual
+    const hardProtected = normalized.filter(item => item?.locked || item?.manual);
+    const hardIds = new Set(hardProtected.map(item => item.id));
+    const statusWeight = value => ({ active: 4, disputed: 3, superseded: 1, invalidated: 0 }[value] ?? 0);
+    const confidenceWeight = value => ({ high: 3, medium: 2, low: 0 }[value] ?? 1);
+    const softProtectedWeight = item => (
+        item?.important
         || Number(item?.importance || 0) >= 3
         || item?.status === 'disputed'
-    ));
-    const protectedIds = new Set(protectedItems.map(item => item.id));
-    const remainder = normalized
-        .filter(item => !protectedIds.has(item.id))
-        .sort((a, b) => {
-            const statusWeight = value => ({ active: 4, disputed: 3, superseded: 1, invalidated: 0 }[value] ?? 0);
-            const confidenceWeight = value => ({ high: 3, medium: 2, low: 0 }[value] ?? 1);
-            return (
-                statusWeight(b.status) - statusWeight(a.status)
-                || Number(b.importance || 0) - Number(a.importance || 0)
-                || confidenceWeight(b.confidence) - confidenceWeight(a.confidence)
-                || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
-            );
-        })
-        .slice(0, LIMITS.memoryFacts);
-    return [...protectedItems, ...remainder]
+    ) ? 1 : 0;
+    const ranked = normalized
+        .filter(item => !hardIds.has(item.id))
+        .sort((a, b) => (
+            softProtectedWeight(b) - softProtectedWeight(a)
+            || statusWeight(b.status) - statusWeight(a.status)
+            || Number(b.importance || 0) - Number(a.importance || 0)
+            || confidenceWeight(b.confidence) - confidenceWeight(a.confidence)
+            || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+        ));
+    const remainingSlots = Math.max(0, LIMITS.memoryFacts - hardProtected.length);
+    return [...hardProtected, ...ranked.slice(0, remainingSlots)]
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
 }
 
@@ -2075,21 +2073,20 @@ function retainStorySummaries(items) {
 
 function retainClues(items) {
     const normalized = asArray(items);
-    const protectedItems = normalized.filter(item => (
-        item?.locked
-        || item?.important
-        || item?.manual
-        || ['open', 'developing', 'echoed', 'triggered'].includes(item?.status)
-    ));
-    const protectedIds = new Set(protectedItems.map(item => item.id));
-    const remainder = normalized
-        .filter(item => !protectedIds.has(item.id))
+    const hardProtected = normalized.filter(item => item?.locked || item?.manual);
+    const hardIds = new Set(hardProtected.map(item => item.id));
+    const activeWeight = item => (
+        item?.important || Number(item?.importance || 0) >= 3 || ['open', 'developing', 'echoed', 'triggered'].includes(item?.status)
+    ) ? 1 : 0;
+    const ranked = normalized
+        .filter(item => !hardIds.has(item.id))
         .sort((a, b) => (
-            Number(b.importance || 0) - Number(a.importance || 0)
+            activeWeight(b) - activeWeight(a)
+            || Number(b.importance || 0) - Number(a.importance || 0)
             || Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
-        ))
-        .slice(0, LIMITS.clues);
-    return [...protectedItems, ...remainder]
+        ));
+    const remainingSlots = Math.max(0, LIMITS.clues - hardProtected.length);
+    return [...hardProtected, ...ranked.slice(0, remainingSlots)]
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
 }
 
@@ -2607,6 +2604,11 @@ export function normalizeEvent(raw, worldMinute = 0, existing = null) {
         visibility,
         delivery: {
             state: deliveryState,
+            mode: ['event', 'soft-observation'].includes(
+                raw?.delivery_mode ?? raw?.deliveryMode ?? oldDelivery.mode,
+            )
+                ? (raw?.delivery_mode ?? raw?.deliveryMode ?? oldDelivery.mode)
+                : 'event',
             manualQueued: Boolean(
                 raw?.delivery_queued
                 ?? raw?.deliveryQueued
@@ -4529,6 +4531,63 @@ function eventPriority(event) {
     return visibilityScore * 1_000_000 + recency;
 }
 
+function deliveryDensityPolicy(value) {
+    const density = {
+        restrained: 'restrained', balanced: 'balanced', active: 'active',
+        克制: 'restrained', 均衡: 'balanced', 活跃: 'active',
+    }[value] || 'restrained';
+    return {
+        density,
+        label: { restrained: '克制', balanced: '均衡', active: '活跃' }[density],
+        liveMaximum: { restrained: 1, balanced: 2, active: 3 }[density],
+        minimumScore: { restrained: 145, balanced: 90, active: 55 }[density],
+        obligation: {
+            restrained: '只有已经直接撞上当前地点、行动或在场人物的候选才需要现在承接；最多落下一处具体后果，其余可以继续在后台发展。',
+            balanced: '只要候选与当前行动存在清楚的物理、因果或通讯接触路径，本轮通常至少自然体现一处具体可感知后果；不要只把它当背景资料。',
+            active: '下列候选只要具备物理、因果或通讯接触路径，就不是可忽略建议；本轮应自然落下至少一处具体可感知后果，互不冲突时可以承接两处。只有确实没有当前接触路径才允许延后。',
+        }[density],
+    };
+}
+
+function selectOngoingInfluenceCandidates(state, settings = {}, { contextText = '', people = [] } = {}) {
+    const policy = deliveryDensityPolicy(settings.deliveryDensity);
+    const context = String(contextText || '').toLocaleLowerCase();
+    const personRefs = new Set(asArray(people)
+        .flatMap(person => [normalizedReference(person?.id), normalizedReference(person?.name)])
+        .filter(Boolean));
+    const explicitSceneTransition = /(?:^|[，。！？\s])(?:我|玩家|user|玲)?(?:已经|刚刚|刚才|现在|此刻|目前)?(?:到了|到达|来到|抵达|进入|走进|回到|身处|位于|待在)\s*[^，。！？\n]{1,32}/i.test(context);
+    const explicitPresentLocation = /(?:我|玩家|user|玲)(?:已经|现在|此刻|目前)\s*在\s*[^，。！？\n]{0,24}(?:图书馆|咖啡店|办公室|医院|学校|车站|港区|商场|街道|公园|客厅|卧室|厨房|大厅|房间|门口|家中|公司|店里|楼上|楼下)/i.test(context);
+    const activeEvents = asArray(state?.events)
+        .filter(event => ACTIVE_EVENT_STATES.has(event?.status) && event?.visibility !== 'hidden');
+    const hasContextualSceneAnchor = explicitSceneTransition || explicitPresentLocation || activeEvents.some(event => contextMatchScore(context, [
+        event.title, event.place, ...(event.actors || []),
+        event.summary, event.consequence, event.publicTrace,
+    ]) > 0);
+    return activeEvents
+        .map(event => {
+            const contextScore = contextMatchScore(context, [
+                event.title, event.place, ...(event.actors || []),
+                event.summary, event.consequence, event.publicTrace,
+            ]);
+            const actorOverlap = asArray(event.actors)
+                .some(actor => personRefs.has(normalizedReference(actor)));
+            const manualQueued = Boolean(event.delivery?.manualQueued);
+            const direct = event.visibility === 'direct';
+            const hasContactRoute = manualQueued || actorOverlap || contextScore > 0 || (direct && !hasContextualSceneAnchor);
+            const score = contextScore
+                + (actorOverlap ? 70 : 0)
+                + (manualQueued ? 220 : 0)
+                + (direct ? 180 : 0)
+                + (event.visibility === 'known' ? 30 : event.visibility === 'trace' ? 10 : 0)
+                + Number(event.updatedAt || event.startedAt || 0) / 1_000_000;
+            return { event, score, hasContactRoute };
+        })
+        .filter(item => item.hasContactRoute && item.score >= policy.minimumScore)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, policy.liveMaximum)
+        .map(item => item.event);
+}
+
 export function selectDeliveryCandidates(state, settings = {}) {
     const maximum = {
         restrained: 1,
@@ -4605,7 +4664,7 @@ function selectRelevantPeople(state, recentText = '', maximum = 6) {
 
 export function buildInjectionPackage(state, settings = {}, recentText = '', { contextText = recentText } = {}) {
     if (!settings.enabled) {
-        return { text: '', authorityText: '', supportText: '', eventIds: [] };
+        return { text: '', authorityText: '', supportText: '', eventIds: [], liveInfluenceIds: [] };
     }
 
     // 注入只决定“当前镜头能拿到什么”，不决定后台模块是否存在或运行。
@@ -4632,10 +4691,11 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         && !injectMemory
         && timeMode === 'off'
     ) {
-        return { text: '', authorityText: '', supportText: '', eventIds: [] };
+        return { text: '', authorityText: '', supportText: '', eventIds: [], liveInfluenceIds: [] };
     }
 
     const clock = formatWorldCalendar(state);
+    const influencePolicy = deliveryDensityPolicy(settings.deliveryDensity);
     const people = injectPeople
         ? selectRelevantPeople(state, recentText)
             .filter(person => settings.recordPlayerCharacter !== false || !person?.isUser)
@@ -4662,6 +4722,9 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
             .slice(0, 5)
             .map(item => item.event)
         : [];
+    const liveInfluences = injectEvents
+        ? selectOngoingInfluenceCandidates(state, settings, { contextText: eventContextText, people })
+        : [];
     const contextReality = rawContextReality.filter(item => (
         (item.kind === 'world-fact' && injectFacts)
         || (item.kind !== 'world-fact' && injectEvents)
@@ -4675,7 +4738,9 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         ? selectRelevantWorldFacts(state, recentText, 12)
             .filter(fact => !contextFactKeys.has(fact.key))
         : [];
-    const deliveries = injectEchoes ? selectDeliveryCandidates(state, settings) : [];
+    const deliveries = injectEchoes ? asArray(selectDeliveryCandidates(state, settings)) : [];
+    const deliveryIds = new Set(deliveries.map(event => event.id));
+    const foregroundInfluences = liveInfluences.filter(event => !deliveryIds.has(event.id));
     const recalledMemory = injectMemory ? selectRelevantStoryMemory(state, recentText, {
         maximumFacts: 6,
         maximumClues: 3,
@@ -4692,10 +4757,10 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         && clue.status !== 'discarded'
     ));
     const sceneTiming = {
-        strict: '只在转场、空档或角色自然能够接触信息时显露；当前场面不合适就继续延后。',
-        smart: '关键场面中延后次要信息；只有直接影响眼前行动的结果可以自然进入。',
-        open: '可以在场景中加入一条简短、自然的可感知变化，但不要后台播报。',
-    }[settings.sceneTiming] || '只在自然时机显露，不要后台播报。';
+        strict: '只在转场、空档或角色已经自然接触到影响时显露；但已经直接撞上眼前行动的后果不能用“场面不合适”忽略。',
+        smart: '次要信息可以延后；直接影响眼前行动的结果现在就应自然进入。',
+        open: '只要存在自然接触路径，就应让一处相关可感知变化进入；不要后台播报。',
+    }[settings.sceneTiming] || '只在自然时机显露；已经直接影响眼前行动的客观后果不能被忽略。';
 
     const authorityLines = ['<world_backstage_state>'];
     const supportLines = ['<world_backstage_support>'];
@@ -4775,7 +4840,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
                 `- [${event.id}] ${event.title}｜${event.place}｜${event.summary || event.expectedResult || event.cause || '正在发展'}｜显露=${event.visibility}`,
             );
         }
-        authorityLines.push('这些进行中事件只约束世界连续性；只能从当前阶段继续发展或产生后果，不能把它们当成新事件再演一遍。隐藏事件不得因此直接泄漏成角色知识或后台播报。');
+        authorityLines.push('这些进行中事件都约束世界连续性；其中只有下方列为“现场影响候选”的项目在本轮具有正文承接义务。hidden 事件即使相关也不得泄漏幕后原因或让不知情角色突然知道。');
     }
 
     if (contextReality.length) {
@@ -4823,15 +4888,37 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         supportLines.push('只用于维持回忆、承诺与前后呼应；不得把未列出的隐藏记忆补写成角色知识。');
     }
 
+    if (foregroundInfluences.length || deliveries.length) {
+    supportLines.push(`正文承接强度（${influencePolicy.label}）：${influencePolicy.obligation}`);
+    supportLines.push(`显露时机：${sceneTiming}`);
+    supportLines.push('强度只改变相关后果进入正文的积极程度，不提高事件严重性；禁止为了档位制造巧合、升级灾难、泄漏幕后原因或替玩家决定行动。人物不知道原因时，只写她能实际感知的表面后果。');
+}
+
+if (foregroundInfluences.length) {
+    supportLines.push('当前镜头已经有现实接触路径的进行中世界变化：');
+    for (const event of foregroundInfluences) {
+        const route = event.delivery?.route || event.consequence || event.summary || event.expectedResult || '正在影响当前环境';
+        supportLines.push(`- [${event.id}] ${event.title}：${modelText(route, 180)}（${event.visibility}；进行中）`);
+    }
+}
+
     if (deliveries.length) {
         supportLines.push('本轮由用户点名或系统选中的可自然显露事件：');
         for (const event of deliveries) {
+            if (event.delivery?.mode === 'soft-observation') {
+                supportLines.push(
+                    `- [${event.id}] 人物幕后观测（仅作可选理解线索，不是已经发生的事件）：${event.summary}`,
+                );
+                continue;
+            }
             const route = event.delivery.route || event.result || event.consequence || event.summary;
             const request = event.delivery?.manualQueued ? '用户要求下一轮优先显露' : '系统候选';
             supportLines.push(`- [${event.id}] ${event.title}：${route}（${event.visibility}；${request}）`);
         }
-        supportLines.push(`显露节奏：${sceneTiming}`);
-        supportLines.push('只把真正写进正文、被角色感知或留下可见痕迹的新后果视为已承接；公开新闻只允许新增获知、反应与后果，不能把报道对象重新发生一次。不要声称“后台已递交”。');
+        if (deliveries.some(event => event.delivery?.mode === 'soft-observation')) {
+            supportLines.push('幕后观测只能帮助理解人物当时的动机与情绪。不得逐句照搬独白，不得把它直接宣布为事实、行动或新事件；只有当前场景自然触及该人物与话题时，才可通过符合人设的言行留下轻微呼应。');
+        }
+        supportLines.push('只把真正写进正文、被角色感知或留下可见痕迹的结果视为已承接；不要声称“后台已递交”。');
     }
 
     if (authorityLines.length > 1) {
@@ -4879,6 +4966,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         authorityText: authority.text,
         supportText: support.text,
         eventIds: deliveries.map(event => event.id),
+        liveInfluenceIds: foregroundInfluences.map(event => event.id),
         omittedLines: authority.omitted + support.omitted,
     };
 }
@@ -5920,6 +6008,54 @@ export function isPersonObservationEligible(person, userName = '') {
     return !(normalizedUserName && normalizedPersonName === normalizedUserName);
 }
 
+function normalizedSceneLocation(value) {
+    return normalizedReference(value)
+        .replace(/\s+/g, '')
+        .replace(/[，,。；;、·|｜/\\]+/g, '');
+}
+
+export function personObservationSceneRelation(state, person, userName = '') {
+    const player = asArray(state?.people).find(item => isUserPersonLike(item, userName)) || null;
+    const personLocation = asString(person?.location, '', 180);
+    const userLocation = asString(player?.location, '', 180);
+    const observed = normalizedSceneLocation(personLocation);
+    const playerPlace = normalizedSceneLocation(userLocation);
+    let kind = 'unknown';
+    if (observed && playerPlace) {
+        if (observed === playerPlace) kind = 'same_place';
+        else if (observed.length >= 3 && playerPlace.length >= 3 && (observed.includes(playerPlace) || playerPlace.includes(observed))) kind = 'same_area';
+        else kind = 'separate';
+    }
+    return {
+        kind,
+        personId: asString(person?.id, '', 120),
+        personLocation,
+        userId: asString(player?.id, '', 120),
+        userLocation: ['same_place', 'same_area'].includes(kind) ? userLocation : '',
+    };
+}
+
+function personObservationSceneConstraintLines(sceneRelation, person, userName) {
+    const personName = modelText(person?.name, 80) || '该人物';
+    const personLocation = modelText(person?.location, 180) || '位置未记录';
+    const playerName = modelText(userName, 80) || 'user';
+    const lines = [
+        '位置与同场关系属于观测输入的硬约束，不属于角色自动获得的知识。观测器没有权限重写任何人的位置，也没有权限用这次观测制造相遇。',
+        '观测位置硬锚：' + personName + ' 此刻仍在“' + personLocation + '”。本次观测不得让该人物离开、抵达、回到、进入任何新地点；若意识里提到别处，只能明确是回忆、计划、想象或目标，不能写成当前所在地。',
+    ];
+    if (sceneRelation.kind === 'same_place') {
+        lines.push('权威场景关系：玩家“' + playerName + '”与该人物当前记录为同一地点“' + personLocation + '”。这只代表同地点候选，不等于已经互相看见、听见、注意到、交谈或建立互动。除非该人物当前 action / intent 或下方认知账本已经明确建立感知/互动，否则不得突然让她发现玩家，也不得让思维自动围着玩家转。');
+    } else if (sceneRelation.kind === 'same_area') {
+        lines.push('权威场景关系：玩家与该人物的位置记录存在范围包含关系（' + personLocation + ' / ' + modelText(sceneRelation.userLocation, 180) + '），只能视为同一较大区域，绝不能自动升级成同一房间、同一视线或已经相遇。');
+    } else if (sceneRelation.kind === 'separate') {
+        lines.push('权威场景关系：当前没有玩家与该人物同地点的结构化证据。不得把玩家写进该人物眼前，也不得让该人物为了观测而移动到玩家所在处。');
+    } else {
+        lines.push('权威场景关系：当前缺少足够精确的玩家位置记录。保持未知，不得自行补造同场、相遇或玩家当前位置。');
+    }
+    lines.push('场景关系约束（只作一致性边界，不是角色知识）：' + JSON.stringify(sceneRelation));
+    return lines;
+}
+
 export function buildPersonObservationPrompt(state, person, {
     narrativeTurns = [],
     userName = '',
@@ -5929,6 +6065,7 @@ export function buildPersonObservationPrompt(state, person, {
     if (!isPersonObservationEligible(person, userName)) {
         throw new Error('玩家角色不使用人物即时观测');
     }
+    const sceneRelation = personObservationSceneRelation(state, person, userName);
 
     // IMPORTANT: raw recent narrative is intentionally NOT passed to the person POV.
     // The world engine may know the full scene; this observer only receives the
@@ -6011,6 +6148,7 @@ export function buildPersonObservationPrompt(state, person, {
         '这是幕后即时观测，不是主聊天正文，也不是新的世界推演。',
         '人物观测不会收到完整“世界背景设定”：其中可能包含角色本人不知道的幕后世界真相。世界规则由已结算人物状态和认知账本间接约束。',
         '本任务拥有独立 POV 与输出协议。你没有收到完整最近正文或 GM 世界档案，这是刻意的认知防火墙；绝不能根据“世界可能知道什么”自行补全角色没获得的信息。',
+        ...personObservationSceneConstraintLines(sceneRelation, person, userName),
         '执行优先级：已结算的明确事实 > 该人物的已知/已怀疑信息 > 当前位置、行动、目标与身心状态 > 人格、经历、说话习惯与行为边界 > 人物惯性与合理日常 > 戏剧性和可读性。',
         '要求：',
         '0. 最高优先级是“像这个具体人物本人”，其次才是“像真实思维”，最后才是“把信息交代完整”。三者冲突时，宁可少交代，也不要为了完整、合理或好读写出不像本人的内容。',
@@ -6901,6 +7039,7 @@ export function buildSimulationPrompt(state, {
     backgroundPersonTargets = [],
     worldCoverageTargets = [],
     directorNotes = [],
+    socialContext = [],
 } = {}) {
     const compact = compactStateForModel(state, {
         includeUserInnerVoice,
@@ -7038,6 +7177,16 @@ const activeDirectorNotes = asArray(directorNotes)
         ? '11. 较早轮次只用于理解因果，不得重复计算；本次只推演最后一个 assistant_turn（new="true"）。'
         : `11. 只处理标记 new="true" 的最后 ${newAssistantIndexSet.size} 个 assistant_turn，并按消息顺序合并变化；new="false" 的轮次只用于理解因果，不得重复计算。`;
     const causalReplayRule = '因果去重：正文若只是报道、回忆、转述或角色刚刚得知 current_state 中已经存在的事件/事实，只更新对应人物认知、反应或原事件的后续阶段；不得另建一条近义事件，不得把既有事件的发生时间改成本轮。只有正文明确写出此前不存在的新升级、新地点扩散或新后果时，才更新原事件或创建带 caused_by 的后续事件。';
+    const pendingSocialContext = asArray(socialContext).map(conversation => ({
+        conversation_id: asString(conversation?.conversationId, '', 160),
+        title: asString(conversation?.title, '', 120),
+        members: asArray(conversation?.members).map(name => asString(name, '', 80)).filter(Boolean),
+        messages: asArray(conversation?.messages).map(message => ({
+            id: asString(message?.id, '', 160),
+            sender: asString(message?.senderName, message?.senderId === 'user' ? '玩家' : '', 120),
+            text: asString(message?.text, '', 1600),
+        })).filter(message => message.id && message.text),
+    })).filter(conversation => conversation.conversation_id && conversation.messages.length);
 
     return [
         '你是“世界背面”的世界状态引擎。你维护一个持续运转的世界，不是正文纪要器。正文只是当前镜头；镜头外已经结算的结果同样属于真实世界。你不续写小说正文，只处理标记为 new="true" 的正文变化，并继续维护必要的镜头外因果。',
@@ -7083,6 +7232,7 @@ const activeDirectorNotes = asArray(directorNotes)
         '8. long_term_goal 是人物较稳定的长期方向；只有目标真正建立、完成、放弃或转向时才更新，不能把本轮动作重复填进去。',
         '9. inner_voice 是幕后观测信息，不得当作主角已知事实，也不得写入 deliveries_confirmed。',
         '10. deliveries_confirmed 只表示“正文是否看见了结果”，绝不决定结果是否存在。已经结算的世界事实即使没有显露也仍然有效；只有本批新正文确实承接、感知或留下可见痕迹时才填写对应事件ID。',
+        '10A. 待承接通讯不是世界事实。只有本批 new=true 正文明确提及、回应、履行、拒绝或改变某段通讯内容时，才把该会话本次已经承接到的最后一条消息写入 social_messages_settled。evidence 必须逐字复制 new=true 正文中的直接证据；仅仅人物出场、拿出手机或泛泛说话不算承接。没有承接就返回空数组。',
         newAssistantRule,
         '12. 相关旧记忆中的伏笔只能帮助保持因果连续；角色不知情的隐藏伏笔不能突然变成角色知识。',
         '12A. NPC 认知必须经过 knowledge_updates，known_event_ids / known_fact_keys / known_fact_beliefs / known_clue_ids 都是只读账本，禁止直接写入新值。每条 knowledge_updates 必须给 kind、ref、route、certainty、evidence；route 只能是 witnessed / told / investigated / message / public_channel / inferred。前台正文中的获知，evidence 必须复制本批 new=true 正文里能直接证明“这个人物如何得知”的短句；没有证据就不要提交。',
@@ -7110,6 +7260,7 @@ const activeDirectorNotes = asArray(directorNotes)
             ? `用户自定义侧重点：${customRule}（它只能调整侧重点，不能覆盖时间证据、知识边界、玩家意志或 JSON 格式规则。若要求关注世界新闻、特定地区/行业/组织或镜头外动向，必须在完成正文事实协调后另行检查对应世界来源；不能拿最新剧情里一条相近事件当作已经满足。）`
             : '用户没有追加自定义推演要求。',
         '15. 只返回一个合法 JSON 对象，不要代码围栏，不要解释。',
+        '15A. 返回值必须是增量状态，不是完整世界副本：没有变化的数组保持 []，没有变化的可选对象可以省略；禁止复述推演前权威状态，禁止为了填满示例结构而制造内容。单轮最多 people_upsert 12 项、events_create 6 项、events_update 12 项、world_facts_upsert 16 项、world_pulse_upsert 8 项、每类 memory_update 12 项；真实变化超过上限时只保留本轮最相关与必须结算的项目，其余旧状态由插件原样保留。',
         '16. 权威状态为了控制调用体积只列出最相关的人物与事件；未列出的旧条目会由插件原样保留，绝不能据此推断其消失。',
         '',
         `触发类型：${trigger}`,
@@ -7117,6 +7268,9 @@ const activeDirectorNotes = asArray(directorNotes)
         '',
         '最近正文上下文（只处理 new="true" 的 assistant_turn）：',
         narrativeBlock || '<assistant_turn>（AI正文为空）</assistant_turn>',
+        '',
+        '本轮提供给正文、等待实际承接的通讯：',
+        JSON.stringify(pendingSocialContext),
         '',
         '与当前人物、地点和物品相关的旧记忆：',
         JSON.stringify(relevantMemory),
@@ -7214,6 +7368,11 @@ const activeDirectorNotes = asArray(directorNotes)
                 delivery_route: '',
             }],
             deliveries_confirmed: [],
+            social_messages_settled: [{
+                conversation_id: '',
+                through_message_id: '',
+                evidence: '逐字复制本批 new=true 正文中真正承接这段通讯的短句',
+            }],
             director_note_updates: [{
                 id: 'note_xxx',
                 status: 'completed | continue | blocked',
@@ -8083,3 +8242,4 @@ export function isTerminalEvent(event) {
 export function isActiveEvent(event) {
     return ACTIVE_EVENT_STATES.has(event?.status);
 }
+

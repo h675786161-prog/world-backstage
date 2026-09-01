@@ -1,4 +1,5 @@
 import { SNAPSHOT_KEY, STATE_KEY } from './core.js';
+import { pruneBranchSurfaceHistory } from './branch-surface-history.js';
 
 const GUARD_RUNTIME_KEY = '__WORLD_BACKSTAGE_STORAGE_GUARD_V1__';
 
@@ -142,6 +143,32 @@ function compactHistoricalSwipeSnapshots(chat) {
     return changed;
 }
 
+function validBranchSurfaceKeys(store, chat) {
+    const keys = new Set(['root']);
+    const remember = value => {
+        const key = String(value || '').trim();
+        if (key) keys.add(key);
+    };
+    const rememberRecord = record => {
+        if (!record || typeof record !== 'object' || record.stale) return;
+        remember(record.sourceKey);
+        remember(record.base?.meta?.sourceKey);
+        remember(record.result?.meta?.sourceKey);
+    };
+
+    remember(store?.currentState?.lastCommit?.sourceKey);
+    for (const key of Object.keys(store?.branchOverrides || {})) remember(key);
+
+    for (const message of Array.isArray(chat) ? chat : []) {
+        if (!message || message.is_user || message.is_system) continue;
+        rememberRecord(message.extra?.[SNAPSHOT_KEY]);
+        for (const swipeInfo of message.swipe_info || []) {
+            rememberRecord(swipeInfo?.extra?.[SNAPSHOT_KEY]);
+        }
+    }
+    return [...keys];
+}
+
 let running = false;
 let lastCheckedFingerprint = '';
 
@@ -181,7 +208,11 @@ async function runStorageGuard(reason = 'scheduled') {
 
         const branchChanged = compactBranchOverrides(store, context.chat);
         const swipeChanged = compactHistoricalSwipeSnapshots(context.chat);
-        const changed = branchChanged || swipeChanged;
+        const surfaceChanged = pruneBranchSurfaceHistory(
+            store,
+            validBranchSurfaceKeys(store, context.chat),
+        );
+        const changed = branchChanged || swipeChanged || surfaceChanged;
         lastCheckedFingerprint = storageFingerprint(store, context.chat);
         if (!changed) return false;
 

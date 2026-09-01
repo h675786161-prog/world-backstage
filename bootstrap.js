@@ -4,6 +4,8 @@ import './mobile-ui-polish.js';
 import './ui-hotfix.js';
 import './token-budget-policy.js';
 import './communication-ecology.js';
+import './communication-voice-guard.js';
+import './observation-scene-overlap.js';
 import './settings-persistence-guard.js';
 import './social-notice-stability.js?v=3';
 import './index.js';
@@ -16,6 +18,7 @@ void import('./presentation-polish.js?v=251')
     .then(() => Promise.all([
         import('./social-responsive-adapter.js?v=1'),
         import('./settings-responsive-adapter.js?v=1'),
+        import('./mobile-news-discussion.js?v=1'),
     ]))
     .catch(error => {
         console.error('[世界背面] 自适应表现层加载失败', error);
@@ -31,4 +34,8 @@ void import('./community-note.js?v=3').catch(error => {
 
 void import('./lingqi-greeting.js?v=2').catch(error => {
     console.error('[世界背面] 玲七常驻开场白加载失败', error);
+});
+
+void import('./history-parallel-lab-runtime.js?v=2').catch(error => {
+    console.error('[世界背面] 并行历史实验室加载失败', error);
 });

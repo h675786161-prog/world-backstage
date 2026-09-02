@@ -160,9 +160,9 @@ import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.5.5';
+const PLUGIN_VERSION = '2.5.6';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 30,
+    settingsVersion: 31,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -284,6 +284,13 @@ const runtime = {
     queuedSimulations: new Map(),
     connectionLanes: new Map(),
     apiRequestTimeline: [],
+    lastRequestShape: null,
+    settingsPersistence: {
+        saveRequests: 0,
+        lastSaveRequestedAt: '',
+        lastSaveFields: [],
+    },
+    installationDiagnostics: null,
     pendingManualSimulation: null,
     manualSimulationTimer: null,
     autoMemoryTimer: null,
@@ -296,6 +303,7 @@ const runtime = {
     modelPullStatus: { phase: 'idle', message: '' },
     lastPromptBridge: null,
     lastTaskConnection: null,
+    lastTaskTrace: null,
     publicOpinionStatus: {
         phase: 'idle',
         message: '舆情还没开张呢～',
@@ -1043,8 +1051,13 @@ function getSettings() {
     return settings;
 }
 
-function saveSettings() {
+function saveSettings(fields = []) {
     const context = getContext();
+    runtime.settingsPersistence = {
+        saveRequests: Number(runtime.settingsPersistence?.saveRequests || 0) + 1,
+        lastSaveRequestedAt: new Date().toISOString(),
+        lastSaveFields: [...new Set((Array.isArray(fields) ? fields : []).map(String))].slice(0, 40),
+    };
     context?.saveSettingsDebounced?.();
 }
 
@@ -1526,7 +1539,7 @@ function prepareStore(rawStore, context = getContext()) {
             player.identityAnchor = legacyPlayerIdentityAnchor;
         }
         settings.playerIdentityAnchor = '';
-        saveSettings();
+        saveSettings(['playerIdentityAnchor']);
         migratedLegacyPlayerIdentity = true;
     }
     store.branchOverrides = store.branchOverrides && typeof store.branchOverrides === 'object'
@@ -1852,6 +1865,11 @@ function pushApiRequestTimeline(entry = {}) {
         waitMs: Math.max(0, Number(entry.waitMs) || 0),
         durationMs: Math.max(0, Number(entry.durationMs) || 0),
         outcome: String(entry.outcome || 'unknown'),
+        errorType: String(entry.errorType || 'none').slice(0, 80),
+        transportStatus: Number(entry.transportStatus) || null,
+        upstreamStatus: Number(entry.upstreamStatus) || null,
+        retryAfterMs: Math.max(0, Number(entry.retryAfterMs) || 0),
+        request: entry.request && typeof entry.request === 'object' ? { ...entry.request } : null,
     });
     if (runtime.apiRequestTimeline.length > 32) {
         runtime.apiRequestTimeline.splice(0, runtime.apiRequestTimeline.length - 32);
@@ -1861,12 +1879,17 @@ function pushApiRequestTimeline(entry = {}) {
 function waitForPromiseOrAbort(promise, signal) {
     if (!signal) return Promise.resolve(promise);
     if (signal.aborted) {
+        if (signal.reason instanceof Error) return Promise.reject(signal.reason);
         const error = new Error('后台任务已取消');
         error.name = 'AbortError';
         return Promise.reject(error);
     }
     return new Promise((resolve, reject) => {
         const onAbort = () => {
+            if (signal.reason instanceof Error) {
+                reject(signal.reason);
+                return;
+            }
             const error = new Error('后台任务已取消');
             error.name = 'AbortError';
             reject(error);
@@ -1885,7 +1908,13 @@ function waitForPromiseOrAbort(promise, signal) {
     });
 }
 
-async function runInConnectionLane(taskKind, signal, operation) {
+async function runInConnectionLane(taskKind, signal, operation, requestShape = null) {
+    if (requestShape && typeof requestShape === 'object') {
+        runtime.lastRequestShape = { ...requestShape };
+        if (runtime.lastTaskTrace?.taskKind === taskKind) {
+            updateTaskTrace({ request: { ...requestShape } });
+        }
+    }
     const laneKey = physicalConnectionKey(taskKind);
     const routeAtQueue = resolveTaskConnection(getSettings(), taskKind);
     const timelineModel = routeAtQueue.mode === 'custom'
@@ -1905,6 +1934,7 @@ async function runInConnectionLane(taskKind, signal, operation) {
     const chatTokenAtQueue = currentChatToken();
     let startedAtMs = 0;
     let outcome = 'cancelled';
+    let terminalError = null;
     try {
         await waitForPromiseOrAbort(waitForPrevious, signal);
         if (signal?.aborted) {
@@ -1918,7 +1948,12 @@ async function runInConnectionLane(taskKind, signal, operation) {
             outcome = 'success';
             return result;
         } catch (error) {
-            outcome = isAbortError(error) || signal?.aborted ? 'cancelled' : 'error';
+            terminalError = error;
+            outcome = error?.errorType === 'timeout' || error?.code === 'GENERATION_TIMEOUT'
+                ? 'timeout'
+                : isAbortError(error) || signal?.aborted
+                    ? 'cancelled'
+                    : 'error';
             throw error;
         }
     } finally {
@@ -1935,6 +1970,13 @@ async function runInConnectionLane(taskKind, signal, operation) {
             waitMs: startedAtMs ? startedAtMs - queuedAtMs : finishedAtMs - queuedAtMs,
             durationMs: startedAtMs ? finishedAtMs - startedAtMs : 0,
             outcome,
+            errorType: terminalError
+                ? (terminalError?.errorType || classifyDiagnosticIssue(describeError(terminalError)))
+                : 'none',
+            transportStatus: terminalError?.transportStatus,
+            upstreamStatus: terminalError?.upstreamStatus,
+            retryAfterMs: terminalError?.retryAfterMs,
+            request: requestShape,
         });
         release?.();
         void laneTail.finally(() => {
@@ -2388,6 +2430,70 @@ function setSyncStatus(patch) {
         ...(phaseChanged && !Object.hasOwn(patch || {}, 'summary') ? { summary: null } : {}),
     };
     runtime.ui?.render();
+}
+
+function beginTaskTrace(taskKind, details = {}) {
+    const attemptedAt = new Date().toISOString();
+    runtime.lastTaskTrace = {
+        taskKind: String(taskKind || 'unknown'),
+        phase: 'running',
+        stage: 'preparing',
+        attempt: 0,
+        responseOutcome: 'none',
+        parseOutcome: 'none',
+        validationOutcome: 'none',
+        commitOutcome: 'none',
+        responseCharacters: 0,
+        errorType: 'none',
+        errorSummary: '',
+        attemptHistory: [],
+        attemptedAt,
+        responseAt: '',
+        parsedAt: '',
+        committedAt: '',
+        finishedAt: '',
+        ...details,
+    };
+    return runtime.lastTaskTrace;
+}
+
+function updateTaskTrace(patch = {}) {
+    if (!runtime.lastTaskTrace) return null;
+    runtime.lastTaskTrace = { ...runtime.lastTaskTrace, ...patch };
+    return runtime.lastTaskTrace;
+}
+
+function finishTaskTrace(phase, patch = {}) {
+    return updateTaskTrace({ phase, finishedAt: new Date().toISOString(), ...patch });
+}
+
+function recordTaskAttemptFailure({ attempt, total, delayMs, error, rateLimited }) {
+    if (!runtime.lastTaskTrace) return;
+    const issueType = error?.errorType || classifyDiagnosticIssue(describeError(error));
+    const previous = Array.isArray(runtime.lastTaskTrace.attemptHistory)
+        ? runtime.lastTaskTrace.attemptHistory
+        : [];
+    updateTaskTrace({
+        attemptHistory: [...previous, {
+            attempt: Number(attempt) || 0,
+            total: Number(total) || 0,
+            stage: runtime.lastTaskTrace.stage,
+            errorType: issueType,
+            errorSummary: describeError(error),
+            retryDelayMs: Math.max(0, Number(delayMs) || 0),
+            rateLimited: Boolean(rateLimited),
+            failedAt: new Date().toISOString(),
+        }].slice(-6),
+    });
+}
+
+function shouldRetryWorldGeneration(error) {
+    if (isAbortError(error)) return false;
+    const status = Number(error?.upstreamStatus ?? error?.transportStatus ?? error?.status) || 0;
+    if (status >= 400 && status < 500 && ![408, 409, 425, 429].includes(status)) return false;
+    const issueType = error?.errorType || classifyDiagnosticIssue(describeError(error));
+    return !['authorization', 'quota-exhausted'].includes(issueType)
+        && !/请先填写独立 API|没有找到可以推演|没有提供安静生成接口/.test(describeError(error));
 }
 
 function describeError(error) {
@@ -3927,6 +4033,24 @@ async function backgroundSimulation(prompt, {
         timeoutLimitSource: limits.timeoutSource,
     };
     const messages = backgroundRequestMessages(prompt, settings, { taskKind });
+    const requestShape = {
+        taskKind,
+        routeKey: route.routeKey,
+        routeMode: route.mode,
+        messageCount: messages.length,
+        messageCharacters: messages.reduce((total, item) => (
+            total + String(item?.content || '').length
+        ), 0),
+        temperature: Number(temperature) || 0,
+        stream: false,
+        requestedMaxTokens: limits.requestedMaxTokens,
+        maxTokensSent: effectiveMaxTokens,
+        tokenLimitSource: limits.tokenSource,
+        timeoutMs: effectiveTimeoutMs,
+        timeoutLimitSource: limits.timeoutSource,
+        rejectTruncated: Boolean(rejectTruncated),
+    };
+    runtime.lastRequestShape = { ...requestShape };
     if (signal?.aborted) {
         const error = new Error('推演已由用户取消');
         error.name = 'AbortError';
@@ -3953,22 +4077,35 @@ async function backgroundSimulation(prompt, {
         try {
             runtime.syncStatus.method = `${route.label} · 酒馆已保存方案`;
             resetLastCustomApiOperation();
-            const result = await runInConnectionLane(taskKind, guard.signal, () => service.sendRequest(
-                profileId,
-                messages,
-                effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
+            const result = await runInConnectionLane(
+                taskKind,
+                guard.signal,
+                () => service.sendRequest(
+                    profileId,
+                    messages,
+                    effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
+                    {
+                        stream: false,
+                        signal: guard.signal,
+                        extractData: true,
+                        includePreset: false,
+                        includeInstruct: true,
+                    },
+                    {
+                        temperature,
+                        include_reasoning: false,
+                    },
+                ),
                 {
-                    stream: false,
-                    signal: guard.signal,
+                    ...requestShape,
+                    apiSurface: 'connection-manager',
                     extractData: true,
                     includePreset: false,
                     includeInstruct: true,
+                    includeReasoning: false,
+                    statusVisibility: 'connection-manager-error-only',
                 },
-                {
-                    temperature,
-                    include_reasoning: false,
-                },
-            ));
+            );
             const text = typeof result === 'string'
                 ? result
                 : typeof result?.content === 'string'
@@ -4006,17 +4143,27 @@ async function backgroundSimulation(prompt, {
             runtime.syncStatus.method = requestSettings.customApiTransport === 'direct'
                 ? `${route.label} · 浏览器直连`
                 : `${route.label} · 酒馆转发`;
-            return await runInConnectionLane(taskKind, signal, () => requestCustomCompletion(requestSettings, messages, {
-                fetchImpl: globalThis.fetch.bind(globalThis),
-                getRequestHeaders: () => context?.getRequestHeaders?.() || {},
-                maxTokens: effectiveMaxTokens,
-                temperature,
-                timeoutMs: effectiveTimeoutMs,
+            return await runInConnectionLane(
+                taskKind,
                 signal,
-                rejectTruncated,
-                operation: taskKind,
-                routeLabel: route.label,
-            }));
+                () => requestCustomCompletion(requestSettings, messages, {
+                    fetchImpl: globalThis.fetch.bind(globalThis),
+                    getRequestHeaders: () => context?.getRequestHeaders?.() || {},
+                    maxTokens: effectiveMaxTokens,
+                    temperature,
+                    timeoutMs: effectiveTimeoutMs,
+                    signal,
+                    rejectTruncated,
+                    operation: taskKind,
+                    routeLabel: route.label,
+                }),
+                {
+                    ...requestShape,
+                    apiSurface: 'custom-independent',
+                    transport: requestSettings.customApiTransport === 'direct' ? 'direct' : 'proxy',
+                    statusVisibility: 'full',
+                },
+            );
         } catch (error) {
             if (error?.code !== 'OUTPUT_TRUNCATED' && error?.errorType !== 'output-limit') throw error;
             const pluginLimited = effectiveMaxTokens > 0;
@@ -4079,30 +4226,39 @@ async function backgroundSimulation(prompt, {
         requestSignal.addEventListener('abort', stopNativeGeneration, { once: true });
     }
     try {
-        let request;
-        if (typeof context.generateRaw === 'function') {
-            runtime.syncStatus.method = '独立上下文推演';
-            request = context.generateRaw({
-                prompt: messages,
-                responseLength: effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
-                trimNames: false,
-                signal: requestSignal,
-            });
-        } else {
-            runtime.syncStatus.method = '安静生成兼容模式';
-            request = context.generateQuietPrompt({
-                quietPrompt: `${messages[0]?.content || ''}\n\n${messages[1]?.content || ''}`.trim(),
-                skipWIAN: true,
-                responseLength: effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
-                removeReasoning: true,
-                signal: requestSignal,
-            });
-        }
-        // The background request has captured its own prompt. Restore the
-        // foreground injection before waiting so a newly sent user turn never
-        // sees an empty World Backstage prompt.
-        refreshInjection();
-        return await Promise.race([request, guard.guardPromise]);
+        return await runInConnectionLane(taskKind, requestSignal, async () => {
+            let request;
+            if (typeof context.generateRaw === 'function') {
+                runtime.syncStatus.method = '独立上下文推演';
+                request = context.generateRaw({
+                    prompt: messages,
+                    responseLength: effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
+                    trimNames: false,
+                    signal: requestSignal,
+                });
+            } else {
+                runtime.syncStatus.method = '安静生成兼容模式';
+                request = context.generateQuietPrompt({
+                    quietPrompt: `${messages[0]?.content || ''}\n\n${messages[1]?.content || ''}`.trim(),
+                    skipWIAN: true,
+                    responseLength: effectiveMaxTokens > 0 ? effectiveMaxTokens : undefined,
+                    removeReasoning: true,
+                    signal: requestSignal,
+                });
+            }
+            // The background request has captured its own prompt. Restore the
+            // foreground injection before waiting so a newly sent user turn never
+            // sees an empty World Backstage prompt.
+            refreshInjection();
+            return await Promise.race([request, guard.guardPromise]);
+        }, {
+            ...requestShape,
+            apiSurface: typeof context.generateRaw === 'function' ? 'generateRaw' : 'generateQuietPrompt',
+            trimNames: typeof context.generateRaw === 'function' ? false : null,
+            skipWIAN: typeof context.generateRaw === 'function' ? null : true,
+            removeReasoning: typeof context.generateRaw === 'function' ? null : true,
+            statusVisibility: 'opaque-tavern-api',
+        });
     } finally {
         if (allowGlobalStopOnAbort) {
             requestSignal.removeEventListener?.('abort', stopNativeGeneration);
@@ -4242,6 +4398,11 @@ async function runSimulationForMessage(messageId, {
         cancelled: false,
     };
     runtime.activeSimulation = activeSimulation;
+    beginTaskTrace('simulation', {
+        messageId,
+        sourceKey,
+        chatToken: chatTokenAtStart,
+    });
 
     setBusy(true);
     setSyncStatus({
@@ -4308,6 +4469,13 @@ async function runSimulationForMessage(messageId, {
                 runtime.ui?.render();
             }
             await target.context.saveChat?.();
+            finishTaskTrace(supersededByNewerReply ? 'superseded' : 'success', {
+                stage: supersededByNewerReply ? 'superseded' : 'committed',
+                parseOutcome: 'skipped',
+                validationOutcome: 'skipped',
+                commitOutcome: 'success',
+                committedAt: new Date().toISOString(),
+            });
             setSyncStatus({
                 phase: supersededByNewerReply ? 'pending' : 'success',
                 message: supersededByNewerReply
@@ -4372,6 +4540,16 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
                 'simulation',
                 retryTokenBudget(baseMaxTokens, attempt),
             ).maxTokens;
+            updateTaskTrace({
+                stage: 'requesting',
+                attempt: attempt + 1,
+                responseOutcome: 'pending',
+                parseOutcome: 'none',
+                validationOutcome: 'none',
+                commitOutcome: 'none',
+                errorType: 'none',
+                errorSummary: '',
+            });
             const raw = await backgroundSimulation(retrySimulationPrompt(prompt, attempt), {
                 maxTokens: generationMetrics.tokenBudget,
                 temperature: attempt > 0
@@ -4380,16 +4558,33 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
                 signal: controller.signal,
             });
             generationMetrics.raw = String(raw || '');
+            updateTaskTrace({
+                stage: 'parsing',
+                responseOutcome: 'success',
+                responseCharacters: generationMetrics.raw.length,
+                responseAt: new Date().toISOString(),
+            });
             const parsed = extractJsonObject(raw);
-            if (parsed) return parsed;
-            throw unreadableJsonError(raw);
+            if (parsed) {
+                updateTaskTrace({
+                    stage: 'parsed',
+                    parseOutcome: 'success',
+                    parsedAt: new Date().toISOString(),
+                });
+                return parsed;
+            }
+            const parseError = unreadableJsonError(raw);
+            updateTaskTrace({
+                parseOutcome: 'error',
+                errorType: parseError.errorType || 'invalid-json',
+                errorSummary: describeError(parseError),
+            });
+            throw parseError;
         }, {
             retries: settings.autoRetryCount,
-            shouldRetry: error => !(
-                /请先填写独立 API|HTTP 40[0134]|没有找到可以推演|没有提供安静生成接口/
-                    .test(describeError(error))
-            ),
+            shouldRetry: shouldRetryWorldGeneration,
             onRetry: ({ attempt, total, delayMs, error, rateLimited }) => {
+                recordTaskAttemptFailure({ attempt, total, delayMs, error, rateLimited });
                 setSyncStatus({
                     phase: 'running',
                     message: rateLimited
@@ -4426,6 +4621,7 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
         // commit decision must use the current switch value, not the snapshot
         // captured when generation started.
         const memoryEnabledAtCommit = getSettings().memorySystemEnabled;
+        updateTaskTrace({ stage: 'validating' });
         const applicablePayload = memoryEnabledAtCommit
             ? payload
             : {
@@ -4466,6 +4662,10 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
                 message: '推演期间世界状态被手动修改，旧结果已丢弃；会按最新状态重新同步',
                 error: '',
             });
+            finishTaskTrace('superseded', {
+                stage: 'state-changed',
+                commitOutcome: 'skipped',
+            });
             return getState();
         }
 
@@ -4482,6 +4682,7 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             lifeSettlementTargetIds: backgroundPersonTargets.map(person => person.id),
             memorySummaryMessageIds: memoryEnabledAtCommit ? pendingMessageIds : [],
         });
+        updateTaskTrace({ stage: 'validated', validationOutcome: 'success' });
         // Manual deletion is an author decision, not a temporary UI filter.
         // Apply both exact-id and near-duplicate tombstones before snapshots are
         // written, so a model cannot resurrect the same current under a new id.
@@ -4510,6 +4711,10 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
 
         const target = locateTargetBranch(messageId, swipeId, expectedHash);
         if (!target || !taskStillCurrent()) {
+            finishTaskTrace('superseded', {
+                stage: target ? 'context-changed' : 'branch-changed',
+                commitOutcome: 'skipped',
+            });
             if (taskStillCurrent()) {
                 setSyncStatus({
                     phase: 'pending',
@@ -4532,6 +4737,7 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             error: '',
             summary,
         };
+        updateTaskTrace({ stage: 'committing', commitOutcome: 'pending' });
         settleResultBranchSurface(getStore(), sourceKey, baseState, resultState, {
             settledSocialMessages: applicablePayload?.social_messages_settled ?? applicablePayload?.socialMessagesSettled,
             narrativeText: newAssistantTexts.join('\n'),
@@ -4571,6 +4777,11 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
         }
 
         await target.context.saveChat?.();
+        finishTaskTrace('success', {
+            stage: 'committed',
+            commitOutcome: 'success',
+            committedAt: new Date().toISOString(),
+        });
         setSyncStatus({
             phase: supersededByNewerReply ? 'pending' : 'success',
             message: supersededByNewerReply
@@ -4584,6 +4795,12 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
         return resultState;
     } catch (error) {
         if (isAbortError(error) || controller.signal.aborted) {
+            finishTaskTrace('cancelled', {
+                stage: 'cancelled',
+                responseOutcome: 'cancelled',
+                errorType: 'cancelled',
+                errorSummary: describeError(error),
+            });
             const target = taskStillCurrent()
                 ? locateTargetBranch(messageId, swipeId, expectedHash)
                 : null;
@@ -4614,6 +4831,20 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
         }
         const errorMessage = describeError(error);
         const issueType = error?.errorType || classifyDiagnosticIssue(errorMessage);
+        finishTaskTrace('error', {
+            stage: runtime.lastTaskTrace?.stage || 'failed',
+            responseOutcome: runtime.lastTaskTrace?.stage === 'requesting'
+                ? 'error'
+                : runtime.lastTaskTrace?.responseOutcome || 'error',
+            validationOutcome: runtime.lastTaskTrace?.stage === 'validating'
+                ? 'error'
+                : runtime.lastTaskTrace?.validationOutcome || 'none',
+            commitOutcome: runtime.lastTaskTrace?.stage === 'committing'
+                ? 'error'
+                : runtime.lastTaskTrace?.commitOutcome || 'none',
+            errorType: issueType,
+            errorSummary: errorMessage,
+        });
         const visibleError = issueType === 'output-limit'
             ? '本次推演内容超过当前输出上限，模型返回被截断；本轮没有提交任何世界状态。可在「生成限制」提高世界推演 Token 上限后再试。'
             : errorMessage;
@@ -5813,15 +6044,307 @@ function classifyDiagnosticIssue(value) {
     const text = String(value || '').toLocaleLowerCase();
     if (!text) return 'none';
     if (/abort|cancel|取消|停止/.test(text)) return 'cancelled';
+    if (/请先填写|尚未配置|配置缺失|missing[_\s-]*(?:field|configuration)/.test(text)) return 'configuration';
     if (/401|403|unauthorized|forbidden|鉴权|密钥|api.?key/.test(text)) return 'authorization';
     if (/insufficient[_\s-]*quota|quota\s*(?:exceeded|exhausted|depleted)|credits?\s*(?:exhausted|depleted)|额度(?:不足|耗尽)|余额不足/.test(text)) return 'quota-exhausted';
     if (/429|too many requests|rate[_\s-]*limit|请求过于频繁|频率限制|限流/.test(text)) return 'rate-limit';
+    if (/\b503\b|service unavailable|temporarily unavailable|服务不可用|服务暂不可用/.test(text)) return 'service-unavailable';
     if (/timeout|timed out|超时/.test(text)) return 'timeout';
-    if (/network|fetch|connection|econn|网络|连接/.test(text)) return 'network';
+    if (/network|fetch|connection|econn|socket hang up|socket closed|connection reset|网络|连接/.test(text)) return 'network';
     if (/no message|empty|空回|没有生成|未生成/.test(text)) return 'empty-response';
     if (/length|max[_\s-]*tokens?|token[_\s-]*limit|输出上限|长度上限|过长/.test(text)) return 'output-limit';
     if (/json|解析|parse|格式/.test(text)) return 'invalid-json';
     return 'other';
+}
+
+function diagnosticSecretShape(value, source = 'plugin-settings') {
+    const raw = String(value || '');
+    const trimmed = raw.trim();
+    const length = trimmed.length;
+    return {
+        source,
+        present: length > 0,
+        lengthRange: length === 0
+            ? 'empty'
+            : length < 16
+                ? '1-15'
+                : length < 32
+                    ? '16-31'
+                    : length < 64
+                        ? '32-63'
+                        : '64+',
+        leadingOrTrailingWhitespace: raw !== trimmed,
+        internalWhitespace: /\s/.test(trimmed),
+    };
+}
+
+function diagnosticEndpointShape(value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+        return {
+            present: false,
+            validUrl: false,
+            protocol: '',
+            secure: false,
+            pathSegments: 0,
+            hasQuery: false,
+            hasHash: false,
+            pathHint: 'empty',
+        };
+    }
+    try {
+        const parsed = new URL(raw);
+        const segments = parsed.pathname.split('/').filter(Boolean);
+        const path = parsed.pathname.toLocaleLowerCase();
+        return {
+            present: true,
+            validUrl: Boolean(parsed.host && ['http:', 'https:'].includes(parsed.protocol)),
+            protocol: parsed.protocol.replace(':', ''),
+            secure: parsed.protocol === 'https:',
+            pathSegments: segments.length,
+            hasQuery: Boolean(parsed.search),
+            hasHash: Boolean(parsed.hash),
+            pathHint: /\/chat\/completions\/?$/.test(path)
+                ? 'chat-completions'
+                : /\/models\/?$/.test(path)
+                    ? 'models'
+                    : /\/v\d+(?:beta)?\/?$/.test(path)
+                        ? 'version-root'
+                        : 'custom-root',
+        };
+    } catch {
+        return {
+            present: true,
+            validUrl: false,
+            protocol: '',
+            secure: false,
+            pathSegments: 0,
+            hasQuery: raw.includes('?'),
+            hasHash: raw.includes('#'),
+            pathHint: 'unparseable',
+        };
+    }
+}
+
+function diagnosticCustomConfiguration(settings, source = 'default-independent') {
+    const endpoint = diagnosticEndpointShape(settings?.customApiUrl);
+    const key = diagnosticSecretShape(settings?.customApiKey, source);
+    const rawModel = String(settings?.customApiModel || '');
+    const model = rawModel.trim();
+    const transport = settings?.customApiTransport === 'direct' ? 'direct' : 'proxy';
+    const missing = [];
+    if (!endpoint.present) missing.push('apiUrl');
+    else if (!endpoint.validUrl) missing.push('validApiUrl');
+    if (!key.present) missing.push('apiKey');
+    if (!model) missing.push('model');
+    return {
+        ready: missing.length === 0,
+        missing,
+        transport,
+        endpoint,
+        key,
+        model: {
+            present: Boolean(model),
+            characters: model.length,
+            leadingOrTrailingWhitespace: rawModel !== model,
+        },
+        configuredTimeoutMs: Math.max(0, Number(settings?.customApiTimeoutMs) || 0),
+    };
+}
+
+function diagnosticRouteKind(routeValue) {
+    const route = String(routeValue || 'default');
+    if (route === 'default' || route === 'tavern') return route;
+    if (route.startsWith('profile:')) return 'saved-independent-profile';
+    if (route.startsWith('tavern-profile:')) return 'saved-tavern-profile';
+    return 'unknown';
+}
+
+function diagnosticModuleRoute(settings, taskKind) {
+    const routeKey = taskRouteKey(taskKind);
+    const selectedRoute = String(settings.apiModuleRoutes?.[routeKey] || 'default');
+    const resolved = resolveTaskConnection(settings, taskKind);
+    const result = {
+        module: routeKey,
+        selectedRouteKind: diagnosticRouteKind(selectedRoute),
+        resolvedMode: resolved.mode,
+        resolved: true,
+    };
+    if (resolved.mode === 'custom') {
+        result.configuration = diagnosticCustomConfiguration(
+            resolved.settings,
+            selectedRoute.startsWith('profile:') ? 'saved-independent-profile' : 'default-independent',
+        );
+        result.profileResolved = selectedRoute.startsWith('profile:') ? Boolean(resolved.profile) : null;
+    } else if (resolved.mode === 'tavern-profile') {
+        result.profileResolved = Boolean(resolved.profile);
+        result.requestServiceAvailable = typeof getContext()?.ConnectionManagerRequestService?.sendRequest === 'function';
+    } else {
+        result.currentTavernSource = getCurrentTavernConnectionInfo().source;
+        result.generateRawAvailable = typeof getContext()?.generateRaw === 'function';
+    }
+    if (
+        selectedRoute.startsWith('profile:')
+        && !settings.apiProfiles?.some(item => item.id === selectedRoute.slice('profile:'.length))
+    ) {
+        result.resolved = false;
+        result.fallback = resolved.mode;
+    }
+    return result;
+}
+
+function diagnosticEntityHealth(items) {
+    const list = Array.isArray(items) ? items : [];
+    const ids = list.map(item => String(item?.id || '').trim()).filter(Boolean);
+    return {
+        isArray: Array.isArray(items),
+        count: list.length,
+        missingIds: list.length - ids.length,
+        duplicateIds: ids.length - new Set(ids).size,
+    };
+}
+
+function diagnosticSerializedCharacters(value) {
+    try {
+        return JSON.stringify(value).length;
+    } catch {
+        return -1;
+    }
+}
+
+function diagnosticDuration(start, finish) {
+    const startedAt = Date.parse(start || '');
+    const finishedAt = Date.parse(finish || '');
+    return Number.isFinite(startedAt) && Number.isFinite(finishedAt)
+        ? Math.max(0, finishedAt - startedAt)
+        : 0;
+}
+
+function diagnosticRouteLabel(value, settings = getSettings()) {
+    const label = String(value || '').trim();
+    if (!label) return '';
+    const independentIndex = (settings.apiProfiles || [])
+        .findIndex(profile => String(profile?.name || '').trim() === label);
+    if (independentIndex >= 0) return `已保存独立方案 #${independentIndex + 1}`;
+    const tavernIndex = listTavernConnectionProfiles()
+        .findIndex(profile => String(profile?.name || '').trim() === label);
+    if (tavernIndex >= 0) return `酒馆连接方案 #${tavernIndex + 1}`;
+    return redactDiagnosticText(label);
+}
+
+function diagnosticRemoteKind(value) {
+    const text = String(value || '').toLocaleLowerCase();
+    if (!text) return 'unknown';
+    if (text.includes('github.com')) return 'github';
+    if (text.startsWith('git@') || text.startsWith('ssh://')) return 'git-ssh';
+    if (text.startsWith('http://') || text.startsWith('https://')) return 'git-http';
+    return 'git-other';
+}
+
+async function refreshInstallationDiagnostics() {
+    let folder = 'unknown';
+    try {
+        folder = new URL('.', import.meta.url).pathname
+            .split('/')
+            .map(part => decodeURIComponent(part))
+            .filter(Boolean)
+            .at(-1) || 'unknown';
+    } catch {
+        // Keep the safe fallback. Full local paths are intentionally never reported.
+    }
+    const manager = globalThis.worldBackstageUpdateManager;
+    const update = typeof manager?.getStatus === 'function' ? manager.getStatus() : null;
+    let manifestVersion = '';
+    let manifestAvailable = false;
+    let manifestErrorType = 'none';
+    try {
+        const response = await globalThis.fetch?.(new URL('./manifest.json', import.meta.url), {
+            cache: 'no-store',
+        });
+        if (!response?.ok) throw new Error(`manifest HTTP ${Number(response?.status) || 0}`);
+        const manifest = await response.json();
+        manifestVersion = String(manifest?.version || '').trim().slice(0, 80);
+        manifestAvailable = true;
+    } catch (error) {
+        manifestErrorType = classifyDiagnosticIssue(error?.message || error);
+    }
+    runtime.installationDiagnostics = {
+        folder,
+        scope: update ? (update.isGlobal ? 'global' : 'local') : 'unknown',
+        manifestAvailable,
+        manifestErrorType,
+        manifestVersion,
+        runtimeVersion: PLUGIN_VERSION,
+        versionsAligned: Boolean(manifestVersion && manifestVersion === PLUGIN_VERSION),
+        updateManagerAvailable: Boolean(update),
+        update: update ? {
+            phase: String(update.phase || ''),
+            currentVersion: String(update.currentVersion || ''),
+            updateAvailable: Boolean(update.updateAvailable),
+            lastCheckedAt: Number(update.lastCheckedAt) > 0
+                ? new Date(Number(update.lastCheckedAt)).toISOString()
+                : '',
+            branch: String(update.branch || '').slice(0, 80),
+            commitHash: String(update.commitHash || '').slice(0, 12),
+            remoteKind: diagnosticRemoteKind(update.remoteUrl),
+            errorType: classifyDiagnosticIssue(update.error),
+        } : null,
+    };
+    return runtime.installationDiagnostics;
+}
+
+function diagnosticConflictLedger(state) {
+    const conflicts = Array.isArray(state?.consistencyConflicts) ? state.consistencyConflicts : [];
+    const byResolution = conflicts.reduce((result, conflict) => {
+        const key = String(conflict?.resolution || 'unknown');
+        result[key] = (result[key] || 0) + 1;
+        return result;
+    }, {});
+    const latestAt = conflicts.reduce((latest, conflict) => (
+        Math.max(latest, Number(conflict?.at) || 0)
+    ), 0);
+    return {
+        ledgerEntries: conflicts.length,
+        byResolution,
+        distinctFields: new Set(conflicts.map(conflict => String(conflict?.field || '')).filter(Boolean)).size,
+        linkedToMessages: conflicts.filter(conflict => Number(conflict?.messageId) >= 0).length,
+        latestWorldMinute: latestAt,
+        entriesAtCurrentWorldMinute: conflicts.filter(conflict => (
+            Number(conflict?.at) === Number(state?.clock?.absoluteMinute)
+        )).length,
+        pendingReconciliation: Boolean(state?.needsReconciliation),
+        note: 'consistencyConflicts 是保留的冲突处置账本，不等同于当前未解决错误。',
+    };
+}
+
+function diagnosticRequestShape(value) {
+    const request = value && typeof value === 'object' ? value : null;
+    if (!request) return null;
+    return {
+        taskKind: String(request.taskKind || ''),
+        routeKey: String(request.routeKey || ''),
+        routeMode: String(request.routeMode || ''),
+        apiSurface: String(request.apiSurface || ''),
+        transport: String(request.transport || ''),
+        messageCount: Number(request.messageCount) || 0,
+        messageCharacters: Number(request.messageCharacters) || 0,
+        temperature: Number(request.temperature) || 0,
+        stream: Boolean(request.stream),
+        requestedMaxTokens: Number(request.requestedMaxTokens) || 0,
+        maxTokensSent: Number(request.maxTokensSent) || 0,
+        tokenLimitSource: String(request.tokenLimitSource || ''),
+        timeoutMs: Number(request.timeoutMs) || 0,
+        timeoutLimitSource: String(request.timeoutLimitSource || ''),
+        rejectTruncated: Boolean(request.rejectTruncated),
+        includePreset: request.includePreset ?? null,
+        includeInstruct: request.includeInstruct ?? null,
+        includeReasoning: request.includeReasoning ?? null,
+        extractData: request.extractData ?? null,
+        trimNames: request.trimNames ?? null,
+        skipWIAN: request.skipWIAN ?? null,
+        removeReasoning: request.removeReasoning ?? null,
+        statusVisibility: String(request.statusVisibility || ''),
+    };
 }
 
 function buildDiagnosticReport() {
@@ -5850,11 +6373,43 @@ function buildDiagnosticReport() {
         result[key] = (result[key] || 0) + 1;
         return result;
     }, {});
+    const narrative = latestNarrativeSyncSnapshot();
+    const lastOperation = getLastCustomApiOperation();
+    const moduleRoutes = ['simulation', 'person-observation', 'history', 'public-opinion']
+        .map(taskKind => diagnosticModuleRoute(settings, taskKind));
+    const defaultIndependentConfiguration = diagnosticCustomConfiguration(settings);
+    const savedIndependentProfiles = (settings.apiProfiles || []).map((profile, index) => {
+        const profileSettings = settingsForApiProfile(settings, profile);
+        return {
+            slot: index + 1,
+            configuration: diagnosticCustomConfiguration(profileSettings, 'saved-independent-profile'),
+        };
+    });
+    const activeTaskLabels = activeBackgroundTaskLabels();
     const report = {
+        report: {
+            schema: 3,
+            generatedAt: new Date().toISOString(),
+            secretsRedacted: true,
+            privacyLevel: 'diagnostic-metadata',
+        },
         plugin: {
             name: 'World Backstage',
             version: PLUGIN_VERSION,
             stateSchema: SCHEMA_VERSION,
+            settingsSchema: Number(settings.settingsVersion || DEFAULT_SETTINGS.settingsVersion),
+            initialized: Boolean(runtime.initialized),
+        },
+        installation: runtime.installationDiagnostics || {
+            folder: 'unknown',
+            scope: 'unknown',
+            manifestAvailable: false,
+            manifestErrorType: 'not-collected',
+            manifestVersion: '',
+            runtimeVersion: PLUGIN_VERSION,
+            versionsAligned: false,
+            updateManagerAvailable: false,
+            update: null,
         },
         sillyTavern: {
             version: String(
@@ -5863,11 +6418,33 @@ function buildDiagnosticReport() {
                 || document.querySelector?.('#version_display')?.textContent
                 || '未识别',
             ).trim().slice(0, 120),
+            contextAvailable: Boolean(context),
+            chatLoaded: hasChatContext(),
+            mainApi: String(context?.mainApi || 'unknown').slice(0, 80),
+            onlineStatus: String(context?.onlineStatus || '').slice(0, 80),
+            capabilities: {
+                generateRaw: typeof context?.generateRaw === 'function',
+                connectionManagerRequest: typeof context?.ConnectionManagerRequestService?.sendRequest === 'function',
+                extensionSettings: Boolean(context?.extensionSettings),
+                chatMetadata: Boolean(context?.chatMetadata),
+                saveMetadata: typeof context?.saveMetadataDebounced === 'function',
+                requestHeaders: typeof context?.getRequestHeaders === 'function',
+            },
         },
         device: {
             userAgent: String(globalThis.navigator?.userAgent || '未识别').slice(0, 240),
             viewport: `${Math.round(Number(viewport?.width || globalThis.innerWidth || 0))}x${Math.round(Number(viewport?.height || globalThis.innerHeight || 0))}`,
             touchPoints: Number(globalThis.navigator?.maxTouchPoints || 0),
+            online: globalThis.navigator?.onLine !== false,
+            pageVisibility: String(globalThis.document?.visibilityState || 'unknown'),
+            reducedMotion: Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches),
+            capabilities: {
+                fetch: typeof globalThis.fetch === 'function',
+                abortController: typeof globalThis.AbortController === 'function',
+                structuredClone: typeof globalThis.structuredClone === 'function',
+                clipboardWrite: typeof globalThis.navigator?.clipboard?.writeText === 'function',
+                visualViewport: Boolean(viewport),
+            },
         },
         connection: {
             mode: settings.apiMode,
@@ -5883,8 +6460,26 @@ function buildDiagnosticReport() {
             method: connection.method,
             internalCompatChars: Number(runtime.lastPromptBridge?.internalCompatChars
                 ?? String(INTERNAL_COMPAT_SYSTEM_PROMPT || '').trim().length),
+            defaultIndependentConfiguration,
+            savedIndependentProfiles,
+            savedTavernProfileCount: listTavernConnectionProfiles().length,
+            moduleRoutes,
+            modelList: {
+                phase: runtime.modelPullStatus.phase,
+                messageType: classifyDiagnosticIssue(runtime.modelPullStatus.message),
+                modelsReceived: runtime.customModels.length,
+            },
+            imageApi: {
+                enabled: Boolean(settings.imageApiEnabled),
+                endpoint: diagnosticEndpointShape(settings.imageApiUrl),
+                key: diagnosticSecretShape(settings.imageApiKey, 'image-api-settings'),
+                modelPresent: Boolean(String(settings.imageApiModel || '').trim()),
+                size: String(settings.imageApiSize || ''),
+                timeoutMs: Math.max(0, Number(settings.imageApiTimeoutMs) || 0),
+            },
         },
         features: {
+            pluginEnabled: settings.enabled,
             worldSimulation: settings.worldSimulationEnabled,
             worldAuto: settings.worldAutoEnabled,
             worldContinuityInjection: settings.worldSimulationEnabled,
@@ -5906,6 +6501,31 @@ function buildDiagnosticReport() {
             generationMaxTokenCap: settings.maxOutputTokens,
             generationTimeoutMs: settings.generationTimeoutMs,
             generationModuleLimits: clone(settings.generationModuleLimits || {}),
+            autoSync: settings.autoSync,
+            memoryAutoIndexInterval: settings.memoryAutoIndexInterval,
+            enhancedBackgroundSimulation: settings.enhancedBackgroundSimulation,
+            pendingSimulationPrompt: settings.pendingSimulationPromptEnabled,
+            recordPlayerCharacter: settings.recordPlayerCharacter,
+            includeUserInnerVoice: settings.includeUserInnerVoice,
+            contextTurnsCustom: settings.customContextTurns,
+            timePolicy: settings.timePolicy,
+            injectionTimeMode: settings.injectionTimeMode,
+            injectionParts: {
+                worldBackground: settings.injectionWorldBackground,
+                people: settings.injectionPeople,
+                events: settings.injectionEvents,
+                echoes: settings.injectionEchoes,
+                facts: settings.injectionFacts,
+                memory: settings.injectionMemory,
+                publicOpinion: settings.injectionPublicOpinion,
+                social: settings.injectionSocial,
+            },
+            filters: {
+                tagFilterEnabled: settings.tagFilterEnabled,
+                tagRuleCount: Array.isArray(settings.tagFilterRules) ? settings.tagFilterRules.length : 0,
+                narrativeIncludeTagPresent: Boolean(String(settings.narrativeIncludeTag || '').trim()),
+                narrativeRegexFiltersPresent: Boolean(String(settings.narrativeRegexFilters || '').trim()),
+            },
         },
         state: {
             revision: state.revision,
@@ -5928,15 +6548,115 @@ function buildDiagnosticReport() {
             chatMessages: context?.chat?.length || 0,
             recoveryPoints: recoveryPoints.length,
             latestSnapshot: Boolean(findLatestResultSnapshot()),
+            anchoredClock: Boolean(state.clock?.anchored),
+            clockDay: Number(state.clock?.day || 0),
+            branchOverrides: Object.keys(store.branchOverrides || {}).length,
+            observationRecords: Object.keys(store.personObservations || {}).length,
+            memorySummaryArchive: Array.isArray(store.memorySummaryArchive) ? store.memorySummaryArchive.length : 0,
+            historyBootstrapCheckpoint: Boolean(store.historyBootstrapCheckpoint),
+            serializedCharacters: diagnosticSerializedCharacters(state),
+        },
+        dataHealth: {
+            people: diagnosticEntityHealth(state.people),
+            events: diagnosticEntityHealth(state.events),
+            echoes: diagnosticEntityHealth(state.echoes),
+            archive: diagnosticEntityHealth(state.archive),
+            worldFacts: diagnosticEntityHealth(state.worldFacts),
+            memoryFacts: diagnosticEntityHealth(state.storyMemory?.facts),
+            memorySummaries: diagnosticEntityHealth(state.storyMemory?.summaries),
+            memoryClues: diagnosticEntityHealth(state.storyMemory?.clues),
+            storeSchema: Number(store.schemaVersion || 0),
+            storeSerializedCharacters: diagnosticSerializedCharacters(store),
+            manualDeletions: {
+                eventIds: store.manualDeletions?.eventIds?.length || 0,
+                events: store.manualDeletions?.events?.length || 0,
+                people: store.manualDeletions?.people?.length || 0,
+                memoryFacts: store.manualDeletions?.memory?.factIds?.length || 0,
+                memorySummaries: store.manualDeletions?.memory?.summaryIds?.length || 0,
+                memoryClues: store.manualDeletions?.memory?.clueIds?.length || 0,
+            },
+            consistencyConflictLedger: diagnosticConflictLedger(state),
+        },
+        settingsPersistence: {
+            runtimeAttachedToExtensionSettings: context?.extensionSettings?.[MODULE_ID] === settings,
+            saveMethodAvailable: typeof context?.saveSettingsDebounced === 'function',
+            saveCompletionObservable: false,
+            saveRequestsThisPage: Number(runtime.settingsPersistence?.saveRequests || 0),
+            lastSaveRequestedAt: runtime.settingsPersistence?.lastSaveRequestedAt || '',
+            lastSaveFields: runtime.settingsPersistence?.lastSaveFields || [],
+            uiDrafts: runtime.ui?.getDiagnosticDraftStatus?.() || null,
+            note: 'SillyTavern 只提供防抖保存入口；插件能确认已请求保存，但不能伪造磁盘写入完成时间。',
+        },
+        execution: {
+            contextEpoch: runtime.contextEpoch,
+            dataEpoch: runtime.dataEpoch,
+            simulationCount: runtime.simulationCount,
+            inBackgroundGeneration: runtime.inBackgroundGeneration,
+            consistencyBarrierRunning: runtime.consistencyBarrierRunning,
+            activeTasks: activeTaskLabels,
+            queuedSimulations: runtime.queuedSimulations.size,
+            queuedConnectionLanes: runtime.connectionLanes.size,
+            pendingManualSimulation: Boolean(runtime.pendingManualSimulation),
+            pendingPublicImpact: Boolean(runtime.pendingPublicImpact),
+            pendingPublicOpinion: Boolean(runtime.pendingPublicOpinion),
+            narrativeSync: {
+                active: Boolean(narrative.active),
+                queued: Boolean(narrative.queued),
+                status: String(narrative.status || ''),
+                committed: Boolean(narrative.committed),
+                needsSimulation: Boolean(narrative.needsSimulation),
+                pendingTurns: Number(narrative.pendingTurns || 0),
+                hasLatest: Boolean(narrative.hasLatest),
+            },
+            promptInjection: {
+                authoritativeCharacters: String(runtime.injection?.text || '').length,
+                eventIds: runtime.injection?.eventIds?.length || 0,
+                directorNoteIds: runtime.injection?.directorNoteIds?.length || 0,
+                bridgeEnabled: Boolean(runtime.lastPromptBridge?.enabled),
+                bridgeAvailable: Boolean(runtime.lastPromptBridge?.available),
+                bridgePromptCount: Number(runtime.lastPromptBridge?.promptCount || 0),
+                bridgeTruncated: Boolean(runtime.lastPromptBridge?.truncated),
+            },
+            moduleStatus: {
+                memory: {
+                    kind: runtime.historyProgress.kind,
+                    phase: runtime.historyProgress.phase,
+                    processed: Number(runtime.historyProgress.processed || 0),
+                    total: Number(runtime.historyProgress.total || 0),
+                    messageType: classifyDiagnosticIssue(runtime.historyProgress.message),
+                },
+                publicOpinion: {
+                    phase: runtime.publicOpinionStatus.phase,
+                    errorType: classifyDiagnosticIssue(runtime.publicOpinionStatus.error),
+                    sandboxPhase: runtime.publicOpinionSandboxStatus.phase,
+                    sandboxErrorType: classifyDiagnosticIssue(runtime.publicOpinionSandboxStatus.error),
+                },
+                lingqi: {
+                    phase: runtime.lingqiStatus.phase,
+                    errorType: classifyDiagnosticIssue(runtime.lingqiStatus.error),
+                },
+                social: {
+                    phase: runtime.socialStatus.phase,
+                    errorType: classifyDiagnosticIssue(runtime.socialStatus.error),
+                    friendRequestPhase: runtime.friendRequestStatus.phase,
+                    momentsPhase: runtime.momentsStatus.phase,
+                },
+                worldbookScan: {
+                    phase: runtime.worldbookScan.phase,
+                    entryCount: runtime.worldbookScan.entries?.length || 0,
+                },
+            },
         },
         lastWorldTask: {
             phase: runtime.syncStatus.phase,
-            messageType: classifyDiagnosticIssue(runtime.syncStatus.message),
+            messageType: runtime.syncStatus.phase === 'success'
+                ? 'success'
+                : classifyDiagnosticIssue(runtime.syncStatus.message),
             errorType: classifyDiagnosticIssue(runtime.syncStatus.error),
             attemptedAt: runtime.syncStatus.attemptedAt,
             succeededAt: runtime.syncStatus.succeededAt,
             method: runtime.syncStatus.method,
-            route: runtime.lastTaskConnection?.apiLabel || '',
+            route: diagnosticRouteLabel(runtime.lastTaskConnection?.apiLabel || '', settings),
             model: redactDiagnosticText(runtime.lastTaskConnection?.model || ''),
             taskKind: runtime.lastTaskConnection?.taskKind || '',
             requestedMaxTokens: runtime.lastTaskConnection?.requestedMaxTokens || 0,
@@ -5946,6 +6666,35 @@ function buildDiagnosticReport() {
             timeoutLimitSource: runtime.lastTaskConnection?.timeoutLimitSource || '',
             memoryPhase: runtime.historyProgress.phase,
             memoryMessageType: classifyDiagnosticIssue(runtime.historyProgress.message),
+            request: diagnosticRequestShape(runtime.lastTaskTrace?.request || runtime.lastRequestShape),
+            pipeline: runtime.lastTaskTrace ? {
+                taskKind: runtime.lastTaskTrace.taskKind,
+                phase: runtime.lastTaskTrace.phase,
+                stage: runtime.lastTaskTrace.stage,
+                attempt: runtime.lastTaskTrace.attempt,
+                responseOutcome: runtime.lastTaskTrace.responseOutcome,
+                parseOutcome: runtime.lastTaskTrace.parseOutcome,
+                validationOutcome: runtime.lastTaskTrace.validationOutcome,
+                commitOutcome: runtime.lastTaskTrace.commitOutcome,
+                responseCharacters: runtime.lastTaskTrace.responseCharacters,
+                errorType: runtime.lastTaskTrace.errorType,
+                errorSummary: redactDiagnosticText(runtime.lastTaskTrace.errorSummary || ''),
+                attemptedAt: runtime.lastTaskTrace.attemptedAt,
+                responseAt: runtime.lastTaskTrace.responseAt,
+                parsedAt: runtime.lastTaskTrace.parsedAt,
+                committedAt: runtime.lastTaskTrace.committedAt,
+                finishedAt: runtime.lastTaskTrace.finishedAt,
+                timingsMs: {
+                    request: diagnosticDuration(runtime.lastTaskTrace.attemptedAt, runtime.lastTaskTrace.responseAt),
+                    parse: diagnosticDuration(runtime.lastTaskTrace.responseAt, runtime.lastTaskTrace.parsedAt),
+                    validate: diagnosticDuration(runtime.lastTaskTrace.parsedAt, runtime.lastTaskTrace.committedAt),
+                    total: diagnosticDuration(runtime.lastTaskTrace.attemptedAt, runtime.lastTaskTrace.finishedAt),
+                },
+                attemptHistory: (runtime.lastTaskTrace.attemptHistory || []).map(item => ({
+                    ...item,
+                    errorSummary: redactDiagnosticText(item.errorSummary || ''),
+                })),
+            } : null,
         },
         retryControl: getRetryControlStatus(),
         apiCadence: {
@@ -5953,13 +6702,18 @@ function buildDiagnosticReport() {
             last5Minutes: recentFiveMinuteRequests.length,
             byTaskLast5Minutes: recentByTask,
             queuedPhysicalRoutes: runtime.connectionLanes.size,
+            retainedTimelineEntries: currentApiTimeline.length,
+            successesLast5Minutes: recentFiveMinuteRequests.filter(item => item.outcome === 'success').length,
+            errorsLast5Minutes: recentFiveMinuteRequests.filter(item => item.outcome === 'error').length,
+            timeoutsLast5Minutes: recentFiveMinuteRequests.filter(item => item.outcome === 'timeout').length,
+            cancellationsLast5Minutes: recentFiveMinuteRequests.filter(item => item.outcome === 'cancelled').length,
         },
         recentApiRequests: runtime.apiRequestTimeline
             .filter(item => item.chatToken === currentChatToken())
             .slice(-20)
             .map(item => ({
             taskKind: item.taskKind,
-            route: redactDiagnosticText(item.route || ''),
+            route: diagnosticRouteLabel(item.route || '', settings),
             model: redactDiagnosticText(item.model || ''),
             queuedAt: item.queuedAt,
             startedAt: item.startedAt,
@@ -5967,15 +6721,22 @@ function buildDiagnosticReport() {
             waitMs: item.waitMs,
             durationMs: item.durationMs,
             outcome: item.outcome,
+            outcomeScope: 'response',
+            connectionLane: String(item.lane || '').split(':')[0],
+            errorType: item.errorType,
+            transportStatus: item.transportStatus,
+            upstreamStatus: item.upstreamStatus,
+            retryAfterMs: item.retryAfterMs,
+            request: diagnosticRequestShape(item.request),
         })),
         lastApiOperation: (() => {
-            const operation = getLastCustomApiOperation();
+            const operation = lastOperation;
             if (!operation) return null;
             return {
                 phase: operation.phase,
                 operation: operation.operation,
                 source: operation.source,
-                route: redactDiagnosticText(operation.route || ''),
+                route: diagnosticRouteLabel(operation.route || '', settings),
                 model: redactDiagnosticText(operation.model || ''),
                 transport: operation.transport,
                 transportStatus: operation.transportStatus,
@@ -5983,18 +6744,53 @@ function buildDiagnosticReport() {
                 retryAfterMs: Number(operation.retryAfterMs) || 0,
                 errorType: operation.errorType,
                 errorSummary: redactDiagnosticText(operation.errorSummary || ''),
+                missingField: operation.missingField || '',
+                request: operation.request ? {
+                    endpointKind: operation.request.endpointKind,
+                    method: operation.request.method,
+                    timeoutMs: Number(operation.request.timeoutMs) || 0,
+                    apiUrlPresent: Boolean(operation.request.apiUrlPresent),
+                    apiKeyPresent: Boolean(operation.request.apiKeyPresent),
+                    modelPresent: Boolean(operation.request.modelPresent),
+                    messageCount: Number(operation.request.messageCount) || 0,
+                    messageCharacters: Number(operation.request.messageCharacters) || 0,
+                    maxTokensSent: Number(operation.request.maxTokensSent) || 0,
+                    temperature: Number(operation.request.temperature) || 0,
+                    stream: Boolean(operation.request.stream),
+                    deepSeekV4Compatibility: Boolean(operation.request.deepSeekV4Compatibility),
+                } : null,
                 attemptedAt: operation.attemptedAt,
                 succeededAt: operation.succeededAt,
                 failedAt: operation.failedAt,
+                durationMs: diagnosticDuration(
+                    operation.attemptedAt,
+                    operation.succeededAt || operation.failedAt,
+                ),
             };
         })(),
-        privacy: '不包含 API Key、接口地址、聊天正文、角色身份锚点或自定义提示词。',
-        generatedAt: new Date().toISOString(),
+        privacy: {
+            summary: '不包含 API Key、接口地址、聊天正文、角色身份锚点或自定义提示词。',
+            omitted: [
+                'API keys and authorization headers',
+                'API hosts and full endpoint URLs',
+                'chat and generated response text',
+                'character names and identity anchors',
+                'custom prompts and filter contents',
+                'profile names and identifiers',
+            ],
+            retainedOnlyAsMetadata: [
+                'secret presence and length range',
+                'endpoint validity and path shape',
+                'message counts and character counts',
+                'prompt lengths and state counts',
+            ],
+        },
     };
     return `世界背面诊断信息（可安全分享）\n${JSON.stringify(report, null, 2)}`;
 }
 
 async function copyDiagnosticReport() {
+    await refreshInstallationDiagnostics();
     const report = buildDiagnosticReport();
     try {
         if (typeof globalThis.navigator?.clipboard?.writeText !== 'function') {
@@ -10637,7 +11433,7 @@ async function handleUiAction(action, payload = {}) {
             runtime.pendingPublicOpinion = false;
         }
         context.extensionSettings[MODULE_ID] = settings;
-        saveSettings();
+        saveSettings(Object.keys(payload || {}));
         if (Object.prototype.hasOwnProperty.call(payload, 'recordPlayerCharacter')) {
             const store = getStore();
             store.currentState = applyPlayerCharacterRecordingPolicy(store.currentState, settings);

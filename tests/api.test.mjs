@@ -5,10 +5,12 @@ import {
     customProxyBase,
     extractCompletionFinishReason,
     extractCompletionText,
+    getLastCustomApiOperation,
     normalizeCustomApiUrl,
     normalizeCustomModelsUrl,
     requestCustomCompletion,
     requestCustomModels,
+    resetLastCustomApiOperation,
     runWithRetries,
 } from '../api.js';
 
@@ -67,11 +69,12 @@ test('custom API can pull and normalize model lists while keeping manual input p
     });
     assert.deepEqual(proxied, ['gemini-test']);
     assert.equal(proxyRequest.url, '/api/backends/chat-completions/status');
-    assert.equal(proxyRequest.body.custom_url, 'https://example.test/v1');
-    assert.match(proxyRequest.body.custom_include_headers, /Bearer proxy-secret/);
+    assert.equal(proxyRequest.body.chat_completion_source, 'openai');
+    assert.equal(proxyRequest.body.reverse_proxy, 'https://example.test/v1');
+    assert.equal(proxyRequest.body.proxy_password, 'proxy-secret');
 });
 
-test('proxy request uses plugin URL, key and model instead of tavern selection', async () => {
+test('proxy request carries the independent endpoint, key and model instead of Tavern secrets', async () => {
     let request = null;
     const result = await requestCustomCompletion({
         customApiUrl: 'https://example.test/v1',
@@ -89,10 +92,10 @@ test('proxy request uses plugin URL, key and model instead of tavern selection',
 
     assert.equal(result, '{"ok":true}');
     assert.equal(request.url, '/api/backends/chat-completions/generate');
-    assert.equal(request.body.custom_url, 'https://example.test/v1');
-    assert.match(request.body.custom_include_headers, /Bearer plugin-secret/);
+    assert.equal(request.body.reverse_proxy, 'https://example.test/v1');
+    assert.equal(request.body.proxy_password, 'plugin-secret');
     assert.equal(request.body.model, 'plugin-model');
-    assert.equal(request.body.chat_completion_source, 'custom');
+    assert.equal(request.body.chat_completion_source, 'openai');
     assert.equal(request.options.headers['X-CSRF-Token'], 'tavern-token');
 });
 
@@ -149,12 +152,12 @@ test('completion text extraction supports string and array content', () => {
     );
 });
 
-test('DeepSeek V4 disables thinking and uses the tavern DeepSeek proxy path', async () => {
+test('DeepSeek-named models keep the independent endpoint and explicit key', async () => {
     let proxyRequest = null;
     const result = await requestCustomCompletion({
         customApiUrl: 'https://example.test/v1',
         customApiKey: 'deepseek-secret',
-        customApiModel: 'deepseek-v4-flash',
+        customApiModel: '[B]DeepSeek-V4-Pro-0813',
         customApiTransport: 'proxy',
     }, [{ role: 'user', content: 'return json' }], {
         fetchImpl: async (url, options) => {
@@ -167,11 +170,13 @@ test('DeepSeek V4 disables thinking and uses the tavern DeepSeek proxy path', as
 
     assert.equal(result, '{"ok":true}');
     assert.equal(proxyRequest.url, '/api/backends/chat-completions/generate');
-    assert.equal(proxyRequest.body.chat_completion_source, 'deepseek');
+    assert.equal(proxyRequest.body.chat_completion_source, 'openai');
+    assert.equal(proxyRequest.body.reverse_proxy, 'https://example.test/v1');
+    assert.equal(proxyRequest.body.proxy_password, 'deepseek-secret');
+    assert.equal(proxyRequest.body.custom_url, undefined);
+    assert.equal(proxyRequest.body.custom_include_headers, undefined);
     assert.equal(proxyRequest.body.include_reasoning, false);
     assert.deepEqual(proxyRequest.body.thinking, { type: 'disabled' });
-    // The tavern dispatcher only forwards `thinking` when it sees this key.
-    assert.equal(proxyRequest.body.reasoning_effort, 'none');
 });
 
 test('DeepSeek V4 direct mode also requests non-thinking output', async () => {
@@ -179,7 +184,7 @@ test('DeepSeek V4 direct mode also requests non-thinking output', async () => {
     await requestCustomCompletion({
         customApiUrl: 'https://example.test/v1',
         customApiKey: 'deepseek-secret',
-        customApiModel: 'deepseek-v4-flash',
+        customApiModel: '[稳定]deepseek-v4-pro-0813',
         customApiTransport: 'direct',
     }, [{ role: 'user', content: 'return json' }], {
         fetchImpl: async (_url, options) => {
@@ -243,6 +248,31 @@ test('custom API errors are surfaced and never fall back silently', async () => 
         /HTTP 401.*invalid api key/,
     );
     assert.equal(calls, 1);
+});
+
+test('missing independent configuration is recorded without exposing its value', async () => {
+    resetLastCustomApiOperation();
+    await assert.rejects(
+        () => requestCustomCompletion({
+            customApiUrl: 'https://example.test/v1',
+            customApiKey: '',
+            customApiModel: 'plugin-model',
+            customApiTransport: 'proxy',
+        }, [{ role: 'user', content: 'private prompt' }], { timeoutMs: 0 }),
+        error => error?.errorType === 'configuration' && error?.missingField === 'customApiKey',
+    );
+
+    const operation = getLastCustomApiOperation();
+    assert.equal(operation.phase, 'error');
+    assert.equal(operation.errorType, 'configuration');
+    assert.equal(operation.missingField, 'customApiKey');
+    assert.equal(operation.request.apiUrlPresent, true);
+    assert.equal(operation.request.apiKeyPresent, false);
+    assert.equal(operation.request.modelPresent, true);
+    assert.equal(operation.request.messageCount, 1);
+    assert.equal(operation.request.messageCharacters, 14);
+    assert.equal(JSON.stringify(operation).includes('private prompt'), false);
+    assert.equal(JSON.stringify(operation).includes('https://example.test/v1'), false);
 });
 
 test('failed simulation requests retry the same operation without hiding the final error', async () => {

@@ -1136,7 +1136,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                     </label>
                     <p>只是临时试一下就不用起名字～想以后再用，我就帮你把它收成一个方案。</p>
                     <div class="wb-api-actions">
-                        <button class="wb-api-action is-primary" type="submit">保存默认独立接口</button>
+                        <button class="wb-api-action is-primary" type="submit">保存默认独立接口并生效</button>
                         <button class="wb-api-action is-accent" type="button" data-wb-action="save-api-profile-from-form">${apiValues.profileId ? '保存方案修改' : '保存为方案'}</button>
                         <button class="wb-api-action" type="button" data-wb-action="test-api">测试连接</button>
                         <button class="wb-api-action" type="button" data-wb-action="pull-api-models"
@@ -6700,7 +6700,7 @@ export function createWorldBackstageUI({
                 if (model && modelField) {
                     modelField.value = model;
                     readApiForm(apiForm);
-                    notify(`模型已选：${model}`, 'success');
+                    notify(`模型已选但尚未保存：${model}`, 'info');
                 }
                 return;
             }
@@ -7130,6 +7130,39 @@ export function createWorldBackstageUI({
         syncVisualViewportInsets();
         positionOrbFromSettings();
     };
+    function getDiagnosticDraftStatus() {
+        const settings = getSettings();
+        const draft = apiFormDraft && typeof apiFormDraft === 'object' ? apiFormDraft : null;
+        const changedFields = [];
+        if (draft) {
+            if (String(draft.customApiUrl || '').trim() !== String(settings.customApiUrl || '').trim()) {
+                changedFields.push('customApiUrl');
+            }
+            if (String(draft.customApiModel || '').trim() !== String(settings.customApiModel || '').trim()) {
+                changedFields.push('customApiModel');
+            }
+            if (String(draft.customApiTransport || 'proxy') !== String(settings.customApiTransport || 'proxy')) {
+                changedFields.push('customApiTransport');
+            }
+            if (String(draft.customApiCredential || '').trim()) changedFields.push('customApiKey');
+        }
+        const savedTagRules = Array.isArray(settings.tagFilterRules) ? settings.tagFilterRules : [];
+        return {
+            api: {
+                draftPresent: Boolean(draft),
+                unsavedChanges: changedFields.length > 0,
+                changedFields,
+                replacementCredentialEntered: Boolean(String(draft?.customApiCredential || '').trim()),
+            },
+            tagFilters: {
+                draftPresent: Array.isArray(tagFilterDraftRules),
+                unsavedChanges: Array.isArray(tagFilterDraftRules)
+                    && JSON.stringify(tagFilterDraftRules) !== JSON.stringify(savedTagRules),
+                draftRuleCount: Array.isArray(tagFilterDraftRules) ? tagFilterDraftRules.length : 0,
+                savedRuleCount: savedTagRules.length,
+            },
+        };
+    }
     const selfHealTimer = window.setInterval(ensureMounted, 1800);
     const onPageVisible = () => ensureMounted();
     document.addEventListener('keydown', onKeydown);
@@ -7150,6 +7183,7 @@ export function createWorldBackstageUI({
         openEvent,
         close,
         resetContext,
+        getDiagnosticDraftStatus,
         destroy() {
             window.clearTimeout(toastTimer);
             window.clearTimeout(memorySearchTimer);

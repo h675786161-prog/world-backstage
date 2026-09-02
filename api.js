@@ -169,6 +169,7 @@ function beginCustomApiOperation({
     route = '',
     model = '',
     transport = '',
+    request = null,
 } = {}) {
     const id = ++customApiOperationSequence;
     lastCustomApiOperation = {
@@ -184,11 +185,26 @@ function beginCustomApiOperation({
         retryAfterMs: 0,
         errorType: 'none',
         errorSummary: '',
+        request: request && typeof request === 'object' ? { ...request } : null,
         attemptedAt: new Date().toISOString(),
         succeededAt: '',
         failedAt: '',
     };
     return id;
+}
+
+function failCustomApiConfiguration(operationId, message, missingField) {
+    const error = new Error(message);
+    error.errorType = 'configuration';
+    error.missingField = cleanText(missingField);
+    finishCustomApiOperation(operationId, {
+        phase: 'error',
+        errorType: error.errorType,
+        errorSummary: error.message,
+        missingField: error.missingField,
+        failedAt: new Date().toISOString(),
+    });
+    throw error;
 }
 
 function finishCustomApiOperation(id, patch = {}) {
@@ -373,7 +389,7 @@ function responsesApiText(payload) {
 }
 
 function isDeepSeekV4Model(model) {
-    return /(?:^|[\/_-])deepseek[-_]?v?4(?:[\/_-]|$)/i.test(String(model || ''));
+    return /(?:^|[^a-z0-9])deepseek[-_]?v?4(?:[^a-z0-9]|$)/i.test(String(model || ''));
 }
 
 export function extractCompletionText(payload) {
@@ -497,13 +513,6 @@ function buildCustomApiResponseError(response, data, text, subject = '独立 API
     if (classified.errorType === 'rate-limit') error.code = 'RATE_LIMIT';
     if (classified.errorType === 'quota-exhausted') error.code = 'QUOTA_EXHAUSTED';
     return error;
-}
-
-function customAuthorizationHeadersYaml(apiKey) {
-    // SillyTavern's Custom OpenAI-compatible route merges these headers after its
-    // default Authorization header. JSON quoted scalars are valid YAML and avoid
-    // breaking on punctuation inside keys.
-    return `Authorization: ${JSON.stringify(`Bearer ${cleanText(apiKey)}`)}`;
 }
 
 function headersFrom(getRequestHeaders) {
@@ -653,8 +662,22 @@ export async function requestCustomModels(settings, {
     const apiKey = cleanText(settings?.customApiKey);
     const transport = settings?.customApiTransport === 'direct' ? 'direct' : 'proxy';
     const requestTimeout = Number(timeoutMs ?? settings?.customApiTimeoutMs ?? 120000);
-    if (!modelsUrl) throw new Error('请先填写独立 API 地址');
-    if (!apiKey) throw new Error('请先填写独立 API Key');
+    const operationId = beginCustomApiOperation({
+        operation: 'model-list',
+        route: routeLabel,
+        model: cleanText(settings?.customApiModel),
+        transport,
+        request: {
+            endpointKind: 'models',
+            method: transport === 'direct' ? 'GET' : 'POST',
+            timeoutMs: requestTimeout,
+            apiUrlPresent: Boolean(cleanText(settings?.customApiUrl)),
+            apiKeyPresent: Boolean(apiKey),
+            modelPresent: Boolean(cleanText(settings?.customApiModel)),
+        },
+    });
+    if (!modelsUrl) failCustomApiConfiguration(operationId, '请先填写独立 API 地址', 'customApiUrl');
+    if (!apiKey) failCustomApiConfiguration(operationId, '请先填写独立 API Key', 'customApiKey');
 
     let target = modelsUrl;
     let options = {
@@ -669,19 +692,13 @@ export async function requestCustomModels(settings, {
             cache: 'no-cache',
             headers: headersFrom(getRequestHeaders),
             body: JSON.stringify({
-                chat_completion_source: 'custom',
-                custom_url: customProxyBase(settings.customApiUrl),
-                custom_include_headers: customAuthorizationHeadersYaml(apiKey),
+                chat_completion_source: 'openai',
+                reverse_proxy: customProxyBase(settings.customApiUrl),
+                proxy_password: apiKey,
             }),
         };
     }
 
-    const operationId = beginCustomApiOperation({
-        operation: 'model-list',
-        route: routeLabel,
-        model: cleanText(settings?.customApiModel),
-        transport,
-    });
     try {
         const response = await fetchWithTimeout(fetchImpl, target, options, requestTimeout, signal);
         const { text, data } = await readResponse(response);
@@ -732,18 +749,43 @@ export async function requestCustomCompletion(settings, messages, {
     const apiKey = cleanText(settings?.customApiKey);
     const transport = settings?.customApiTransport === 'direct' ? 'direct' : 'proxy';
     const requestTimeout = Number(timeoutMs ?? settings?.customApiTimeoutMs ?? 120000);
+    const messageList = Array.isArray(messages) ? messages : [];
+    const configuredMaxTokens = Number.parseInt(maxTokens, 10);
+    const operationId = beginCustomApiOperation({
+        operation,
+        route: routeLabel,
+        model,
+        transport,
+        request: {
+            endpointKind: 'chat-completions',
+            method: 'POST',
+            timeoutMs: requestTimeout,
+            apiUrlPresent: Boolean(cleanText(settings?.customApiUrl)),
+            apiKeyPresent: Boolean(apiKey),
+            modelPresent: Boolean(model),
+            messageCount: messageList.length,
+            messageCharacters: messageList.reduce((total, item) => (
+                total + cleanText(item?.content).length
+            ), 0),
+            maxTokensSent: Number.isFinite(configuredMaxTokens) && configuredMaxTokens > 0
+                ? Math.max(64, configuredMaxTokens)
+                : 0,
+            temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.2,
+            stream: false,
+            deepSeekV4Compatibility: isDeepSeekV4Model(model),
+        },
+    });
 
-    if (!apiUrl) throw new Error('请先填写独立 API 地址');
-    if (!model) throw new Error('请先填写独立 API 模型名');
-    if (!apiKey) throw new Error('请先填写独立 API Key');
+    if (!apiUrl) failCustomApiConfiguration(operationId, '请先填写独立 API 地址', 'customApiUrl');
+    if (!model) failCustomApiConfiguration(operationId, '请先填写独立 API 模型名', 'customApiModel');
+    if (!apiKey) failCustomApiConfiguration(operationId, '请先填写独立 API Key', 'customApiKey');
 
     const body = {
         model,
-        messages: Array.isArray(messages) ? messages : [],
+        messages: messageList,
         temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.2,
         stream: false,
     };
-    const configuredMaxTokens = Number.parseInt(maxTokens, 10);
     if (Number.isFinite(configuredMaxTokens) && configuredMaxTokens > 0) {
         body.max_tokens = Math.max(64, configuredMaxTokens);
     }
@@ -765,35 +807,17 @@ export async function requestCustomCompletion(settings, messages, {
     if (transport === 'proxy') {
         target = '/api/backends/chat-completions/generate';
         headers = headersFrom(getRequestHeaders);
-        if (useDeepSeekV4Compatibility) {
-            payload = {
-                chat_completion_source: 'deepseek',
-                reverse_proxy: customProxyBase(settings.customApiUrl),
-                proxy_password: apiKey,
-                include_reasoning: false,
-                ...body,
-                reasoning_effort: 'none',
-            };
-        } else {
-            // This is an arbitrary OpenAI-compatible endpoint, not an OpenAI
-            // reverse proxy. Let SillyTavern's CUSTOM dispatcher handle its URL
-            // and custom headers so the same endpoint behaves like it does in ST.
-            payload = {
-                chat_completion_source: 'custom',
-                custom_url: customProxyBase(settings.customApiUrl),
-                custom_include_headers: customAuthorizationHeadersYaml(apiKey),
-                include_reasoning: false,
-                ...body,
-            };
-        }
+        // The independent route owns both its URL and key. SillyTavern's CUSTOM
+        // dispatcher reads the key from Tavern's secret store, not this plugin.
+        // Its generic OpenAI-compatible reverse proxy accepts both explicitly.
+        payload = {
+            chat_completion_source: 'openai',
+            reverse_proxy: customProxyBase(settings.customApiUrl),
+            proxy_password: apiKey,
+            include_reasoning: false,
+            ...body,
+        };
     }
-
-    const operationId = beginCustomApiOperation({
-        operation,
-        route: routeLabel,
-        model,
-        transport,
-    });
 
     let response;
     try {

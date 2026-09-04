@@ -1,7 +1,7 @@
-const STYLE_ID = 'wb-presentation-polish-v251';
+const STYLE_ID = 'wb-presentation-polish-v250';
 
 const CSS = `
-/* 2.5.1 · 通讯排版优化；保留手机单页会话逻辑，不修改原生悬浮球。 */
+/* 2.5.0 · 只保留通讯排版优化；不修改原生悬浮球。 */
 #world-backstage-root .wb-social-shell.is-page-messages {
   grid-template-rows: 54px 44px minmax(0,1fr) !important;
   min-height: 0;
@@ -156,19 +156,8 @@ const CSS = `
   #world-backstage-root .wb-social-shell.is-page-messages {
     grid-template-rows: 48px 38px minmax(0,1fr) !important;
   }
-
-  /* social-responsive-adapter.js deliberately makes narrow messages single-pane.
-     The generic two-column polish must never override that state and leave a blank column. */
-  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-list,
-  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-thread,
-  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-empty {
-    grid-template-columns: minmax(0,1fr) !important;
-  }
-
-  #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout:not(.wb-social-adaptive-list):not(.wb-social-adaptive-thread):not(.wb-social-adaptive-empty):not(.wb-social-adaptive-split) {
-    grid-template-columns: minmax(112px,34%) minmax(0,1fr) !important;
-  }
   #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout {
+    grid-template-columns: minmax(112px,34%) minmax(0,1fr) !important;
     border-radius: 14px;
   }
   #world-backstage-root .wb-social-shell.is-page-messages .wb-social-sidebar-head {
@@ -280,7 +269,6 @@ const CSS = `
 function installStyle() {
   document.getElementById('wb-presentation-polish-v248')?.remove();
   document.getElementById('wb-presentation-polish-v249')?.remove();
-  document.getElementById('wb-presentation-polish-v250')?.remove();
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;

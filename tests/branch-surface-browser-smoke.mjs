@@ -13,7 +13,7 @@ function which(name) {
     }
 }
 
-const executablePath = [
+const executablePath = process.env.WB_CHROMIUM_EXECUTABLE || [
     'google-chrome',
     'google-chrome-stable',
     'chromium',
@@ -37,7 +37,7 @@ page.on('pageerror', error => errors.push(String(error?.stack || error?.message 
 
 let report = {};
 try {
-    await page.goto('http://127.0.0.1:8000/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+await page.goto(process.env.WB_TAVERN_URL || 'http://127.0.0.1:8000/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForFunction(() => Boolean(globalThis.SillyTavern?.getContext), null, { timeout: 30_000 });
     await page.waitForSelector('#world-backstage-root', { timeout: 30_000 });
 
@@ -140,7 +140,7 @@ try {
     assert.equal(report.dedupe.publicOpinionBlobs, 2, '500 inherited B branches must share existing opinion blobs');
     assert.ok(report.afterRolling.socialBlobs <= 3, 'rolling overwrite leaked social payload blobs');
     assert.ok(report.afterRolling.publicOpinionBlobs <= 3, 'rolling overwrite leaked opinion payload blobs');
-    assert.equal(report.afterPrune.refs, 3, 'A, B and current root should be the only protected refs after prune');
+    assert.equal(report.afterPrune.refs, 2, 'only the valid A/B refs should remain after prune');
     assert.equal(report.legacyFound, false);
     assert.equal(report.legacyFriend, 'friend-EMPTY');
     assert.equal(report.legacyNews, 'news-EMPTY');

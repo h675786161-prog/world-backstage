@@ -13,7 +13,7 @@ function which(name) {
     }
 }
 
-const executablePath = [
+const executablePath = process.env.WB_CHROMIUM_EXECUTABLE || [
     'google-chrome',
     'google-chrome-stable',
     'chromium',
@@ -39,7 +39,7 @@ page.on('console', message => {
 page.on('pageerror', error => pageErrors.push(String(error?.stack || error?.message || error)));
 
 const report = {
-    url: 'http://127.0.0.1:8000/',
+    url: process.env.WB_TAVERN_URL || 'http://127.0.0.1:8000/',
     pluginRoot: false,
     relation: null,
     overlap: null,

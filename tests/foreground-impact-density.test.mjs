@@ -42,6 +42,24 @@ test('restrained only forces ongoing changes already colliding with the current 
   assert.equal(packet.supportText.includes('西市配送延迟'), false);
 });
 
+test('direct visibility does not let an off-scene event follow a newly anchored scene', () => {
+  let state = addManualEvent(createInitialState(), {
+    id: 'direct-doorbell', title: '门外来访', place: '公寓门口', summary: '门铃正在响。',
+    status: 'active', visibility: 'direct',
+  });
+  state = addManualEvent(state, {
+    id: 'east-port-rain', title: '东港持续暴雨', place: '东港',
+    summary: '强降雨正在造成路面积水和车辆绕行。', consequence: '东港道路通行明显变慢。',
+    status: 'active', visibility: 'trace',
+  });
+  const packet = buildInjectionPackage(state, {
+    enabled: true, worldSimulationEnabled: true, worldPromptInjection: true,
+    deliveryDensity: 'active', sceneTiming: 'open',
+  }, '我已经到了东港，正沿着港区散步。', { contextText: '我已经到了东港，正沿着港区散步。' });
+  assert.deepEqual(packet.liveInfluenceIds, ['east-port-rain']);
+  assert.equal(packet.supportText.includes('门外来访'), false);
+});
+
 test('hidden ongoing events stay backstage and never gain foreground influence rights', () => {
   const state = addManualEvent(createInitialState(), {
     id: 'secret-tail', title: '秘密跟踪', place: '东港', summary: '一名未知人物正在暗中跟踪目标。',

@@ -9,6 +9,13 @@ import './observation-scene-overlap.js';
 import './settings-persistence-guard.js';
 import './social-notice-stability.js?v=3';
 import './index.js';
+import './phone-bridge-host.js?v=2';
+
+void import('./update-manager.js?v=2')
+    .then(() => import('./update-session-refresh.js?v=1'))
+    .catch(error => {
+        console.error('[世界背面] 更新检查管理器加载失败', error);
+    });
 
 void import('./social-friend-request-fix.js?v=2').catch(error => {
     console.error('[世界背面] 好友申请状态修复加载失败', error);
@@ -30,6 +37,10 @@ void import('./orb-motion-randomizer.js?v=8').catch(error => {
 
 void import('./community-note.js?v=3').catch(error => {
     console.error('[世界背面] 妈妈的小纸条加载失败', error);
+});
+
+void import('./community-note-entry-fix.js?v=1').catch(error => {
+    console.error('[世界背面] 妈妈的小纸条常驻入口加载失败', error);
 });
 
 void import('./lingqi-greeting.js?v=2').catch(error => {

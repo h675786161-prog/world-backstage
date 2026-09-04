@@ -11,7 +11,7 @@ function installStyle() {
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-/* 通讯布局按自己的可用空间决定，不再把“手机=某个固定像素”写死。 */
+/* 测试版：通讯布局按自己的可用空间决定，不再把“手机=某个固定像素”写死。 */
 #world-backstage-root .wb-content-column.is-social-column {
     min-height: 0 !important;
     height: 100% !important;
@@ -25,6 +25,7 @@ function installStyle() {
     height: 100% !important;
 }
 
+/* 窄容器：一次只显示列表或聊天，不保留幽灵空列。 */
 #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-list,
 #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-thread,
 #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-empty {
@@ -44,10 +45,11 @@ function installStyle() {
     display: none !important;
 }
 #world-backstage-root .wb-social-layout.wb-social-adaptive-thread > .wb-social-thread {
-    display: grid !important;
+    display: flex !important;
     width: 100% !important;
 }
 
+/* 没有会话时，无论设备多宽，都让空状态吃满整个通讯区。 */
 #world-backstage-root .wb-social-layout.wb-social-adaptive-empty > .wb-social-sidebar {
     display: none !important;
 }
@@ -63,6 +65,7 @@ function installStyle() {
     margin: auto !important;
 }
 
+/* 宽容器：自然回到左右双栏。宽度按容器自己伸缩，不依赖屏幕型号。 */
 #world-backstage-root .wb-social-shell.is-page-messages .wb-social-layout.wb-social-adaptive-split {
     grid-template-columns: clamp(210px, 30%, 286px) minmax(0, 1fr) !important;
     gap: 0 !important;
@@ -71,9 +74,10 @@ function installStyle() {
     display: grid !important;
 }
 #world-backstage-root .wb-social-layout.wb-social-adaptive-split > .wb-social-thread {
-    display: grid !important;
+    display: flex !important;
 }
 
+/* 返回键只在真正的单栏聊天页出现。 */
 #world-backstage-root .wb-social-layout:not(.wb-social-adaptive-thread) .wb-adaptive-social-back {
     display: none !important;
 }
@@ -93,6 +97,7 @@ function installStyle() {
     cursor: pointer;
 }
 
+/* 高屏、矮屏都把聊天主体交给剩余空间，不写固定卡片高度。 */
 #world-backstage-root .wb-social-layout.wb-social-adaptive-list > .wb-social-sidebar,
 #world-backstage-root .wb-social-layout.wb-social-adaptive-thread > .wb-social-thread,
 #world-backstage-root .wb-social-layout.wb-social-adaptive-split > .wb-social-sidebar,

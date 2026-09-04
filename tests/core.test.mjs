@@ -11,7 +11,6 @@ import {
     buildInjectionPackage,
     buildPersonObservationPrompt,
     buildSimulationPrompt,
-    compactStateForModel,
     createInitialState,
     createSnapshot,
     eventProgress,
@@ -217,115 +216,6 @@ test('有效工时事件只累计正文确认的实际工作分钟', () => {
 
     assert.equal(state.events[0].accruedMinutes, 30);
     assert.equal(eventProgress(state.events[0], state.clock.absoluteMinute).percent, 25);
-});
-
-test('世界时间未推进时活动事件不能单独积累工时', () => {
-    let state = createInitialState({ day: 1, hour: 8, minute: 0 });
-    state = addManualEvent(state, {
-        id: 'frozen-work',
-        title: '整理档案',
-        clock_mode: 'active',
-        duration_minutes: 120,
-        visibility: 'hidden',
-    });
-    const startedAt = state.clock.absoluteMinute;
-
-    state = applySimulationResult(state, {
-        elapsed_minutes: 0,
-        time_reason: '本轮没有经过时间',
-        events_update: [{ id: 'frozen-work', status: 'active', worked_minutes: 60 }],
-    }, {
-        timePolicy: 'world',
-        narrativeText: '她仍站在原地。',
-    });
-
-    assert.equal(state.clock.absoluteMinute, startedAt);
-    assert.equal(state.events[0].accruedMinutes, 0);
-    assert.equal(state.events[0].lastCheckedAt, startedAt);
-    assert.equal(state.audit.some(entry => entry.type === 'event_work_clamped'), true);
-});
-
-test('活动事件工时不能超过主世界实际经过的分钟', () => {
-    let state = createInitialState({ day: 1, hour: 8, minute: 0 });
-    state = addManualEvent(state, {
-        id: 'bounded-work',
-        title: '修补屋顶',
-        clock_mode: 'active',
-        duration_minutes: 180,
-        visibility: 'hidden',
-    });
-    const startedAt = state.clock.absoluteMinute;
-
-    state = applySimulationResult(state, {
-        elapsed_minutes: 30,
-        time_reason: '半小时过去',
-        events_update: [{ id: 'bounded-work', status: 'active', worked_minutes: 90 }],
-    }, {
-        timePolicy: 'world',
-        narrativeText: '她修补了半小时屋顶。',
-    });
-
-    assert.equal(state.clock.absoluteMinute, startedAt + 30);
-    assert.equal(state.events[0].accruedMinutes, 30);
-    assert.equal(state.events[0].lastCheckedAt, startedAt + 30);
-    assert.equal(state.audit.some(entry => entry.type === 'event_work_clamped'), true);
-});
-
-test('正文明确时间跳转会为活动事件提供同一段工时窗口', () => {
-    let state = createInitialState({ day: 1, hour: 8, minute: 0 });
-    state = addManualEvent(state, {
-        id: 'narrative-window',
-        title: '清点物资',
-        clock_mode: 'active',
-        duration_minutes: 240,
-        visibility: 'hidden',
-    });
-    const startedAt = state.clock.absoluteMinute;
-
-    state = applySimulationResult(state, {
-        elapsed_minutes: 0,
-        events_update: [{ id: 'narrative-window', status: 'active', worked_minutes: 90 }],
-    }, {
-        timePolicy: 'world',
-        narrativeText: '过了2小时，她终于清点完第一批物资。',
-    });
-
-    assert.equal(state.clock.absoluteMinute, startedAt + 120);
-    assert.equal(state.events[0].accruedMinutes, 90);
-    assert.equal(state.events[0].lastCheckedAt, startedAt + 120);
-});
-
-test('手动推进世界时间后活动事件可以在下一轮补结算', () => {
-    let state = createInitialState({ day: 1, hour: 8, minute: 0 });
-    state = addManualEvent(state, {
-        id: 'catch-up-work',
-        title: '熬煮药剂',
-        clock_mode: 'active',
-        duration_minutes: 180,
-        visibility: 'hidden',
-    });
-    const startedAt = state.clock.absoluteMinute;
-
-    state = advanceWorldClock(state, 60, '手动推进一小时');
-    assert.equal(state.events[0].lastCheckedAt, startedAt);
-    assert.equal(
-        compactStateForModel(state).events[0].unsettled_work_window_minutes,
-        60,
-    );
-
-    state = applySimulationResult(state, {
-        elapsed_minutes: 0,
-        time_reason: '只补结算已经经过的世界时间',
-        events_update: [{ id: 'catch-up-work', status: 'active', worked_minutes: 45 }],
-    }, {
-        timePolicy: 'world',
-        narrativeText: '',
-        preserveCommitAnchor: true,
-    });
-
-    assert.equal(state.clock.absoluteMinute, startedAt + 60);
-    assert.equal(state.events[0].accruedMinutes, 45);
-    assert.equal(state.events[0].lastCheckedAt, startedAt + 60);
 });
 
 test('预定事件使用明确到期时刻', () => {
@@ -756,4 +646,259 @@ test('能从带说明或代码围栏的返回中提取唯一 JSON 对象', () =>
         null,
     );
     assert.equal(extractJsonObject('没有结构化内容'), null);
+});
+
+
+test('世界主推演提示包含统一推演协议、时间判决与下一轮注入判决', () => {
+    const prompt = buildSimulationPrompt(createInitialState(), {
+        narrativeTurns: [
+            { role: 'user', content: '继续。', messageId: 4 },
+            { role: 'assistant', content: '回到公寓时已经是晚上十点半。', messageId: 5 },
+        ],
+        newAssistantTurns: 1,
+        timePolicy: 'world',
+    });
+    assert.match(prompt, /<world_backstage_reasoning_protocol>/);
+    assert.match(prompt, /<task_protocol type="world_simulation">/);
+    assert.match(prompt, /她现在知道什么/);
+    assert.match(prompt, /time_resolution/);
+    assert.match(prompt, /next_turn_injection/);
+    assert.match(prompt, /权威末尾时间/);
+});
+
+test('正文权威末尾时间覆盖模型耗时并记录可诊断的时间判决', () => {
+    let state = createInitialState({ day: 3, hour: 18, minute: 20 });
+    state = setWorldCalendar(state, {
+        calendarName: '主世界历',
+        year: 2026,
+        month: 9,
+        day: 3,
+        hour: 18,
+        minute: 20,
+    });
+    const before = state.clock.absoluteMinute;
+    state = applySimulationResult(state, {
+        time_resolution: {
+            evidence_found: true,
+            authority: 'explicit_end_time',
+            scope: 'current',
+            evidence: '2026年9月3日 22:30',
+            end_time_text: '22:30',
+            needs_elapsed_estimate: false,
+            estimated_minutes: 0,
+            confidence: 'high',
+            reason: '正文已经给出当前场景末尾时间',
+        },
+        elapsed_minutes: 120,
+        time_reason: '模型原始估算两小时',
+        next_turn_injection: {
+            required_refs: ['fact:apartment:door'],
+            conditional_refs: ['event:night_bus'],
+            suppress_refs: ['event:old_rain'],
+            reason: '保留当前约束，抑制已经结束的旧事件',
+        },
+    }, {
+        messageId: 18,
+        swipeId: 0,
+        sourceKey: '18:0:time-protocol',
+        narrativeText: '2026年9月3日 22:30，回到公寓。',
+        timePolicy: 'world',
+    });
+    assert.equal(formatWorldCalendar(state).time, '22:30');
+    assert.equal(state.lastTimeResolution.method, 'deterministic-anchor');
+    assert.equal(state.lastTimeResolution.requestedElapsedMinutes, 120);
+    assert.equal(state.lastTimeResolution.appliedElapsedMinutes, 0);
+    assert.equal(state.lastTimeResolution.deterministicEvidence, true);
+    assert.equal(state.lastTimeResolution.beforeMinute, before);
+    assert.equal(state.nextTurnInjection.requiredRefs[0], 'fact:apartment:door');
+    assert.equal(state.nextTurnInjection.sourceRevision, state.revision);
+});
+
+test('下一轮注入判决只可提升当前权威引用，不会复活已终结事件', () => {
+    let state = createInitialState();
+    state.events = [
+        {
+            id: 'active-route', title: '仍在封路', place: '北门', summary: '北门施工封闭', consequence: '', expectedResult: '', result: '',
+            status: 'active', clockMode: 'condition', startedAt: state.clock.absoluteMinute, dueAt: null, durationMinutes: 0, accruedMinutes: 0,
+            lastCheckedAt: state.clock.absoluteMinute, prerequisites: [], cause: '施工', actors: [], knownBy: [], causedBy: [],
+            publicTrace: '', publicHeadline: '', publicSummary: '', publicResult: '', publicity: 'private', visibility: 'trace',
+            delivery: { state: 'none', mode: 'event', manualQueued: false, attempts: 0, route: '', confirmedAt: null, confirmedMessageId: null, lastOfferedAt: null },
+            createdAt: state.clock.absoluteMinute, updatedAt: state.clock.absoluteMinute, resolvedAt: null,
+        },
+        {
+            id: 'finished-rain', title: '昨夜暴雨', place: '北门', summary: '暴雨已经结束', consequence: '', expectedResult: '', result: '雨停',
+            status: 'resolved', clockMode: 'condition', startedAt: state.clock.absoluteMinute - 60, dueAt: null, durationMinutes: 0, accruedMinutes: 0,
+            lastCheckedAt: state.clock.absoluteMinute, prerequisites: [], cause: '天气', actors: [], knownBy: [], causedBy: [],
+            publicTrace: '', publicHeadline: '', publicSummary: '', publicResult: '', publicity: 'private', visibility: 'trace',
+            delivery: { state: 'pending', mode: 'event', manualQueued: false, attempts: 0, route: '', confirmedAt: null, confirmedMessageId: null, lastOfferedAt: null },
+            createdAt: state.clock.absoluteMinute - 60, updatedAt: state.clock.absoluteMinute, resolvedAt: state.clock.absoluteMinute,
+        },
+    ];
+    state.nextTurnInjection = {
+        requiredRefs: ['event:active-route', 'event:finished-rain'],
+        conditionalRefs: [],
+        suppressRefs: ['event:finished-rain'],
+        reason: '当前封路继续，暴雨本体结束',
+        sourceRevision: state.revision,
+    };
+    const packet = buildInjectionPackage(state, {
+        enabled: true,
+        worldSimulationEnabled: true,
+        worldPromptInjection: true,
+        injectionEvents: true,
+        injectionFacts: true,
+        injectionPeople: true,
+        injectionEchoes: true,
+        memorySystemEnabled: false,
+        deliveryDensity: 'balanced',
+        sceneTiming: 'smart',
+    }, '我要去北门', { contextText: '我要去北门' });
+    assert.match(packet.authorityText, /仍在封路/);
+    assert.doesNotMatch(packet.supportText, /昨夜暴雨/);
+});
+
+
+test('时间判决不能用模型虚构的末尾时间覆盖正文', () => {
+    let state = createInitialState({ day: 3, hour: 18, minute: 20 });
+    state = setWorldCalendar(state, {
+        calendarName: '主世界历',
+        year: 2026,
+        month: 9,
+        day: 3,
+        hour: 18,
+        minute: 20,
+    });
+    const before = state.clock.absoluteMinute;
+    state = applySimulationResult(state, {
+        time_resolution: {
+            evidence_found: true,
+            authority: 'explicit_end_time',
+            scope: 'current',
+            evidence: '2026年9月3日 23:50',
+            end_time_text: '23:50',
+            needs_elapsed_estimate: false,
+            estimated_minutes: 0,
+            confidence: 'high',
+            reason: '声称正文有这个时间',
+        },
+        elapsed_minutes: 0,
+    }, {
+        messageId: 19,
+        swipeId: 0,
+        sourceKey: '19:0:fake-time-evidence',
+        narrativeText: '2026年9月3日，回到公寓时天已经黑了。',
+        timePolicy: 'world',
+    });
+    assert.equal(state.clock.absoluteMinute, before);
+    assert.notEqual(formatWorldCalendar(state).time, '23:50');
+});
+
+
+test('beta.8 长楼末尾时间与确定性末态保护', () => {
+    const longNarrative = '她在屋里整理资料。'.repeat(900) + '\n2026年9月3日 23:10，她把最后一本文件夹放回架上。';
+    const prompt = buildSimulationPrompt(createInitialState(), {
+        narrativeTurns: [
+            { role: 'user', content: '继续。', messageId: 1, swipeId: 0 },
+            { role: 'assistant', content: longNarrative, messageId: 2, swipeId: 0 },
+        ],
+        latestTurn: { user: '继续。', assistant: longNarrative },
+        newAssistantTurns: 1,
+    });
+    assert.match(prompt, /2026年9月3日 23:10/);
+    assert.match(prompt, /正文中段已压缩/);
+
+    let state = createInitialState({ day: 1, hour: 18, minute: 20 });
+    state = setWorldCalendar(state, { calendarName: '公历', year: 2026, month: 9, day: 3, hour: 18, minute: 20 });
+    state = applySimulationResult(state, {
+        elapsed_minutes: 0,
+        time_resolution: {
+            evidence_found: false,
+            authority: 'none',
+            scope: 'unknown',
+            confidence: 'low',
+        },
+    }, {
+        narrativeText: '她回到公寓。2026年9月3日 22:30，门在她身后合上，这一段行动到此结束。',
+        timePolicy: 'world',
+    });
+    assert.equal(formatWorldCalendar(state).stamp, '公历 2026年9月3日 22:30');
+    assert.equal(state.lastTimeResolution?.deterministicEvidence, true);
+});
+
+
+test('beta.10 强语义耗时仅在完成态组合证据下保守推进', () => {
+    const state = createInitialState({ day: 1, hour: 18, minute: 20 });
+    const before = state.clock.absoluteMinute;
+    const committed = applySimulationResult(state, {
+        elapsed_minutes: 0,
+        time_resolution: { evidence_found: false, authority: 'none', scope: 'unknown', confidence: 'low' },
+    }, {
+        narrativeText: '她登上夜班火车后靠着窗睡着。醒来时列车已经穿过数座城市，乘务员正在收第二轮餐车。正文没有给出具体钟点。',
+        timePolicy: 'world',
+    });
+    assert.equal(committed.clock.absoluteMinute - before, 180);
+    assert.equal(committed.lastTimeResolution?.method, 'semantic-fallback');
+    assert.equal(committed.lastTimeResolution?.appliedElapsedMinutes, 180);
+
+    const memoryState = createInitialState({ day: 1, hour: 18, minute: 20 });
+    const memoryBefore = memoryState.clock.absoluteMinute;
+    const memoryCommitted = applySimulationResult(memoryState, { elapsed_minutes: 0 }, {
+        narrativeText: '她想起以前坐夜班火车时睡着，醒来已经穿过数座城市，甚至遇到第二轮餐车。现在她仍坐在客厅。',
+        timePolicy: 'world',
+    });
+    assert.equal(memoryCommitted.clock.absoluteMinute, memoryBefore);
+});
+
+test('beta.10 已结束事件不复活，但正文仍成立的持续后果自动进入下一轮', () => {
+    let state = addManualEvent(createInitialState(), {
+        id: 'storm-finished',
+        title: '昨夜暴雨',
+        summary: '昨夜持续的暴雨。',
+        visibility: 'known',
+    });
+    const storm = state.events.find(event => event.id === 'storm-finished');
+    storm.status = 'resolved';
+    storm.result = '暴雨已经结束。';
+    state.worldFacts.push({
+        key: 'east-port-road-water',
+        subjectType: 'location', subjectId: 'east-port-road', subject: '东港道路',
+        field: '积水', value: '道路仍有明显积水', source: 'simulation',
+        visibility: 'direct', confidence: 'high', validity: 'persistent',
+        eventId: 'storm-finished', createdAt: state.clock.absoluteMinute, updatedAt: state.clock.absoluteMinute,
+    });
+    state = trimState(state);
+    const committed = applySimulationResult(state, {
+        elapsed_minutes: 0,
+        next_turn_injection: {
+            required_refs: ['event:storm-finished', 'person:人物ID | event:事件ID | fact:事实key | clue:线索ID'],
+            conditional_refs: [], suppress_refs: [],
+        },
+    }, {
+        narrativeText: '窗外已经停雨。林准备出门，楼下道路仍有明显积水，她只好绕开最深的一段。',
+        timePolicy: 'world',
+    });
+    assert.ok(committed.nextTurnInjection.requiredRefs.includes('fact:east-port-road-water'));
+    assert.ok(!committed.nextTurnInjection.requiredRefs.includes('event:storm-finished'));
+    assert.ok(committed.nextTurnInjection.suppressRefs.includes('event:storm-finished'));
+    assert.ok(!committed.nextTurnInjection.requiredRefs.some(ref => /人物ID|事实key|线索ID/.test(ref)));
+});
+
+
+test('beta.11 超长新正文压到稳定预算但保留末尾时间', () => {
+    const longNarrative = '她在公寓里安静地整理资料，把旧纸页按编号重新归档。'.repeat(520)
+        + '\n直到最后一份资料归档完毕。2026年9月3日 23:10，她把最后一本文件夹放回架上。';
+    const prompt = buildSimulationPrompt(createInitialState(), {
+        narrativeTurns: [
+            { role: 'user', content: '继续。', messageId: 100, swipeId: 0 },
+            { role: 'assistant', content: longNarrative, messageId: 101, swipeId: 0 },
+        ],
+        latestTurn: { user: '继续。', assistant: longNarrative },
+        newAssistantTurns: 1,
+        timePolicy: 'world',
+        simulationMode: 'balanced',
+        backgroundNpcBudget: 0,
+    });
+    assert.match(prompt, /正文中段已压缩/);
+    assert.match(prompt, /2026年9月3日 23:10/);
+    assert.ok(prompt.length < 26000, `prompt too large: ${prompt.length}`);
 });

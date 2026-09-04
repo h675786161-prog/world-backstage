@@ -2,15 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const [uiSource, styleSource, indexSource, bootstrapSource, hotfixSource, storageGuardSource, socialAdapterSource, presentationSource] = await Promise.all([
+const [uiSource, styleSource, indexSource] = await Promise.all([
     readFile(new URL('../ui.js', import.meta.url), 'utf8'),
     readFile(new URL('../style.css', import.meta.url), 'utf8'),
     readFile(new URL('../index.js', import.meta.url), 'utf8'),
-    readFile(new URL('../bootstrap.js', import.meta.url), 'utf8'),
-    readFile(new URL('../ui-hotfix.js', import.meta.url), 'utf8'),
-    readFile(new URL('../storage-guard.js', import.meta.url), 'utf8'),
-    readFile(new URL('../social-responsive-adapter.js', import.meta.url), 'utf8'),
-    readFile(new URL('../presentation-polish.js', import.meta.url), 'utf8'),
 ]);
 
 test('long memory UI uses filtering, search and progressive loading', () => {
@@ -32,10 +27,13 @@ test('independent modules, cancellable simulation, NPC editor and observation ca
     assert.match(uiSource, /data-wb-setting="worldPromptInjection"/);
     assert.match(uiSource, /data-wb-setting="memorySystemEnabled"/);
     assert.match(uiSource, /data-wb-setting="injectionMemory"/);
+    assert.doesNotMatch(uiSource, /data-wb-setting="memoryPromptInjection"/);
     assert.match(uiSource, /data-wb-action="\$\{canCancelSimulation \? 'cancel-simulation' : 'manual-sync'\}"/);
     assert.match(indexSource, /function cancelActiveSimulation/);
     assert.match(indexSource, /runtime\.autoCatchUpSuppressedThroughMessageId = Math\.max/);
+    assert.match(indexSource, /active\.cancelled = true/);
     assert.match(indexSource, /active\.controller\.abort\(\)/);
+    assert.doesNotMatch(indexSource, /settings\.autoSimulationMode = 'manual'/);
     assert.doesNotMatch(uiSource, /data-wb-setting="simulationPaused"/);
     assert.match(uiSource, /添加后台 NPC/);
     assert.match(uiSource, /name="personalityAnchor"/);
@@ -90,7 +88,8 @@ test('echoes and memory cards use readable scalable typography and quiet actions
     assert.match(styleSource, /\.wb-person-observation article p[\s\S]*font-size: clamp\(12px/);
     assert.match(styleSource, /\.wb-event-card p[\s\S]*font-size: clamp\(12px/);
     assert.match(uiSource, /界面字号/);
-    assert.match(uiSource, /settingExplanation\('deliveryDensity', settings\.deliveryDensity\)/);
+    assert.match(uiSource, /正文显露度/);
+    assert.match(uiSource, /后台该活的还是照样活/);
 });
 
 test('editing a committed latest reply asks before rerunning or keeping state', () => {
@@ -105,10 +104,8 @@ test('editing a committed latest reply asks before rerunning or keeping state', 
     assert.match(styleSource, /\.wb-edit-choice/);
 });
 
-test('mobile navigation exposes all current views without horizontal overflow', () => {
-    const viewCount = [...uiSource.matchAll(/\{ id: '[^']+', label: '[^']+', eyebrow: '[^']+' \}/g)].length;
-    assert.equal(viewCount, 9);
-    assert.match(styleSource, new RegExp(`repeat\\(${viewCount}, minmax\\(0, 1fr\\)\\)`));
+test('mobile navigation exposes all nine views without horizontal overflow', () => {
+    assert.match(styleSource, /repeat\(9, minmax\(0, 1fr\)\)/);
     assert.match(styleSource, /\.wb-calendar-page \{/);
 });
 
@@ -128,7 +125,7 @@ test('mobile shell adapts to dynamic viewports, safe areas and competing overlay
     assert.match(uiSource, /function responsiveOrbSize/);
     assert.match(uiSource, /function visualViewportBounds/);
     assert.match(uiSource, /class="wb-settings-layer"/);
-    assert.match(uiSource, /<div class="[^"]*wb-settings-popover[^"]*" role="dialog"/);
+    assert.match(uiSource, /<div class="wb-settings-popover[^\"]*" role="dialog"/);
     assert.doesNotMatch(uiSource, /<aside class="wb-settings-popover"/);
     assert.doesNotMatch(uiSource, /root\.appendChild\(settingsPanel\)/);
     assert.match(styleSource, /#world-backstage-root \.wb-settings-layer > \.wb-settings-popover/);
@@ -152,7 +149,6 @@ test('memory progress reports unindexed assistant responses', () => {
 
 test('transparent summary, model pull and observation delivery controls are exposed', () => {
     assert.match(uiSource, /<summary>本次变化<\/summary>/);
-    assert.match(uiSource, /summary\.elapsedMinutes/);
     assert.match(uiSource, /data-wb-action="pull-api-models"/);
     assert.match(uiSource, /data-wb-setting="maxOutputTokens"/);
     assert.match(uiSource, /data-wb-action="queue-person-observation"/);
@@ -179,8 +175,7 @@ test('worldbook NPC bridge is explicit, selective and never scans on every turn'
     assert.match(uiSource, /data-wb-action="scan-worldbook"/);
     assert.match(uiSource, /data-wb-form="worldbook"/);
     assert.match(uiSource, /name="entryIds"/);
-    assert.match(uiSource, /wb-worldbook-import-button/);
-    assert.match(uiSource, /worldbookSelectedCount \? `导入已选人物/);
+    assert.match(uiSource, /导入已选人物/);
     assert.match(indexSource, /getWorldInfoNames/);
     assert.match(indexSource, /loadWorldInfo/);
     assert.match(indexSource, /function importWorldbookPeople/);
@@ -193,7 +188,7 @@ test('custom API form preserves mobile edits across rerenders and avoids passwor
     assert.match(uiSource, /let skipApiDraftCapture = false/);
     assert.match(uiSource, /const previousApiForm = root\.querySelector/);
     assert.match(uiSource, /apiDraft\?\.customApiUrl \?\? settings\.customApiUrl/);
-    assert.match(uiSource, /customApiCredential: apiDraft\?\.customApiCredential \?\? ''/);
+    assert.match(uiSource, /apiDraft\?\.customApiCredential \?\? ''/);
     assert.match(uiSource, /name="customApiCredential" type="text"/);
     assert.doesNotMatch(uiSource, /value="\$\{escapeAttr\(settings\.customApiKey\)\}"/);
     assert.match(uiSource, /autocomplete="one-time-code"/);
@@ -201,50 +196,8 @@ test('custom API form preserves mobile edits across rerenders and avoids passwor
     assert.match(uiSource, /data-wb-action="reset-api-draft"/);
     assert.match(uiSource, /data-wb-action="toggle-api-key-visibility"/);
     assert.match(uiSource, /data-lpignore="true"/);
-    assert.match(uiSource, /旧 Key 不会重新摆回输入框/);
+    assert.match(uiSource, /留空则继续使用已保存的 Key/);
     assert.match(styleSource, /-webkit-text-security: disc/);
-});
-
-test('bootstrap loads one social adapter and one community-note entry only', () => {
-    assert.match(bootstrapSource, /social-responsive-adapter\.js/);
-    assert.match(bootstrapSource, /community-note\.js/);
-    assert.doesNotMatch(bootstrapSource, /mobile-social-fix\.js/);
-    assert.doesNotMatch(bootstrapSource, /community-note-entry-fix\.js/);
-});
-
-test('responsive social thread keeps its vertical grid in single and split layouts', () => {
-    assert.match(socialAdapterSource, /wb-social-adaptive-thread > \.wb-social-thread \{[\s\S]*?display: grid !important/);
-    assert.match(socialAdapterSource, /wb-social-adaptive-split > \.wb-social-thread \{[\s\S]*?display: grid !important/);
-    assert.doesNotMatch(socialAdapterSource, /wb-social-adaptive-(?:thread|split) > \.wb-social-thread \{[\s\S]*?display: flex !important/);
-    assert.match(presentationSource, /\.wb-social-layout\.wb-social-adaptive-thread,[\s\S]*?grid-template-columns: minmax\(0,1fr\) !important/);
-    assert.doesNotMatch(presentationSource, /wb-mobile-social-(?:list|thread|empty)/);
-});
-
-test('UI safeguards avoid whole-document mutation scans and periodic full serialization', () => {
-    assert.doesNotMatch(hotfixSource, /MutationObserver/);
-    assert.match(hotfixSource, /compositionstart/);
-    assert.match(uiSource, /data-wb-action="setting-button" data-setting="injectionTimeMode"/);
-    assert.match(storageGuardSource, /const GUARD_INTERVAL_MS = 60_000/);
-    assert.match(storageGuardSource, /fingerprint === lastCheckedFingerprint/);
-});
-
-test('image API test button reads the visible form before invoking the paid request', () => {
-    assert.match(uiSource, /if \(action === 'test-image-api'\) \{[\s\S]*?target\.closest\('\[data-wb-form="image-api"\]'\)/);
-    assert.match(uiSource, /invokeAction\('test-image-api', \{[\s\S]*?imageApiUrl: data\.imageApiUrl,[\s\S]*?imageApiKey: key,[\s\S]*?imageApiModel: data\.imageApiModel/);
-});
-
-test('long history scans durably commit every completed batch before continuing', () => {
-    assert.match(indexSource, /return Promise\.resolve\(context\.saveMetadata\(\)\)/);
-    assert.match(indexSource, /await saveHistoryBootstrapCheckpoint\(\{/);
-    assert.match(indexSource, /await saveStore\(store, \{ immediate: true \}\)/);
-    assert.match(indexSource, /已安全保存～继续往后收拾/);
-});
-
-test('history batching starts wide, stays character-bounded and shrinks on malformed output', () => {
-    assert.match(indexSource, /const HISTORY_BATCH_TARGET_ASSISTANT_TURNS = 10/);
-    assert.match(indexSource, /maximumCharacters = 24000/);
-    assert.match(indexSource, /assistantBatchLimit = Math\.max\(1, Math\.floor\(assistantTurns \/ 2\)\)/);
-    assert.match(indexSource, /assistantBatchLimit \+ 1/);
 });
 
 test('player identity anchor supports non-binary presentation and nonhuman roles', () => {

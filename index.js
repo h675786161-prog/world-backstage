@@ -160,7 +160,7 @@ import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.5.6';
+const PLUGIN_VERSION = '2.5.7';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 31,
     enabled: true,

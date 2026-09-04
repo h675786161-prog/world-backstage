@@ -1,10 +1,13 @@
 import {
     buildClockAuthorityLines,
-    extractStructuredTimeScope,
     normalizeClueTiming,
     resolveFutureTimeExpression,
     resolveNarrativeTimeTransition,
 } from './world-clock-authority.js';
+import {
+    WORLD_BACKSTAGE_CORE_REASONING_PROTOCOL,
+    WORLD_SIMULATION_REASONING_PROTOCOL,
+} from './reasoning-protocol.js';
 
 const WB_STATE_RECONCILE_ORDER = Object.freeze([3, 1, 4, 2]);
 
@@ -128,6 +131,85 @@ function mergeUniqueStrings(previous, incoming, maximum = 12) {
     ], maximum);
 }
 
+const VALID_TIME_RESOLUTION_AUTHORITY = new Set([
+    'explicit_end_time',
+    'explicit_transition',
+    'daypart_transition',
+    'duration_only',
+    'estimated_elapsed',
+    'none',
+]);
+const VALID_TIME_RESOLUTION_SCOPE = new Set([
+    'current', 'memory', 'future', 'reported', 'unknown',
+]);
+const VALID_TIME_RESOLUTION_CONFIDENCE = new Set(['low', 'medium', 'high']);
+
+function normalizeModelTimeResolution(raw = {}) {
+    const authority = asString(raw?.authority, 'none', 40);
+    const scope = asString(raw?.scope, 'unknown', 30);
+    const confidence = asString(raw?.confidence, 'low', 20);
+    return {
+        evidenceFound: Boolean(raw?.evidence_found ?? raw?.evidenceFound),
+        authority: VALID_TIME_RESOLUTION_AUTHORITY.has(authority) ? authority : 'none',
+        scope: VALID_TIME_RESOLUTION_SCOPE.has(scope) ? scope : 'unknown',
+        evidence: asString(raw?.evidence, '', 260),
+        endTimeText: asString(raw?.end_time_text ?? raw?.endTimeText, '', 120),
+        needsElapsedEstimate: Boolean(raw?.needs_elapsed_estimate ?? raw?.needsElapsedEstimate),
+        estimatedMinutes: asInteger(
+            raw?.estimated_minutes ?? raw?.estimatedMinutes,
+            0,
+            0,
+            5 * 365 * MINUTES_PER_DAY,
+        ),
+        confidence: VALID_TIME_RESOLUTION_CONFIDENCE.has(confidence) ? confidence : 'low',
+        reason: asString(raw?.reason, '', 320),
+    };
+}
+
+function normalizeInjectionRefs(value, maximum = 24) {
+    const placeholder = /(?:人物ID|事件ID|事实key|事实KEY|线索ID|person_id|event_id|fact_key|clue_id|示例|placeholder)/i;
+    return uniqueStrings(value, maximum * 2)
+        .map(ref => String(ref || '').trim())
+        .filter(ref => /^(?:event|fact|person|clue):[^\s|]{1,110}$/i.test(ref))
+        .filter(ref => !placeholder.test(ref))
+        .slice(0, maximum);
+}
+
+function normalizeNextTurnInjection(raw = {}) {
+    return {
+        requiredRefs: normalizeInjectionRefs(raw?.required_refs ?? raw?.requiredRefs, 24),
+        conditionalRefs: normalizeInjectionRefs(raw?.conditional_refs ?? raw?.conditionalRefs, 24),
+        suppressRefs: normalizeInjectionRefs(raw?.suppress_refs ?? raw?.suppressRefs, 24),
+        reason: asString(raw?.reason, '', 360),
+        sourceRevision: asInteger(raw?.source_revision ?? raw?.sourceRevision, 0, 0),
+    };
+}
+
+function normalizeStoredTimeResolution(raw = {}) {
+    if (!raw || typeof raw !== 'object') return null;
+    const authority = asString(raw?.authority, 'none', 40);
+    const method = asString(raw?.method, 'unchanged', 60);
+    return {
+        sourceKey: asString(raw?.sourceKey ?? raw?.source_key, '', 180),
+        messageId: Number.isFinite(Number(raw?.messageId ?? raw?.message_id))
+            ? Number(raw?.messageId ?? raw?.message_id)
+            : null,
+        beforeMinute: asInteger(raw?.beforeMinute ?? raw?.before_minute, 0, 0),
+        afterMinute: asInteger(raw?.afterMinute ?? raw?.after_minute, 0, 0),
+        method,
+        authority: VALID_TIME_RESOLUTION_AUTHORITY.has(authority) ? authority : 'none',
+        evidence: asString(raw?.evidence, '', 260),
+        requestedElapsedMinutes: asInteger(raw?.requestedElapsedMinutes ?? raw?.requested_elapsed_minutes, 0, 0),
+        appliedElapsedMinutes: asInteger(raw?.appliedElapsedMinutes ?? raw?.applied_elapsed_minutes, 0, 0),
+        reason: asString(raw?.reason, '', 320),
+        precision: asString(raw?.precision, '', 30),
+        daypart: asString(raw?.daypart, '', 40),
+        deterministicEvidence: Boolean(raw?.deterministicEvidence ?? raw?.deterministic_evidence),
+        model: normalizeModelTimeResolution(raw?.model || {}),
+        sourceRevision: asInteger(raw?.sourceRevision ?? raw?.source_revision, 0, 0),
+    };
+}
+
 function nowIso() {
     return new Date().toISOString();
 }
@@ -233,6 +315,28 @@ export function resolveElapsedMinutes(rawMinutes, narrativeText, policy = 'expli
     if (policy === 'open' || policy === 'world') return minutes;
     if (hasExplicitTimeEvidence(narrativeText)) return minutes;
     if (policy === 'cautious') return Math.min(minutes, 180);
+    return 0;
+}
+
+function inferStrongSemanticElapsedMinutes(narrativeText) {
+    const tail = String(narrativeText || '').slice(-1800);
+    if (!tail.trim()) return 0;
+
+    // This is deliberately a narrow safety floor, not a general duration guesser.
+    // Ignore obvious recollection / report / future framing so old or planned travel
+    // cannot move the current world clock.
+    const nonCurrentFrame = /(?:回忆|想起|记起|梦见|曾经|以前|当年|那天|讲述|转述|据说|听说|计划|预计|打算|将会|将在|明天|后天)/;
+    if (nonCurrentFrame.test(tail)) return 0;
+
+    const sleepCycle = /(?:睡着|入睡|睡下|睡去)[\s\S]{0,320}?(?:醒来|醒了|醒转|睁开眼)/.test(tail);
+    const longTransit = /(?:火车|列车|高铁|航班|飞机|长途车|客轮|轮船)/.test(tail)
+        && /(?:穿过|跨过|驶过|经过)[^。！？\n]{0,48}?(?:数座|多座|多个|几座|数个)?(?:城市|城镇|地区|站点|车站|省|州|国家)/.test(tail);
+    const repeatedService = /(?:第二轮|第三轮|数轮|多轮)[^。！？\n]{0,36}?(?:餐车|送餐|服务|广播|检票)/.test(tail);
+    const untilDawn = /(?:一路|一直|持续)[^。！？\n]{0,80}?(?:到|直到|直至)(?:天亮|黎明|清晨)/.test(tail);
+
+    if ((sleepCycle && (longTransit || repeatedService)) || (longTransit && repeatedService) || untilDawn) {
+        return 180;
+    }
     return 0;
 }
 
@@ -367,26 +471,28 @@ function extractExplicitCalendarDate(text = '') {
 /**
  * 从一条正文中读取“作者明确写出来”的时间锚点。
  * 手动“与正文校准”使用它：不调用模型、不推断缺失的钟点。
- * 优先解析正文的语义时间栏；找不到时才回退到整条正文。
+ * 优先解析正文的“时间与地点” details；找不到时才回退到整条正文。
  */
 export function extractNarrativeTimeAnchor(text = '') {
     const source = asString(text, '', 60000);
     if (!source.trim()) return null;
 
-    const structuredScope = extractStructuredTimeScope(source);
-    const scope = structuredScope || source;
+    const detailMatches = [...source.matchAll(/<details\b[^>]*>[\s\S]*?<summary\b[^>]*>[\s\S]*?(?:时间\s*[与和]\s*地点|时间地点)[\s\S]*?<\/summary>[\s\S]*?<\/details>/giu)];
+    const scope = detailMatches.length
+        ? String(detailMatches.at(-1)?.[0] || '')
+        : source;
 
     const date = extractExplicitCalendarDate(scope) || (scope === source ? null : extractExplicitCalendarDate(source));
 
     // 形如 ▶07:40→08:15：结尾时间代表这段正文结束时的时间。
-    const transitions = [...scope.matchAll(/(?:▶|>)?\s*([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)\s*(?:→|->|至|到|[-–—~～])\s*([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)/gu)];
+    const transitions = [...scope.matchAll(/(?:▶|>)?\s*([01]?\d|2[0-3])\s*:\s*([0-5]\d)\s*(?:→|->|至|到)\s*([01]?\d|2[0-3])\s*:\s*([0-5]\d)/gu)];
     let exact = null;
     if (transitions.length) {
         const match = transitions.at(-1);
         exact = { hour: Number(match[3]), minute: Number(match[4]), excerpt: match[0].trim() };
     } else {
         // 时间栏里只有单个明确钟点时也允许同步。限制在“时间与地点”区域可减少误抓正文中的普通数字。
-        const times = [...scope.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)(?!\d)/gu)];
+        const times = [...scope.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])\s*:\s*([0-5]\d)(?!\d)/gu)];
         if (times.length) {
             const match = times.at(-1);
             exact = { hour: Number(match[1]), minute: Number(match[2]), excerpt: match[0].trim() };
@@ -404,7 +510,7 @@ export function extractNarrativeTimeAnchor(text = '') {
         hour: exact?.hour ?? null,
         minute: exact?.minute ?? null,
         daypart,
-        structured: Boolean(structuredScope),
+        structured: detailMatches.length > 0,
         precision: date && exact ? 'minute' : date ? (daypart ? 'daypart' : 'date') : 'minute',
         excerpt: [date?.excerpt, exact?.excerpt, daypart].filter(Boolean).join(' · ').slice(0, 240),
     };
@@ -1753,6 +1859,14 @@ export function createInitialState({
         publicImpactLedger: [],
         consistencyConflicts: [],
         needsReconciliation: false,
+        lastTimeResolution: null,
+        nextTurnInjection: {
+            requiredRefs: [],
+            conditionalRefs: [],
+            suppressRefs: [],
+            reason: '',
+            sourceRevision: 0,
+        },
         storyMemory: {
             indexedThroughMessageId: -1,
             indexedAt: '',
@@ -1989,6 +2103,8 @@ function normalizeMemoryFact(raw, existing = null, worldMinute = 0, {
 
 function retainMemoryFacts(items) {
     const normalized = asArray(items);
+    // Manual/locked facts are user-authored authority and may only overflow the soft cap
+    // in the pathological case where the user explicitly locks more than the whole pool.
     const hardProtected = normalized.filter(item => item?.locked || item?.manual);
     const hardIds = new Set(hardProtected.map(item => item.id));
     const statusWeight = value => ({ active: 4, disputed: 3, superseded: 1, invalidated: 0 }[value] ?? 0);
@@ -2011,7 +2127,6 @@ function retainMemoryFacts(items) {
     return [...hardProtected, ...ranked.slice(0, remainingSlots)]
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
 }
-
 function retainStorySummaries(items) {
     const chronological = asArray(items)
         .sort((a, b) => Number(a.endMessageId || 0) - Number(b.endMessageId || 0));
@@ -2089,7 +2204,6 @@ function retainClues(items) {
     return [...hardProtected, ...ranked.slice(0, remainingSlots)]
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
 }
-
 function normalizeStoryMemory(raw, worldMinute = 0) {
     const summaries = asArray(raw?.summaries)
         .map(summary => normalizeStorySummary(summary))
@@ -2732,13 +2846,7 @@ export function settleTimedEvents(inputState, targetMinute, {
     if (nextMinute >= previousMinute) {
         for (const event of state.events) {
             if (!ACTIVE_EVENT_STATES.has(event.status)) continue;
-
-            // Active events represent actual work, not passive wall-clock expiry.
-            // Keep their settlement cursor behind until a simulation explicitly
-            // accounts for how much work happened during the elapsed world time.
-            // Duration/scheduled/condition events can be checked deterministically
-            // as soon as the authoritative clock advances.
-            if (event.clockMode !== 'active') event.lastCheckedAt = nextMinute;
+            event.lastCheckedAt = nextMinute;
 
             if (!['duration', 'scheduled'].includes(event.clockMode)) continue;
             if (!Number.isFinite(Number(event.dueAt))) continue;
@@ -2864,45 +2972,9 @@ function findClue(memory, raw) {
     const text = asString(raw?.text, '', 620);
     if (!text) return null;
     const fingerprint = text.replace(/\s+/g, '').slice(0, 80);
-    const exact = memory.clues.find(clue => (
+    return memory.clues.find(clue => (
         clue.text.replace(/\s+/g, '').slice(0, 80) === fingerprint
-    ));
-    if (exact) return exact;
-
-    // Models sometimes assign a fresh id while clearly continuing the same clue.
-    // Merge only with strong, explainable evidence: the title must be identical,
-    // and either the narrative text is substantially the same or at least two
-    // explicit relation anchors overlap. This avoids merging unrelated generic
-    // clues merely because they mention the same character once.
-    const normalizedPhrase = value => asString(value, '', 620)
-        .toLocaleLowerCase()
-        .replace(/[\s\p{P}\p{S}]+/gu, '');
-    const title = normalizedPhrase(raw?.title);
-    if (!title) return null;
-    const incomingText = normalizedPhrase(text);
-    const relationValues = item => uniqueStrings([
-        ...asArray(item?.people),
-        ...asArray(item?.locations),
-        ...asArray(item?.events),
-        ...asArray(item?.tags),
-    ], 64).map(value => value.toLocaleLowerCase());
-    const incomingRelations = new Set(relationValues(raw));
-
-    return memory.clues.find(clue => {
-        if (clue.archived || ['resolved', 'discarded'].includes(clue.status)) return false;
-        if (normalizedPhrase(clue.title) !== title) return false;
-        const existingText = normalizedPhrase(clue.text);
-        const textLooksSame = incomingText.length >= 8
-            && existingText.length >= 8
-            && (incomingText.includes(existingText) || existingText.includes(incomingText));
-        if (textLooksSame) return true;
-        if (!incomingRelations.size) return false;
-        let sharedRelations = 0;
-        for (const relation of relationValues(clue)) {
-            if (incomingRelations.has(relation)) sharedRelations += 1;
-        }
-        return sharedRelations >= 2;
-    }) || null;
+    )) || null;
 }
 
 function appendMemoryMetabolism(state, {
@@ -3105,26 +3177,13 @@ function applyClueUpdates(state, {
     for (const rawClue of asArray(cluesUpsert).slice(0, 24)) {
         const existing = findClue(state.storyMemory, rawClue);
         if (existing?.locked) continue;
-        const rawIncomingId = asString(rawClue?.id, '', 100);
-        const incomingId = rawIncomingId ? normalizeId(rawIncomingId, 'clue') : '';
-        const mergedFreshIdentity = Boolean(
-            existing
-            && incomingId
-            && incomingId !== existing.id
-        );
         const previousText = existing?.text || '';
         const previousExcerpt = existing?.sourceExcerpt || '';
-        const clue = normalizeClue(existing ? { ...rawClue, id: existing.id } : rawClue, existing, state.clock.absoluteMinute, {
+        const clue = normalizeClue(rawClue, existing, state.clock.absoluteMinute, {
             sourceMessageId,
             sourceSwipeId,
         });
         if (!clue.text) continue;
-        if (existing) {
-            clue.people = mergeUniqueStrings(existing.people, clue.people, 16);
-            clue.locations = mergeUniqueStrings(existing.locations, clue.locations, 12);
-            clue.events = mergeUniqueStrings(existing.events, clue.events, 16);
-            clue.tags = mergeUniqueStrings(existing.tags, clue.tags, 20);
-        }
         const sourceChanged = Boolean(
             existing
             && (previousText !== clue.text || previousExcerpt !== clue.sourceExcerpt)
@@ -3135,16 +3194,6 @@ function applyClueUpdates(state, {
         anchorTiming(clue, { force: !existing || sourceChanged });
         if (existing) Object.assign(existing, clue);
         else state.storyMemory.clues.unshift(clue);
-        if (mergedFreshIdentity) {
-            appendMemoryMetabolism(state, {
-                kind: 'clue',
-                action: 'merged',
-                targetId: incomingId,
-                replacementId: existing.id,
-                reason: '模型为同一未完线索提交了新 ID，已保留原身份并合并进展',
-                sourceMessageId: sourceMessageId ?? clue.sourceMessageId ?? 0,
-            });
-        }
     }
 
     for (const rawResolution of asArray(cluesResolve).slice(0, 24)) {
@@ -3201,6 +3250,12 @@ function normalizeSimulationResult(payload, { peopleUpsertLimit = LIMITS.peopleP
             5 * 365 * MINUTES_PER_DAY,
         ),
         timeReason: asString(payload?.time_reason ?? payload?.timeReason, '', 320),
+        timeResolution: normalizeModelTimeResolution(
+            payload?.time_resolution ?? payload?.timeResolution ?? {},
+        ),
+        nextTurnInjection: normalizeNextTurnInjection(
+            payload?.next_turn_injection ?? payload?.nextTurnInjection ?? {},
+        ),
         clockAnchor: {
             mode: anchorMode,
             calendarName: asString(
@@ -3304,6 +3359,25 @@ function conflictKeepsPersonField(rawConflicts, person, field) {
 
 function normalizedEvidenceText(value) {
     return String(value || '').replace(/\s+/g, '').trim();
+}
+
+function narrativeTailExplicitEndSupported(narrativeText, anchor, calendar) {
+    if (!anchor || !calendar || anchor.hour === null || anchor.minute === null) return false;
+    const source = String(narrativeText || '');
+    if (!source.trim()) return false;
+    const tail = source.slice(-1200);
+    const exactMatches = [...tail.matchAll(/(?:\d{2,6}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*[日号][\s\S]{0,24}?\d{1,2}\s*(?:[:：]|点|时)\s*\d{0,2}/g)];
+    const last = exactMatches.at(-1);
+    if (!last) return false;
+    const local = tail.slice(Math.max(0, last.index - 90), Math.min(tail.length, last.index + last[0].length + 140));
+    const before = tail.slice(Math.max(0, last.index - 80), last.index);
+    const after = tail.slice(last.index + last[0].length, Math.min(tail.length, last.index + last[0].length + 120));
+    const futureFraming = /(计划|预计|约定|预约|预定|安排|打算|将于|将在|届时|说[：:]?\s*[“"'「]?|提醒|通知).{0,48}$/i.test(before)
+        || /^(?:.{0,24})(?:见|集合|碰头|开会|出发|启程|开始)/i.test(after);
+    if (futureFraming) return false;
+    const completionCue = /(已经|此时|此刻|最终|最后|结束|到此|完成|抵达|到达|回到|回来|关上|合上|放回|睡下|醒来|离开|散场|收工|落锁)/.test(local);
+    const nearTail = tail.length - (last.index + last[0].length) <= 420;
+    return nearTail && (completionCue || after.trim().length <= 90);
 }
 
 function foregroundKnowledgeEvidenceSupported(narrativeText, person, acquisition) {
@@ -3500,6 +3574,78 @@ function personKnowsReference(person, ref) {
     return false;
 }
 
+function hasValidatedKnowledgePath(person, ref) {
+    const normalized = normalizedReference(ref);
+    if (!normalized) return false;
+
+    if (normalized.startsWith('event:')) {
+        const eventId = normalized.slice('event:'.length);
+        return asArray(person?.knownEventViews).some(view => (
+            normalizedReference(view?.eventId) === eventId
+            && VALID_KNOWLEDGE_ROUTES.has(asString(view?.route, '', 40))
+            && Boolean(asString(view?.evidence, '', 360))
+        ));
+    }
+
+    if (normalized.startsWith('fact:')) {
+        const factKey = normalized.slice('fact:'.length);
+        return asArray(person?.knownFactBeliefs).some(belief => (
+            normalizedReference(belief?.key) === factKey
+            && VALID_KNOWLEDGE_ROUTES.has(asString(belief?.route, '', 40))
+            && Boolean(asString(belief?.evidence, '', 360))
+        ));
+    }
+
+    return personKnowsReference(person, normalized);
+}
+
+function hiddenInjectionReference(state, ref) {
+    const normalized = normalizedReference(ref);
+    if (!normalized) return false;
+
+    if (normalized.startsWith('event:')) {
+        const eventId = normalized.slice('event:'.length);
+        const event = asArray(state?.events).find(item => normalizedReference(item?.id) === eventId);
+        return Boolean(event && String(event.visibility || '').toLowerCase() === 'hidden');
+    }
+
+    if (normalized.startsWith('fact:')) {
+        const factKey = normalized.slice('fact:'.length);
+        const worldFact = asArray(state?.worldFacts).find(item => (
+            normalizedReference(item?.key) === factKey
+            && ['current', 'persistent'].includes(String(item?.validity || 'current').toLowerCase())
+        ));
+        const memoryFact = asArray(state?.storyMemory?.facts).find(item => (
+            normalizedReference(item?.key) === factKey
+            && ['active', 'disputed'].includes(String(item?.status || 'active').toLowerCase())
+        ));
+        const fact = worldFact || memoryFact;
+        return Boolean(fact && String(fact.visibility || '').toLowerCase() === 'hidden');
+    }
+
+    return false;
+}
+
+function sanitizeNextTurnInjectionKnowledge(state, rawInjection) {
+    const next = normalizeNextTurnInjection(rawInjection);
+    const blocked = [];
+    const allowed = ref => {
+        if (!hiddenInjectionReference(state, ref)) return true;
+        const hasPath = asArray(state?.people).some(person => hasValidatedKnowledgePath(person, ref));
+        if (!hasPath) blocked.push(ref);
+        return hasPath;
+    };
+
+    next.requiredRefs = next.requiredRefs.filter(allowed);
+    next.conditionalRefs = next.conditionalRefs.filter(allowed);
+    if (blocked.length) {
+        next.suppressRefs = mergeUniqueStrings(next.suppressRefs, blocked, 24);
+        const guardReason = '知识防火墙压制了 ' + new Set(blocked).size + ' 个缺少合法获知路径的 hidden 引用';
+        next.reason = asString(next.reason ? next.reason + '；' + guardReason : guardReason, '', 360);
+    }
+    return next;
+}
+
 function textHasSecretOverlap(text, secret) {
     const candidate = normalizedEvidenceText(text);
     const source = normalizedEvidenceText(secret);
@@ -3653,8 +3799,32 @@ export function applySimulationResult(baseState, rawPayload, {
     const modelClockAnchor = payload.clockAnchor;
     void modelClockAnchor;
     const currentCalendar = formatWorldCalendar(baseState);
-    const narrativeCalendar = extractExplicitCalendarDate(narrativeText);
-    const narrativeAnchor = extractNarrativeTimeAnchor(narrativeText);
+    const rawNarrativeCalendar = extractExplicitCalendarDate(narrativeText);
+    const rawNarrativeAnchor = extractNarrativeTimeAnchor(narrativeText);
+    const modelTimeResolution = payload.timeResolution || {};
+    const modelEvidenceText = asString(modelTimeResolution.evidence, '', 260);
+    const normalizedNarrativeForTime = normalizedEvidenceText(narrativeText);
+    const normalizedModelTimeEvidence = normalizedEvidenceText(modelEvidenceText);
+    const modelSelectedCurrentEnd = Boolean(
+        modelTimeResolution.evidenceFound
+        && modelTimeResolution.authority === 'explicit_end_time'
+        && modelTimeResolution.scope === 'current'
+        && modelTimeResolution.confidence === 'high'
+        && normalizedModelTimeEvidence.length >= 4
+        && normalizedNarrativeForTime.includes(normalizedModelTimeEvidence)
+    );
+    // The model may select which of several literal times is the scene-end evidence,
+    // but it never supplies the clock value by authority. We re-parse its copied
+    // excerpt with the deterministic parser and ignore it unless the excerpt exists
+    // verbatim in the new narrative.
+    const selectedEndAnchor = modelSelectedCurrentEnd
+        ? extractNarrativeTimeAnchor(modelEvidenceText)
+        : null;
+    const selectedEndCalendar = modelSelectedCurrentEnd
+        ? extractExplicitCalendarDate(modelEvidenceText)
+        : null;
+    const narrativeCalendar = selectedEndCalendar || rawNarrativeCalendar;
+    const narrativeAnchor = selectedEndAnchor || rawNarrativeAnchor;
     const relativeTransition = resolveNarrativeTimeTransition(narrativeText, {
         currentAbsoluteMinute: baseState.clock?.absoluteMinute || 0,
         currentCalendar,
@@ -3685,9 +3855,14 @@ export function applySimulationResult(baseState, rawPayload, {
         && narrativeAnchor.minute !== null
         ? Number(narrativeAnchor.hour) * 60 + Number(narrativeAnchor.minute)
         : null;
+    const narrativeTailExplicitEnd = narrativeTailExplicitEndSupported(
+        narrativeText,
+        narrativeAnchor,
+        narrativeCalendar,
+    );
     const structuredForwardExact = Boolean(
         baseClockAnchored
-        && narrativeAnchor?.structured
+        && (narrativeAnchor?.structured || modelSelectedCurrentEnd || narrativeTailExplicitEnd)
         && Number.isFinite(narrativeMinuteOfDay)
         && narrativeMinuteOfDay >= currentMinuteOfDay
     );
@@ -3704,7 +3879,11 @@ export function applySimulationResult(baseState, rawPayload, {
         : null;
     const narrativeDateReliable = Boolean(
         narrativeCalendar
-        && (narrativeAnchor?.structured || Number(narrativeCalendar.index) <= 500)
+        && (
+            narrativeAnchor?.structured
+            || narrativeTailExplicitEnd
+            || Number(narrativeCalendar.index) <= 500
+        )
     );
     const narrativeDateCanCalibrate = Boolean(
         narrativeDateReliable
@@ -3770,6 +3949,16 @@ export function applySimulationResult(baseState, rawPayload, {
     const anchorApplied = initializeClock || recalibrateClock;
 
     const requestedElapsedMinutes = payload.elapsedMinutes;
+    const semanticElapsedFallback = requestedElapsedMinutes === 0
+        && ['open', 'world'].includes(timePolicy)
+        && !anchorApplied
+        && !relativeTransition
+        ? inferStrongSemanticElapsedMinutes(narrativeText)
+        : 0;
+    const effectiveElapsedMinutes = requestedElapsedMinutes || semanticElapsedFallback;
+    const semanticElapsedEvidence = semanticElapsedFallback > 0
+        ? asString(String(narrativeText || '').slice(-520), '', 260)
+        : '';
     const explicitTimeEvidence = hasExplicitTimeEvidence(narrativeText);
     if (anchorApplied || relativeTransition) {
         // Both are end-of-batch time evidence. Adding model elapsed_minutes again
@@ -3777,10 +3966,13 @@ export function applySimulationResult(baseState, rawPayload, {
         payload.elapsedMinutes = 0;
     } else {
         payload.elapsedMinutes = resolveElapsedMinutes(
-            requestedElapsedMinutes,
+            effectiveElapsedMinutes,
             narrativeText,
             timePolicy,
         );
+        if (semanticElapsedFallback > 0 && requestedElapsedMinutes === 0) {
+            payload.timeReason = '正文出现已完成的强耗时组合证据；模型未估算时仅按保守下界推进';
+        }
     }
     if (!explicitTimeEvidence && !['open', 'world'].includes(timePolicy)) {
         for (const update of payload.eventsUpdate) {
@@ -3900,6 +4092,44 @@ export function applySimulationResult(baseState, rawPayload, {
         state.clock.daypart = '';
     }
     const worldMinute = state.clock.absoluteMinute;
+    const deterministicAuthority = anchorApplied
+        ? 'explicit_end_time'
+        : relativeTransition
+            ? (relativeTransition.precision === 'daypart' ? 'daypart_transition' : 'explicit_transition')
+            : payload.elapsedMinutes > 0
+                ? (payload.timeResolution.authority === 'duration_only' ? 'duration_only' : 'estimated_elapsed')
+                : 'none';
+    const deterministicEvidence = anchorApplied || Boolean(relativeTransition);
+    state.lastTimeResolution = normalizeStoredTimeResolution({
+        sourceKey,
+        messageId,
+        beforeMinute: baseState.clock?.absoluteMinute || 0,
+        afterMinute: worldMinute,
+        method: anchorApplied
+            ? 'deterministic-anchor'
+            : relativeTransition
+                ? 'deterministic-transition'
+                : payload.elapsedMinutes > 0
+                    ? (semanticElapsedFallback > 0 && requestedElapsedMinutes === 0
+                        ? 'semantic-fallback'
+                        : 'model-elapsed')
+                    : 'unchanged',
+        authority: deterministicAuthority,
+        evidence: anchorApplied
+            ? anchor.sourceExcerpt
+            : relativeTransition?.sourceExcerpt
+                || relativeTransition?.evidence
+                || semanticElapsedEvidence
+                || payload.timeResolution.evidence,
+        requestedElapsedMinutes,
+        appliedElapsedMinutes: payload.elapsedMinutes,
+        reason: payload.timeReason,
+        precision: state.clock?.precision || '',
+        daypart: state.clock?.daypart || '',
+        deterministicEvidence,
+        model: payload.timeResolution,
+    });
+    state.nextTurnInjection = normalizeNextTurnInjection(payload.nextTurnInjection);
 
     if (payload.world.title) state.world.title = payload.world.title;
     if (payload.world.detail) state.world.detail = payload.world.detail;
@@ -4091,42 +4321,20 @@ export function applySimulationResult(baseState, rawPayload, {
             }
             : null;
 
-        const requestedWorkedMinutes = asInteger(
+        const workedMinutes = asInteger(
             update?.worked_minutes ?? update?.workedMinutes,
             0,
             0,
             5 * 365 * MINUTES_PER_DAY,
         );
-        if (event.clockMode === 'active') {
-            const previousCheckedAt = asInteger(
-                event.lastCheckedAt,
-                worldMinute,
-                0,
+        if (workedMinutes && event.clockMode === 'active') {
+            event.accruedMinutes = Math.min(
+                event.durationMinutes || Number.MAX_SAFE_INTEGER,
+                event.accruedMinutes + workedMinutes,
             );
-            const availableWorkedMinutes = Math.max(0, worldMinute - previousCheckedAt);
-            const workedMinutes = Math.min(requestedWorkedMinutes, availableWorkedMinutes);
-
-            if (requestedWorkedMinutes > availableWorkedMinutes) {
-                appendAudit(state, {
-                    type: 'event_work_clamped',
-                    text: `活动事件“${event.title}”申报 ${requestedWorkedMinutes} 分钟工时，按世界时间截为 ${availableWorkedMinutes} 分钟`,
-                    reason: '活动事件不能在主世界未经过的时间里单独推进',
-                });
+            if (event.durationMinutes > 0 && event.accruedMinutes >= event.durationMinutes) {
+                event.status = 'ready';
             }
-
-            if (workedMinutes) {
-                event.accruedMinutes = Math.min(
-                    event.durationMinutes || Number.MAX_SAFE_INTEGER,
-                    event.accruedMinutes + workedMinutes,
-                );
-                if (event.durationMinutes > 0 && event.accruedMinutes >= event.durationMinutes) {
-                    event.status = 'ready';
-                }
-            }
-
-            // This event has now been evaluated through the current authoritative
-            // world minute even when no work was performed during the interval.
-            event.lastCheckedAt = worldMinute;
         }
 
         if (update?.summary) event.summary = asString(update.summary, event.summary, 420);
@@ -4414,6 +4622,57 @@ export function applySimulationResult(baseState, rawPayload, {
         });
     }
 
+    // Reconcile next-turn injection against the committed world, not against the
+    // model's wording alone. A finished process stays finished, while a directly
+    // observed persistent consequence may remain authoritative for the next turn.
+    const narrativeResidueText = normalizedEvidenceText(String(narrativeText || '').slice(-5000));
+    const terminalRefs = new Set(
+        asArray(state.events)
+            .filter(event => TERMINAL_EVENT_STATES.has(String(event?.status || '').toLowerCase()))
+            .map(event => `event:${event.id}`),
+    );
+    state.nextTurnInjection.requiredRefs = state.nextTurnInjection.requiredRefs
+        .filter(ref => !terminalRefs.has(ref));
+    state.nextTurnInjection.conditionalRefs = state.nextTurnInjection.conditionalRefs
+        .filter(ref => !terminalRefs.has(ref));
+
+    const residueFactRefs = [];
+    const residueEventRefs = [];
+    for (const fact of asArray(state.worldFacts)) {
+        if (!fact?.key || !fact?.eventId) continue;
+        if (!['persistent', 'current'].includes(String(fact.validity || '').toLowerCase())) continue;
+        if (String(fact.visibility || '').toLowerCase() === 'hidden') continue;
+        const eventRef = `event:${fact.eventId}`;
+        if (!terminalRefs.has(eventRef)) continue;
+        const candidates = [
+            fact.value,
+            `${fact.field || ''}${fact.value || ''}`,
+            `${fact.subject || ''}${fact.field || ''}`,
+        ]
+            .map(value => normalizedEvidenceText(value))
+            .filter(value => value.length >= 4);
+        if (!candidates.some(value => narrativeResidueText.includes(value))) continue;
+        residueFactRefs.push(`fact:${fact.key}`);
+        residueEventRefs.push(eventRef);
+    }
+    if (residueFactRefs.length > 0) {
+        state.nextTurnInjection.requiredRefs = mergeUniqueStrings(
+            state.nextTurnInjection.requiredRefs,
+            residueFactRefs,
+            24,
+        );
+        state.nextTurnInjection.suppressRefs = mergeUniqueStrings(
+            state.nextTurnInjection.suppressRefs,
+            residueEventRefs,
+            24,
+        );
+    }
+
+    // next_turn_injection is model advice, not authority. Hidden world truth may stay
+    // in backstage state, but it cannot become a character-facing carry-forward hint
+    // without a validated acquisition route and evidence.
+    state.nextTurnInjection = sanitizeNextTurnInjectionKnowledge(state, state.nextTurnInjection);
+
     if (preserveCommitAnchor) {
         state.needsReconciliation = Boolean(baseState?.needsReconciliation);
         state.pendingSync = Boolean(baseState?.pendingSync);
@@ -4430,6 +4689,8 @@ export function applySimulationResult(baseState, rawPayload, {
         };
     }
     state.revision = asInteger(state.revision, 0, 0) + 1;
+    if (state.lastTimeResolution) state.lastTimeResolution.sourceRevision = state.revision;
+    if (state.nextTurnInjection) state.nextTurnInjection.sourceRevision = state.revision;
     state.updatedAt = nowIso();
     appendAudit(state, {
         type: 'simulation_committed',
@@ -4696,9 +4957,17 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
 
     const clock = formatWorldCalendar(state);
     const influencePolicy = deliveryDensityPolicy(settings.deliveryDensity);
+    const injectionDecision = Number(state?.nextTurnInjection?.sourceRevision || 0) === Number(state?.revision || 0)
+        ? normalizeNextTurnInjection(state.nextTurnInjection)
+        : normalizeNextTurnInjection({});
+    const requiredRefs = new Set(injectionDecision.requiredRefs);
+    const suppressedRefs = new Set(injectionDecision.suppressRefs);
+    const requiredPeople = asArray(state?.people).filter(person => requiredRefs.has(`person:${person.id}`));
     const people = injectPeople
-        ? selectRelevantPeople(state, recentText)
+        ? [...requiredPeople, ...selectRelevantPeople(state, recentText)]
             .filter(person => settings.recordPlayerCharacter !== false || !person?.isUser)
+            .filter((person, index, all) => all.findIndex(item => item.id === person.id) === index)
+            .slice(0, 8)
         : [];
     const rawContextReality = (injectEvents || injectFacts)
         ? selectContextRelevantReality(state, contextText, 9)
@@ -4716,10 +4985,11 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
                 let score = Number(event.updatedAt || event.startedAt || 0) / 1_000_000;
                 if (terms.some(term => eventContextText.includes(term))) score += 100;
                 if (event.delivery?.manualQueued) score += 80;
+                if (requiredRefs.has(`event:${event.id}`)) score += 500;
                 return { event, score };
             })
             .sort((a, b) => b.score - a.score)
-            .slice(0, 5)
+            .slice(0, 6)
             .map(item => item.event)
         : [];
     const liveInfluences = injectEvents
@@ -4735,10 +5005,19 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
             .map(item => String(item.id).slice(5)),
     );
     const authoritativeFacts = injectFacts
-        ? selectRelevantWorldFacts(state, recentText, 12)
+        ? [...asArray(state?.worldFacts).filter(fact => (
+            requiredRefs.has(`fact:${fact.key}`)
+            && ['current', 'persistent'].includes(fact.validity || 'current')
+        )), ...selectRelevantWorldFacts(state, recentText, 12)]
             .filter(fact => !contextFactKeys.has(fact.key))
+            .filter((fact, index, all) => all.findIndex(item => item.key === fact.key) === index)
+            .slice(0, 14)
         : [];
-    const deliveries = injectEchoes ? asArray(selectDeliveryCandidates(state, settings)) : [];
+    const deliveries = injectEchoes
+        ? asArray(selectDeliveryCandidates(state, settings)).filter(event => (
+            !suppressedRefs.has(`event:${event.id}`) || event.visibility === 'direct'
+        ))
+        : [];
     const deliveryIds = new Set(deliveries.map(event => event.id));
     const foregroundInfluences = liveInfluences.filter(event => !deliveryIds.has(event.id));
     const recalledMemory = injectMemory ? selectRelevantStoryMemory(state, recentText, {
@@ -4777,14 +5056,6 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     }
 
     authorityLines.push(...buildClockAuthorityLines(state, clock, timeMode));
-
-    if (worldRunning) {
-        authorityLines.push(
-            '时间与因果边界：本注入中标为“已结算”“当前”“正在持续”或已经带有结果的内容，都是此前已经成立的世界事实，不是要求正文重新生成的剧情指令。',
-            '正文只能承接角色获知、现场后果、反应、余波或从当前阶段继续发展的新变化；事件本体不可重新开演，不得把事件的起因、发生过程或既有结果再演一次。',
-            '新闻出现只表示一条信息经公开渠道传播，不等于新闻所报道的事件在本轮重新发生。若角色尚未知情，只能在她通过合理渠道接触后新增认知，不能倒改事件发生时间。',
-        );
-    }
 
     if (people.length) {
         if (state.needsReconciliation) {
@@ -4833,7 +5104,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
 
     if (ongoingEvents.length) {
         authorityLines.push(
-            '此前已开始、当前仍在持续的事件 / 暗流（承接当前阶段，不得重演起因或已经发生的过程；它们客观存在，但不等于任何角色已经知道）：',
+            '当前相关进行中事件 / 暗流（它们在世界里客观存在，但不等于任何角色已经知道）：',
         );
         for (const event of ongoingEvents) {
             authorityLines.push(
@@ -4850,7 +5121,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         );
         for (const reality of contextReality) {
             const sourceLabel = {
-                'public-event': reality.temporalState === 'upcoming' ? '即将发生的公开预告' : '此前已发生或正在持续的公开世界事件',
+                'public-event': reality.temporalState === 'upcoming' ? '即将发生的公开预告' : '当前公开世界事件',
                 'world-pulse': '当前世界环境',
                 'world-fact': reality.temporalState === 'historical'
                     ? '当前对话明确重新提及的历史事实'
@@ -4973,6 +5244,15 @@ if (foregroundInfluences.length) {
 
 function modelText(value, maximum) {
     return asString(value, '', maximum);
+}
+
+function modelNarrativeText(value, { maximum = 8000, tail = 5000 } = {}) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (!text || text.length <= maximum) return text;
+    const marker = '\n...[正文中段已压缩，保留首尾用于事实、末态与时间判定]...\n';
+    const tailBudget = Math.min(Math.max(1200, tail), maximum - marker.length - 800);
+    const headBudget = Math.max(800, maximum - marker.length - tailBudget);
+    return text.slice(0, headBudget) + marker + text.slice(-tailBudget);
 }
 
 export function planMemoryRollup(state) {
@@ -5446,7 +5726,7 @@ export function buildWorldBootstrapPrompt(state, {
                 hour: null,
                 minute: null,
                 precision: 'minute | daypart | date',
-                confidence: 'low | medium | high',
+                confidence: 'low',
                 source_excerpt: '',
                 reason: '',
             },
@@ -6020,17 +6300,25 @@ export function personObservationSceneRelation(state, person, userName = '') {
     const userLocation = asString(player?.location, '', 180);
     const observed = normalizedSceneLocation(personLocation);
     const playerPlace = normalizedSceneLocation(userLocation);
+
     let kind = 'unknown';
     if (observed && playerPlace) {
         if (observed === playerPlace) kind = 'same_place';
-        else if (observed.length >= 3 && playerPlace.length >= 3 && (observed.includes(playerPlace) || playerPlace.includes(observed))) kind = 'same_area';
+        else if (
+            observed.length >= 3
+            && playerPlace.length >= 3
+            && (observed.includes(playerPlace) || playerPlace.includes(observed))
+        ) kind = 'same_area';
         else kind = 'separate';
     }
+
     return {
         kind,
         personId: asString(person?.id, '', 120),
         personLocation,
         userId: asString(player?.id, '', 120),
+        // Only expose the player's exact location to this POV when the authoritative
+        // state already says the two location records overlap.
         userLocation: ['same_place', 'same_area'].includes(kind) ? userLocation : '',
     };
 }
@@ -6043,6 +6331,7 @@ function personObservationSceneConstraintLines(sceneRelation, person, userName) 
         '位置与同场关系属于观测输入的硬约束，不属于角色自动获得的知识。观测器没有权限重写任何人的位置，也没有权限用这次观测制造相遇。',
         '观测位置硬锚：' + personName + ' 此刻仍在“' + personLocation + '”。本次观测不得让该人物离开、抵达、回到、进入任何新地点；若意识里提到别处，只能明确是回忆、计划、想象或目标，不能写成当前所在地。',
     ];
+
     if (sceneRelation.kind === 'same_place') {
         lines.push('权威场景关系：玩家“' + playerName + '”与该人物当前记录为同一地点“' + personLocation + '”。这只代表同地点候选，不等于已经互相看见、听见、注意到、交谈或建立互动。除非该人物当前 action / intent 或下方认知账本已经明确建立感知/互动，否则不得突然让她发现玩家，也不得让思维自动围着玩家转。');
     } else if (sceneRelation.kind === 'same_area') {
@@ -6052,10 +6341,10 @@ function personObservationSceneConstraintLines(sceneRelation, person, userName) 
     } else {
         lines.push('权威场景关系：当前缺少足够精确的玩家位置记录。保持未知，不得自行补造同场、相遇或玩家当前位置。');
     }
+
     lines.push('场景关系约束（只作一致性边界，不是角色知识）：' + JSON.stringify(sceneRelation));
     return lines;
 }
-
 export function buildPersonObservationPrompt(state, person, {
     narrativeTurns = [],
     userName = '',
@@ -6394,7 +6683,8 @@ export function compactStateForModel(state, {
         ))
         .slice(0, LIMITS.events);
 
-    return {        // Numeric minute coordinates are model-visible only when minute precision is
+    return {
+        // Numeric minute coordinates are model-visible only when minute precision is
         // actually known. Coarse date/day/daypart states keep their internal minute
         // solely for deterministic scheduling; exposing it here would let the model
         // reconstruct a clock time that the narrative never established.
@@ -6531,13 +6821,6 @@ export function compactStateForModel(state, {
                 due_at: event.dueAt,
                 duration_minutes: event.durationMinutes,
                 accrued_minutes: event.accruedMinutes,
-                unsettled_work_window_minutes: event.clockMode === 'active'
-                    ? Math.max(
-                        0,
-                        Number(state.clock?.absoluteMinute || 0)
-                            - Number(event.lastCheckedAt ?? state.clock?.absoluteMinute ?? 0),
-                    )
-                    : 0,
                 prerequisites: event.prerequisites,
                 cause: modelText(event.cause, LIMITS.eventCause),
                 actors: event.actors,
@@ -7053,11 +7336,22 @@ export function buildSimulationPrompt(state, {
     });
     const queued = uniqueStrings(queuedEventIds, 24);
     const latestUser = modelText(latestTurn?.user, 6000);
-    const latestAssistant = modelText(latestTurn?.assistant, 9000);
-    const contextTurns = asArray(narrativeTurns)
+    const latestAssistant = modelNarrativeText(latestTurn?.assistant, { maximum: 9000, tail: 5600 });
+    const rawNarrativeTurns = asArray(narrativeTurns);
+    const rawAssistantIndexes = rawNarrativeTurns
+        .map((turn, index) => turn?.role === 'assistant' ? index : -1)
+        .filter(index => index >= 0);
+    const newRawAssistantIndexSet = new Set(
+        rawAssistantIndexes.slice(-asInteger(newAssistantTurns, 1, 1, 20)),
+    );
+    const contextTurns = rawNarrativeTurns
         .map((turn, index) => ({
             role: turn?.role === 'assistant' ? 'assistant' : 'user',
-            content: modelText(turn?.content, turn?.role === 'assistant' ? 5000 : 3000),
+            content: turn?.role === 'assistant'
+                ? (newRawAssistantIndexSet.has(index)
+                    ? modelNarrativeText(turn?.content, { maximum: 8000, tail: 5000 })
+                    : modelText(turn?.content, 4200))
+                : modelText(turn?.content, 3000),
             messageId: Number.isInteger(Number(turn?.messageId)) ? Number(turn.messageId) : index,
             swipeId: Number.isInteger(Number(turn?.swipeId)) ? Number(turn.swipeId) : 0,
             index,
@@ -7090,7 +7384,7 @@ export function buildSimulationPrompt(state, {
         open: '开放估算：允许依据清楚的叙事时间变化估算经过时长，但仍不得把回复轮次当时间。',
         world: '世界钟模式：主世界时钟一旦建立就是连续时间基准。不要重新猜“现在几点”；只根据 new="true" 正文里真实发生的行动、路程、等待、睡眠、工作等估算本批实际经过时长。没有事件耗时就填 0；不得把回复轮次本身当时间。',
     }[timePolicy] || '严格时间：没有明确、可计算的时间证据就填 0。';
-    const clockAuthorityRule = '绝对日期、星期和精确钟点由插件的确定性时间权威层处理。clock_anchor.mode 必须返回 none；不要猜年月日、星期或当前几点。你只负责 elapsed_minutes（本批 new=true 正文真正经过的时长）和 time_reason。正文已经明确写出的时间证据会由插件代码单独解析。';
+    const clockAuthorityRule = '时间先判末尾再判耗时：当前场景有明确末尾日期/钟点时，time_resolution.evidence_found=true、authority=explicit_end_time、scope=current、confidence=high，elapsed_minutes=0；未来约定/回忆/转述不得当成当前时间。没有末尾时间但正文真实经历长途移动、睡眠、等待、工作等，needs_elapsed_estimate=true，并让 estimated_minutes 与 elapsed_minutes 一致。睡下后醒来、长途交通跨多个地区、多个班次/轮次/餐次、完成持续工作等都属于明确耗时语义，即使没有钟点也不能机械填0；按叙事尺度保守估算。time_resolution 的 authority/scope/confidence 每个字段只能填写一个合法值。绝对时间最终仍由插件确定性代码核验。';
     const identityAnchor = modelText(playerIdentityAnchor, 400);
     const playerIdentityRule = identityAnchor
         ? `用户明确设定的玩家身份锚点：${identityAnchor}。涉及玩家的性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守，除非用户更新此锚点；不得根据外貌、衣着、身体或物种反推性别。`
@@ -7176,7 +7470,6 @@ const activeDirectorNotes = asArray(directorNotes)
     const newAssistantRule = newAssistantIndexSet.size === 1
         ? '11. 较早轮次只用于理解因果，不得重复计算；本次只推演最后一个 assistant_turn（new="true"）。'
         : `11. 只处理标记 new="true" 的最后 ${newAssistantIndexSet.size} 个 assistant_turn，并按消息顺序合并变化；new="false" 的轮次只用于理解因果，不得重复计算。`;
-    const causalReplayRule = '因果去重：正文若只是报道、回忆、转述或角色刚刚得知 current_state 中已经存在的事件/事实，只更新对应人物认知、反应或原事件的后续阶段；不得另建一条近义事件，不得把既有事件的发生时间改成本轮。只有正文明确写出此前不存在的新升级、新地点扩散或新后果时，才更新原事件或创建带 caused_by 的后续事件。';
     const pendingSocialContext = asArray(socialContext).map(conversation => ({
         conversation_id: asString(conversation?.conversationId, '', 160),
         title: asString(conversation?.title, '', 120),
@@ -7190,6 +7483,8 @@ const activeDirectorNotes = asArray(directorNotes)
 
     return [
         '你是“世界背面”的世界状态引擎。你维护一个持续运转的世界，不是正文纪要器。正文只是当前镜头；镜头外已经结算的结果同样属于真实世界。你不续写小说正文，只处理标记为 new="true" 的正文变化，并继续维护必要的镜头外因果。',
+        WORLD_BACKSTAGE_CORE_REASONING_PROTOCOL,
+        WORLD_SIMULATION_REASONING_PROTOCOL,
         compact.world.background
             ? `用户维护的“世界背景设定”是这个世界的基础地基，不是动态状态，也不是可改写建议：${compact.world.background}`
             : '当前没有额外填写“世界背景设定”，只按已有世界状态与正文证据运行。',
@@ -7202,7 +7497,6 @@ const activeDirectorNotes = asArray(directorNotes)
         '1B. 正文里的“明天见/下周约”等未来承诺不是当前时间已经跳转；只把本批真正发生的等待、睡眠、路程、工作与明确转场计入 elapsed_minutes。',
         '1C. clock_anchor 只是兼容返回字段，必须保持 mode=none。模型没有权限初始化或重新校准绝对世界日期。',
         `本次尺度：${simulationRule}`,
-        causalReplayRule,
         '2. 玩家/用户的行动只能来自正文已经发生的内容，不得替玩家新增行动。',
         `3. 先做“前台事实协调”：new="true" 正文明确写出的时间、人物位置/移动、行动、身体状态、物品或环境变化必须回写。这个步骤不受后台 NPC 预算限制。完成前台协调后，本次最多更新 ${npcBudget} 名镜头外 NPC。`,
         '3A. 推演前权威状态不是可选建议。若新正文没有描写移动/返回/离场等过渡，却把人物放到与权威位置矛盾的地方，不要默默覆盖世界状态；把它写入 consistency_conflicts，并保持原世界事实。只有正文明确建立了新的过渡或可靠新事实，才接受正文并更新状态。',
@@ -7223,7 +7517,7 @@ const activeDirectorNotes = asArray(directorNotes)
         '3L. world_pulse 可以产生与当前主线完全无关的新暗流。公开世界事件先在世界里真实发生，再通过 publicity/public_* 字段交给舆情模块；舆情绝不能反向创造事实。',
         '3M. “公开世界事件”不等于“大事件”。天气、交通、商业、政策小变化、行业动态、地方案件、设施故障、活动、消费与网络热点都可以成立。绝大多数公共变化应该普通、地方化、可解释；真正的大型灾害、战争、政变、巨型阴谋等必须极罕见且有强因果。',
         '大量同阵营或同地点 NPC 的共同变化优先合并成势力/地点事件；名字重新出现、地点接近、关联事件到时或伏笔命中时再唤醒个人。',
-        '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写实际工作的 worked_minutes，而且工时必须发生在主世界已经真实经过的时间里，不能让事件跑到世界钟前面。unsettled_work_window_minutes 表示此前已经过但尚未结算的可用时间窗；本批正文新发生的明确时间推进也可以成为可用时间。插件会把超出权威世界时间的工时截掉。condition 事件等待条件。',
+        '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
         '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在该人物的处境、目标或情绪有真实变化时更新。不要让所有人物每轮集体独白。',
         '人物状态中的 identity_anchor、personality_anchor、appearance_profile、background_profile、speaking_style 与 behavior_boundaries 是用户维护的稳定角色设定：必须遵守，不得在 people_upsert 中重写。identity_anchor 可包含任意性别身份、称谓/代词、物种、年龄阶段与社会身份；appearance_profile 负责外貌与身体特征；background_profile 负责背景、经历与关系。不得根据外貌、衣着、身体或物种反推或改写身份。没有身份锚点且正文也不明确时使用中性表述。',
@@ -7249,10 +7543,11 @@ const activeDirectorNotes = asArray(directorNotes)
         '12D-1. 已解决事件本体不要为了“保留剧情”继续挂在暗流里；保留它已经造成的 world_facts / 人物状态 / 环境后果即可。真正需要继续发展的部分创建为新的事件。这样事件链会往前长，而不是反复复读旧事件。',
         '12E. 当 event.visibility=trace 时，public_trace 只写“不知内情的外界观察者实际能看见/听见/注意到的表面迹象”，例如封路、异常车流、公开可见的损坏、突然停业等；绝不能把隐藏原因、幕后行动、人物私密内容或未公开结论塞进 public_trace。hidden 事件的 public_trace 必须为空；known/direct 可按需给一条简短公开线索。',
         '12F. visibility 必须按“外界实际能察觉到什么”主动选择，而不是习惯性全部填 hidden：只有事件及其影响都无法被不知情者合理察觉时才用 hidden；幕后原因仍保密、但已经出现可见/可听/可公开注意到的表面异常时必须用 trace，并填写安全的 public_trace；已经通过公告、媒体、公开渠道传播的事实用 known；当前镜头中的人物/玩家已直接感知到的显露内容可用 direct。秘密原因 + 公开迹象的组合必须是 trace，不能因为真相保密就继续写 hidden。',
-        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。相关旧记忆里已经存在的同一伏笔必须沿用原 ID，禁止换标题或换 ID 重复新建；旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。伏笔若明确关联人物、地点或世界事件，可分别填写 people / locations / events；不要为了分类硬绑一个人物。',
+        '13. 新出现且可能在后文呼应的细节写入 memory_update.clues_upsert；普通动作和气氛不要滥记。旧伏笔开始推进时用原 ID 更新为 developing，关键条件已实际触发时可更新为 triggered；已经完成/揭晓用 clues_resolve(status=resolved)，后文证明不再需要或误判的线索用 clues_resolve(status=discarded) 并说明原因。伏笔若明确关联人物、地点或世界事件，可分别填写 people / locations / events；不要为了分类硬绑一个人物。',
         '14. 只有本批新正文明确建立或改变了未来仍有用的身份、关系、承诺、限制、物品归属或已揭示真相时，才写入 memory_update.facts_upsert。临时位置、动作和模型自行推演的幕后猜测不得写成长效事实。长期事实必须更迭：同一稳定 key 出现新值时提交新值，让旧版本退出 active；明确失效/否定时写 facts_invalidate。不要让过期事实与新事实同时保持当前有效。',
         '14A. 事实层更新只代表世界真相/档案更新，绝不能因此自动把新值塞进所有 NPC 的 known_fact_keys；NPC 认知仍只按 12A 的知情证据单独变化。',
         '14B. 为每个 new="true" 的 assistant_turn 顺手生成一条 L0 单轮摘要，写入 memory_update.turn_summaries。source_message_id 必须等于该 assistant_turn 的 message_id；summary 只总结这一轮真正发生的关键变化、关系/承诺/物品/未完问题，约 60—160 字。不要再让独立记忆任务为了同一轮正文重新请求一次模型。',
+        '14C. 结算完成后填写 next_turn_injection。required_refs 只列下一轮不带就容易造成连续性错误、且在正文末态仍成立的引用；conditional_refs 只列自然相关时才需要的引用；suppress_refs 只列已经结束的历史、没有接触路径的幕后信息或容易诱发重复演出的旧条目。已结束事件若仍有 persistent/current 后果事实，事件本体不要复活，但仍成立的后果 fact 必须进入 required_refs 或 conditional_refs。visibility=hidden 的事件/事实如果当前角色尚未通过 witnessed/told/investigated/message/public_channel/inferred 等合法路径获得，绝不能放进 required_refs 或 conditional_refs；它会继续留在后台世界状态里，不需要靠 next_turn_injection 保活。只有已有合法认知证据，或本批 knowledge_updates 同时提供可验证 route+evidence 时才允许放行。不得把整个世界状态复制进去。',
         '同一类事实使用稳定 key。正文给出新值时保留 key；插件会保留旧版本并标为 superseded。正文明确否定某条旧事实时写入 facts_invalidate；真假未定时用 status=disputed。',
         '人物 source 只有在本批 new="true" 正文真实描写到该人物时才填 foreground；镜头外人物必须填 background。present_in_scene 只有人物本人在当前场景中实际行动、说话或被直接感知时才为 true；仅被提及、回忆、谈论、作为目标或出现在内心想法里一律为 false。last_seen_message_id 必须填该人物最后实际出现的 assistant 消息 ID。',
         directorRule,
@@ -7280,6 +7575,17 @@ const activeDirectorNotes = asArray(directorNotes)
         '',
         '返回结构：',
         JSON.stringify({
+            time_resolution: {
+                evidence_found: false,
+                authority: 'none',
+                scope: 'unknown',
+                evidence: '',
+                end_time_text: '',
+                needs_elapsed_estimate: false,
+                estimated_minutes: 0,
+                confidence: 'low',
+                reason: '',
+            },
             elapsed_minutes: 0,
             time_reason: '',
             clock_anchor: {
@@ -7416,6 +7722,12 @@ const activeDirectorNotes = asArray(directorNotes)
                 resolution: 'keep-world | accept-narrative | transition',
                 reason: '',
             }],
+            next_turn_injection: {
+                required_refs: [],
+                conditional_refs: [],
+                suppress_refs: [],
+                reason: '',
+            },
             memory_update: {
                 turn_summaries: [{
                     source_message_id: 0,
@@ -8016,6 +8328,8 @@ export function trimState(inputState) {
     const state = deepClone(inputState);
     const previousSchemaVersion = asInteger(state.schemaVersion, 0, 0);
     state.schemaVersion = SCHEMA_VERSION;
+    state.lastTimeResolution = normalizeStoredTimeResolution(state.lastTimeResolution);
+    state.nextTurnInjection = normalizeNextTurnInjection(state.nextTurnInjection);
     const absoluteMinute = asInteger(state.clock?.absoluteMinute, MINUTES_PER_DAY, 0);
     const absoluteDay = Math.floor(absoluteMinute / MINUTES_PER_DAY);
     // Keep the raw calendar long enough to decide whether an old save ever had
@@ -8242,4 +8556,3 @@ export function isTerminalEvent(event) {
 export function isActiveEvent(event) {
     return ACTIVE_EVENT_STATES.has(event?.status);
 }
-

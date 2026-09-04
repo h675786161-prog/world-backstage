@@ -1,4 +1,4 @@
-import { parseTraditionalClock } from './traditional-time.js';
+import { formatTraditionalTime, parseTraditionalClock } from './traditional-time.js';
 
 export const MINUTES_PER_DAY = 24 * 60;
 
@@ -6,7 +6,7 @@ const DAYPARTS = Object.freeze([
     { label: '凌晨', minute: 180, pattern: /凌晨/u },
     { label: '黎明', minute: 300, pattern: /黎明/u },
     { label: '清晨', minute: 360, pattern: /清晨/u },
-    { label: '早晨', minute: 420, pattern: /早晨/u },
+    { label: '早晨', minute: 420, pattern: /早晨|一早|早上/u },
     { label: '上午', minute: 540, pattern: /上午/u },
     { label: '中午', minute: 720, pattern: /中午/u },
     { label: '午后', minute: 840, pattern: /午后/u },
@@ -14,7 +14,7 @@ const DAYPARTS = Object.freeze([
     { label: '傍晚', minute: 1080, pattern: /傍晚/u },
     { label: '黄昏', minute: 1110, pattern: /黄昏/u },
     { label: '晚上', minute: 1200, pattern: /晚上/u },
-    { label: '夜晚', minute: 1260, pattern: /夜晚/u },
+    { label: '夜晚', minute: 1260, pattern: /夜晚|夜里/u },
     { label: '深夜', minute: 1380, pattern: /深夜/u },
 ]);
 
@@ -86,7 +86,7 @@ function dateOrdinal(rawDate) {
 }
 
 function dateFromOrdinal(value) {
-    let target = Math.max(0, Math.trunc(Number(value) || 0));
+    const target = Math.max(0, Math.trunc(Number(value) || 0));
     let low = 1;
     let high = 999999;
     while (low < high) {
@@ -119,7 +119,7 @@ function dateDifference(from, to) {
 
 function weekdayIndex(date) {
     const ordinal = dateOrdinal(date);
-    return ordinal === null ? null : ordinal % 7; // 0001-01-01 is Monday in proleptic Gregorian.
+    return ordinal === null ? null : ordinal % 7;
 }
 
 export function extractStructuredTimeScope(text = '') {
@@ -128,35 +128,23 @@ export function extractStructuredTimeScope(text = '') {
     const collect = (pattern, kind = 'line') => {
         for (const match of source.matchAll(pattern)) {
             const index = Number(match.index || 0);
-            const text = String(match[0] || '');
-            candidates.push({
-                index,
-                end: index + text.length,
-                text,
-                kind,
-            });
+            const matchedText = String(match[0] || '');
+            candidates.push({ index, end: index + matchedText.length, text: matchedText, kind });
         }
     };
 
-    // Common collapsible status header used by several presets.
     collect(/<details\b[^>]*>[\s\S]*?<summary\b[^>]*>[\s\S]*?(?:时间\s*[与和]\s*地点|时间地点|time\s*(?:&|and)\s*(?:place|location))[\s\S]*?<\/summary>[\s\S]*?<\/details>/giu, 'block');
-
-    // XML-like semantic wrappers used by prompt presets, for example
-    // <time_format>...</time_format> and <scene_time>...</scene_time>.
     collect(/<(time(?:[_-]?(?:format|info|status))?|date[_-]?time|datetime|story[_-]?time|world[_-]?time|scene[_-]?time)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, 'block');
-
-    // Plain/Markdown status lines are accepted only when explicitly labelled as
-    // time. A bare clock inside narrative dialogue must never become authority.
     collect(/^(?:\s*(?:[-*#>|]+\s*)?(?:\*\*|__)?(?:当前|本轮|场景|故事|世界)?\s*(?:时间|time|date\s*(?:&|and)\s*time)(?:\*\*|__)?\s*[:：]\s*[^\n\r]+)$/gimu);
 
     if (!candidates.length) return '';
     const blocks = candidates.filter(candidate => candidate.kind === 'block');
-    const visibleCandidates = candidates.filter(candidate => (
+    const visible = candidates.filter(candidate => (
         candidate.kind === 'block'
         || !blocks.some(block => candidate.index >= block.index && candidate.end <= block.end)
     ));
-    visibleCandidates.sort((left, right) => left.index - right.index);
-    return visibleCandidates.at(-1).text;
+    visible.sort((left, right) => left.index - right.index);
+    return visible.at(-1).text;
 }
 
 function latestDaypart(text = '') {
@@ -187,22 +175,12 @@ function latestExactClock(text = '') {
     const transitions = [...source.matchAll(/(?:▶|>)?\s*([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)\s*(?:→|->|至|到|[-–—~～])\s*([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)/gu)];
     if (transitions.length) {
         const match = transitions.at(-1);
-        return {
-            hour: Number(match[3]),
-            minute: Number(match[4]),
-            index: Number(match.index || 0),
-            sourceText: match[0].trim(),
-        };
+        return { hour: Number(match[3]), minute: Number(match[4]), index: Number(match.index || 0), sourceText: match[0].trim() };
     }
     const clocks = [...source.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)(?!\d)/gu)];
     if (clocks.length) {
         const match = clocks.at(-1);
-        return {
-            hour: Number(match[1]),
-            minute: Number(match[2]),
-            index: Number(match.index || 0),
-            sourceText: match[0].trim(),
-        };
+        return { hour: Number(match[1]), minute: Number(match[2]), index: Number(match.index || 0), sourceText: match[0].trim() };
     }
     const traditional = parseTraditionalClock(source);
     if (!traditional?.precise) return null;
@@ -256,6 +234,17 @@ function targetMinuteForDay(baseAbsoluteMinute, dayDelta, desiredMinuteOfDay = n
     return (baseDay + integer(dayDelta, 0)) * MINUTES_PER_DAY + minute;
 }
 
+function canonicalDaypart(label = '') {
+    const source = String(label || '').trim();
+    if (!source) return '';
+    return DAYPARTS.find(item => item.pattern.test(source))?.label || '';
+}
+
+function daypartMinute(label) {
+    const canonical = canonicalDaypart(label);
+    return DAYPARTS.find(item => item.label === canonical)?.minute ?? null;
+}
+
 function traditionalCandidate(token, extra = {}) {
     const parsed = parseTraditionalClock(token);
     if (!parsed) return null;
@@ -274,7 +263,8 @@ function transitionCandidates(text = '') {
     const candidates = [];
     const boundary = '(?:^|[。！？!?；;\\n])\\s*';
     const sequencePrefix = '(?:(?:随后|接着|然后|之后|此后)\\s*)?(?:又\\s*|再\\s*)?';
-    const daypart = '(凌晨|黎明|清晨|早晨|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|深夜)?';
+    const requiredDaypart = '(凌晨|黎明|清晨|一早|早晨|早上|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|夜里|深夜)';
+    const daypart = `${requiredDaypart}?`;
     const traditionalToken = '([子丑寅卯辰巳午未申酉戌亥](?:时(?:\\s*(?:初|正))?(?:\\s*(?:\\d+|[零〇一二两三四五六七八九])\\s*刻)?|(?:初|正)(?:\\s*(?:\\d+|[零〇一二两三四五六七八九])\\s*刻)?))';
     const add = (pattern, mapper) => {
         for (const match of source.matchAll(pattern)) {
@@ -283,25 +273,33 @@ function transitionCandidates(text = '') {
         }
     };
 
-    add(new RegExp(`${boundary}${sequencePrefix}(次日|翌日|第二天|隔天)(?:的)?\\s*${daypart}`, 'gu'), match => ({
-        dayDelta: 1,
-        daypart: match[2] || '',
-        confidence: 'high',
-    }));
+    add(new RegExp(`${boundary}${sequencePrefix}(次日|翌日|第二天|隔天)(?:的)?\\s*${daypart}`, 'gu'), match => ({ dayDelta: 1, daypart: canonicalDaypart(match[2]), confidence: 'high' }));
 
     add(new RegExp(`${boundary}${sequencePrefix}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?|醒来时(?:已经)?|一觉醒来(?:已经)?)\\s*(明天|后天|大后天)\\s*${daypart}`, 'gu'), match => ({
         dayDelta: match[1] === '明天' ? 1 : match[1] === '后天' ? 2 : 3,
-        daypart: match[2] || '',
+        daypart: canonicalDaypart(match[2]),
         confidence: 'high',
     }));
 
     add(new RegExp(`${boundary}${sequencePrefix}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?|经过|过了)\\s*(\\d+|[一二两三四五六七八九十]+)\\s*(分钟|小时|天|日)(?:后)?\\s*${daypart}`, 'gu'), match => {
         const count = chineseInteger(match[1]);
         if (!Number.isFinite(count) || count < 0) return null;
-        if (match[2] === '分钟') return { minuteDelta: count, daypart: match[3] || '', confidence: 'high' };
-        if (match[2] === '小时') return { minuteDelta: count * 60, daypart: match[3] || '', confidence: 'high' };
-        return { dayDelta: count, daypart: match[3] || '', confidence: 'high' };
+        if (match[2] === '分钟') return { minuteDelta: count, daypart: canonicalDaypart(match[3]), confidence: 'high' };
+        if (match[2] === '小时') return { minuteDelta: count * 60, daypart: canonicalDaypart(match[3]), confidence: 'high' };
+        return { dayDelta: count, daypart: canonicalDaypart(match[3]), confidence: 'high' };
     });
+
+    add(new RegExp(`${boundary}${sequencePrefix}(半|\\d+|[一二两三四五六七八九十]+)(?:个)?\\s*(分钟|小时|天|日)\\s*后\\s*${daypart}\\s*[，,]`, 'gu'), match => {
+        const count = match[1] === '半' ? 0.5 : chineseInteger(match[1]);
+        if (!Number.isFinite(count) || count < 0) return null;
+        if (match[1] === '半' && match[2] !== '小时') return null;
+        if (match[2] === '分钟') return { minuteDelta: count, daypart: canonicalDaypart(match[3]), confidence: 'high' };
+        if (match[2] === '小时') return { minuteDelta: Math.round(count * 60), daypart: canonicalDaypart(match[3]), confidence: 'high' };
+        return { dayDelta: count, daypart: canonicalDaypart(match[3]), confidence: 'high' };
+    });
+
+    add(new RegExp(`${boundary}${sequencePrefix}当天\\s*${requiredDaypart}\\s*[，,]`, 'gu'), match => ({ sameDaypart: true, daypart: canonicalDaypart(match[1]), confidence: 'high' }));
+    add(new RegExp(`${boundary}${sequencePrefix}(?:到了?|时间(?:来)?到(?:了)?|转眼(?:已经)?到了?)\\s*${requiredDaypart}\\s*[，,]`, 'gu'), match => ({ sameDaypart: true, daypart: canonicalDaypart(match[1]), confidence: 'high' }));
 
     add(new RegExp(`${boundary}${sequencePrefix}(次日|翌日|第二天|隔天)(?:的)?\\s*${traditionalToken}\\s*[，,]`, 'gu'), match => traditionalCandidate(match[2], { dayDelta: 1 }));
     add(new RegExp(`${boundary}${sequencePrefix}当天\\s*${traditionalToken}\\s*[，,]`, 'gu'), match => traditionalCandidate(match[1], { sameTraditional: true }));
@@ -310,12 +308,13 @@ function transitionCandidates(text = '') {
     add(new RegExp(`${boundary}${sequencePrefix}(?:转眼|一晃|时间(?:来)?到(?:了)?|到了?)\\s*(下周|本周)?(?:周|星期)([一二三四五六日天])\\s*${daypart}`, 'gu'), match => ({
         weekdayMode: match[1] === '下周' ? 'next-week' : match[1] === '本周' ? 'this-week' : 'next-occurrence',
         weekday: WEEKDAY_INDEX[match[2]],
-        daypart: match[3] || '',
+        daypart: canonicalDaypart(match[3]),
         confidence: 'high',
     }));
 
     return candidates.sort((a, b) => a.index - b.index);
 }
+
 function weekdayDelta(currentDate, targetWeekday, mode) {
     const currentWeekday = weekdayIndex(currentDate);
     if (currentWeekday === null || !Number.isFinite(targetWeekday)) return null;
@@ -323,21 +322,11 @@ function weekdayDelta(currentDate, targetWeekday, mode) {
         const delta = targetWeekday - currentWeekday;
         return delta >= 0 ? delta : null;
     }
-    if (mode === 'next-week') {
-        return (7 - currentWeekday) + targetWeekday;
-    }
+    if (mode === 'next-week') return (7 - currentWeekday) + targetWeekday;
     const delta = (targetWeekday - currentWeekday + 7) % 7;
     return delta === 0 ? 7 : delta;
 }
 
-function daypartMinute(label) {
-    return DAYPARTS.find(item => item.label === label)?.minute ?? null;
-}
-
-/**
- * Resolves only evidence that the narrative has actually moved the current scene
- * time. A future promise like “明天见” is deliberately NOT a clock transition.
- */
 export function resolveNarrativeTimeTransition(text = '', {
     currentAbsoluteMinute = 0,
     currentCalendar = null,
@@ -358,17 +347,14 @@ export function resolveNarrativeTimeTransition(text = '', {
 
     const exact = narrativeAnchor?.hour !== null && narrativeAnchor?.hour !== undefined
         && narrativeAnchor?.minute !== null && narrativeAnchor?.minute !== undefined
-        ? {
-            hour: Number(narrativeAnchor.hour),
-            minute: Number(narrativeAnchor.minute),
-            sourceText: narrativeAnchor.excerpt || '',
-        }
+        ? { hour: Number(narrativeAnchor.hour), minute: Number(narrativeAnchor.minute), sourceText: narrativeAnchor.excerpt || '' }
         : (structuredScope ? latestExactClock(structuredScope) : null);
-    const anchorDaypart = String(narrativeAnchor?.daypart || '').trim();
-    const structuredDaypart = anchorDaypart || latestDaypart(structuredScope)?.label || '';
-    const structuredStoryDay = structuredScope && !calendarBound
-        ? latestStoryDayIndex(structuredScope)
-        : null;
+    const anchorDaypart = canonicalDaypart(narrativeAnchor?.daypart) || String(narrativeAnchor?.daypart || '').trim();
+    const structuredDaypart = anchorDaypart
+        || latestDaypart(structuredScope)?.label
+        || structuredTraditional?.periodLabel
+        || '';
+    const structuredStoryDay = structuredScope && !calendarBound ? latestStoryDayIndex(structuredScope) : null;
 
     if (structuredScope && exact) {
         const targetDay = structuredStoryDay ?? dayIndex(baseAbsoluteMinute);
@@ -402,10 +388,8 @@ export function resolveNarrativeTimeTransition(text = '', {
     if (candidates.length) {
         let target = baseAbsoluteMinute;
         const coarsePrecision = calendarBound ? 'date' : 'day';
-        let precision = ['minute', 'daypart', 'date', 'day'].includes(currentPrecision)
-            ? currentPrecision
-            : coarsePrecision;
-        let resolvedDaypart = precision === 'daypart' ? String(currentDaypart || '').trim() : '';
+        let precision = ['minute', 'daypart', 'date', 'day'].includes(currentPrecision) ? currentPrecision : coarsePrecision;
+        let resolvedDaypart = precision === 'daypart' ? (canonicalDaypart(currentDaypart) || String(currentDaypart || '').trim()) : '';
         if (precision === 'daypart' && !resolvedDaypart) precision = coarsePrecision;
         const applied = [];
 
@@ -430,6 +414,12 @@ export function resolveNarrativeTimeTransition(text = '', {
                     candidate += MINUTES_PER_DAY;
                 }
                 if (candidate >= target) nextTarget = candidate;
+            } else if (transition.sameDaypart && transition.daypart) {
+                const desired = daypartMinute(transition.daypart);
+                if (desired !== null) {
+                    const candidate = dayIndex(target) * MINUTES_PER_DAY + desired;
+                    if (candidate >= target) nextTarget = candidate;
+                }
             } else if (Number.isFinite(transition.weekday) && calendarBound && currentDate) {
                 const elapsedDays = dayIndex(target) - dayIndex(baseAbsoluteMinute);
                 const cursorDate = addDateDays(currentDate, elapsedDays);
@@ -449,15 +439,9 @@ export function resolveNarrativeTimeTransition(text = '', {
                 precision = 'daypart';
                 resolvedDaypart = transition.daypart;
             } else if (wholeDayShift) {
-                // A whole-day/date jump proves which day the world reached, but it
-                // does not prove that the old clock minute survived unchanged. Keep
-                // the internal minute only as a calculation coordinate and lower the
-                // exposed fact precision so stale exact time cannot propagate.
                 precision = coarsePrecision;
                 resolvedDaypart = '';
             } else if (precision === 'daypart') {
-                // An exact elapsed duration can preserve exact-minute precision, but
-                // a fuzzy daypart cannot remain authoritative after arbitrary time.
                 precision = coarsePrecision;
                 resolvedDaypart = '';
             }
@@ -519,18 +503,21 @@ export function resolveNarrativeTimeTransition(text = '', {
 
     return null;
 }
+
 function findFutureExpression(text = '') {
     const source = String(text || '');
     const explicit = latestAbsoluteDate(source);
     if (explicit) {
-        const exact = latestExactClock(source.slice(Math.max(0, explicit.index - 20), explicit.index + 100));
-        const daypart = latestDaypart(source.slice(Math.max(0, explicit.index - 20), explicit.index + 100));
+        const timingScope = source.slice(Math.max(0, explicit.index - 20), explicit.index + 100);
+        const exact = latestExactClock(timingScope);
+        const traditional = parseTraditionalClock(timingScope);
+        const daypart = latestDaypart(timingScope);
         return {
             type: 'absolute-date',
             index: explicit.index,
             date: { year: explicit.year, month: explicit.month, day: explicit.day },
             exact,
-            daypart: daypart?.label || '',
+            daypart: daypart?.label || traditional?.periodLabel || '',
             sourceText: explicit.sourceText,
         };
     }
@@ -570,12 +557,7 @@ export function resolveFutureTimeExpression(text = '', {
     const expressionEnd = Math.min(nearby.length, expressionIndex + String(expression.sourceText || '').length);
     const tail = nearby.slice(expressionEnd);
     const boundaryOffset = tail.search(/[。！？!?；;\n]/u);
-    const localEnd = boundaryOffset >= 0
-        ? expressionEnd + boundaryOffset
-        : nearby.length;
-    // Attach a clock/daypart only when it belongs to the same clause as the
-    // chosen future expression. An unrelated 09:00 elsewhere in the evidence
-    // must never turn a date-only promise into a fake 09:00 appointment.
+    const localEnd = boundaryOffset >= 0 ? expressionEnd + boundaryOffset : nearby.length;
     const localTimingScope = nearby.slice(expressionIndex, localEnd);
     const relativeWord = expression.type === 'relative-word' ? String(expression.match?.[1] || '') : '';
     const implicitDaypart = ['今晚', '明晚', '今夜'].includes(relativeWord)
@@ -585,21 +567,18 @@ export function resolveFutureTimeExpression(text = '', {
             : relativeWord === '明晨'
                 ? '清晨'
                 : '';
-    const daypart = latestDaypart(localTimingScope)?.label || implicitDaypart;
+    const traditional = parseTraditionalClock(localTimingScope);
     const exact = latestExactClock(localTimingScope);
+    const daypart = latestDaypart(localTimingScope)?.label || traditional?.periodLabel || implicitDaypart;
     const desiredMinute = exact
         ? exact.hour * 60 + exact.minute
-        : daypartMinute(daypart);
-    const precision = exact ? 'minute' : daypart ? 'daypart' : 'date';
+        : traditional
+            ? traditional.minuteOfDay
+            : daypartMinute(daypart);
+    const precision = exact ? 'minute' : traditional || daypart ? 'daypart' : 'date';
 
     if (expression.type === 'condition') {
-        return normalizeClueTiming({
-            kind: 'condition',
-            sourceText: expression.sourceText,
-            targetWorldMinute: null,
-            precision: 'condition',
-            anchoredAtWorldMinute: baseMinute,
-        }, baseMinute);
+        return normalizeClueTiming({ kind: 'condition', sourceText: expression.sourceText, targetWorldMinute: null, precision: 'condition', anchoredAtWorldMinute: baseMinute }, baseMinute);
     }
 
     if (expression.type === 'absolute-date') {
@@ -608,9 +587,7 @@ export function resolveFutureTimeExpression(text = '', {
         return normalizeClueTiming({
             kind: 'absolute',
             sourceText: expression.sourceText,
-            targetWorldMinute: delta !== null && delta >= 0
-                ? targetMinuteForDay(baseMinute, delta, desiredMinute ?? 0)
-                : null,
+            targetWorldMinute: delta !== null && delta >= 0 ? targetMinuteForDay(baseMinute, delta, desiredMinute ?? 0) : null,
             targetDate,
             precision,
             daypart,
@@ -627,35 +604,19 @@ export function resolveFutureTimeExpression(text = '', {
         else if (word === '大后天') dayDelta = 3;
     } else if (expression.type === 'relative-days') {
         dayDelta = chineseInteger(expression.match[1]);
-    } else if (expression.type === 'weekday') {
-        if (calendarBound && baseDate) {
-            const mode = expression.match[1] === '下周'
-                ? 'next-week'
-                : expression.match[1] === '本周'
-                    ? 'this-week'
-                    : 'next-occurrence';
-            dayDelta = weekdayDelta(baseDate, WEEKDAY_INDEX[expression.match[2]], mode);
-        }
+    } else if (expression.type === 'weekday' && calendarBound && baseDate) {
+        const mode = expression.match[1] === '下周' ? 'next-week' : expression.match[1] === '本周' ? 'this-week' : 'next-occurrence';
+        dayDelta = weekdayDelta(baseDate, WEEKDAY_INDEX[expression.match[2]], mode);
     }
 
     if (!Number.isFinite(dayDelta) || dayDelta < 0) {
-        return normalizeClueTiming({
-            kind: 'condition',
-            sourceText: expression.sourceText,
-            targetWorldMinute: null,
-            precision: 'condition',
-            anchoredAtWorldMinute: baseMinute,
-        }, baseMinute);
+        return normalizeClueTiming({ kind: 'condition', sourceText: expression.sourceText, targetWorldMinute: null, precision: 'condition', anchoredAtWorldMinute: baseMinute }, baseMinute);
     }
 
     const targetDate = calendarBound && baseDate ? addDateDays(baseDate, dayDelta) : null;
     return normalizeClueTiming({
         kind: 'relative',
         sourceText: expression.sourceText,
-        // Date-only clues become eligible at the start of their target day.
-        // Midnight is an internal threshold, not an asserted occurrence time; the
-        // exposed precision remains "date". Preserving the creation clock here
-        // would incorrectly delay a "明天" clue until that same hour tomorrow.
         targetWorldMinute: targetMinuteForDay(baseMinute, dayDelta, desiredMinute ?? 0),
         targetDate,
         precision,
@@ -690,7 +651,7 @@ export function normalizeClueTiming(raw, currentWorldMinute = 0) {
         targetWorldMinute,
         targetDate: date,
         precision,
-        daypart: String(raw.daypart || '').trim().slice(0, 20),
+        daypart: canonicalDaypart(raw.daypart) || String(raw.daypart || '').trim().slice(0, 20),
         anchoredAtWorldMinute: Math.max(0, integer(raw.anchoredAtWorldMinute ?? raw.anchored_at_world_minute, currentWorldMinute)),
         relativeLabel,
     };
@@ -702,14 +663,16 @@ export function buildClockAuthorityLines(state, formattedClock, mode = 'full') {
     const absoluteMinute = Math.max(0, integer(clock.absoluteMinute, 0));
     const relativeDay = dayIndex(absoluteMinute);
     const precision = String(clock.precision || 'day');
-    const daypart = String(clock.daypart || '').trim();
+    const daypart = canonicalDaypart(clock.daypart) || String(clock.daypart || '').trim();
     const exactTime = `${pad(Math.floor(minuteOfDay(absoluteMinute) / 60))}:${pad(minuteOfDay(absoluteMinute) % 60)}`;
+    const traditionalTime = formatTraditionalTime(absoluteMinute);
+    const exactWithTraditional = traditionalTime ? `${formattedClock?.time || exactTime}（${traditionalTime}）` : (formattedClock?.time || exactTime);
 
     if (clock.anchored) {
         const dateText = formattedClock?.date || `${formattedClock?.year || ''}年${formattedClock?.month || ''}月${formattedClock?.dayOfMonth || ''}日`;
         if (mode === 'anchor') {
             const label = precision === 'minute'
-                ? `${dateText} ${formattedClock?.time || exactTime}`
+                ? `${dateText} ${exactWithTraditional}`
                 : precision === 'daypart' && daypart
                     ? `${dateText} · ${daypart}`
                     : dateText;
@@ -720,9 +683,9 @@ export function buildClockAuthorityLines(state, formattedClock, mode = 'full') {
         }
         if (precision === 'minute') {
             return [
-                `权威主世界时间：${state?.world?.name || '主世界'} · ${formattedClock?.stamp || `${dateText} ${exactTime}`}`,
-                `权威日期字段：year=${formattedClock?.year}; month=${formattedClock?.month}; day=${formattedClock?.dayOfMonth}; time=${formattedClock?.time || exactTime}`,
-                '时间一致性规则：主世界时间由世界背面维护，是本轮正文的事实源。若正文显示日期或钟点，必须与这里一致；不得保留旧日期、无因果倒退或自行另起一天。',
+                `权威主世界时间：${state?.world?.name || '主世界'} · ${formattedClock?.stamp || `${dateText} ${exactTime}`} · 十二时辰 ${traditionalTime}`,
+                `权威日期字段：year=${formattedClock?.year}; month=${formattedClock?.month}; day=${formattedClock?.dayOfMonth}; time=${formattedClock?.time || exactTime}; traditional_time=${traditionalTime}`,
+                '时间一致性规则：24小时制与十二时辰只是同一世界钟的两种表达。若正文使用子丑寅卯等时辰或“几刻”，必须与权威钟点一致；不得另起一套时间线。',
                 `若输出“时间与地点”栏，日期应写成：${formattedClock?.year}年${formattedClock?.month}月${formattedClock?.dayOfMonth}日。`,
                 '正文只负责叙事；本轮实际经过多久会在正文结束后由世界背面结算，不要为了推进剧情自行篡改世界钟。',
             ];
@@ -730,7 +693,7 @@ export function buildClockAuthorityLines(state, formattedClock, mode = 'full') {
         if (precision === 'daypart' && daypart) {
             return [
                 `权威主世界时间：${dateText} · ${daypart}（具体钟点未确定）`,
-                '日期和时段是事实；正文不得把它写回旧日期、跳到别的日期，也不要擅自补造精确分钟。若本轮明确给出可靠钟点，世界背面会在正文后提升时间精度。',
+                '日期和时段是事实；正文不得把它写回旧日期、跳到别的日期，也不要擅自补造精确分钟。若本轮明确给出可靠钟点或“某时某刻”，世界背面会在正文后提升时间精度。',
             ];
         }
         return [
@@ -740,7 +703,7 @@ export function buildClockAuthorityLines(state, formattedClock, mode = 'full') {
     }
 
     const relativeLabel = precision === 'minute'
-        ? `故事第 ${relativeDay} 日 ${exactTime}`
+        ? `故事第 ${relativeDay} 日 ${exactTime}${traditionalTime ? `（${traditionalTime}）` : ''}`
         : precision === 'daypart' && daypart
             ? `故事第 ${relativeDay} 日 · ${daypart}`
             : `故事第 ${relativeDay} 日`;
@@ -755,9 +718,9 @@ export function buildClockAuthorityLines(state, formattedClock, mode = 'full') {
         '世界钟已经存在，只是尚未绑定具体历法日期。正文不明确时间时继续沿用这个世界时间，不得因为缺少年月日就重新猜“现在是哪一天”。',
         '若正文明确给出可靠年月日，世界背面会在正文结束后把现有故事日序映射到该历法；此前已经经过的时间不会被抹掉。',
         precision === 'daypart'
-            ? '当前只知道时段，不要擅自补造精确钟点。'
+            ? '当前只知道时段或时辰，不要擅自补造精确钟点。'
             : precision === 'minute'
-                ? '当前相对钟点已经明确；除非剧情真实经过时间，否则保持连续。'
+                ? '当前相对钟点已经明确；24小时制与十二时辰可互换表达，但除非剧情真实经过时间，否则保持连续。'
                 : '当前只确定故事日序；不要擅自补造精确钟点。',
     ];
 }

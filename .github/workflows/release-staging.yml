@@ -1,0 +1,30 @@
+name: World Backstage Release Staging
+
+on:
+  push:
+    branches:
+      - release-2.5.7-staging
+
+permissions:
+  contents: write
+
+jobs:
+  export-current:
+    if: ${{ !contains(github.event.head_commit.message, '[candidate]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package current staging source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --output=/tmp/world-backstage-production-staging.tar.gz HEAD
+          sha256sum /tmp/world-backstage-production-staging.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-staging-source
+          path: /tmp/world-backstage-production-staging.tar.gz
+          if-no-files-found: error
+          retention-days: 1

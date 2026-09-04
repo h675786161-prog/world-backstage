@@ -1,0 +1,25 @@
+name: Probe validated release candidate access
+
+on:
+  push:
+    branches: [release-2.5.7-transfer]
+    paths: ['.github/workflows/release-transfer-probe.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Probe candidate ref without exposing credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://x-access-token:${GH_TOKEN}@github.com/h675786161-prog/wordbankstage-test.git"
+          result="$(git ls-remote "$url" refs/heads/release-candidate-2.5.7)"
+          test "$result" = 'bd5aec433794844b923d0f532ac12c07e3962034	refs/heads/release-candidate-2.5.7'
+          echo 'candidate_access=ok'

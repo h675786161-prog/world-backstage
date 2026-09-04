@@ -5,7 +5,6 @@ const AUTO_CHECK_DELAY_MS = 5000;
 const STORAGE_PREFIX = 'world-backstage:update-manager:';
 const NOTICE_ID = 'world-backstage-update-notice';
 const STYLE_ID = 'world-backstage-update-style';
-const CONTROL_CLASS = 'wb-update-check-control';
 
 function nowMs() {
     return Date.now();
@@ -141,31 +140,6 @@ function installStyles() {
             font: inherit;
         }
         #${NOTICE_ID} button[data-wb-update-now] { background: color-mix(in srgb, currentColor 13%, transparent); }
-        #world-backstage-root .${CONTROL_CLASS} {
-            position: relative;
-            flex: 0 0 auto;
-        }
-        #world-backstage-root .${CONTROL_CLASS} .wb-update-control-glyph {
-            display: inline-grid;
-            place-items: center;
-            width: 1em;
-            height: 1em;
-            font-size: 15px;
-            line-height: 1;
-            transform: translateY(-.5px);
-        }
-        #world-backstage-root .${CONTROL_CLASS}.is-update-available::after {
-            position: absolute;
-            top: 5px;
-            right: 5px;
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: var(--wb-amber, #c6aa74);
-            box-shadow: 0 0 0 2px var(--wb-bg, transparent);
-            content: '';
-            pointer-events: none;
-        }
     `;
     document.head.appendChild(style);
 }
@@ -186,8 +160,6 @@ const runtime = {
     remoteUrl: '',
     commitHash: '',
     error: '',
-    observer: null,
-    syncQueued: false,
 };
 
 function publicStatus() {
@@ -262,42 +234,6 @@ function renderNotice({ force = false } = {}) {
     if (copy && copy.textContent !== nextCopy) copy.textContent = nextCopy;
 }
 
-function syncPanelControl() {
-    if (typeof document === 'undefined') return;
-    const actions = document.querySelector('#world-backstage-root .wb-header-actions');
-    if (!actions) return;
-
-    let button = document.querySelector(`#world-backstage-root .${CONTROL_CLASS}`);
-    if (button && button.parentElement !== actions) {
-        button.remove();
-        button = null;
-    }
-
-    if (!button) {
-        button = document.createElement('button');
-        button.type = 'button';
-        button.className = `wb-round-action ${CONTROL_CLASS}`;
-        button.innerHTML = '<span class="wb-update-control-glyph" aria-hidden="true">↻</span>';
-        button.addEventListener('click', () => void checkForUpdates({ force: true, notify: true }));
-        const collapse = actions.querySelector('[data-wb-action="toggle-panel"]');
-        actions.insertBefore(button, collapse || null);
-    }
-
-    button.classList.toggle('is-update-available', runtime.updateAvailable);
-    const nextLabel = runtime.updateAvailable ? '世界背面有更新，检查更新' : '检查世界背面更新';
-    if (button.getAttribute('aria-label') !== nextLabel) button.setAttribute('aria-label', nextLabel);
-    if (button.getAttribute('title') !== nextLabel) button.setAttribute('title', nextLabel);
-}
-
-function queuePanelSync() {
-    if (runtime.syncQueued) return;
-    runtime.syncQueued = true;
-    queueMicrotask(() => {
-        runtime.syncQueued = false;
-        syncPanelControl();
-    });
-}
-
 async function discoverGlobalLocation(fetchImpl = globalThis.fetch) {
     if (typeof fetchImpl !== 'function') return null;
     try {
@@ -351,7 +287,6 @@ export async function checkForUpdates({
 
     if (!force && !shouldAutoCheck(stored.lastCheckedAt, now)) {
         renderNotice();
-        syncPanelControl();
         return publicStatus();
     }
 
@@ -393,7 +328,6 @@ export async function checkForUpdates({
         if (notify) toast('检查更新失败了；现有世界背面不受影响，可以稍后再试。', 'warning');
     }
 
-    syncPanelControl();
     dispatchStatus();
     return publicStatus();
 }
@@ -427,7 +361,6 @@ export async function updateNow({ fetchImpl = globalThis.fetch } = {}) {
             `;
         }
         toast('世界背面已经更新，刷新酒馆后生效～', 'success');
-        syncPanelControl();
         dispatchStatus();
         return { ...publicStatus(), result: data };
     } catch (error) {
@@ -454,9 +387,6 @@ function initBrowserUpdateManager() {
     runtime.commitHash = String(stored.commitHash || '');
     installStyles();
     renderNotice();
-    queuePanelSync();
-    runtime.observer = new MutationObserver(queuePanelSync);
-    runtime.observer.observe(document.documentElement, { childList: true, subtree: true });
 
     globalThis.worldBackstageUpdateManager = {
         check: options => checkForUpdates({ force: true, notify: true, ...(options || {}) }),

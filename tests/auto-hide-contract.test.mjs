@@ -35,3 +35,16 @@ test('auto-hide UI explains the five-floor buffer and memory-injection dependenc
     assert.match(uiSource, /固定留最近 5 层缓冲/);
     assert.match(uiSource, /长期记忆注入关闭时不会工作/);
 });
+
+
+test('plugin load and chat switches reconcile stale hidden state', () => {
+    assert.match(indexSource, /function reconcileAutoHidePrerequisites/);
+    assert.match(
+        indexSource,
+        /restoreLatestBranch\(\);[\s\S]*?reconcileAutoHidePrerequisites\(currentChatToken\(\)\)/,
+    );
+    assert.match(
+        indexSource,
+        /function onChatChanged\([\s\S]*?reconcileAutoHidePrerequisites\(currentChatToken\(\)\)/,
+    );
+});

@@ -1722,6 +1722,32 @@ async function restoreAutoHiddenFloors({ quiet = false } = {}) {
     return { restoredCount: messageIds.length, messageIds };
 }
 
+async function reconcileAutoHidePrerequisites(expectedChatToken = currentChatToken()) {
+    const context = getContext();
+    if (
+        !context
+        || !Array.isArray(context.chat)
+        || expectedChatToken !== currentChatToken()
+    ) {
+        return { restoredCount: 0, messageIds: [] };
+    }
+
+    const settings = getSettings();
+    if (settings.enabled && settings.memorySystemEnabled && settings.injectionMemory) {
+        return { restoredCount: 0, messageIds: [] };
+    }
+
+    if (settings.autoHideArchivedFloors) {
+        settings.autoHideArchivedFloors = false;
+        context.extensionSettings[MODULE_ID] = settings;
+        saveSettings(['autoHideArchivedFloors']);
+        syncSettingsEntry();
+        runtime.ui?.render();
+    }
+
+    return restoreAutoHiddenFloors({ quiet: true });
+}
+
 function branchSourceKey(messageId, message, swipeId = message?.swipe_id ?? 0) {
     const text = message?.swipes?.[swipeId] ?? message?.mes ?? '';
     return `${messageId}:${swipeId}:${hashText(text)}`;
@@ -5985,6 +6011,9 @@ function onChatChanged() {
         restoreLatestBranch();
         syncSettingsEntry();
         if (compactBranchSnapshotStorage()) void getContext()?.saveChat?.();
+        void reconcileAutoHidePrerequisites(currentChatToken()).catch(error => {
+            console.warn('[世界背面] 自动隐藏安全校验失败', error);
+        });
         scheduleAutoHideArchivedFloors(120);
         schedulePendingCatchUp();
     }, 80);
@@ -12636,6 +12665,10 @@ function initialize() {
     registerEvents();
     registerDebugCheck();
     restoreLatestBranch();
+    void reconcileAutoHidePrerequisites(currentChatToken()).catch(error => {
+        console.warn('[世界背面] 自动隐藏安全校验失败', error);
+    });
+    scheduleAutoHideArchivedFloors(120);
     console.info('[世界背面] 世界状态引擎已加载');
 }
 

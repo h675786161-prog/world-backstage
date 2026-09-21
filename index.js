@@ -1704,12 +1704,12 @@ function scheduleAutoHideArchivedFloors(delay = 140, expectedChatToken = current
     return true;
 }
 
-async function restoreAutoHiddenFloors() {
+async function restoreAutoHiddenFloors({ quiet = false } = {}) {
     const context = getContext();
     if (!context || !Array.isArray(context.chat)) return { restoredCount: 0, messageIds: [] };
     const messageIds = restoreAutoHiddenMessages(context.chat);
     if (!messageIds.length) {
-        toast('当前聊天没有由世界背面自动隐藏的楼层。', 'info');
+        if (!quiet) toast('当前聊天没有由世界背面自动隐藏的楼层。', 'info');
         return { restoredCount: 0, messageIds: [] };
     }
 
@@ -1718,7 +1718,7 @@ async function restoreAutoHiddenFloors() {
     }
 
     await context.saveChat?.();
-    toast(`已恢复 ${messageIds.length} 层由世界背面自动隐藏的正文。`, 'success');
+    if (!quiet) toast(`已恢复 ${messageIds.length} 层由世界背面自动隐藏的正文。`, 'success');
     return { restoredCount: messageIds.length, messageIds };
 }
 
@@ -11510,7 +11510,16 @@ async function handleUiAction(action, payload = {}) {
     if (action === 'update-settings') {
         const context = getContext();
         const settings = getSettings();
+        const autoHideDependencyDisabled = (
+            payload.enabled === false
+            || payload.memorySystemEnabled === false
+            || payload.injectionMemory === false
+            || payload.autoHideArchivedFloors === false
+        );
         Object.assign(settings, payload);
+        if (!settings.enabled || !settings.memorySystemEnabled || !settings.injectionMemory) {
+            settings.autoHideArchivedFloors = false;
+        }
         if (payload.memorySystemEnabled === false) {
             if (runtime.autoMemoryTimer !== null) {
                 window.clearTimeout(runtime.autoMemoryTimer);
@@ -11523,6 +11532,20 @@ async function handleUiAction(action, payload = {}) {
         }
         context.extensionSettings[MODULE_ID] = settings;
         saveSettings(Object.keys(payload || {}));
+        let autoHideRestoreResult = null;
+        if (autoHideDependencyDisabled) {
+            if (runtime.autoHideTimer !== null) {
+                window.clearTimeout(runtime.autoHideTimer);
+                runtime.autoHideTimer = null;
+            }
+            autoHideRestoreResult = await restoreAutoHiddenFloors({ quiet: true });
+            if (autoHideRestoreResult.restoredCount > 0) {
+                toast(
+                    `自动隐藏已停止，并恢复 ${autoHideRestoreResult.restoredCount} 层旧正文。`,
+                    'success',
+                );
+            }
+        }
         if (Object.prototype.hasOwnProperty.call(payload, 'recordPlayerCharacter')) {
             const store = getStore();
             store.currentState = applyPlayerCharacterRecordingPolicy(store.currentState, settings);
@@ -11544,7 +11567,7 @@ async function handleUiAction(action, payload = {}) {
         ) {
             window.setTimeout(schedulePendingCatchUp, 40);
         }
-        return;
+        return autoHideRestoreResult;
     }
 
     if (action === 'lingqi-send-message') {
@@ -11649,8 +11672,11 @@ async function handleUiAction(action, payload = {}) {
     }
 
     if (action === 'restore-auto-hidden-floors') {
-        await handleUiAction('update-settings', { autoHideArchivedFloors: false });
-        return restoreAutoHiddenFloors();
+        const result = await handleUiAction('update-settings', { autoHideArchivedFloors: false });
+        if (!result?.restoredCount) {
+            toast('自动隐藏已经关闭；当前没有需要恢复的楼层。', 'info');
+        }
+        return result;
     }
 
     if (action === 'bootstrap-history') {

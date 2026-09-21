@@ -159,9 +159,8 @@ import {
 import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
 import {
     AUTO_HIDE_KEEP_RECENT_MESSAGES,
-    AUTO_HIDDEN_MESSAGE_KEY,
-    autoHideCandidateMessageIds,
-    autoHiddenMessageIds,
+    markAutoHiddenMessages,
+    restoreAutoHiddenMessages,
 } from './auto-hide.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
@@ -1671,23 +1670,12 @@ async function applyAutoHideArchivedFloors({
     }
 
     const indexedThroughMessageId = Number(getState()?.storyMemory?.indexedThroughMessageId ?? -1);
-    const messageIds = autoHideCandidateMessageIds(context.chat, indexedThroughMessageId, {
+    const messageIds = markAutoHiddenMessages(context.chat, indexedThroughMessageId, {
         keepRecent: AUTO_HIDE_KEEP_RECENT_MESSAGES,
     });
     if (!messageIds.length) return { hiddenCount: 0, messageIds: [] };
 
-    const hiddenAt = new Date().toISOString();
     for (const messageId of messageIds) {
-        const message = context.chat[messageId];
-        if (!message || message.is_system) continue;
-        message.is_system = true;
-        message.extra ||= {};
-        message.extra[AUTO_HIDDEN_MESSAGE_KEY] = {
-            version: 1,
-            hiddenAt,
-            indexedThroughMessageId,
-            keepRecent: AUTO_HIDE_KEEP_RECENT_MESSAGES,
-        };
         setMessageHiddenDomState(messageId, true);
     }
 
@@ -1715,17 +1703,13 @@ function scheduleAutoHideArchivedFloors(delay = 140, expectedChatToken = current
 async function restoreAutoHiddenFloors() {
     const context = getContext();
     if (!context || !Array.isArray(context.chat)) return { restoredCount: 0, messageIds: [] };
-    const messageIds = autoHiddenMessageIds(context.chat);
+    const messageIds = restoreAutoHiddenMessages(context.chat);
     if (!messageIds.length) {
         toast('当前聊天没有由世界背面自动隐藏的楼层。', 'info');
         return { restoredCount: 0, messageIds: [] };
     }
 
     for (const messageId of messageIds) {
-        const message = context.chat[messageId];
-        if (!message?.extra?.[AUTO_HIDDEN_MESSAGE_KEY]) continue;
-        message.is_system = false;
-        delete message.extra[AUTO_HIDDEN_MESSAGE_KEY];
         setMessageHiddenDomState(messageId, false);
     }
 

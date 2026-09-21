@@ -43,3 +43,37 @@ export function autoHiddenMessageIds(chat) {
     }
     return ids;
 }
+
+
+export function markAutoHiddenMessages(chat, indexedThroughMessageId, {
+    keepRecent = AUTO_HIDE_KEEP_RECENT_MESSAGES,
+    hiddenAt = new Date().toISOString(),
+} = {}) {
+    const messages = Array.isArray(chat) ? chat : [];
+    const messageIds = autoHideCandidateMessageIds(messages, indexedThroughMessageId, { keepRecent });
+    for (const messageId of messageIds) {
+        const message = messages[messageId];
+        if (!message || message.is_system) continue;
+        message.is_system = true;
+        message.extra ||= {};
+        message.extra[AUTO_HIDDEN_MESSAGE_KEY] = {
+            version: 1,
+            hiddenAt,
+            indexedThroughMessageId: Number(indexedThroughMessageId),
+            keepRecent,
+        };
+    }
+    return messageIds;
+}
+
+export function restoreAutoHiddenMessages(chat) {
+    const messages = Array.isArray(chat) ? chat : [];
+    const messageIds = autoHiddenMessageIds(messages);
+    for (const messageId of messageIds) {
+        const message = messages[messageId];
+        if (!message?.extra?.[AUTO_HIDDEN_MESSAGE_KEY]) continue;
+        message.is_system = false;
+        delete message.extra[AUTO_HIDDEN_MESSAGE_KEY];
+    }
+    return messageIds;
+}

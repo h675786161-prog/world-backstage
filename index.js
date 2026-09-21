@@ -157,12 +157,18 @@ import {
     parseLingqiLocalQueryRequest,
 } from './lingqi-skills.js';
 import { LINGQI_MASCOT_DATA_URLS } from './lingqi-assets.js';
+import {
+    AUTO_HIDE_KEEP_RECENT_MESSAGES,
+    AUTO_HIDDEN_MESSAGE_KEY,
+    autoHideCandidateMessageIds,
+    autoHiddenMessageIds,
+} from './auto-hide.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
 const PLUGIN_VERSION = '2.5.7';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 31,
+    settingsVersion: 32,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -190,6 +196,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     pendingSimulationPromptEnabled: false,
     autoRetryCount: 1,
     memoryAutoIndexInterval: 10,
+    autoHideArchivedFloors: false,
     backgroundNpcBudget: 4,
     enhancedBackgroundSimulation: false,
     customSimulationInstruction: '',
@@ -294,6 +301,7 @@ const runtime = {
     pendingManualSimulation: null,
     manualSimulationTimer: null,
     autoMemoryTimer: null,
+    autoHideTimer: null,
     publicImpactTimer: null,
     publicOpinionTimer: null,
     manualUndo: null,
@@ -976,6 +984,7 @@ function getSettings() {
         50,
         Math.max(0, Number.parseInt(settings.memoryAutoIndexInterval, 10) || 0),
     );
+    settings.autoHideArchivedFloors = Boolean(settings.autoHideArchivedFloors);
     settings.backgroundNpcBudget = Math.max(
         0,
         Number.parseInt(settings.backgroundNpcBudget, 10) || 0,
@@ -1004,7 +1013,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 31;
+    settings.settingsVersion = 32;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -1047,7 +1056,7 @@ function getSettings() {
         : settings.orbEnabled !== false;
     settings.orbEdgeHide = Boolean(settings.orbEdgeHide);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 31) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 32) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -1626,6 +1635,7 @@ function saveStore(store, { immediate = false } = {}) {
     }
 
     context.chatMetadata[STATE_KEY] = store;
+    scheduleAutoHideArchivedFloors();
     if (immediate && typeof context.saveMetadata === 'function') {
         return Promise.resolve(context.saveMetadata());
     } else {
@@ -1636,6 +1646,92 @@ function saveStore(store, { immediate = false } = {}) {
 
 function getState() {
     return getStore().currentState;
+}
+
+function setMessageHiddenDomState(messageId, hidden) {
+    const messageBlock = globalThis.document?.querySelector?.(`.mes[mesid="${Number(messageId)}"]`);
+    if (messageBlock) messageBlock.setAttribute('is_system', String(Boolean(hidden)));
+}
+
+async function applyAutoHideArchivedFloors({
+    quiet = true,
+    expectedChatToken = currentChatToken(),
+} = {}) {
+    const settings = getSettings();
+    const context = getContext();
+    if (
+        !settings.enabled
+        || !settings.memorySystemEnabled
+        || !settings.autoHideArchivedFloors
+        || !context
+        || expectedChatToken !== currentChatToken()
+        || !Array.isArray(context.chat)
+    ) {
+        return { hiddenCount: 0, messageIds: [] };
+    }
+
+    const indexedThroughMessageId = Number(getState()?.storyMemory?.indexedThroughMessageId ?? -1);
+    const messageIds = autoHideCandidateMessageIds(context.chat, indexedThroughMessageId, {
+        keepRecent: AUTO_HIDE_KEEP_RECENT_MESSAGES,
+    });
+    if (!messageIds.length) return { hiddenCount: 0, messageIds: [] };
+
+    const hiddenAt = new Date().toISOString();
+    for (const messageId of messageIds) {
+        const message = context.chat[messageId];
+        if (!message || message.is_system) continue;
+        message.is_system = true;
+        message.extra ||= {};
+        message.extra[AUTO_HIDDEN_MESSAGE_KEY] = {
+            version: 1,
+            hiddenAt,
+            indexedThroughMessageId,
+            keepRecent: AUTO_HIDE_KEEP_RECENT_MESSAGES,
+        };
+        setMessageHiddenDomState(messageId, true);
+    }
+
+    await context.saveChat?.();
+    if (!quiet) {
+        toast(
+            `已自动隐藏 ${messageIds.length} 层旧正文，最近 ${AUTO_HIDE_KEEP_RECENT_MESSAGES} 层已归档正文仍保留在上下文里。`,
+            'success',
+        );
+    }
+    return { hiddenCount: messageIds.length, messageIds };
+}
+
+function scheduleAutoHideArchivedFloors(delay = 140, expectedChatToken = currentChatToken()) {
+    if (runtime.autoHideTimer !== null) window.clearTimeout(runtime.autoHideTimer);
+    runtime.autoHideTimer = window.setTimeout(() => {
+        runtime.autoHideTimer = null;
+        if (expectedChatToken !== currentChatToken()) return;
+        void applyAutoHideArchivedFloors({ expectedChatToken }).catch(error => {
+            console.warn('[世界背面] 自动隐藏旧楼层失败', error);
+        });
+    }, Math.max(0, Number(delay) || 0));
+}
+
+async function restoreAutoHiddenFloors() {
+    const context = getContext();
+    if (!context || !Array.isArray(context.chat)) return { restoredCount: 0, messageIds: [] };
+    const messageIds = autoHiddenMessageIds(context.chat);
+    if (!messageIds.length) {
+        toast('当前聊天没有由世界背面自动隐藏的楼层。', 'info');
+        return { restoredCount: 0, messageIds: [] };
+    }
+
+    for (const messageId of messageIds) {
+        const message = context.chat[messageId];
+        if (!message?.extra?.[AUTO_HIDDEN_MESSAGE_KEY]) continue;
+        message.is_system = false;
+        delete message.extra[AUTO_HIDDEN_MESSAGE_KEY];
+        setMessageHiddenDomState(messageId, false);
+    }
+
+    await context.saveChat?.();
+    toast(`已恢复 ${messageIds.length} 层由世界背面自动隐藏的正文。`, 'success');
+    return { restoredCount: messageIds.length, messageIds };
 }
 
 function branchSourceKey(messageId, message, swipeId = message?.swipe_id ?? 0) {
@@ -5857,6 +5953,10 @@ function onChatChanged() {
         window.clearTimeout(runtime.autoMemoryTimer);
         runtime.autoMemoryTimer = null;
     }
+    if (runtime.autoHideTimer !== null) {
+        window.clearTimeout(runtime.autoHideTimer);
+        runtime.autoHideTimer = null;
+    }
     if (runtime.socialPulseTimer !== null) {
         window.clearTimeout(runtime.socialPulseTimer);
         runtime.socialPulseTimer = null;
@@ -5897,6 +5997,7 @@ function onChatChanged() {
         restoreLatestBranch();
         syncSettingsEntry();
         if (compactBranchSnapshotStorage()) void getContext()?.saveChat?.();
+        scheduleAutoHideArchivedFloors(120);
         schedulePendingCatchUp();
     }, 80);
 }
@@ -11446,6 +11547,9 @@ async function handleUiAction(action, payload = {}) {
         if (payload.publicOpinionAutoEnabled === true) {
             scheduleAutoPublicOpinion(getState(), 120);
         }
+        if (payload.autoHideArchivedFloors === true) {
+            scheduleAutoHideArchivedFloors(20);
+        }
         if (
             (payload.worldAutoEnabled === true)
             || (payload.autoSimulationMode && getSettings().worldAutoEnabled)
@@ -11554,6 +11658,10 @@ async function handleUiAction(action, payload = {}) {
 
     if (action === 'scan-history') {
         return scanStoryMemoryHistory();
+    }
+
+    if (action === 'restore-auto-hidden-floors') {
+        return restoreAutoHiddenFloors();
     }
 
     if (action === 'bootstrap-history') {

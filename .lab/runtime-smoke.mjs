@@ -46,11 +46,11 @@ try {
     await page.evaluate(() => globalThis.worldBackstageHost.open());
     await page.waitForTimeout(150);
     const memoryTab = page.locator('[data-wb-action="set-view"][data-view="memory"]').first();
-    if (await memoryTab.count()) await memoryTab.click();
+    if (await memoryTab.count()) await memoryTab.click({ force: true });
     await page.waitForTimeout(120);
     const settingsButton = page.locator('[data-wb-action="toggle-module-settings"][data-view="memory"]').first();
     if (!(await settingsButton.count())) throw new Error('Memory settings button not rendered');
-    await settingsButton.click();
+    await settingsButton.click({ force: true });
     await page.waitForTimeout(120);
 
     const toggle = page.locator('[data-wb-setting="autoHideArchivedFloors"]').first();
@@ -58,10 +58,16 @@ try {
     if (!(await toggle.count())) throw new Error('Auto-hide setting toggle not rendered');
     if (!(await restoreButton.count())) throw new Error('Auto-hide restore button not rendered');
 
-    await toggle.check();
+    await toggle.check({ force: true });
     await page.waitForTimeout(160);
     const persistedSetting = await page.evaluate(() => (
         globalThis.SillyTavern?.getContext?.()?.extensionSettings?.world_backstage?.autoHideArchivedFloors
+    ));
+
+    await restoreButton.click({ force: true });
+    await page.waitForTimeout(160);
+    const disabledAfterRestore = await page.evaluate(() => (
+        globalThis.SillyTavern?.getContext?.()?.extensionSettings?.world_backstage?.autoHideArchivedFloors === false
     ));
 
     report = {
@@ -71,6 +77,7 @@ try {
             autoHideToggleRendered: true,
             restoreButtonRendered: true,
             persistedSetting: persistedSetting === true,
+            disabledAfterRestore,
         },
         pageErrors,
     };
@@ -79,6 +86,7 @@ try {
     if (!helper.manualHidePreserved) throw new Error('Restore touched a pre-existing manual/system hide');
     if (!helper.autoHideRestored) throw new Error('Auto-hide helper failed to restore its own messages');
     if (persistedSetting !== true) throw new Error('Auto-hide setting did not persist through the real UI');
+    if (!disabledAfterRestore) throw new Error('Restore action did not disable auto-hide before restoring floors');
     if (pageErrors.length) throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);
 } finally {
     await fs.mkdir(evidenceDir, { recursive: true });

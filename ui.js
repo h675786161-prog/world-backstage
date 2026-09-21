@@ -1596,7 +1596,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 <label class="wb-switch">
                     <input type="checkbox" data-wb-setting="autoHideArchivedFloors"
                         ${settings.autoHideArchivedFloors ? 'checked' : ''}
-                        ${!settings.injectionMemory ? 'disabled' : ''}>
+                        ${!settings.injectionMemory && !settings.autoHideArchivedFloors ? 'disabled' : ''}>
                     <i></i>
                 </label>
             </div>
@@ -2309,7 +2309,7 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
             </div>
             <div class="wb-setting-toggle">
                 <div><strong>自动隐藏已归档楼层</strong><span>只藏记忆已经收好的旧楼层，固定留最近 5 层缓冲；不删聊天。长期记忆注入关闭时不会工作。</span></div>
-                <label class="wb-switch"><input type="checkbox" data-wb-setting="autoHideArchivedFloors" ${settings.autoHideArchivedFloors ? 'checked' : ''} ${!settings.injectionMemory ? 'disabled' : ''}><i></i></label>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="autoHideArchivedFloors" ${settings.autoHideArchivedFloors ? 'checked' : ''} ${!settings.injectionMemory && !settings.autoHideArchivedFloors ? 'disabled' : ''}><i></i></label>
             </div>
             <button type="button" data-wb-action="restore-auto-hidden-floors">关闭并恢复自动隐藏楼层</button>
             ${routeSetting('history', '我整理记忆时使用的连接', '这里只告诉我整理记忆时走哪条路～Key 和地址不用再填一遍。')}

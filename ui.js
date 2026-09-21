@@ -1588,6 +1588,21 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                 </label>
             </div>
             <p class="wb-setting-explanation">要不要把记忆叼给正文看，请去「正文注入」告诉我～这里仅管记忆盒子本身还收不收新东西。</p>
+            <div class="wb-setting-toggle">
+                <div>
+                    <strong>自动隐藏已归档楼层</strong>
+                    <span>长期记忆确认收好后，把更早的楼层从 AI 上下文隐藏；始终保留最近 5 层已归档正文和全部未归档正文。聊天记录不会删除。</span>
+                </div>
+                <label class="wb-switch">
+                    <input type="checkbox" data-wb-setting="autoHideArchivedFloors"
+                        ${settings.autoHideArchivedFloors ? 'checked' : ''}>
+                    <i></i>
+                </label>
+            </div>
+            <div class="wb-history-settings">
+                <button type="button" data-wb-action="restore-auto-hidden-floors">恢复世界背面自动隐藏的楼层</button>
+                <p>只恢复世界背面自己隐藏的楼层，不会碰你手动 /hide 的内容。</p>
+            </div>
                         </div>
                     </details>
 
@@ -2291,7 +2306,12 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                 <div><strong>启用记忆系统</strong><span>关掉我就先不往记忆盒子里塞新纸片～已经放好的我压着，不丢。</span></div>
                 <label class="wb-switch"><input type="checkbox" data-wb-setting="memorySystemEnabled" ${settings.memorySystemEnabled ? 'checked' : ''}><i></i></label>
             </div>
-            ${routeSetting('history', '我整理记忆时使用的连接', '这里只告诉我整理记忆时走哪条路～Key 和地址不用再填一遍。')}
+                        <div class="wb-setting-toggle">
+                <div><strong>自动隐藏已归档楼层</strong><span>只藏记忆已经收好的旧楼层，固定留最近 5 层缓冲；不删聊天。</span></div>
+                <label class="wb-switch"><input type="checkbox" data-wb-setting="autoHideArchivedFloors" ${settings.autoHideArchivedFloors ? 'checked' : ''}><i></i></label>
+            </div>
+            <button type="button" data-wb-action="restore-auto-hidden-floors">恢复自动隐藏楼层</button>
+${routeSetting('history', '我整理记忆时使用的连接', '这里只告诉我整理记忆时走哪条路～Key 和地址不用再填一遍。')}
         </div>
         ${sectionHeading('中途接入', '我来晚了？没事。我可以从前面的聊天一路闻回来～')}
         <div class="wb-history-settings wb-flat-history-settings wb-world-bootstrap-settings">

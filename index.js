@@ -1661,6 +1661,7 @@ async function applyAutoHideArchivedFloors({
     if (
         !settings.enabled
         || !settings.memorySystemEnabled
+        || !settings.injectionMemory
         || !settings.autoHideArchivedFloors
         || !context
         || expectedChatToken !== currentChatToken()
@@ -1691,7 +1692,7 @@ async function applyAutoHideArchivedFloors({
 
 function scheduleAutoHideArchivedFloors(delay = 140, expectedChatToken = currentChatToken()) {
     const settings = getSettings();
-    if (!settings.enabled || !settings.memorySystemEnabled || !settings.autoHideArchivedFloors) return false;
+    if (!settings.enabled || !settings.memorySystemEnabled || !settings.injectionMemory || !settings.autoHideArchivedFloors) return false;
     if (runtime.autoHideTimer !== null) window.clearTimeout(runtime.autoHideTimer);
     runtime.autoHideTimer = window.setTimeout(() => {
         runtime.autoHideTimer = null;

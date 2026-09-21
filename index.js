@@ -1690,6 +1690,8 @@ async function applyAutoHideArchivedFloors({
 }
 
 function scheduleAutoHideArchivedFloors(delay = 140, expectedChatToken = currentChatToken()) {
+    const settings = getSettings();
+    if (!settings.enabled || !settings.memorySystemEnabled || !settings.autoHideArchivedFloors) return false;
     if (runtime.autoHideTimer !== null) window.clearTimeout(runtime.autoHideTimer);
     runtime.autoHideTimer = window.setTimeout(() => {
         runtime.autoHideTimer = null;
@@ -1698,6 +1700,7 @@ function scheduleAutoHideArchivedFloors(delay = 140, expectedChatToken = current
             console.warn('[世界背面] 自动隐藏旧楼层失败', error);
         });
     }, Math.max(0, Number(delay) || 0));
+    return true;
 }
 
 async function restoreAutoHiddenFloors() {
@@ -11645,6 +11648,7 @@ async function handleUiAction(action, payload = {}) {
     }
 
     if (action === 'restore-auto-hidden-floors') {
+        await handleUiAction('update-settings', { autoHideArchivedFloors: false });
         return restoreAutoHiddenFloors();
     }
 

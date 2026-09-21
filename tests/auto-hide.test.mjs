@@ -7,6 +7,8 @@ import {
     autoHideCandidateMessageIds,
     autoHideThroughMessageId,
     autoHiddenMessageIds,
+    markAutoHiddenMessages,
+    restoreAutoHiddenMessages,
 } from '../auto-hide.js';
 
 test('keeps the newest five indexed messages visible', () => {
@@ -44,4 +46,22 @@ test('finds only messages owned by the auto-hide marker', () => {
         {},
     ];
     assert.deepEqual(autoHiddenMessageIds(chat), [1, 2]);
+});
+
+
+test('marks only eligible messages and can restore only its own hides', () => {
+    const chat = Array.from({ length: 10 }, () => ({ extra: {} }));
+    chat[1].is_system = true;
+
+    const hidden = markAutoHiddenMessages(chat, 9, { hiddenAt: '2026-09-21T00:00:00.000Z' });
+    assert.deepEqual(hidden, [0, 2, 3, 4]);
+    assert.equal(chat[0].is_system, true);
+    assert.equal(chat[0].extra[AUTO_HIDDEN_MESSAGE_KEY].version, 1);
+    assert.equal(chat[1].extra[AUTO_HIDDEN_MESSAGE_KEY], undefined);
+
+    const restored = restoreAutoHiddenMessages(chat);
+    assert.deepEqual(restored, [0, 2, 3, 4]);
+    assert.equal(chat[0].is_system, false);
+    assert.equal(chat[1].is_system, true);
+    assert.equal(chat[0].extra[AUTO_HIDDEN_MESSAGE_KEY], undefined);
 });

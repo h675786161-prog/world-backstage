@@ -92,8 +92,21 @@ try {
     // not just a separate in-memory array passed to the helper.
     await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
-        if (!context.characters.length) throw new Error('No runtime character available');
-        await context.selectCharacterById(0);
+        if (!context.characters.length) {
+            const response = await fetch('/api/characters/create', {
+                method: 'POST', headers: {
+                    ...context.getRequestHeaders(), 'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ ch_name: 'LAB记忆验证角色',
+                    description: '仅供隔离测试的成年角色。', first_mes: '欢迎来到记忆测试。' }),
+            });
+            if (!response.ok) throw new Error(`Could not create LAB character: ${response.status}`);
+            const { getCharacters } = await import('/script.js');
+            await getCharacters();
+        }
+        const loadedContext = globalThis.SillyTavern.getContext();
+        if (!loadedContext.characters.length) throw new Error('LAB character was not loaded');
+        await loadedContext.selectCharacterById(0);
     });
     await page.waitForFunction(() => Boolean(globalThis.SillyTavern.getContext().chatId));
     await page.waitForTimeout(350);

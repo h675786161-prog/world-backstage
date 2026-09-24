@@ -437,6 +437,52 @@ test('archived narrative is recalled in the foreground without turning hidden fa
     assert.match(packet.supportText, /不代表现场每个人都知情/);
 });
 
+test('each memory switch disables narrative recall while world injection remains enabled', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: 'DIGEST_MUST_STAY_OFF' },
+        turn_summaries: [{ source_message_id: 0, summary: 'LATEST_MUST_STAY_OFF' }],
+    }, { startMessageId: 0, endMessageId: 0 });
+    for (const key of ['memorySystemEnabled', 'memoryPromptInjection', 'injectionMemory']) {
+        const packet = buildInjectionPackage(state, { enabled: true, [key]: false });
+        assert.ok(packet.authorityText.length > 0);
+        assert.doesNotMatch(packet.text, /DIGEST_MUST_STAY_OFF|LATEST_MUST_STAY_OFF/, key);
+    }
+});
+
+test('crowded world state preserves narrative recall within the total injection budget', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: '持续约定：明天归还钥匙。' },
+        turn_summaries: [{ source_message_id: 0, summary: '最新行动：把蓝钥匙交给林医生。' }],
+    }, { startMessageId: 0, endMessageId: 0 });
+    state.people = Array.from({ length: 8 }, (_, i) => ({
+        id: `person_${i}`, name: `人物${i}`, location: '地点'.repeat(100),
+        action: '行动'.repeat(200), relevance: 5, knowledge: 'known', updatedAt: 0,
+    }));
+    const packet = buildInjectionPackage(state, { enabled: true }, '钥匙');
+    assert.match(packet.supportText, /明天归还钥匙/);
+    assert.match(packet.supportText, /蓝钥匙交给林医生/);
+    assert.ok(packet.text.length <= 4200);
+    assert.match(packet.supportText, /<\/world_backstage_support>$/);
+    assert.match(packet.authorityText, /<\/world_backstage_state>$/);
+});
+
+test('ineligible manual summaries cannot consume the narrative recall slots', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        turn_summaries: [
+            { source_message_id: 0, summary: '旧约：蓝钥匙周五归还。', tags: ['钥匙'] },
+            { source_message_id: 1, summary: '最新：回到走廊。' },
+        ],
+    }, { startMessageId: 0, endMessageId: 1 });
+    state.storyMemory.summaries.push(...Array.from({ length: 6 }, (_, i) => ({
+        id: `manual_${i}`, startMessageId: 2, endMessageId: 9, level: 2,
+        summary: 'MANUAL_SECRET_DO_NOT_RECALL', manual: true,
+        hierarchyManaged: true, locked: true, important: true, tags: ['钥匙'],
+    })));
+    const packet = buildInjectionPackage(state, { enabled: true }, '钥匙');
+    assert.match(packet.supportText, /蓝钥匙周五归还/);
+    assert.doesNotMatch(packet.supportText, /MANUAL_SECRET_DO_NOT_RECALL/);
+});
+
 test('history prompts request all four memory layers', () => {
     const prompt = buildHistoryIndexPrompt(createInitialState(), {
         messages: [{ id: 1, role: 'assistant', content: 'A promise is made.' }],

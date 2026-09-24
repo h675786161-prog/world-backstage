@@ -5035,22 +5035,24 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         && !clue.archived
         && clue.status !== 'discarded'
     ));
-    const narrativeArchive = injectMemory ? selectRelevantStoryMemory(state, recentText, {
+    // Chat-derived summaries describe the written story, not omniscient NPC knowledge.
+    const foregroundSummaries = injectMemory ? asArray(state?.storyMemory?.summaries)
+        .filter(item => item?.hierarchyManaged && !item?.manual && item?.retentionState !== 'compacted') : [];
+    // Filter before ranking so ineligible summaries cannot crowd out narrative recall.
+    const narrativeArchive = injectMemory ? selectRelevantStoryMemory({
+        ...state, storyMemory: { ...state.storyMemory, summaries: foregroundSummaries },
+    }, recentText, {
         maximumFacts: 0, maximumClues: 0, maximumSummaries: 2, includeDigest: true,
     }) : { digest: null, summaries: [] };
-    // Chat-derived summaries describe the written story, not omniscient NPC knowledge.
-    const foregroundSummaries = asArray(state?.storyMemory?.summaries)
-        .filter(item => item?.hierarchyManaged && !item?.manual && item?.retentionState !== 'compacted');
-    const foregroundSummaryIds = new Set(foregroundSummaries.map(item => item.id));
     const newestTurn = foregroundSummaries
         .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL)
         .sort((a, b) => Number(b.endMessageId) - Number(a.endMessageId))[0];
-    const storyRecall = narrativeArchive.summaries
-        .filter(item => foregroundSummaryIds.has(item.id)).slice(0, 3);
-    if (newestTurn && !storyRecall.some(item => item.id === newestTurn.id)) {
-        storyRecall.push({ id: newestTurn.id, start_message_id: newestTurn.startMessageId,
+    const storyRecall = narrativeArchive.summaries.filter(item => item.id !== newestTurn?.id);
+    if (newestTurn) {
+        storyRecall.unshift({ id: newestTurn.id, start_message_id: newestTurn.startMessageId,
             end_message_id: newestTurn.endMessageId, summary: newestTurn.summary });
     }
+    storyRecall.splice(3);
     const sceneTiming = {
         strict: '只在转场、空档或角色已经自然接触到影响时显露；但已经直接撞上眼前行动的后果不能用“场面不合适”忽略。',
         smart: '次要信息可以延后；直接影响眼前行动的结果现在就应自然进入。',
@@ -5254,7 +5256,9 @@ if (foregroundInfluences.length) {
         };
     };
 
-    const authority = compactLayer(authorityLines, 4600, '</world_backstage_state>');
+    // Reserve room for continuity even when the live world state is crowded.
+    const supportReserve = supportHasContent ? 1600 : 0;
+    const authority = compactLayer(authorityLines, 4200 - supportReserve - 2, '</world_backstage_state>');
     const availableSupport = Math.min(2600, 4200 - authority.text.length - 2);
     const support = supportHasContent && availableSupport >= 120
         ? compactLayer(supportLines, availableSupport, '</world_backstage_support>')

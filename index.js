@@ -7944,7 +7944,7 @@ async function bootstrapWorldFromHistory() {
                     const parsed = extractJsonObject(raw);
                     if (!parsed) throw unreadableJsonError(raw, '世界历史回溯模型');
 
-                    const assistantIds = batch.messages
+                    const requiredSummaryIds = batch.messages
                         .map(message => Number(message.id));
                     const summarizedIds = new Set(
                         (Array.isArray(parsed.turn_summaries) ? parsed.turn_summaries : parsed.turnSummaries || [])
@@ -7952,7 +7952,7 @@ async function bootstrapWorldFromHistory() {
                             .map(item => Number(item?.source_message_id ?? item?.sourceMessageId ?? item?.message_id ?? item?.messageId))
                             .filter(Number.isFinite),
                     );
-                    const missingIds = assistantIds.filter(id => !summarizedIds.has(id));
+                    const missingIds = requiredSummaryIds.filter(id => !summarizedIds.has(id));
                     if (missingIds.length) {
                         const error = new Error(`历史回溯 L0 摘要缺失：消息 ${missingIds.join(', ')}`);
                         error.code = 'WORLD_BOOTSTRAP_L0_MISSING';
@@ -8242,7 +8242,7 @@ async function scanStoryMemoryHistory({
                     });
                     const parsed = extractJsonObject(raw);
                     if (parsed) {
-                        const assistantIds = batch.messages
+                        const requiredSummaryIds = batch.messages
                             .map(message => Number(message.id));
                         const summarizedIds = new Set(
                             (Array.isArray(parsed.turn_summaries) ? parsed.turn_summaries : parsed.turnSummaries || [])
@@ -8250,9 +8250,9 @@ async function scanStoryMemoryHistory({
                                 .map(item => Number(item?.source_message_id ?? item?.sourceMessageId ?? item?.message_id ?? item?.messageId))
                                 .filter(Number.isFinite),
                         );
-                        const missingIds = assistantIds.filter(id => !summarizedIds.has(id));
+                        const missingIds = requiredSummaryIds.filter(id => !summarizedIds.has(id));
                         const fallbackSummary = parsed?.chapter_summary ?? parsed?.chapterSummary;
-                        if (missingIds.length && !(assistantIds.length === 1 && fallbackSummary?.summary)) {
+                        if (missingIds.length && !(requiredSummaryIds.length === 1 && fallbackSummary?.summary)) {
                             const error = new Error(`L0摘要缺失：消息 ${missingIds.join(', ')}`);
                             error.code = 'MEMORY_L0_MISSING';
                             throw error;

@@ -88,9 +88,78 @@ try {
         globalThis.SillyTavern?.getContext?.()?.extensionSettings?.world_backstage?.autoHideArchivedFloors === false
     ));
 
+    // Exercise the plugin against actual ST chat metadata and extension prompts,
+    // not just a separate in-memory array passed to the helper.
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        if (!context.characters.length) throw new Error('No runtime character available');
+        await context.selectCharacterById(0);
+    });
+    await page.waitForFunction(() => Boolean(globalThis.SillyTavern.getContext().chatId));
+    await page.waitForTimeout(350);
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        Object.assign(context.extensionSettings.world_backstage, {
+            enabled: true, memorySystemEnabled: true, injectionMemory: true,
+            worldAutoEnabled: false, memoryAutoIndexInterval: 0,
+            publicOpinionAutoEnabled: false, autoHideArchivedFloors: false,
+        });
+        const chat = Array.from({ length: 12 }, (_, id) => ({
+            name: id % 2 ? context.name2 : context.name1,
+            is_user: id % 2 === 0, is_system: false,
+            mes: `LAB 正文 ${id}：在医院走廊等候。`, extra: {},
+        }));
+        chat[1].is_system = true; // Existing manual hide must remain untouched.
+        context.chat.splice(0, context.chat.length, ...chat);
+        const coveredIds = [0, 2, 4, 5, 6, 7, 8, 9, 10, 11]; // Deliberately omit floor 3.
+        const state = core.applyHistoryIndexResult(core.createInitialState(), {
+            memory_digest: { text: 'LAB持续经过：蓝钥匙仍由林医生保管，约好周五归还。' },
+            turn_summaries: coveredIds.map(id => ({
+                source_message_id: id,
+                summary: id === 11 ? 'LAB最近经历：在医院追问蓝钥匙。' : `已记录第${id}层经历。`,
+            })),
+        }, { startMessageId: 0, endMessageId: 11 });
+        const store = context.chatMetadata[core.STATE_KEY];
+        if (!store) throw new Error('World Backstage did not attach to the real chat');
+        store.currentState = state;
+        globalThis.worldBackstageHost.open();
+    });
+    const realToggle = page.locator('[data-wb-setting="autoHideArchivedFloors"]').first();
+    if (!(await realToggle.count())) {
+        await page.locator('[data-wb-action="toggle-settings"]').first().evaluate(el => el.click());
+    }
+    await realToggle.evaluate(el => { if (!el.checked) el.click(); });
+    await page.waitForFunction(() => globalThis.SillyTavern.getContext().chat[0]?.is_system === true);
+    const runtime = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const support = context.extensionPrompts.world_backstage_context_support?.value || '';
+        return {
+            hiddenIds: context.chat.flatMap((message, id) => message.extra?.world_backstage_auto_hidden ? [id] : []),
+            uncoveredVisible: context.chat[3].is_system === false,
+            recentFiveVisible: context.chat.slice(7).every(message => !message.is_system),
+            digestInjected: support.includes('蓝钥匙仍由林医生保管'),
+            latestInjected: support.includes('在医院追问蓝钥匙'),
+        };
+    });
+    await page.locator('[data-wb-setting="memorySystemEnabled"]').first().evaluate(el => {
+        if (el.checked) el.click();
+    });
+    await page.waitForFunction(() => globalThis.SillyTavern.getContext().chat[0]?.is_system === false);
+    Object.assign(runtime, await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const support = context.extensionPrompts.world_backstage_context_support?.value || '';
+        return {
+            restoredOnMemoryDisable: context.chat.every((message, id) => id === 1 || !message.is_system),
+            manualHidePreserved: context.chat[1].is_system === true,
+            memoryRemovedFromPrompt: !/LAB持续经过|LAB最近经历/.test(support),
+        };
+    }));
+
     report = {
         pluginLoaded: true,
         helper,
+        runtime,
         ui: {
             autoHideToggleRendered: true,
             restoreButtonRendered: true,
@@ -107,6 +176,12 @@ try {
     if (!helper.missingTurnsStayVisible) throw new Error('Uncovered turns were hidden from the model');
     if (persistedSetting !== true) throw new Error('Auto-hide setting did not persist through the real UI');
     if (!disabledAfterRestore) throw new Error('Restore action did not disable auto-hide before restoring floors');
+    if (JSON.stringify(runtime.hiddenIds) !== JSON.stringify([0, 2, 4, 5, 6])) {
+        throw new Error(`Unexpected real chat hidden floors: ${JSON.stringify(runtime.hiddenIds)}`);
+    }
+    for (const [key, value] of Object.entries(runtime)) {
+        if (key !== 'hiddenIds' && value !== true) throw new Error(`Real ST continuity check failed: ${key}`);
+    }
     if (pageErrors.length) throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);
 } finally {
     await fs.mkdir(evidenceDir, { recursive: true });

@@ -5035,6 +5035,22 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         && !clue.archived
         && clue.status !== 'discarded'
     ));
+    const narrativeArchive = injectMemory ? selectRelevantStoryMemory(state, recentText, {
+        maximumFacts: 0, maximumClues: 0, maximumSummaries: 2, includeDigest: true,
+    }) : { digest: null, summaries: [] };
+    // Chat-derived summaries describe the written story, not omniscient NPC knowledge.
+    const foregroundSummaries = asArray(state?.storyMemory?.summaries)
+        .filter(item => item?.hierarchyManaged && !item?.manual && item?.retentionState !== 'compacted');
+    const foregroundSummaryIds = new Set(foregroundSummaries.map(item => item.id));
+    const newestTurn = foregroundSummaries
+        .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL)
+        .sort((a, b) => Number(b.endMessageId) - Number(a.endMessageId))[0];
+    const storyRecall = narrativeArchive.summaries
+        .filter(item => foregroundSummaryIds.has(item.id)).slice(0, 3);
+    if (newestTurn && !storyRecall.some(item => item.id === newestTurn.id)) {
+        storyRecall.push({ id: newestTurn.id, start_message_id: newestTurn.startMessageId,
+            end_message_id: newestTurn.endMessageId, summary: newestTurn.summary });
+    }
     const sceneTiming = {
         strict: '只在转场、空档或角色已经自然接触到影响时显露；但已经直接撞上眼前行动的后果不能用“场面不合适”忽略。',
         smart: '次要信息可以延后；直接影响眼前行动的结果现在就应自然进入。',
@@ -5147,6 +5163,17 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         authorityLines.push('显露度只决定这些事实如何进入镜头，不决定它们是否存在。隐藏事实可以约束连续性，但不得因此让不知情角色突然知晓。');
     }
 
+    if (narrativeArchive.digest?.text || storyRecall.length) {
+        supportLines.push('此前正文的剧情记忆（只用于衔接已写出的经历；不代表现场每个人都知情，也不要求重演旧情节）：');
+        if (narrativeArchive.digest?.text) {
+            supportLines.push(`- 持续经过：${modelText(narrativeArchive.digest.text, 620)}`);
+        }
+        for (const item of storyRecall) {
+            supportLines.push(`- 第 ${item.start_message_id}—${item.end_message_id} 层：${modelText(item.summary, 330)}`);
+        }
+        supportLines.push('承接人物的承诺、关系、物品和待回应的问题；隐藏的动机及真相仍须遵守人物认知边界。');
+    }
+
     if (knownFacts.length || knownClues.length) {
         supportLines.push('与当前场景相关、且角色已经有资格知道的长期记忆：');
         for (const fact of knownFacts) {
@@ -5228,8 +5255,9 @@ if (foregroundInfluences.length) {
     };
 
     const authority = compactLayer(authorityLines, 4600, '</world_backstage_state>');
-    const support = supportHasContent
-        ? compactLayer(supportLines, 1100, '</world_backstage_support>')
+    const availableSupport = Math.min(2600, 4200 - authority.text.length - 2);
+    const support = supportHasContent && availableSupport >= 120
+        ? compactLayer(supportLines, availableSupport, '</world_backstage_support>')
         : { text: '', omitted: 0 };
 
     return {
@@ -5646,7 +5674,7 @@ export function buildWorldBootstrapPrompt(state, {
             ? `当前已有用户维护的世界背景设定：${compactState.world.background}`
             : '当前没有额外填写世界背景设定。',
         '世界背景设定不是历史回溯的输出字段，也不能由聊天回溯覆盖；历史只能在这份地基上恢复已经发生的状态。',
-        '1. 本批每条 assistant 正文仍要生成一条 turn_summaries L0 摘要；同时整理长期记忆 facts/clues。',
+        '1. 本批每条 user 与 assistant 正文各生成一条 turn_summaries L0 摘要；user 只记录玩家明确做了、说了什么及末态，不推断玩家内心；同时整理长期记忆 facts/clues。',
         recordPlayerCharacter
             ? '2. people_upsert 恢复截至本批末尾仍有意义的人物当前状态：最后可靠位置、行动/处境、长期目标与已明确状态。只写正文有证据的内容；不得根据外貌猜身份，不得替玩家补内心。'
             : '2. people_upsert 只恢复 NPC / 非玩家人物。玩家角色当前设置为“不记录”，禁止为玩家建立或更新人物卡；玩家已经发生的行动仍可沉淀为事件、世界事实和长期记忆。',
@@ -6109,7 +6137,7 @@ export function buildHistoryIndexPrompt(state, {
         '你是“世界背面”的历史档案员。你只整理已经发生的聊天记录，不续写、不推演未来、不修改世界时间。',
         '',
         '任务：',
-        '1. 为本批每一条 assistant 正文分别写一条 L0 单轮摘要，放进 turn_summaries。每条只总结对应消息，不把下一轮或别的消息混进来；保留关系变化、承诺、冲突、重要物品与未完成的问题。',
+        '1. 为本批每一条 user 与 assistant 正文分别写一条 L0 单轮摘要，放进 turn_summaries。每条只总结对应消息，不把下一轮或别的消息混进来；user 只记录明确行动/话语，不推断玩家内心；保留关系变化、承诺、冲突、重要物品与未完成的问题。',
         '2. 重写 memory_digest：把旧持续摘要与本批真正持久的重要变化合并，删除已经失效的说法；这不是逐轮流水账，也不是所有 L0 摘要的机械拼接。',
         '3. facts_upsert 只记录正文明确成立、未来仍有用的长期事实，例如身份、关系、承诺、能力限制、重要物品归属和已经揭示的真相。临时位置、普通动作、气氛不算长期事实。',
         '4. 每类事实使用稳定 key（例如“人物:老白:真实身份”）。同一 key 出现新值时保留 key 并提交新 value；插件会把旧版本标为 superseded。真假仍无法判断时用 status=disputed，不要强行覆盖。',
@@ -6124,7 +6152,7 @@ export function buildHistoryIndexPrompt(state, {
                 ? ` 用户明确设定的身份锚点：${identityAnchor}。涉及性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守；不得根据外貌、衣着、身体或物种反推性别。`
                 : ' 未设置玩家身份锚点；正文没有明确时使用中性表述，不得根据外貌、衣着、身体或物种猜测性别与称谓。'),
         `用户维护的其他角色身份锚点：${characterIdentityAnchors.length ? JSON.stringify(characterIdentityAnchors) : '无'}。这些锚点是权威设定，整理身份、称谓和关系时必须遵守；没有锚点且正文也不明确的角色使用中性表述，不得凭外貌、衣着、身体或物种猜测。`,
-        '9. turn_summaries 只为 assistant 消息生成；user 消息作为上下文使用，但不要单独建立 L0。每条必须带准确 source_message_id。',
+        '9. turn_summaries 为每条有正文的 user 和 assistant 消息分别生成；每条必须带准确 source_message_id，禁止合并相邻消息。',
         '10. chapter_summary 是旧版兼容兜底字段：正常情况下返回 null；只有无法输出 turn_summaries 时才用它概括整批。',
         '11. 只返回一个合法 JSON 对象，不要代码围栏和解释。',
         `12. ${outputLimits}`,

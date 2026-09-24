@@ -1671,8 +1671,10 @@ async function applyAutoHideArchivedFloors({
     }
 
     const indexedThroughMessageId = Number(getState()?.storyMemory?.indexedThroughMessageId ?? -1);
+    const summaries = getState()?.storyMemory?.summaries || [];
     const messageIds = markAutoHiddenMessages(context.chat, indexedThroughMessageId, {
         keepRecent: AUTO_HIDE_KEEP_RECENT_MESSAGES,
+        summaries,
     });
     if (!messageIds.length) return { hiddenCount: 0, messageIds: [] };
 
@@ -5447,6 +5449,7 @@ function hasL0SummaryForMessage(state, messageId) {
         Number(summary?.level) === 0
         && Number(summary?.startMessageId) === Number(messageId)
         && Number(summary?.endMessageId) === Number(messageId)
+        && Boolean(String(summary?.summary || '').trim())
     ));
 }
 
@@ -5458,7 +5461,9 @@ function advanceMemoryCursorThroughSummaries(state, throughMessageId) {
     for (let index = cursor + 1; index <= target; index += 1) {
         const message = chat[index];
         if (
-            hasUsableAssistantText(message)
+            message && !message.is_system
+            && (message.is_user || hasUsableAssistantText(message))
+            && String(selectedMessageText(message)).trim()
             && !hasL0SummaryForMessage(state, index)
         ) break;
         cursor = index;
@@ -7940,10 +7945,10 @@ async function bootstrapWorldFromHistory() {
                     if (!parsed) throw unreadableJsonError(raw, '世界历史回溯模型');
 
                     const assistantIds = batch.messages
-                        .filter(message => message.role === 'assistant')
                         .map(message => Number(message.id));
                     const summarizedIds = new Set(
                         (Array.isArray(parsed.turn_summaries) ? parsed.turn_summaries : parsed.turnSummaries || [])
+                            .filter(item => String(item?.summary || '').trim())
                             .map(item => Number(item?.source_message_id ?? item?.sourceMessageId ?? item?.message_id ?? item?.messageId))
                             .filter(Number.isFinite),
                     );
@@ -8238,10 +8243,10 @@ async function scanStoryMemoryHistory({
                     const parsed = extractJsonObject(raw);
                     if (parsed) {
                         const assistantIds = batch.messages
-                            .filter(message => message.role === 'assistant')
                             .map(message => Number(message.id));
                         const summarizedIds = new Set(
                             (Array.isArray(parsed.turn_summaries) ? parsed.turn_summaries : parsed.turnSummaries || [])
+                                .filter(item => String(item?.summary || '').trim())
                                 .map(item => Number(item?.source_message_id ?? item?.sourceMessageId ?? item?.message_id ?? item?.messageId))
                                 .filter(Number.isFinite),
                         );

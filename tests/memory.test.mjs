@@ -418,6 +418,25 @@ test('main prompt recalls only relevant knowledge-safe memory', () => {
     assert.equal(injection.text.includes('Hidden assassin order'), false);
 });
 
+test('archived narrative is recalled in the foreground without turning hidden facts into character knowledge', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: '医院正门有封条，主角尚不知审计组在幕后。' },
+        turn_summaries: [
+            { source_message_id: 0, summary: '主角走近医院门口，看到封条。', locations: ['医院'] },
+            { source_message_id: 1, summary: '施工人员挡在门口；主角问起封条来源。', locations: ['医院'] },
+        ],
+        facts_upsert: [{ key: '幕后', subject: '审计组', predicate: '行动', value: '秘密封锁医院', visibility: 'hidden' }],
+    }, { startMessageId: 0, endMessageId: 1 });
+    const packet = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false,
+        memorySystemEnabled: true, injectionMemory: true,
+    }, '医院门口的封条');
+    assert.match(packet.supportText, /主角问起封条来源/);
+    assert.match(packet.supportText, /主角尚不知审计组/);
+    assert.doesNotMatch(packet.supportText, /秘密封锁医院/);
+    assert.match(packet.supportText, /不代表现场每个人都知情/);
+});
+
 test('history prompts request all four memory layers', () => {
     const prompt = buildHistoryIndexPrompt(createInitialState(), {
         messages: [{ id: 1, role: 'assistant', content: 'A promise is made.' }],

@@ -24,6 +24,7 @@ try {
 
     const helper = await page.evaluate(async () => {
         const module = await import('/scripts/extensions/third-party/world-backstage/auto-hide.js?lab-smoke=1');
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js?lab-smoke=1');
         const chat = Array.from({ length: 10 }, () => ({ extra: {} }));
         chat[1].is_system = true;
         const hidden = module.markAutoHiddenMessages(chat, 9, {
@@ -34,12 +35,32 @@ try {
             && Boolean(chat[id]?.extra?.[module.AUTO_HIDDEN_MESSAGE_KEY])
         ));
         const restored = module.restoreAutoHiddenMessages(chat);
+        const archived = core.applyHistoryIndexResult(core.createInitialState(), {
+            memory_digest: { text: '医院门口有封条，主角仍在调查来源。' },
+            turn_summaries: [
+                { source_message_id: 0, summary: '主角在医院门口见到封条。' },
+                { source_message_id: 1, summary: '施工人员拦下主角；主角追问封条来源。' },
+            ],
+        }, { startMessageId: 0, endMessageId: 1 });
+        const continuity = core.buildInjectionPackage(archived, {
+            enabled: true, worldSimulationEnabled: false,
+            memorySystemEnabled: true, injectionMemory: true,
+        }, '医院封条');
+        const incompleteChat = Array.from({ length: 9 }, (_, id) => ({
+            mes: `正文${id}`, is_user: id % 2 === 0,
+        }));
+        const safelyHidden = module.markAutoHiddenMessages(incompleteChat, 8, {
+            summaries: archived.storyMemory.summaries,
+        });
         return {
             hidden,
             restored,
             marked,
             manualHidePreserved: chat[1]?.is_system === true,
             autoHideRestored: hidden.every(id => chat[id]?.is_system === false),
+            memoryRecalled: continuity.supportText.includes('施工人员拦下主角'),
+            missingTurnsStayVisible: safelyHidden.every(id => id < 2)
+                && incompleteChat[2].is_system !== true,
         };
     });
 
@@ -82,6 +103,8 @@ try {
     if (!helper.marked) throw new Error('Auto-hide helper did not mark eligible messages');
     if (!helper.manualHidePreserved) throw new Error('Restore touched a pre-existing manual/system hide');
     if (!helper.autoHideRestored) throw new Error('Auto-hide helper failed to restore its own messages');
+    if (!helper.memoryRecalled) throw new Error('Narrative memory was absent from the foreground prompt');
+    if (!helper.missingTurnsStayVisible) throw new Error('Uncovered turns were hidden from the model');
     if (persistedSetting !== true) throw new Error('Auto-hide setting did not persist through the real UI');
     if (!disabledAfterRestore) throw new Error('Restore action did not disable auto-hide before restoring floors');
     if (pageErrors.length) throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);

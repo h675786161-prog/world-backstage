@@ -166,6 +166,8 @@ try {
             restoredOnMemoryDisable: context.chat.every((message, id) => id === 1 || !message.is_system),
             manualHidePreserved: context.chat[1].is_system === true,
             memoryRemovedFromPrompt: !/LAB持续经过|LAB最近经历/.test(support),
+            memorySettingDisabled: context.extensionSettings.world_backstage.memorySystemEnabled === false,
+            injectedSupportExcerpt: support.slice(0, 520),
         };
     }));
 
@@ -193,7 +195,9 @@ try {
         throw new Error(`Unexpected real chat hidden floors: ${JSON.stringify(runtime.hiddenIds)}`);
     }
     for (const [key, value] of Object.entries(runtime)) {
-        if (key !== 'hiddenIds' && value !== true) throw new Error(`Real ST continuity check failed: ${key}`);
+        if (!['hiddenIds', 'injectedSupportExcerpt'].includes(key) && value !== true) {
+            throw new Error(`Real ST continuity check failed: ${key}; support=${runtime.injectedSupportExcerpt}`);
+        }
     }
     if (pageErrors.length) throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);
 } finally {

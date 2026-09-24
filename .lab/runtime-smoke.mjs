@@ -159,6 +159,12 @@ try {
         if (el.checked) el.click();
     });
     await page.waitForFunction(() => globalThis.SillyTavern.getContext().chat[0]?.is_system === false);
+    await page.waitForFunction(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const support = context.extensionPrompts.world_backstage_context_support?.value || '';
+        return context.extensionSettings.world_backstage.memorySystemEnabled === false
+            && !/LAB持续经过|LAB最近经历/.test(support);
+    }, null, { timeout: 12_000 }).catch(() => {});
     Object.assign(runtime, await page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();
         const support = context.extensionPrompts.world_backstage_context_support?.value || '';

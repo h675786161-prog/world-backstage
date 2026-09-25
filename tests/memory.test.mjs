@@ -583,6 +583,17 @@ test('old item password survives 120 model-indexed floors and a newer knock code
         enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
     }, '现在核对正文：最新敲门节奏是什么？');
     assert.match(rhythm.supportText, /一长两短/);
+
+    state.storyMemory.facts.push({
+        id: 'bookmark-holder', subject: '银书签', predicate: '当前持有人', value: '乔',
+        sourceMessageId: 70, status: 'active', visibility: 'known', importance: 2,
+    });
+    const currentHolder = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
+    }, '最初做了什么？取回银书签的暗号是什么？当前银书签由谁保管？最新敲门节奏是什么？');
+    assert.match(currentHolder.supportText, /第 70—70 层：[^\n]*交给乔/);
+    assert.match(currentHolder.supportText, /一长两短/);
+    assert.ok(currentHolder.text.length <= 4200);
 });
 
 test('history prompts request all four memory layers', () => {

@@ -5095,11 +5095,23 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         return selected ? [{ id: selected.id, start_message_id: selected.startMessageId,
             end_message_id: selected.endMessageId, summary: selected.summary }] : [];
     }).filter((item, index, items) => items.findIndex(other => other.id === item.id) === index);
+    const asksCurrentHolder = /(?:当前|现在|最新).{0,20}(?:保管|持有|归属|由谁)|(?:谁|由谁).{0,10}(?:保管|持有)/u.test(recentText);
+    const holderChangeTurns = asksCurrentHolder ? knownFacts
+        .filter(fact => /持有|保管|归属/u.test(String(fact.predicate || ''))
+            && String(fact.subject || '').length >= 2
+            && recentText.includes(fact.subject))
+        .map(fact => foregroundSummaries.find(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+            && Number(item.startMessageId) === Number(fact.sourceMessageId)
+            && Number(item.endMessageId) === Number(fact.sourceMessageId)))
+        .filter(Boolean).slice(0, 1)
+        .map(item => ({ id: item.id, start_message_id: item.startMessageId,
+            end_message_id: item.endMessageId, summary: item.summary })) : [];
     const rankedArchiveSummaries = [...narrativeArchive.summaries]
         .sort((a, b) => Number(a.memory_role === 'anchor') - Number(b.memory_role === 'anchor')
             || Number(a.start_message_id) - Number(b.start_message_id));
-    const recallLimit = (asksAboutBeginning ? 4 : 3) + (exactDetailTurns.length ? 1 : 0);
-    const pinned = [...earliestTurns, ...exactDetailTurns]
+    const recallLimit = (asksAboutBeginning ? 4 : 3) + (exactDetailTurns.length ? 1 : 0)
+        + (holderChangeTurns.length ? 1 : 0);
+    const pinned = [...earliestTurns, ...exactDetailTurns, ...holderChangeTurns]
         .filter((item, index, items) => item.id !== newestTurn?.id
             && items.findIndex(other => other.id === item.id) === index);
     const ranked = rankedArchiveSummaries.filter(item => item.id !== newestTurn?.id

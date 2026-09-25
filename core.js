@@ -5101,8 +5101,8 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
             && String(fact.subject || '').length >= 2
             && recentText.includes(fact.subject))
         .map(fact => foregroundSummaries.find(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
-            && Number(item.startMessageId) === Number(fact.sourceMessageId)
-            && Number(item.endMessageId) === Number(fact.sourceMessageId)))
+            && Number(item.startMessageId) === Number(fact.source_message_id)
+            && Number(item.endMessageId) === Number(fact.source_message_id)))
         .filter(Boolean).slice(0, 1)
         .map(item => ({ id: item.id, start_message_id: item.startMessageId,
             end_message_id: item.endMessageId, summary: item.summary })) : [];

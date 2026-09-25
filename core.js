@@ -5077,28 +5077,35 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     // Exact codes can remain in protected L0 after the digest has moved on.
     // A later "knock code" must not displace an earlier item-retrieval code.
     const asksForCode = /暗号|口令|密码|密语|敲门.{0,8}节奏/u.test(recentText);
-    const asksForItemCode = /(?:取回|领回).{0,8}书签/u.test(recentText);
+    const itemCodeSubject = recentText.match(
+        /(?:取回|领回)([^，。；？?\n]{2,16}?)(?:的)?(?:暗号|口令|密码|密语)/u,
+    )?.[1]?.replace(/的$/u, '').trim() || '';
     const asksForKnockCode = /敲门.{0,8}(?:暗号|口令|密码|密语|节奏)/u.test(recentText);
     const codeCandidates = asksForCode ? foregroundSummaries
         .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
-            && /暗号|口令|密码|密语/u.test(item.summary))
+            && (/(?:暗号|口令|密码|密语)/u.test(item.summary)
+                || (asksForKnockCode && /敲门.{0,8}节奏/u.test(item.summary))))
         .map(item => {
             const summary = String(item.summary || '');
             const hasExplicitValue = /(?:暗号|口令|密码|密语)[^。；]{0,12}[“「『"'][^”」』"']+[”」』"']/u.test(summary)
-                || /(?:暗号|口令|密码|密语)(?:设为|改为|是|为|叫)[^。；]{2,20}/u.test(summary);
+                || /(?:暗号|口令|密码|密语)(?:设为|改为|是|为|叫)[^。；]{2,20}/u.test(summary)
+                || /敲门.{0,8}节奏(?:设为|改为|是|为)[^。；]{2,20}/u.test(summary);
             return { item, hasExplicitValue,
                 score: memoryMatchScore(item, recentText, { referenceMessageId: indexedThrough })
                     + (hasExplicitValue ? 40 : 0) };
         })
         : [];
     const codeTopics = [
-        ...(asksForItemCode ? [item => /书签/u.test(item.summary)] : []),
+        ...(itemCodeSubject ? [item => String(item.summary || '').includes(itemCodeSubject)] : []),
         ...(asksForKnockCode ? [item => /敲门/u.test(item.summary)] : []),
     ];
     if (asksForCode && !codeTopics.length) codeTopics.push(() => true);
     const exactDetailTurns = codeTopics.flatMap(matchesTopic => {
         const selected = codeCandidates.filter(({ item }) => matchesTopic(item))
-            .sort((a, b) => b.score - a.score || a.item.startMessageId - b.item.startMessageId)[0]?.item;
+            .sort((a, b) => Number(b.hasExplicitValue) - Number(a.hasExplicitValue)
+                || (/最新|现在|当前/u.test(recentText)
+                    ? Number(b.item.startMessageId) - Number(a.item.startMessageId) : 0)
+                || b.score - a.score || a.item.startMessageId - b.item.startMessageId)[0]?.item;
         return selected ? [{ id: selected.id, start_message_id: selected.startMessageId,
             end_message_id: selected.endMessageId, summary: selected.summary }] : [];
     }).filter((item, index, items) => items.findIndex(other => other.id === item.id) === index);

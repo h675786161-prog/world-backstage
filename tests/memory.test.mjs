@@ -554,7 +554,7 @@ test('old item password survives 120 model-indexed floors and a newer knock code
                 0: '玩家踢歪门垫，再扶正烛台。',
                 1: '伊莱恩捡起信封并回应玩家。',
                 4: '玩家把银书签暂交苏姨，约定暗号“晚钟九号”取回。',
-                70: '玩家用约定的暗号从苏姨处取回银书签，随后交给乔。',
+                70: '玩家从苏姨处取回物品，随后交给乔。',
                 90: '玩家改约周日正午，敲门暗号设为一长两短。',
                 119: '伊莱恩继续谈论圣堂的代价。',
             }[id] || `圣堂里的第${id}层对话。`;
@@ -584,6 +584,9 @@ test('old item password survives 120 model-indexed floors and a newer knock code
     }, '现在核对正文：最新敲门节奏是什么？');
     assert.match(rhythm.supportText, /一长两短/);
 
+    const handoff = state.storyMemory.summaries.find(item => item.level === 0 && item.startMessageId === 70);
+    handoff.retentionState = 'active';
+    handoff.summary = '玩家从苏姨处取回物品，随后交给乔。';
     state.storyMemory.facts.push({
         id: 'bookmark-holder', subject: '银书签', predicate: '当前持有人', value: '乔',
         sourceMessageId: 70, status: 'active', visibility: 'known', importance: 2,

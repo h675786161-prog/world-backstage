@@ -5069,9 +5069,9 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
             end_message_id: item.endMessageId, summary: item.summary })) : [];
     // Exact codes can remain in protected L0 after the digest has moved on.
     // A later "knock code" must not displace an earlier item-retrieval code.
-    const asksForCode = /暗号|口令|密码|密语/u.test(recentText);
+    const asksForCode = /暗号|口令|密码|密语|敲门.{0,8}节奏/u.test(recentText);
     const asksForItemCode = /(?:取回|领回).{0,8}书签/u.test(recentText);
-    const asksForKnockCode = /敲门.{0,8}(?:暗号|口令|密码|密语)/u.test(recentText);
+    const asksForKnockCode = /敲门.{0,8}(?:暗号|口令|密码|密语|节奏)/u.test(recentText);
     const codeCandidates = asksForCode ? foregroundSummaries
         .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
             && /暗号|口令|密码|密语/u.test(item.summary))

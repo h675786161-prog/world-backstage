@@ -578,6 +578,11 @@ test('old item password survives 120 model-indexed floors and a newer knock code
     assert.match(packet.supportText, /第 4—4 层：[^\n]*晚钟九号/);
     assert.match(packet.supportText, /一长两短/);
     assert.ok(packet.text.length <= 4200);
+
+    const rhythm = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
+    }, '现在核对正文：最新敲门节奏是什么？');
+    assert.match(rhythm.supportText, /一长两短/);
 });
 
 test('history prompts request all four memory layers', () => {

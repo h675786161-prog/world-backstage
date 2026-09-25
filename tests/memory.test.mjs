@@ -9,6 +9,7 @@ import {
     buildInjectionPackage,
     buildPersonObservationPrompt,
     buildSimulationPrompt,
+    buildWorldBootstrapPrompt,
     createInitialState,
     planMemoryRollup,
     selectRelevantStoryMemory,
@@ -553,6 +554,11 @@ test('history prompts request all four memory layers', () => {
     assert.equal(prompt.includes('chapter_summary'), true);
     assert.equal(prompt.includes('facts_upsert'), true);
     assert.equal(prompt.includes('clues_upsert'), true);
+    assert.match(prompt, /先 A、再 B、随后 C/);
+    const bootstrap = buildWorldBootstrapPrompt(createInitialState(), {
+        messages: [{ id: 0, role: 'assistant', content: '先道歉再递纸巾。' }],
+    });
+    assert.match(bootstrap, /先 A、再 B、随后 C/);
 
     const compactPrompt = buildHistoryIndexPrompt(createInitialState(), {
         messages: [{ id: 1, role: 'assistant', content: 'A promise is made.' }],

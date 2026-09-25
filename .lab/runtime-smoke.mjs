@@ -231,11 +231,34 @@ try {
     await page.locator('[data-wb-setting="memorySystemEnabled"]').first().evaluate(el => {
         if (!el.checked) el.click();
     });
+    // Disabling memory in the earlier scenario also disables auto-hide by design.
+    // Re-enable both settings through the actual UI for this separate chat.
+    await page.waitForFunction(() =>
+        globalThis.SillyTavern.getContext().extensionSettings.world_backstage.memorySystemEnabled === true,
+    );
+    await page.locator('[data-wb-setting="autoHideArchivedFloors"]').first().evaluate(el => {
+        if (!el.checked) el.click();
+    });
     await page.waitForFunction(() => {
         const context = globalThis.SillyTavern.getContext();
         return context.chat[0]?.is_system === true
             && (context.extensionPrompts.world_backstage_context_support?.value || '').includes('晚钟九号');
-    }, null, { timeout: 20_000 });
+    }, null, { timeout: 20_000 }).catch(async error => {
+        const diagnostic = await page.evaluate(() => {
+            const context = globalThis.SillyTavern.getContext();
+            return {
+                settings: {
+                    memorySystemEnabled: context.extensionSettings.world_backstage.memorySystemEnabled,
+                    autoHideArchivedFloors: context.extensionSettings.world_backstage.autoHideArchivedFloors,
+                    injectionMemory: context.extensionSettings.world_backstage.injectionMemory,
+                },
+                firstHidden: context.chat[0]?.is_system,
+                hiddenCount: context.chat.filter(message => message.extra?.world_backstage_auto_hidden).length,
+                prompt: (context.extensionPrompts.world_backstage_context_support?.value || '').slice(0, 1500),
+            };
+        });
+        throw new Error(`Real ST long-floor timeout: ${error.message}; ${JSON.stringify(diagnostic)}`);
+    });
     const longRuntime = await page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();
         const support = context.extensionPrompts.world_backstage_context_support?.value || '';

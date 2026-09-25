@@ -513,7 +513,9 @@ test('first contact survives rollup and reaches the prompt before a crowded dige
             { source_message_id: 0, summary: '玩家初到医院时碰倒雨伞。' },
             { source_message_id: 1, summary: '许宁先道歉，再递纸巾，最后邀请进入。' },
             ...Array.from({ length: 10 }, (_, id) => ({
-                source_message_id: id + 2, summary: `走廊中段对话 ${id + 2}`,
+                source_message_id: id + 2,
+                summary: id === 1 ? '玩家约定取回物品的暗号为“晚钟九号”。'
+                    : id === 2 ? '玩家后来将物品转交苏姨保管。' : `走廊中段对话 ${id + 2}`,
             })),
         ],
     }, { startMessageId: 0, endMessageId: 11 });
@@ -522,18 +524,22 @@ test('first contact survives rollup and reaches the prompt before a crowded dige
     const rolled = applyMemoryRollupResult(state, {
         summary_rollup: { title: '医院开局', summary: '玩家和许宁在医院碰面，之后走进长廊。' },
     }, plan);
-    const [first, second, third] = rolled.storyMemory.summaries
+    const [first, second, third, fourth] = rolled.storyMemory.summaries
         .filter(item => item.level === 0)
         .sort((a, b) => a.startMessageId - b.startMessageId);
     assert.match(first.summary, /碰倒雨伞/);
     assert.match(second.summary, /道歉，再递纸巾/);
     assert.equal(third.retentionState, 'compacted');
+    assert.equal(fourth.retentionState, 'active');
 
     const packet = buildInjectionPackage(rolled, {
         enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
-    }, '最初见面时，玩家和许宁各做了什么？');
+    }, '最初见面时，玩家和许宁各做了什么？取回物品的暗号是什么？物品最后交给谁保管？');
     assert.match(packet.supportText, /碰倒雨伞/);
     assert.match(packet.supportText, /先道歉，再递纸巾/);
+    assert.match(packet.supportText, /晚钟九号/);
+    assert.match(packet.supportText, /苏姨保管/);
+    assert.ok(packet.supportText.indexOf('晚钟九号') < packet.supportText.indexOf('苏姨保管'));
     assert.ok(packet.supportText.indexOf('碰倒雨伞') < packet.supportText.indexOf('持续经过'));
     assert.ok(packet.text.length <= 4200);
 });

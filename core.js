@@ -3018,6 +3018,8 @@ function compactRolledUpSources(state, parentSummary, sources, { sourceMessageId
         if (openingIds.has(source.id)) continue;
         if (source.locked || source.important || source.manual) continue;
         if (asArray(source.tags).length) continue;
+        // Exact agreements may never appear in a broader digest or fact ledger.
+        if (/暗号|密码|口令|密语|编号|代号|约定|承诺|预约|期限|归还|转交|保管|password|passphrase|code word|promise|appointment|deadline|handover|custody/iu.test(source.summary)) continue;
         if (Number(source.level || 0) >= MEMORY_SUMMARY_LEVELS.CHAPTER) continue;
         if (source.retentionState === 'compacted') continue;
         source.retentionState = 'compacted';
@@ -5053,8 +5055,10 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     }, recentText, {
         maximumFacts: 0, maximumClues: 0, maximumSummaries: 2, includeDigest: true,
     }) : { digest: null, summaries: [] };
+    const indexedThrough = Number(state?.storyMemory?.indexedThroughMessageId ?? -1);
     const newestTurn = foregroundSummaries
-        .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL)
+        .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+            && (indexedThrough < 0 || Number(item.endMessageId) >= indexedThrough - 1))
         .sort((a, b) => Number(b.endMessageId) - Number(a.endMessageId))[0];
     const asksAboutBeginning = /最初|第一次|开头|刚开始|初到|初见|起初|一开始|开局|初次/u.test(recentText);
     const earliestTurns = asksAboutBeginning ? foregroundSummaries
@@ -5063,7 +5067,10 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         .slice(0, 2)
         .map(item => ({ id: item.id, start_message_id: item.startMessageId,
             end_message_id: item.endMessageId, summary: item.summary })) : [];
-    const storyRecall = [...earliestTurns, ...narrativeArchive.summaries]
+    const rankedArchiveSummaries = [...narrativeArchive.summaries]
+        .sort((a, b) => Number(a.memory_role === 'anchor') - Number(b.memory_role === 'anchor')
+            || Number(a.start_message_id) - Number(b.start_message_id));
+    const storyRecall = [...earliestTurns, ...rankedArchiveSummaries]
         .filter((item, index, items) => item.id !== newestTurn?.id
             && items.findIndex(other => other.id === item.id) === index);
     if (newestTurn) {
@@ -5186,14 +5193,15 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     }
 
     if (narrativeArchive.digest?.text || storyRecall.length) {
-        supportLines.push('此前正文的剧情记忆（只用于衔接已写出的经历；不代表现场每个人都知情，也不要求重演旧情节）：');
+        supportLines.push('此前正文的剧情记忆（楼层号表示先后，后来的明确变更覆盖旧状态；不代表现场每个人都知情，也不要求重演旧情节）：');
         if (asksAboutBeginning) supportLines.push('核对开局经历时按楼层逐项读取，保留同一段里的并列动作及先后；没有写出的细节保持未知。');
-        if (narrativeArchive.digest?.text && !asksAboutBeginning)
+        const digestAlreadyShown = storyRecall.some(item => item.summary === narrativeArchive.digest?.text);
+        if (narrativeArchive.digest?.text && !asksAboutBeginning && !digestAlreadyShown)
             supportLines.push(`- 持续经过：${modelText(narrativeArchive.digest.text, 620)}`);
         for (const item of storyRecall) {
             supportLines.push(`- 第 ${item.start_message_id}—${item.end_message_id} 层：${modelText(item.summary, 330)}`);
         }
-        if (narrativeArchive.digest?.text && asksAboutBeginning)
+        if (narrativeArchive.digest?.text && asksAboutBeginning && !digestAlreadyShown)
             supportLines.push(`- 持续经过：${modelText(narrativeArchive.digest.text, 620)}`);
         supportLines.push('承接人物的承诺、关系、物品和待回应的问题；隐藏的动机及真相仍须遵守人物认知边界。');
     }

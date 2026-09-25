@@ -5,7 +5,7 @@
 **World Backstage / 世界背面** 是一个为 SillyTavern 设计的世界状态与长期连续性扩展。  
 正文负责呈现眼前的故事，世界背面负责维护镜头之外仍然成立的时间、人物、事件、认知、记忆与因果。
 
-**当前 manifest 版本：2.5.5**  
+**当前 manifest 版本：2.5.8**  
 `main` 已合并 2026-09-25 的 **长篇记忆回读** 与 **自动隐藏已归档楼层** 更新。自动隐藏默认关闭。
 
 [📖 使用手册](docs/USER-GUIDE.md) · [🧾 更新记录](CHANGELOG.md) · [🧪 测试清单](docs/TEST-CHECKLIST.md) · [🧱 架构说明](docs/ARCHITECTURE.md)

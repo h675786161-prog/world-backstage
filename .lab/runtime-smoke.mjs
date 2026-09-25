@@ -177,10 +177,86 @@ try {
         };
     }));
 
+    // Run a 121-floor archived chat through the real ST context, settings UI and
+    // extension prompt bridge. A missing L0 at floor 50 must remain visible.
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        const lines = Array.from({ length: 121 }, (_, id) => `第${id}层：圣堂里的日常对话。`);
+        lines[0] = '我初到圣堂，跨门槛时踢歪了门垫。';
+        lines[1] = '伊莱恩先扶正烛台，再捡起信封。';
+        lines[2] = '我交出银书签，取回的暗号是“晚钟九号”。';
+        lines[4] = '我拿回银书签，转交守门人苏姨保管。';
+        lines[72] = '我从苏姨处取回银书签，转交修书匠乔保管。';
+        lines[73] = '伊莱恩确认现在由乔保管银书签。';
+        lines[90] = '原定周六上午十点的见面改为周日正午，敲门改成一长两短。';
+        lines[91] = '伊莱恩确认新的时间与敲门节奏。';
+        lines[120] = '最初门口我弄歪了什么？银书签取回暗号是什么？现在由谁保管？';
+        context.chat.splice(0, context.chat.length, ...lines.map((mes, id) => ({
+            name: id % 2 ? context.name2 : context.name1,
+            is_user: id % 2 === 0, is_system: false, mes, extra: {},
+        })));
+        let state = core.createInitialState();
+        for (let start = 0; start < lines.length; start += 12) {
+            const end = Math.min(start + 12, lines.length);
+            const summaries = lines.slice(start, end).flatMap((summary, offset) => {
+                const id = start + offset;
+                return id === 50 ? [] : [{ source_message_id: id, summary }];
+            });
+            state = core.applyHistoryIndexResult(state, {
+                memory_digest: { text: start < 72
+                    ? '玩家在圣堂交出了银书签，后来转交苏姨。'
+                    : '玩家最初进入圣堂；银书签后来转交修书匠乔。约见改为周日正午，敲门一长两短。' },
+                turn_summaries: summaries,
+                facts_upsert: start === 0 ? [
+                    { key: '银书签:保管人', subject: '银书签', predicate: '保管人', value: '苏姨', visibility: 'known' },
+                ] : start === 72 ? [
+                    { key: '银书签:保管人', subject: '银书签', predicate: '保管人', value: '修书匠乔', visibility: 'known' },
+                ] : [],
+            }, { startMessageId: start, endMessageId: end - 1 });
+            let plan;
+            while ((plan = core.planMemoryRollup(state))) {
+                state = core.applyMemoryRollupResult(state, {
+                    summary_rollup: {
+                        title: `消息${plan.summaries[0].startMessageId}—${plan.summaries.at(-1).endMessageId}`,
+                        summary: plan.summaries.map(item => item.summary).join('；').slice(0, 1100),
+                    },
+                }, plan);
+            }
+        }
+        const store = context.chatMetadata[core.STATE_KEY];
+        if (!store) throw new Error('Long-floor chat did not attach to World Backstage');
+        store.currentState = state;
+    });
+    await page.locator('[data-wb-setting="memorySystemEnabled"]').first().evaluate(el => {
+        if (!el.checked) el.click();
+    });
+    await page.waitForFunction(() => {
+        const context = globalThis.SillyTavern.getContext();
+        return context.chat[0]?.is_system === true
+            && (context.extensionPrompts.world_backstage_context_support?.value || '').includes('晚钟九号');
+    }, null, { timeout: 20_000 });
+    const longRuntime = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const support = context.extensionPrompts.world_backstage_context_support?.value || '';
+        return {
+            floorCount: context.chat.length,
+            hiddenCount: context.chat.filter(message => message.extra?.world_backstage_auto_hidden).length,
+            uncoveredVisible: context.chat[50].is_system === false,
+            recentFiveVisible: context.chat.slice(-5).every(message => !message.is_system),
+            openingRecalled: support.includes('踢歪了门垫'),
+            passwordRecalled: support.includes('晚钟九号'),
+            latestHolderRecalled: support.includes('修书匠乔'),
+            supportLength: support.length,
+            supportExcerpt: support.slice(0, 1300),
+        };
+    });
+
     report = {
         pluginLoaded: true,
         helper,
         runtime,
+        longRuntime,
         ui: {
             autoHideToggleRendered: true,
             restoreButtonRendered: true,
@@ -204,6 +280,14 @@ try {
         if (!['hiddenIds', 'injectedSupportExcerpt'].includes(key) && value !== true) {
             throw new Error(`Real ST continuity check failed: ${key}; support=${runtime.injectedSupportExcerpt}`);
         }
+    }
+    if (longRuntime.floorCount !== 121 || longRuntime.hiddenCount !== 115
+        || longRuntime.supportLength > 4200) {
+        throw new Error(`Real ST long-floor counts failed: ${JSON.stringify(longRuntime)}`);
+    }
+    for (const key of ['uncoveredVisible', 'recentFiveVisible', 'openingRecalled',
+        'passwordRecalled', 'latestHolderRecalled']) {
+        if (!longRuntime[key]) throw new Error(`Real ST long-floor recall failed: ${key}`);
     }
     if (pageErrors.length) throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);
 } finally {

@@ -5047,12 +5047,21 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     const newestTurn = foregroundSummaries
         .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL)
         .sort((a, b) => Number(b.endMessageId) - Number(a.endMessageId))[0];
-    const storyRecall = narrativeArchive.summaries.filter(item => item.id !== newestTurn?.id);
+    const asksAboutBeginning = /最初|第一次|开头|刚开始|初到|初见|起初|一开始|开局|初次/u.test(recentText);
+    const earliestTurns = asksAboutBeginning ? foregroundSummaries
+        .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL)
+        .sort((a, b) => Number(a.startMessageId) - Number(b.startMessageId))
+        .slice(0, 2)
+        .map(item => ({ id: item.id, start_message_id: item.startMessageId,
+            end_message_id: item.endMessageId, summary: item.summary })) : [];
+    const storyRecall = [...earliestTurns, ...narrativeArchive.summaries]
+        .filter((item, index, items) => item.id !== newestTurn?.id
+            && items.findIndex(other => other.id === item.id) === index);
     if (newestTurn) {
         storyRecall.unshift({ id: newestTurn.id, start_message_id: newestTurn.startMessageId,
             end_message_id: newestTurn.endMessageId, summary: newestTurn.summary });
     }
-    storyRecall.splice(3);
+    storyRecall.splice(asksAboutBeginning ? 4 : 3);
     const sceneTiming = {
         strict: '只在转场、空档或角色已经自然接触到影响时显露；但已经直接撞上眼前行动的后果不能用“场面不合适”忽略。',
         smart: '次要信息可以延后；直接影响眼前行动的结果现在就应自然进入。',

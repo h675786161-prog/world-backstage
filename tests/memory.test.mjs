@@ -483,6 +483,27 @@ test('ineligible manual summaries cannot consume the narrative recall slots', ()
     assert.doesNotMatch(packet.supportText, /MANUAL_SECRET_DO_NOT_RECALL/);
 });
 
+test('a question about the beginning recalls the first user and assistant floors', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: '后来继续在走廊等待。' },
+        turn_summaries: [
+            { source_message_id: 0, summary: '玩家初到时碰倒雨伞。' },
+            { source_message_id: 1, summary: '许宁先道歉，再递纸巾。' },
+            ...Array.from({ length: 10 }, (_, id) => ({
+                source_message_id: id + 2, summary: `普通走廊交谈 ${id + 2}`,
+            })),
+        ],
+    }, { startMessageId: 0, endMessageId: 11 });
+    const settings = { enabled: true, worldSimulationEnabled: false, injectionMemory: true };
+    const ordinary = buildInjectionPackage(state, settings, '继续在走廊等候');
+    const beginning = buildInjectionPackage(state, settings, '最初见面时，玩家和许宁各做了什么？');
+    assert.doesNotMatch(ordinary.supportText, /碰倒雨伞|先道歉/);
+    assert.match(beginning.supportText, /碰倒雨伞/);
+    assert.match(beginning.supportText, /先道歉，再递纸巾/);
+    assert.match(beginning.supportText, /普通走廊交谈 11/);
+    assert.ok(beginning.text.length <= 4200);
+});
+
 test('history prompts request all four memory layers', () => {
     const prompt = buildHistoryIndexPrompt(createInitialState(), {
         messages: [{ id: 1, role: 'assistant', content: 'A promise is made.' }],

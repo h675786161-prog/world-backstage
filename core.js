@@ -3006,7 +3006,16 @@ function appendMemoryMetabolism(state, {
 }
 
 function compactRolledUpSources(state, parentSummary, sources, { sourceMessageId = 0 } = {}) {
+    // Preserve the original opening exchange for later questions about first contact.
+    // A higher-level rollup can omit one-off actions even when they define that scene.
+    const openingIds = new Set(asArray(state?.storyMemory?.summaries)
+        .filter(item => item.hierarchyManaged && !item.manual
+            && Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL)
+        .sort((a, b) => Number(a.startMessageId) - Number(b.startMessageId))
+        .slice(0, 2)
+        .map(item => item.id));
     for (const source of sources) {
+        if (openingIds.has(source.id)) continue;
         if (source.locked || source.important || source.manual) continue;
         if (asArray(source.tags).length) continue;
         if (Number(source.level || 0) >= MEMORY_SUMMARY_LEVELS.CHAPTER) continue;
@@ -5058,8 +5067,10 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         .filter((item, index, items) => item.id !== newestTurn?.id
             && items.findIndex(other => other.id === item.id) === index);
     if (newestTurn) {
-        storyRecall.unshift({ id: newestTurn.id, start_message_id: newestTurn.startMessageId,
-            end_message_id: newestTurn.endMessageId, summary: newestTurn.summary });
+        const latest = { id: newestTurn.id, start_message_id: newestTurn.startMessageId,
+            end_message_id: newestTurn.endMessageId, summary: newestTurn.summary };
+        if (asksAboutBeginning) storyRecall.push(latest);
+        else storyRecall.unshift(latest);
     }
     storyRecall.splice(asksAboutBeginning ? 4 : 3);
     const sceneTiming = {
@@ -5176,12 +5187,14 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
 
     if (narrativeArchive.digest?.text || storyRecall.length) {
         supportLines.push('此前正文的剧情记忆（只用于衔接已写出的经历；不代表现场每个人都知情，也不要求重演旧情节）：');
-        if (narrativeArchive.digest?.text) {
+        if (asksAboutBeginning) supportLines.push('核对开局经历时按楼层逐项读取，保留同一段里的并列动作及先后；没有写出的细节保持未知。');
+        if (narrativeArchive.digest?.text && !asksAboutBeginning)
             supportLines.push(`- 持续经过：${modelText(narrativeArchive.digest.text, 620)}`);
-        }
         for (const item of storyRecall) {
             supportLines.push(`- 第 ${item.start_message_id}—${item.end_message_id} 层：${modelText(item.summary, 330)}`);
         }
+        if (narrativeArchive.digest?.text && asksAboutBeginning)
+            supportLines.push(`- 持续经过：${modelText(narrativeArchive.digest.text, 620)}`);
         supportLines.push('承接人物的承诺、关系、物品和待回应的问题；隐藏的动机及真相仍须遵守人物认知边界。');
     }
 

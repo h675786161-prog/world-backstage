@@ -5067,19 +5067,49 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         .slice(0, 2)
         .map(item => ({ id: item.id, start_message_id: item.startMessageId,
             end_message_id: item.endMessageId, summary: item.summary })) : [];
+    // Exact codes can remain in protected L0 after the digest has moved on.
+    // A later "knock code" must not displace an earlier item-retrieval code.
+    const asksForCode = /暗号|口令|密码|密语/u.test(recentText);
+    const asksForItemCode = /(?:取回|领回).{0,8}书签/u.test(recentText);
+    const asksForKnockCode = /敲门.{0,8}(?:暗号|口令|密码|密语)/u.test(recentText);
+    const codeCandidates = asksForCode ? foregroundSummaries
+        .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+            && /暗号|口令|密码|密语/u.test(item.summary))
+        .map(item => {
+            const summary = String(item.summary || '');
+            const hasExplicitValue = /(?:暗号|口令|密码|密语)[^。；]{0,12}[“「『"'][^”」』"']+[”」』"']/u.test(summary)
+                || /(?:暗号|口令|密码|密语)(?:设为|改为|是|为|叫)[^。；]{2,20}/u.test(summary);
+            return { item, hasExplicitValue,
+                score: memoryMatchScore(item, recentText, { referenceMessageId: indexedThrough })
+                    + (hasExplicitValue ? 40 : 0) };
+        })
+        : [];
+    const codeTopics = [
+        ...(asksForItemCode ? [item => /书签/u.test(item.summary)] : []),
+        ...(asksForKnockCode ? [item => /敲门/u.test(item.summary)] : []),
+    ];
+    if (asksForCode && !codeTopics.length) codeTopics.push(() => true);
+    const exactDetailTurns = codeTopics.flatMap(matchesTopic => {
+        const selected = codeCandidates.filter(({ item }) => matchesTopic(item))
+            .sort((a, b) => b.score - a.score || a.item.startMessageId - b.item.startMessageId)[0]?.item;
+        return selected ? [{ id: selected.id, start_message_id: selected.startMessageId,
+            end_message_id: selected.endMessageId, summary: selected.summary }] : [];
+    }).filter((item, index, items) => items.findIndex(other => other.id === item.id) === index);
     const rankedArchiveSummaries = [...narrativeArchive.summaries]
         .sort((a, b) => Number(a.memory_role === 'anchor') - Number(b.memory_role === 'anchor')
             || Number(a.start_message_id) - Number(b.start_message_id));
-    const storyRecall = [...earliestTurns, ...rankedArchiveSummaries]
+    const recallLimit = (asksAboutBeginning ? 4 : 3) + (exactDetailTurns.length ? 1 : 0);
+    const pinned = [...earliestTurns, ...exactDetailTurns]
         .filter((item, index, items) => item.id !== newestTurn?.id
             && items.findIndex(other => other.id === item.id) === index);
-    if (newestTurn) {
-        const latest = { id: newestTurn.id, start_message_id: newestTurn.startMessageId,
-            end_message_id: newestTurn.endMessageId, summary: newestTurn.summary };
-        if (asksAboutBeginning) storyRecall.push(latest);
-        else storyRecall.unshift(latest);
-    }
-    storyRecall.splice(asksAboutBeginning ? 4 : 3);
+    const ranked = rankedArchiveSummaries.filter(item => item.id !== newestTurn?.id
+        && !pinned.some(other => other.id === item.id));
+    const latest = newestTurn ? { id: newestTurn.id, start_message_id: newestTurn.startMessageId,
+        end_message_id: newestTurn.endMessageId, summary: newestTurn.summary } : null;
+    const remaining = Math.max(0, recallLimit - pinned.length - (latest ? 1 : 0));
+    const storyRecall = asksAboutBeginning
+        ? [...pinned, ...ranked.slice(0, remaining), ...(latest ? [latest] : [])]
+        : [...(latest ? [latest] : []), ...pinned, ...ranked.slice(0, remaining)];
     const sceneTiming = {
         strict: '只在转场、空档或角色已经自然接触到影响时显露；但已经直接撞上眼前行动的后果不能用“场面不合适”忽略。',
         smart: '次要信息可以延后；直接影响眼前行动的结果现在就应自然进入。',

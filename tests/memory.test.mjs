@@ -545,6 +545,41 @@ test('first contact survives rollup and reaches the prompt before a crowded dige
     assert.ok(packet.text.length <= 4200);
 });
 
+test('old item password survives 120 model-indexed floors and a newer knock code', () => {
+    let state = createInitialState();
+    for (let start = 0; start < 120; start += 12) {
+        const turn_summaries = Array.from({ length: 12 }, (_, offset) => {
+            const id = start + offset;
+            const summary = {
+                0: '玩家踢歪门垫，再扶正烛台。',
+                1: '伊莱恩捡起信封并回应玩家。',
+                4: '玩家把银书签暂交苏姨，约定暗号“晚钟九号”取回。',
+                70: '玩家用约定的暗号从苏姨处取回银书签，随后交给乔。',
+                90: '玩家改约周日正午，敲门暗号设为一长两短。',
+                119: '伊莱恩继续谈论圣堂的代价。',
+            }[id] || `圣堂里的第${id}层对话。`;
+            return { source_message_id: id, summary };
+        });
+        state = applyHistoryIndexResult(state, {
+            memory_digest: { text: '玩家调查圣堂，与伊莱恩约定周日正午见面，银书签现由乔保管。' },
+            turn_summaries,
+        }, { startMessageId: start, endMessageId: start + 11 });
+        let plan;
+        while ((plan = planMemoryRollup(state))) {
+            state = applyMemoryRollupResult(state, {
+                summary_rollup: { title: '阶段经历', summary: '玩家调查圣堂并与伊莱恩交谈。' },
+            }, plan);
+        }
+    }
+    const packet = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
+    }, '最初门口做了什么？取回银书签的暗号是什么？敲门暗号是什么？');
+    assert.match(packet.supportText, /门垫/);
+    assert.match(packet.supportText, /第 4—4 层：[^\n]*晚钟九号/);
+    assert.match(packet.supportText, /一长两短/);
+    assert.ok(packet.text.length <= 4200);
+});
+
 test('history prompts request all four memory layers', () => {
     const prompt = buildHistoryIndexPrompt(createInitialState(), {
         messages: [{ id: 1, role: 'assistant', content: 'A promise is made.' }],

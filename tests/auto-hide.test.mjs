@@ -65,3 +65,12 @@ test('marks only eligible messages and can restore only its own hides', () => {
     assert.equal(chat[1].is_system, true);
     assert.equal(chat[0].extra[AUTO_HIDDEN_MESSAGE_KEY], undefined);
 });
+
+test('a processed cursor cannot hide turns whose individual memories are missing', () => {
+    const chat = Array.from({ length: 9 }, (_, i) => ({ mes: `正文${i}`, is_user: i % 2 === 0 }));
+    const summaries = [0, 1, 3].map(id => ({ level: 0, startMessageId: id, endMessageId: id, summary: `摘要${id}` }));
+    assert.deepEqual(autoHideCandidateMessageIds(chat, 8, { summaries }), [0, 1, 3]);
+    assert.deepEqual(markAutoHiddenMessages(chat, 8, { summaries }), [0, 1, 3]);
+    assert.equal(chat[2].is_system, undefined);
+    assert.equal(chat[4].is_system, undefined);
+});

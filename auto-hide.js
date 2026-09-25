@@ -20,15 +20,23 @@ export function autoHideThroughMessageId(chatLength, indexedThroughMessageId, ke
 
 export function autoHideCandidateMessageIds(chat, indexedThroughMessageId, {
     keepRecent = AUTO_HIDE_KEEP_RECENT_MESSAGES,
+    summaries = null,
 } = {}) {
     const messages = Array.isArray(chat) ? chat : [];
     const hideThrough = autoHideThroughMessageId(messages.length, indexedThroughMessageId, keepRecent);
     if (hideThrough < 0) return [];
 
+    const covered = summaries === null ? null : new Set(
+        (Array.isArray(summaries) ? summaries : [])
+            .filter(item => Number(item?.level) === 0 && String(item?.summary || '').trim())
+            .filter(item => Number(item?.startMessageId) === Number(item?.endMessageId))
+            .map(item => Number(item.endMessageId)),
+    );
     const ids = [];
     for (let messageId = 0; messageId <= hideThrough; messageId += 1) {
         const message = messages[messageId];
         if (!message || message.is_system) continue;
+        if (covered && String(message.mes || '').trim() && !covered.has(messageId)) continue;
         ids.push(messageId);
     }
     return ids;
@@ -48,9 +56,10 @@ export function autoHiddenMessageIds(chat) {
 export function markAutoHiddenMessages(chat, indexedThroughMessageId, {
     keepRecent = AUTO_HIDE_KEEP_RECENT_MESSAGES,
     hiddenAt = new Date().toISOString(),
+    summaries = null,
 } = {}) {
     const messages = Array.isArray(chat) ? chat : [];
-    const messageIds = autoHideCandidateMessageIds(messages, indexedThroughMessageId, { keepRecent });
+    const messageIds = autoHideCandidateMessageIds(messages, indexedThroughMessageId, { keepRecent, summaries });
     for (const messageId of messageIds) {
         const message = messages[messageId];
         if (!message || message.is_system) continue;

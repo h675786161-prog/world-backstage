@@ -3006,9 +3006,20 @@ function appendMemoryMetabolism(state, {
 }
 
 function compactRolledUpSources(state, parentSummary, sources, { sourceMessageId = 0 } = {}) {
+    // Preserve the original opening exchange for later questions about first contact.
+    // A higher-level rollup can omit one-off actions even when they define that scene.
+    const openingIds = new Set(asArray(state?.storyMemory?.summaries)
+        .filter(item => item.hierarchyManaged && !item.manual
+            && Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL)
+        .sort((a, b) => Number(a.startMessageId) - Number(b.startMessageId))
+        .slice(0, 2)
+        .map(item => item.id));
     for (const source of sources) {
+        if (openingIds.has(source.id)) continue;
         if (source.locked || source.important || source.manual) continue;
         if (asArray(source.tags).length) continue;
+        // Exact agreements may never appear in a broader digest or fact ledger.
+        if (/暗号|密码|口令|密语|编号|代号|约定|承诺|预约|期限|归还|转交|保管|password|passphrase|code word|promise|appointment|deadline|handover|custody/iu.test(source.summary)) continue;
         if (Number(source.level || 0) >= MEMORY_SUMMARY_LEVELS.CHAPTER) continue;
         if (source.retentionState === 'compacted') continue;
         source.retentionState = 'compacted';
@@ -3051,6 +3062,9 @@ function applyMemoryFactUpdates(state, {
     sourceSwipeId = null,
 } = {}) {
     state.storyMemory = normalizeStoryMemory(state.storyMemory, state.clock.absoluteMinute);
+    const upsertedKeys = new Set(asArray(factsUpsert)
+        .filter(fact => asString(fact?.key, '', 180) && asString(fact?.value, '', 520))
+        .map(fact => asString(fact.key, '', 180)));
     for (const rawFact of asArray(factsUpsert).slice(0, 32)) {
         const prepared = normalizeMemoryFact(rawFact, null, state.clock.absoluteMinute, {
             sourceMessageId,
@@ -3120,6 +3134,10 @@ function applyMemoryFactUpdates(state, {
         const invalidation = typeof rawInvalidation === 'string'
             ? { id: rawInvalidation }
             : rawInvalidation;
+        // A key-only cancellation can describe the old value while this batch
+        // also writes its replacement. The upsert already supersedes the old fact.
+        if (!invalidation?.id && !invalidation?.value
+            && upsertedKeys.has(asString(invalidation?.key, '', 180))) continue;
         const fact = findMemoryFact(state.storyMemory, invalidation, { matchValue: false });
         if (!fact || fact.locked) continue;
         freezeKnownFactBeforeChange(state, fact);
@@ -5035,6 +5053,89 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         && !clue.archived
         && clue.status !== 'discarded'
     ));
+    // Chat-derived summaries describe the written story, not omniscient NPC knowledge.
+    const foregroundSummaries = injectMemory ? asArray(state?.storyMemory?.summaries)
+        .filter(item => item?.hierarchyManaged && !item?.manual && item?.retentionState !== 'compacted') : [];
+    // Filter before ranking so ineligible summaries cannot crowd out narrative recall.
+    const narrativeArchive = injectMemory ? selectRelevantStoryMemory({
+        ...state, storyMemory: { ...state.storyMemory, summaries: foregroundSummaries },
+    }, recentText, {
+        maximumFacts: 0, maximumClues: 0, maximumSummaries: 2, includeDigest: true,
+    }) : { digest: null, summaries: [] };
+    const indexedThrough = Number(state?.storyMemory?.indexedThroughMessageId ?? -1);
+    const newestTurn = foregroundSummaries
+        .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+            && (indexedThrough < 0 || Number(item.endMessageId) >= indexedThrough - 1))
+        .sort((a, b) => Number(b.endMessageId) - Number(a.endMessageId))[0];
+    const asksAboutBeginning = /最初|第一次|开头|刚开始|初到|初见|起初|一开始|开局|初次/u.test(recentText);
+    const earliestTurns = asksAboutBeginning ? foregroundSummaries
+        .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL)
+        .sort((a, b) => Number(a.startMessageId) - Number(b.startMessageId))
+        .slice(0, 2)
+        .map(item => ({ id: item.id, start_message_id: item.startMessageId,
+            end_message_id: item.endMessageId, summary: item.summary })) : [];
+    // Exact codes can remain in protected L0 after the digest has moved on.
+    // A later "knock code" must not displace an earlier item-retrieval code.
+    const asksForCode = /暗号|口令|密码|密语|敲门.{0,8}节奏/u.test(recentText);
+    const itemCodeSubject = recentText.match(
+        /(?:取回|领回)([^，。；？?\n]{2,16}?)(?:的)?(?:暗号|口令|密码|密语)/u,
+    )?.[1]?.replace(/的$/u, '').trim() || '';
+    const asksForKnockCode = /敲门.{0,8}(?:暗号|口令|密码|密语|节奏)/u.test(recentText);
+    const codeCandidates = asksForCode ? foregroundSummaries
+        .filter(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+            && (/(?:暗号|口令|密码|密语)/u.test(item.summary)
+                || (asksForKnockCode && /敲门.{0,8}节奏/u.test(item.summary))))
+        .map(item => {
+            const summary = String(item.summary || '');
+            const hasExplicitValue = /(?:暗号|口令|密码|密语)[^。；]{0,12}[“「『"'][^”」』"']+[”」』"']/u.test(summary)
+                || /(?:暗号|口令|密码|密语)(?:设为|改为|是|为|叫)[^。；]{2,20}/u.test(summary)
+                || /敲门.{0,8}节奏(?:设为|改为|是|为)[^。；]{2,20}/u.test(summary);
+            return { item, hasExplicitValue,
+                score: memoryMatchScore(item, recentText, { referenceMessageId: indexedThrough })
+                    + (hasExplicitValue ? 40 : 0) };
+        })
+        : [];
+    const codeTopics = [
+        ...(itemCodeSubject ? [item => String(item.summary || '').includes(itemCodeSubject)] : []),
+        ...(asksForKnockCode ? [item => /敲门/u.test(item.summary)] : []),
+    ];
+    if (asksForCode && !codeTopics.length) codeTopics.push(() => true);
+    const exactDetailTurns = codeTopics.flatMap(matchesTopic => {
+        const selected = codeCandidates.filter(({ item }) => matchesTopic(item))
+            .sort((a, b) => Number(b.hasExplicitValue) - Number(a.hasExplicitValue)
+                || (/最新|现在|当前/u.test(recentText)
+                    ? Number(b.item.startMessageId) - Number(a.item.startMessageId) : 0)
+                || b.score - a.score || a.item.startMessageId - b.item.startMessageId)[0]?.item;
+        return selected ? [{ id: selected.id, start_message_id: selected.startMessageId,
+            end_message_id: selected.endMessageId, summary: selected.summary }] : [];
+    }).filter((item, index, items) => items.findIndex(other => other.id === item.id) === index);
+    const asksCurrentHolder = /(?:当前|现在|最新).{0,20}(?:保管|持有|归属|由谁)|(?:谁|由谁).{0,10}(?:保管|持有)/u.test(recentText);
+    const holderChangeTurns = asksCurrentHolder ? knownFacts
+        .filter(fact => /持有|保管|归属/u.test(String(fact.predicate || ''))
+            && String(fact.subject || '').length >= 2
+            && recentText.includes(fact.subject))
+        .map(fact => foregroundSummaries.find(item => Number(item.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+            && Number(item.startMessageId) === Number(fact.source_message_id)
+            && Number(item.endMessageId) === Number(fact.source_message_id)))
+        .filter(Boolean).slice(0, 1)
+        .map(item => ({ id: item.id, start_message_id: item.startMessageId,
+            end_message_id: item.endMessageId, summary: item.summary })) : [];
+    const rankedArchiveSummaries = [...narrativeArchive.summaries]
+        .sort((a, b) => Number(a.memory_role === 'anchor') - Number(b.memory_role === 'anchor')
+            || Number(a.start_message_id) - Number(b.start_message_id));
+    const recallLimit = (asksAboutBeginning ? 4 : 3) + (exactDetailTurns.length ? 1 : 0)
+        + (holderChangeTurns.length ? 1 : 0);
+    const pinned = [...earliestTurns, ...exactDetailTurns, ...holderChangeTurns]
+        .filter((item, index, items) => item.id !== newestTurn?.id
+            && items.findIndex(other => other.id === item.id) === index);
+    const ranked = rankedArchiveSummaries.filter(item => item.id !== newestTurn?.id
+        && !pinned.some(other => other.id === item.id));
+    const latest = newestTurn ? { id: newestTurn.id, start_message_id: newestTurn.startMessageId,
+        end_message_id: newestTurn.endMessageId, summary: newestTurn.summary } : null;
+    const remaining = Math.max(0, recallLimit - pinned.length - (latest ? 1 : 0));
+    const storyRecall = asksAboutBeginning
+        ? [...pinned, ...ranked.slice(0, remaining), ...(latest ? [latest] : [])]
+        : [...(latest ? [latest] : []), ...pinned, ...ranked.slice(0, remaining)];
     const sceneTiming = {
         strict: '只在转场、空档或角色已经自然接触到影响时显露；但已经直接撞上眼前行动的后果不能用“场面不合适”忽略。',
         smart: '次要信息可以延后；直接影响眼前行动的结果现在就应自然进入。',
@@ -5147,6 +5248,20 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         authorityLines.push('显露度只决定这些事实如何进入镜头，不决定它们是否存在。隐藏事实可以约束连续性，但不得因此让不知情角色突然知晓。');
     }
 
+    if (narrativeArchive.digest?.text || storyRecall.length) {
+        supportLines.push('此前正文的剧情记忆（楼层号表示先后，后来的明确变更覆盖旧状态；不代表现场每个人都知情，也不要求重演旧情节）：');
+        if (asksAboutBeginning) supportLines.push('核对开局经历时按楼层逐项读取，保留同一段里的并列动作及先后；没有写出的细节保持未知。');
+        const digestAlreadyShown = storyRecall.some(item => item.summary === narrativeArchive.digest?.text);
+        if (narrativeArchive.digest?.text && !asksAboutBeginning && !digestAlreadyShown)
+            supportLines.push(`- 持续经过：${modelText(narrativeArchive.digest.text, 620)}`);
+        for (const item of storyRecall) {
+            supportLines.push(`- 第 ${item.start_message_id}—${item.end_message_id} 层：${modelText(item.summary, 330)}`);
+        }
+        if (narrativeArchive.digest?.text && asksAboutBeginning && !digestAlreadyShown)
+            supportLines.push(`- 持续经过：${modelText(narrativeArchive.digest.text, 620)}`);
+        supportLines.push('承接人物的承诺、关系、物品和待回应的问题；隐藏的动机及真相仍须遵守人物认知边界。');
+    }
+
     if (knownFacts.length || knownClues.length) {
         supportLines.push('与当前场景相关、且角色已经有资格知道的长期记忆：');
         for (const fact of knownFacts) {
@@ -5227,9 +5342,12 @@ if (foregroundInfluences.length) {
         };
     };
 
-    const authority = compactLayer(authorityLines, 4600, '</world_backstage_state>');
-    const support = supportHasContent
-        ? compactLayer(supportLines, 1100, '</world_backstage_support>')
+    // Reserve room for continuity even when the live world state is crowded.
+    const supportReserve = supportHasContent ? 1600 : 0;
+    const authority = compactLayer(authorityLines, 4200 - supportReserve - 2, '</world_backstage_state>');
+    const availableSupport = Math.min(2600, 4200 - authority.text.length - 2);
+    const support = supportHasContent && availableSupport >= 120
+        ? compactLayer(supportLines, availableSupport, '</world_backstage_support>')
         : { text: '', omitted: 0 };
 
     return {
@@ -5646,7 +5764,8 @@ export function buildWorldBootstrapPrompt(state, {
             ? `当前已有用户维护的世界背景设定：${compactState.world.background}`
             : '当前没有额外填写世界背景设定。',
         '世界背景设定不是历史回溯的输出字段，也不能由聊天回溯覆盖；历史只能在这份地基上恢复已经发生的状态。',
-        '1. 本批每条 assistant 正文仍要生成一条 turn_summaries L0 摘要；同时整理长期记忆 facts/clues。',
+        '1. 本批每条 user 与 assistant 正文各生成一条 turn_summaries L0 摘要；user 只记录玩家明确做了、说了什么及末态，不推断玩家内心；同时整理长期记忆 facts/clues。',
+        '1A. 原文明确按“先 A、再 B、随后 C”发生的动作，L0 要逐项保留 A/B/C 的先后，不得改写成“做了 A 并 B”或只写首尾；交接物品要保留交出、取回与最终保管人的变化。',
         recordPlayerCharacter
             ? '2. people_upsert 恢复截至本批末尾仍有意义的人物当前状态：最后可靠位置、行动/处境、长期目标与已明确状态。只写正文有证据的内容；不得根据外貌猜身份，不得替玩家补内心。'
             : '2. people_upsert 只恢复 NPC / 非玩家人物。玩家角色当前设置为“不记录”，禁止为玩家建立或更新人物卡；玩家已经发生的行动仍可沉淀为事件、世界事实和长期记忆。',
@@ -6109,7 +6228,8 @@ export function buildHistoryIndexPrompt(state, {
         '你是“世界背面”的历史档案员。你只整理已经发生的聊天记录，不续写、不推演未来、不修改世界时间。',
         '',
         '任务：',
-        '1. 为本批每一条 assistant 正文分别写一条 L0 单轮摘要，放进 turn_summaries。每条只总结对应消息，不把下一轮或别的消息混进来；保留关系变化、承诺、冲突、重要物品与未完成的问题。',
+        '1. 为本批每一条 user 与 assistant 正文分别写一条 L0 单轮摘要，放进 turn_summaries。每条只总结对应消息，不把下一轮或别的消息混进来；user 只记录明确行动/话语，不推断玩家内心；保留关系变化、承诺、冲突、重要物品与未完成的问题。',
+        '1A. 同一消息里明确“先 A、再 B、随后 C”的动作，要按顺序逐项写入 L0；不得把相继动作合写为“做了 A 并 B”，也不得略去中间一步。保留物品从暂存、取回到转交后的持有人。',
         '2. 重写 memory_digest：把旧持续摘要与本批真正持久的重要变化合并，删除已经失效的说法；这不是逐轮流水账，也不是所有 L0 摘要的机械拼接。',
         '3. facts_upsert 只记录正文明确成立、未来仍有用的长期事实，例如身份、关系、承诺、能力限制、重要物品归属和已经揭示的真相。临时位置、普通动作、气氛不算长期事实。',
         '4. 每类事实使用稳定 key（例如“人物:老白:真实身份”）。同一 key 出现新值时保留 key 并提交新 value；插件会把旧版本标为 superseded。真假仍无法判断时用 status=disputed，不要强行覆盖。',
@@ -6124,7 +6244,7 @@ export function buildHistoryIndexPrompt(state, {
                 ? ` 用户明确设定的身份锚点：${identityAnchor}。涉及性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守；不得根据外貌、衣着、身体或物种反推性别。`
                 : ' 未设置玩家身份锚点；正文没有明确时使用中性表述，不得根据外貌、衣着、身体或物种猜测性别与称谓。'),
         `用户维护的其他角色身份锚点：${characterIdentityAnchors.length ? JSON.stringify(characterIdentityAnchors) : '无'}。这些锚点是权威设定，整理身份、称谓和关系时必须遵守；没有锚点且正文也不明确的角色使用中性表述，不得凭外貌、衣着、身体或物种猜测。`,
-        '9. turn_summaries 只为 assistant 消息生成；user 消息作为上下文使用，但不要单独建立 L0。每条必须带准确 source_message_id。',
+        '9. turn_summaries 为每条有正文的 user 和 assistant 消息分别生成；每条必须带准确 source_message_id，禁止合并相邻消息。',
         '10. chapter_summary 是旧版兼容兜底字段：正常情况下返回 null；只有无法输出 turn_summaries 时才用它概括整批。',
         '11. 只返回一个合法 JSON 对象，不要代码围栏和解释。',
         `12. ${outputLimits}`,

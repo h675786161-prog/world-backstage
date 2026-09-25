@@ -3,12 +3,15 @@ import assert from 'node:assert/strict';
 
 import {
     applyHistoryIndexResult,
+    applyMemoryRollupResult,
     applySimulationResult,
     buildHistoryIndexPrompt,
     buildInjectionPackage,
     buildPersonObservationPrompt,
     buildSimulationPrompt,
+    buildWorldBootstrapPrompt,
     createInitialState,
+    planMemoryRollup,
     selectRelevantStoryMemory,
     trimState,
 } from '../core.js';
@@ -329,6 +332,20 @@ test('a changed durable fact keeps the old version and links the replacement', (
     assert.equal(newVersion.supersedes.includes(oldVersion.id), true);
 });
 
+test('a key-only invalidation in the same batch cannot erase its replacement fact', () => {
+    const first = applyHistoryIndexResult(createInitialState(), {
+        facts_upsert: [{ key: 'meeting:plan', subject: 'Meeting', predicate: 'time',
+            value: 'Wednesday afternoon', visibility: 'known' }],
+    }, { startMessageId: 0, endMessageId: 10 });
+    const second = applyHistoryIndexResult(first, {
+        facts_upsert: [{ key: 'meeting:plan', subject: 'Meeting', predicate: 'time',
+            value: 'Thursday at two', visibility: 'known', source_message_id: 12 }],
+        facts_invalidate: [{ key: 'meeting:plan', reason: 'Wednesday was cancelled' }],
+    }, { startMessageId: 11, endMessageId: 20 });
+    assert.equal(second.storyMemory.facts.find(fact => fact.value === 'Wednesday afternoon').status, 'superseded');
+    assert.equal(second.storyMemory.facts.find(fact => fact.value === 'Thursday at two').status, 'active');
+});
+
 test('disputed replacements remain parallel instead of erasing either claim', () => {
     const first = applyHistoryIndexResult(createInitialState(), {
         facts_upsert: [{
@@ -418,6 +435,195 @@ test('main prompt recalls only relevant knowledge-safe memory', () => {
     assert.equal(injection.text.includes('Hidden assassin order'), false);
 });
 
+test('archived narrative is recalled in the foreground without turning hidden facts into character knowledge', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: '医院正门有封条，主角尚不知审计组在幕后。' },
+        turn_summaries: [
+            { source_message_id: 0, summary: '主角走近医院门口，看到封条。', locations: ['医院'] },
+            { source_message_id: 1, summary: '施工人员挡在门口；主角问起封条来源。', locations: ['医院'] },
+        ],
+        facts_upsert: [{ key: '幕后', subject: '审计组', predicate: '行动', value: '秘密封锁医院', visibility: 'hidden' }],
+    }, { startMessageId: 0, endMessageId: 1 });
+    const packet = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false,
+        memorySystemEnabled: true, injectionMemory: true,
+    }, '医院门口的封条');
+    assert.match(packet.supportText, /主角问起封条来源/);
+    assert.match(packet.supportText, /主角尚不知审计组/);
+    assert.doesNotMatch(packet.supportText, /秘密封锁医院/);
+    assert.match(packet.supportText, /不代表现场每个人都知情/);
+});
+
+test('each memory switch disables narrative recall while world injection remains enabled', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: 'DIGEST_MUST_STAY_OFF' },
+        turn_summaries: [{ source_message_id: 0, summary: 'LATEST_MUST_STAY_OFF' }],
+    }, { startMessageId: 0, endMessageId: 0 });
+    for (const key of ['memorySystemEnabled', 'memoryPromptInjection', 'injectionMemory']) {
+        const packet = buildInjectionPackage(state, { enabled: true, [key]: false });
+        assert.ok(packet.authorityText.length > 0);
+        assert.doesNotMatch(packet.text, /DIGEST_MUST_STAY_OFF|LATEST_MUST_STAY_OFF/, key);
+    }
+});
+
+test('crowded world state preserves narrative recall within the total injection budget', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: '持续约定：明天归还钥匙。' },
+        turn_summaries: [{ source_message_id: 0, summary: '最新行动：把蓝钥匙交给林医生。' }],
+    }, { startMessageId: 0, endMessageId: 0 });
+    state.people = Array.from({ length: 8 }, (_, i) => ({
+        id: `person_${i}`, name: `人物${i}`, location: '地点'.repeat(100),
+        action: '行动'.repeat(200), relevance: 5, knowledge: 'known', updatedAt: 0,
+    }));
+    const packet = buildInjectionPackage(state, { enabled: true }, '钥匙');
+    assert.match(packet.supportText, /明天归还钥匙/);
+    assert.match(packet.supportText, /蓝钥匙交给林医生/);
+    assert.ok(packet.text.length <= 4200);
+    assert.match(packet.supportText, /<\/world_backstage_support>$/);
+    assert.match(packet.authorityText, /<\/world_backstage_state>$/);
+});
+
+test('ineligible manual summaries cannot consume the narrative recall slots', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        turn_summaries: [
+            { source_message_id: 0, summary: '旧约：蓝钥匙周五归还。', tags: ['钥匙'] },
+            { source_message_id: 1, summary: '最新：回到走廊。' },
+        ],
+    }, { startMessageId: 0, endMessageId: 1 });
+    state.storyMemory.summaries.push(...Array.from({ length: 6 }, (_, i) => ({
+        id: `manual_${i}`, startMessageId: 2, endMessageId: 9, level: 2,
+        summary: 'MANUAL_SECRET_DO_NOT_RECALL', manual: true,
+        hierarchyManaged: true, locked: true, important: true, tags: ['钥匙'],
+    })));
+    const packet = buildInjectionPackage(state, { enabled: true }, '钥匙');
+    assert.match(packet.supportText, /蓝钥匙周五归还/);
+    assert.doesNotMatch(packet.supportText, /MANUAL_SECRET_DO_NOT_RECALL/);
+});
+
+test('a question about the beginning recalls the first user and assistant floors', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: '后来继续在走廊等待。' },
+        turn_summaries: [
+            { source_message_id: 0, summary: '玩家初到时碰倒雨伞。' },
+            { source_message_id: 1, summary: '许宁先道歉，再递纸巾。' },
+            ...Array.from({ length: 10 }, (_, id) => ({
+                source_message_id: id + 2, summary: `普通走廊交谈 ${id + 2}`,
+            })),
+        ],
+    }, { startMessageId: 0, endMessageId: 11 });
+    const settings = { enabled: true, worldSimulationEnabled: false, injectionMemory: true };
+    const ordinary = buildInjectionPackage(state, settings, '继续在走廊等候');
+    const beginning = buildInjectionPackage(state, settings, '最初见面时，玩家和许宁各做了什么？');
+    assert.doesNotMatch(ordinary.supportText, /碰倒雨伞|先道歉/);
+    assert.match(beginning.supportText, /碰倒雨伞/);
+    assert.match(beginning.supportText, /先道歉，再递纸巾/);
+    assert.match(beginning.supportText, /普通走廊交谈 11/);
+    assert.ok(beginning.text.length <= 4200);
+});
+
+test('first contact survives rollup and reaches the prompt before a crowded digest', () => {
+    const state = applyHistoryIndexResult(createInitialState(), {
+        memory_digest: { text: '后来在医院长廊等待。'.repeat(90) },
+        turn_summaries: [
+            { source_message_id: 0, summary: '玩家初到医院时碰倒雨伞。' },
+            { source_message_id: 1, summary: '许宁先道歉，再递纸巾，最后邀请进入。' },
+            ...Array.from({ length: 10 }, (_, id) => ({
+                source_message_id: id + 2,
+                summary: id === 1 ? '玩家约定取回物品的暗号为“晚钟九号”。'
+                    : id === 2 ? '玩家后来将物品转交苏姨保管。' : `走廊中段对话 ${id + 2}`,
+            })),
+        ],
+    }, { startMessageId: 0, endMessageId: 11 });
+    const plan = planMemoryRollup(state);
+    assert.equal(plan?.sourceLevel, 0);
+    const rolled = applyMemoryRollupResult(state, {
+        summary_rollup: { title: '医院开局', summary: '玩家和许宁在医院碰面，之后走进长廊。' },
+    }, plan);
+    const [first, second, third, fourth] = rolled.storyMemory.summaries
+        .filter(item => item.level === 0)
+        .sort((a, b) => a.startMessageId - b.startMessageId);
+    assert.match(first.summary, /碰倒雨伞/);
+    assert.match(second.summary, /道歉，再递纸巾/);
+    assert.equal(third.retentionState, 'compacted');
+    assert.equal(fourth.retentionState, 'active');
+
+    const packet = buildInjectionPackage(rolled, {
+        enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
+    }, '最初见面时，玩家和许宁各做了什么？取回物品的暗号是什么？物品最后交给谁保管？');
+    assert.match(packet.supportText, /碰倒雨伞/);
+    assert.match(packet.supportText, /先道歉，再递纸巾/);
+    assert.match(packet.supportText, /晚钟九号/);
+    assert.match(packet.supportText, /苏姨保管/);
+    assert.ok(packet.supportText.indexOf('晚钟九号') < packet.supportText.indexOf('苏姨保管'));
+    assert.ok(packet.supportText.indexOf('碰倒雨伞') < packet.supportText.indexOf('持续经过'));
+    assert.ok(packet.text.length <= 4200);
+});
+
+test('old item password survives 120 model-indexed floors and a newer knock code', () => {
+    let state = createInitialState();
+    for (let start = 0; start < 120; start += 12) {
+        const turn_summaries = Array.from({ length: 12 }, (_, offset) => {
+            const id = start + offset;
+            const summary = {
+                0: '玩家踢歪门垫，再扶正烛台。',
+                1: '伊莱恩捡起信封并回应玩家。',
+                4: '玩家把银书签暂交苏姨，约定暗号“晚钟九号”取回。',
+                6: '玩家把黄铜罗盘暂交菲伦，约定暗号“月盐七号”取回。',
+                70: '玩家从苏姨处取回物品，随后交给乔。',
+                92: '玩家改约周二黄昏，敲门节奏设为两短一长。',
+                90: '玩家改约周日正午，敲门暗号设为一长两短。',
+                119: '伊莱恩继续谈论圣堂的代价。',
+            }[id] || `圣堂里的第${id}层对话。`;
+            return { source_message_id: id, summary };
+        });
+        state = applyHistoryIndexResult(state, {
+            memory_digest: { text: '玩家调查圣堂，与伊莱恩约定周日正午见面，银书签现由乔保管。' },
+            turn_summaries,
+        }, { startMessageId: start, endMessageId: start + 11 });
+        let plan;
+        while ((plan = planMemoryRollup(state))) {
+            state = applyMemoryRollupResult(state, {
+                summary_rollup: { title: '阶段经历', summary: '玩家调查圣堂并与伊莱恩交谈。' },
+            }, plan);
+        }
+    }
+    const packet = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
+    }, '最初门口做了什么？取回银书签的暗号是什么？敲门暗号是什么？');
+    assert.match(packet.supportText, /门垫/);
+    assert.match(packet.supportText, /第 4—4 层：[^\n]*晚钟九号/);
+    assert.match(packet.supportText, /一长两短/);
+    assert.ok(packet.text.length <= 4200);
+
+    const rhythm = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
+    }, '现在核对正文：最新敲门节奏是什么？');
+    assert.match(rhythm.supportText, /一长两短/);
+
+    const handoff = state.storyMemory.summaries.find(item => item.level === 0 && item.startMessageId === 70);
+    handoff.retentionState = 'active';
+    handoff.summary = '玩家从苏姨处取回物品，随后交给乔。';
+    state.storyMemory.facts.push({
+        id: 'bookmark-holder', subject: '银书签', predicate: '当前持有人', value: '乔',
+        sourceMessageId: 70, status: 'active', visibility: 'known', importance: 2,
+    });
+    const currentHolder = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
+    }, '最初做了什么？取回银书签的暗号是什么？当前银书签由谁保管？最新敲门节奏是什么？');
+    assert.match(currentHolder.supportText, /第 70—70 层：[^\n]*交给乔/);
+    assert.match(currentHolder.supportText, /一长两短/);
+    assert.ok(currentHolder.text.length <= 4200);
+
+    const knockRhythm = state.storyMemory.summaries.find(item => item.level === 0 && item.startMessageId === 92);
+    knockRhythm.retentionState = 'active';
+    knockRhythm.summary = '玩家改约周二黄昏，敲门节奏设为两短一长。';
+    const alternateItems = buildInjectionPackage(state, {
+        enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
+    }, '取回黄铜罗盘的暗号是什么？最新敲门节奏是什么？');
+    assert.match(alternateItems.supportText, /月盐七号/);
+    assert.match(alternateItems.supportText, /两短一长/);
+});
+
 test('history prompts request all four memory layers', () => {
     const prompt = buildHistoryIndexPrompt(createInitialState(), {
         messages: [{ id: 1, role: 'assistant', content: 'A promise is made.' }],
@@ -427,6 +633,11 @@ test('history prompts request all four memory layers', () => {
     assert.equal(prompt.includes('chapter_summary'), true);
     assert.equal(prompt.includes('facts_upsert'), true);
     assert.equal(prompt.includes('clues_upsert'), true);
+    assert.match(prompt, /先 A、再 B、随后 C/);
+    const bootstrap = buildWorldBootstrapPrompt(createInitialState(), {
+        messages: [{ id: 0, role: 'assistant', content: '先道歉再递纸巾。' }],
+    });
+    assert.match(bootstrap, /先 A、再 B、随后 C/);
 
     const compactPrompt = buildHistoryIndexPrompt(createInitialState(), {
         messages: [{ id: 1, role: 'assistant', content: 'A promise is made.' }],

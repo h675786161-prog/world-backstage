@@ -332,6 +332,20 @@ test('a changed durable fact keeps the old version and links the replacement', (
     assert.equal(newVersion.supersedes.includes(oldVersion.id), true);
 });
 
+test('a key-only invalidation in the same batch cannot erase its replacement fact', () => {
+    const first = applyHistoryIndexResult(createInitialState(), {
+        facts_upsert: [{ key: 'meeting:plan', subject: 'Meeting', predicate: 'time',
+            value: 'Wednesday afternoon', visibility: 'known' }],
+    }, { startMessageId: 0, endMessageId: 10 });
+    const second = applyHistoryIndexResult(first, {
+        facts_upsert: [{ key: 'meeting:plan', subject: 'Meeting', predicate: 'time',
+            value: 'Thursday at two', visibility: 'known', source_message_id: 12 }],
+        facts_invalidate: [{ key: 'meeting:plan', reason: 'Wednesday was cancelled' }],
+    }, { startMessageId: 11, endMessageId: 20 });
+    assert.equal(second.storyMemory.facts.find(fact => fact.value === 'Wednesday afternoon').status, 'superseded');
+    assert.equal(second.storyMemory.facts.find(fact => fact.value === 'Thursday at two').status, 'active');
+});
+
 test('disputed replacements remain parallel instead of erasing either claim', () => {
     const first = applyHistoryIndexResult(createInitialState(), {
         facts_upsert: [{

@@ -3062,6 +3062,9 @@ function applyMemoryFactUpdates(state, {
     sourceSwipeId = null,
 } = {}) {
     state.storyMemory = normalizeStoryMemory(state.storyMemory, state.clock.absoluteMinute);
+    const upsertedKeys = new Set(asArray(factsUpsert)
+        .filter(fact => asString(fact?.key, '', 180) && asString(fact?.value, '', 520))
+        .map(fact => asString(fact.key, '', 180)));
     for (const rawFact of asArray(factsUpsert).slice(0, 32)) {
         const prepared = normalizeMemoryFact(rawFact, null, state.clock.absoluteMinute, {
             sourceMessageId,
@@ -3131,6 +3134,10 @@ function applyMemoryFactUpdates(state, {
         const invalidation = typeof rawInvalidation === 'string'
             ? { id: rawInvalidation }
             : rawInvalidation;
+        // A key-only cancellation can describe the old value while this batch
+        // also writes its replacement. The upsert already supersedes the old fact.
+        if (!invalidation?.id && !invalidation?.value
+            && upsertedKeys.has(asString(invalidation?.key, '', 180))) continue;
         const fact = findMemoryFact(state.storyMemory, invalidation, { matchValue: false });
         if (!fact || fact.locked) continue;
         freezeKnownFactBeforeChange(state, fact);

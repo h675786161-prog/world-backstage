@@ -1,0 +1,27 @@
+name: World Backstage Validation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+      - run: npm run check
+
+  real-sillytavern:
+    uses: h675786161-prog/lab/.github/workflows/real-sillytavern.yml@main
+    with:
+      extension_name: world-backstage
+      run_project_smoke: true
+      artifact_name: world-backstage-auto-hide

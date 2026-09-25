@@ -4,15 +4,15 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
-test('settings defaults and persisted schema checkpoint stay on v31', () => {
-    assert.match(source, /const DEFAULT_SETTINGS = Object\.freeze\(\{[\s\S]*?settingsVersion:\s*31,/);
-    assert.match(source, /settings\.settingsVersion\s*=\s*31;/);
-    assert.match(source, /if \(previousSettingsVersion < 31\) context\.saveSettingsDebounced\?\.\(\);/);
+test('settings defaults and persisted schema checkpoint stay on v32', () => {
+    assert.match(source, /const DEFAULT_SETTINGS = Object\.freeze\(\{[\s\S]*?settingsVersion:\s*32,/);
+    assert.match(source, /settings\.settingsVersion\s*=\s*32;/);
+    assert.match(source, /if \(previousSettingsVersion < 32\) context\.saveSettingsDebounced\?\.\(\);/);
     assert.doesNotMatch(source, /settingsVersion:\s*30,/);
 });
 
-test('legacy settings gates remain explicit through the v31 migration chain', () => {
-    for (const version of [9, 19, 22, 25, 26, 31]) {
+test('legacy settings gates remain explicit through the v32 migration chain', () => {
+    for (const version of [9, 19, 22, 25, 26, 32]) {
         assert.match(source, new RegExp(`previousSettingsVersion < ${version}`));
     }
     assert.match(source, /settings\.worldPromptInjection\s*=\s*previous\?\.promptInjection !== false/);

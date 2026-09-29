@@ -64,6 +64,7 @@ function phoneVisiblePersonIds(social) {
         }
     }
     for (const moment of social?.moments || []) {
+        if (moment?.visibility === 'private') continue;
         const personId = text(moment?.personId);
         if (personId) ids.add(personId);
     }
@@ -131,7 +132,7 @@ function phoneSocialView(social) {
             respondedAt: text(connection?.respondedAt),
             updatedAt: text(connection?.updatedAt),
         })),
-        moments: (social?.moments || []).map(moment => ({
+        moments: (social?.moments || []).filter(moment => moment?.visibility !== 'private').map(moment => ({
             id: text(moment?.id),
             personId: text(moment?.personId),
             text: text(moment?.text),
@@ -158,14 +159,21 @@ function phoneSocialView(social) {
     };
 }
 
-function phonePublicOpinionView(cache) {
+function phonePublicOpinionView(cache, events = []) {
+    const publicEventIds = new Set(events
+        .filter(event => text(event?.publicity).toLowerCase() === 'public')
+        .map(event => text(event?.id)).filter(Boolean));
+    const discussionEventIds = new Set(events
+        .filter(event => ['public', 'trace'].includes(text(event?.publicity).toLowerCase()))
+        .map(event => text(event?.id)).filter(Boolean));
+    const visibleSource = allowed => item => !text(item?.relatedEventId) || allowed.has(text(item?.relatedEventId));
     return {
         generatedAt: text(cache?.generatedAt),
         sourceWorldMinute: Number.isFinite(Number(cache?.sourceWorldMinute))
             ? Number(cache.sourceWorldMinute)
             : -1,
-        news: (cache?.news || []).map(item => ({ ...item })),
-        forums: (cache?.forums || []).map(item => ({
+        news: (cache?.news || []).filter(visibleSource(publicEventIds)).map(item => ({ ...item })),
+        forums: (cache?.forums || []).filter(visibleSource(discussionEventIds)).map(item => ({
             ...item,
             replies: (item?.replies || []).map(reply => ({ ...reply })),
         })),
@@ -193,7 +201,7 @@ export function getWorldPhoneSurface() {
             .map(phoneEventView)
             .filter(Boolean),
         social: phoneSocialView(social),
-        publicOpinion: phonePublicOpinionView(publicOpinion),
+        publicOpinion: phonePublicOpinionView(publicOpinion, state?.events),
         branchKey: text(
             state?.lastCommit?.sourceKey
             ?? state?.lastCommit?.source_key
@@ -248,7 +256,7 @@ export function handleWorldPhoneAction(action, payload = {}) {
         const momentId = text(payload?.momentId ?? payload?.moment_id);
         const desired = Boolean(payload?.liked);
         let social = normalizeSocialState(store.social, people);
-        const moment = social.moments.find(item => item.id === momentId);
+        const moment = social.moments.find(item => item.id === momentId && item.visibility !== 'private');
         if (!moment) throw new Error('没有找到这条动态');
         if (Boolean(moment.likedByUser) !== desired) {
             social = toggleMomentLike(social, state, momentId);

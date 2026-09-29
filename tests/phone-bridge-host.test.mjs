@@ -150,3 +150,46 @@ test('world phone bridge exposes only phone-visible world surface and canonical 
     delete globalThis.SillyTavern;
     delete globalThis.worldBackstageHost;
 });
+
+test('private moments and their otherwise hidden author do not cross the public phone bridge', async () => {
+    const store = fixtureStore();
+    store.social.moments.push({ id: 'private-moment', personId: 'p2', text: '私密行程', visibility: 'private' });
+    globalThis.SillyTavern = { getContext: () => ({ chatMetadata: { [STATE_KEY]: store }, saveMetadataDebounced() {} }) };
+    try {
+        const { getWorldPhoneSurface, handleWorldPhoneAction } = await import('../phone-bridge-host.js');
+        const surface = getWorldPhoneSurface();
+        assert.deepEqual(surface.social.moments.map(item => item.id), ['moment-1']);
+        assert.deepEqual(surface.people.map(item => item.id), ['p1']);
+        assert.equal(JSON.stringify(surface).includes('私密行程'), false);
+        assert.throws(() => handleWorldPhoneAction('social-set-moment-like', { momentId: 'private-moment', liked: true }), /没有找到这条动态/);
+    } finally {
+        delete globalThis.SillyTavern;
+        delete globalThis.worldBackstageHost;
+    }
+});
+
+test('stale public-opinion cache cannot expose news or discussion for private events', async () => {
+    const store = fixtureStore();
+    store.currentState.events.push({ id: 'event-trace', publicity: 'trace', publicTrace: '街头传闻' });
+    store.publicOpinion = {
+        news: [
+            { id: 'news-private', relatedEventId: 'event-secret', headline: '私密标题', summary: '私密细节' },
+            { id: 'news-public', relatedEventId: 'event-public', headline: '公开标题', summary: '公开细节' },
+        ],
+        forums: [
+            { id: 'forum-private', relatedEventId: 'event-secret', title: '私密讨论', summary: '私密留言' },
+            { id: 'forum-trace', relatedEventId: 'event-trace', title: '街头讨论', summary: '可见传闻' },
+        ],
+    };
+    globalThis.SillyTavern = { getContext: () => ({ chatMetadata: { [STATE_KEY]: store } }) };
+    try {
+        const { getWorldPhoneSurface } = await import('../phone-bridge-host.js');
+        const surface = getWorldPhoneSurface();
+        assert.deepEqual(surface.publicOpinion.news.map(item => item.id), ['news-public']);
+        assert.deepEqual(surface.publicOpinion.forums.map(item => item.id), ['forum-trace']);
+        assert.equal(JSON.stringify(surface).includes('私密细节'), false);
+    } finally {
+        delete globalThis.SillyTavern;
+        delete globalThis.worldBackstageHost;
+    }
+});

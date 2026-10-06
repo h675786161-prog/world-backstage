@@ -318,7 +318,7 @@ try {
                 currentTime: core.formatWorldCalendar(store.currentState).time,
                 pendingSync: store.currentState.pendingSync,
                 displayedTime: document.querySelector('.wb-mobile-clock-time')?.textContent.trim(),
-                injectionHasTime: String(context.extensionPrompts.world_backstage_context?.value || '').includes('09:05'),
+                injectionHasTime: String(context.extensionPrompts.world_backstage_authoritative_state?.value || '').includes('09:05'),
             };
             const manual = core.setWorldCalendar(after, {
                 year: 2026, month: 10, day: 1, hour: 8, minute: 30,

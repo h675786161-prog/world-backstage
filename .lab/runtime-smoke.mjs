@@ -275,11 +275,80 @@ try {
         };
     });
 
+    const mobileClock = [];
+    for (const width of [320, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        const restored = await page.evaluate(async () => {
+            const context = globalThis.SillyTavern.getContext();
+            const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+            Object.assign(context.extensionSettings.world_backstage, {
+                enabled: true, worldSimulationEnabled: true, worldAutoEnabled: false,
+                memoryAutoIndexInterval: 0, publicOpinionAutoEnabled: false,
+                autoHideArchivedFloors: false, worldPromptInjection: true, injectionTimeMode: 'full',
+            });
+            const oldText = '<details><summary>时间与地点</summary>09:01 · 客厅</details>';
+            const newText = '<details><summary>时间与地点</summary>09:05 · 客厅</details>';
+            const oldKey = `0:0:${core.hashText(oldText)}`;
+            const newKey = `1:0:${core.hashText(newText)}`;
+            const before = core.setWorldCalendar(core.createInitialState(), {
+                year: 2026, month: 10, day: 1, hour: 9, minute: 1,
+            });
+            before.lastCommit = { messageId: 0, swipeId: 0, sourceKey: oldKey };
+            const after = core.setWorldCalendar(before, {
+                year: 2026, month: 10, day: 1, hour: 9, minute: 5,
+            });
+            after.lastCommit = { messageId: 1, swipeId: 0, sourceKey: newKey };
+            const messages = [before, after].map((state, id) => ({
+                name: context.name2, is_user: false, is_system: false,
+                mes: oldText, swipe_id: 0, swipes: [id ? newText : oldText], extra: {},
+                swipe_info: [{ extra: { [core.SNAPSHOT_KEY]: {
+                    status: 'committed', sourceKey: id ? newKey : oldKey,
+                    result: core.createCompactSnapshot(state, {
+                        messageId: id, swipeId: 0, sourceKey: id ? newKey : oldKey,
+                    }),
+                } } }],
+            }));
+            context.chat.splice(0, context.chat.length, ...messages);
+            const store = context.chatMetadata[core.STATE_KEY];
+            store.initialState = before;
+            store.branchOverrides = {};
+            store.currentState = core.markPendingSync(before, true);
+            globalThis.worldBackstageHost.open();
+            const first = {
+                currentTime: core.formatWorldCalendar(store.currentState).time,
+                pendingSync: store.currentState.pendingSync,
+                displayedTime: document.querySelector('.wb-mobile-clock-time')?.textContent.trim(),
+                injectionHasTime: String(context.extensionPrompts.world_backstage_context?.value || '').includes('09:05'),
+            };
+            const manual = core.setWorldCalendar(after, {
+                year: 2026, month: 10, day: 1, hour: 8, minute: 30,
+            });
+            manual.world.background = 'LAB手动修改必须保留';
+            store.branchOverrides[newKey] = core.createCompactSnapshot(manual, { sourceKey: newKey });
+            store.currentState = core.markPendingSync(before, true);
+            globalThis.worldBackstageHost.open();
+            return {
+                ...first,
+                manualTime: core.formatWorldCalendar(store.currentState).time,
+                manualBackgroundPreserved: store.currentState.world.background === manual.world.background,
+                manualDisplayedTime: document.querySelector('.wb-mobile-clock-time')?.textContent.trim(),
+            };
+        });
+        mobileClock.push({ width, ...restored });
+        if (restored.currentTime !== '09:05' || restored.displayedTime !== '09:05'
+            || restored.pendingSync || !restored.injectionHasTime
+            || restored.manualTime !== '08:30' || restored.manualDisplayedTime !== '08:30'
+            || !restored.manualBackgroundPreserved) {
+            throw new Error(`Mobile clock recovery failed: ${JSON.stringify({ width, ...restored })}`);
+        }
+    }
+
     report = {
         pluginLoaded: true,
         helper,
         runtime,
         longRuntime,
+        mobileClock,
         ui: {
             autoHideToggleRendered: true,
             restoreButtonRendered: true,

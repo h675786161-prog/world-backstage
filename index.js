@@ -2295,7 +2295,8 @@ function latestNarrativeSyncSnapshot() {
         && branch.result
         && !branch.stale
     );
-    const stateCommit = getState()?.lastCommit;
+    const currentState = getState();
+    const stateCommit = currentState?.lastCommit;
     // 历史回溯可能只建立当前状态锚点而没有逐楼层快照；只有不存在当前
     // source 的分支记录时，才允许精确匹配的状态锚点作为完成证据。
     const stateCommitted = Boolean(
@@ -2305,6 +2306,14 @@ function latestNarrativeSyncSnapshot() {
         && Number(stateCommit?.swipeId ?? 0) === swipeId
     );
     const committed = branchCommitted || stateCommitted;
+    const currentStateApplied = Boolean(
+        committed
+        && stateCommit?.sourceKey === sourceKey
+        && Number(stateCommit?.messageId) === Number(latest.index)
+        && Number(stateCommit?.swipeId ?? 0) === swipeId
+        && !currentState.pendingSync
+    );
+    const needsStateRestore = branchCommitted && !currentStateApplied;
     const chatToken = currentChatToken();
     const active = Boolean(
         runtime.activeSimulation?.chatToken === chatToken
@@ -2342,6 +2351,11 @@ function latestNarrativeSyncSnapshot() {
         sourceKey,
         pendingTurns,
         committed,
+        currentStateApplied,
+        needsStateRestore,
+        stateApplyReason: currentStateApplied ? 'applied' : committed ? 'stored-only' : 'not-committed',
+        snapshotWorldMinute: branchCommitted ? branch.result?.state?.clock?.absoluteMinute ?? null : null,
+        currentWorldMinute: currentState.clock?.absoluteMinute ?? null,
         needsSimulation: !committed,
         active,
         queued,
@@ -2384,6 +2398,12 @@ function getSyncStatus() {
             derived = {
                 phase: 'pending',
                 message: '最新正文仍在等待推演',
+                error: '',
+            };
+        } else if (narrative.needsStateRestore) {
+            derived = {
+                phase: 'pending',
+                message: '最新正文的推演已存档，当前世界状态等待恢复',
                 error: '',
             };
         } else if (narrative.committed) {
@@ -2555,6 +2575,8 @@ function beginTaskTrace(taskKind, details = {}) {
         parseOutcome: 'none',
         validationOutcome: 'none',
         commitOutcome: 'none',
+        currentStateApplied: false,
+        stateApplyReason: 'not-applied',
         responseCharacters: 0,
         errorType: 'none',
         errorSummary: '',
@@ -2981,6 +3003,38 @@ function restoreLatestBranch({ pending = false } = {}) {
     refreshInjection();
     runtime.ui?.render();
     return store.currentState;
+}
+
+function restoreCommittedCurrentState() {
+    const settings = getSettings();
+    if (!settings.enabled || !settings.worldSimulationEnabled || !hasChatContext()) return false;
+    // Only repair the idle, stored-but-not-applied state. Never compete with a
+    // writer, a pending manual request, or a newer uncommitted narrative branch.
+    if (
+        !getState().pendingSync
+        || coreSimulationBusy()
+        || runtime.pendingManualSimulation
+        || runtime.consistencyBarrierRunning
+    ) return false;
+    const narrative = latestNarrativeSyncSnapshot();
+    if (!narrative.needsStateRestore) return false;
+    const latest = findLatestResultSnapshot();
+    if (!latest || latest.messageId !== narrative.latestMessageId) return false;
+
+    const store = getStore();
+    const restored = stateWithBranchOverride(latest.snapshot, store);
+    if (restored.lastCommit?.sourceKey !== narrative.sourceKey) return false;
+    captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
+    store.currentState = ensureMonotonicRevision(markPendingSync(restored, false), store.currentState);
+    restoreSurfaceForState(store, store.currentState);
+    saveStore(store, { immediate: true });
+    refreshInjection();
+    setSyncStatus({
+        phase: 'success',
+        message: '已从当前分支存档恢复世界状态，无需重新推演',
+        error: '',
+    });
+    return true;
 }
 
 function recentChatText(maximum = 8, beforeIndex = Infinity) {
@@ -4532,6 +4586,11 @@ async function runSimulationForMessage(messageId, {
             // No valid narrative after filtering: do not consume delivery attempts
             // or expire candidates via recordDeliveryOffers.
             const resultState = markPendingSync(clone(baseState), false);
+            resultState.lastCommit = {
+                messageId, swipeId, sourceKey,
+                at: resultState.clock.absoluteMinute,
+                committedAt: new Date().toISOString(),
+            };
             const nextInjection = buildInjectionPackage(resultState, settings, recentChatText(), {
                 contextText: recentForegroundIntentText(),
             });
@@ -4570,10 +4629,11 @@ async function runSimulationForMessage(messageId, {
             compactBranchSnapshotStorage();
             const branchIsCurrent = (
                 Number(target.message.swipe_id ?? 0) === swipeId
-                && hashText(target.message.mes) === expectedHash
+                && branchSourceKey(messageId, target.message, swipeId) === sourceKey
             );
             const supersededByNewerReply = hasNewerAssistantReply(messageId);
-            if (branchIsCurrent && !supersededByNewerReply) {
+            const currentStateApplied = branchIsCurrent && !supersededByNewerReply;
+            if (currentStateApplied) {
                 const store = getStore();
                 store.currentState = trimState(resultState);
                 saveStore(store, { immediate: true });
@@ -4581,20 +4641,25 @@ async function runSimulationForMessage(messageId, {
                 runtime.ui?.render();
             }
             await target.context.saveChat?.();
-            finishTaskTrace(supersededByNewerReply ? 'superseded' : 'success', {
-                stage: supersededByNewerReply ? 'superseded' : 'committed',
+            if (!taskStillCurrent()) return resultState;
+            finishTaskTrace(currentStateApplied ? 'success' : 'superseded', {
+                stage: currentStateApplied ? 'committed' : 'stored-only',
+                currentStateApplied,
+                stateApplyReason: currentStateApplied ? 'applied' : supersededByNewerReply ? 'newer-reply' : 'branch-not-selected',
                 parseOutcome: 'skipped',
                 validationOutcome: 'skipped',
                 commitOutcome: 'success',
                 committedAt: new Date().toISOString(),
             });
             setSyncStatus({
-                phase: supersededByNewerReply ? 'pending' : 'success',
-                message: supersededByNewerReply
-                    ? '这一轮结果已安全存档，但更新正文已经出现～先不写进当前状态，正在追赶最新一轮'
-                    : '过滤后无有效正文，本轮没有推进世界',
+                phase: currentStateApplied ? 'success' : 'pending',
+                message: currentStateApplied
+                    ? '过滤后无有效正文，本轮没有推进世界'
+                    : supersededByNewerReply
+                        ? '这一轮结果已安全存档，但更新正文已经出现～先不写进当前状态，正在追赶最新一轮'
+                        : '这一轮结果已存档，但当前选中的回复已改变，未更新当前世界',
                 error: '',
-                succeededAt: supersededByNewerReply ? '' : new Date().toISOString(),
+                succeededAt: currentStateApplied ? new Date().toISOString() : '',
                 method: runtime.syncStatus.method,
                 summary,
             });
@@ -4859,10 +4924,11 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
 
         const branchIsCurrent = (
             Number(target.message.swipe_id ?? 0) === swipeId
-            && hashText(target.message.mes) === expectedHash
+            && branchSourceKey(messageId, target.message, swipeId) === sourceKey
         );
         const supersededByNewerReply = hasNewerAssistantReply(messageId);
-        if (branchIsCurrent && !supersededByNewerReply) {
+        const currentStateApplied = branchIsCurrent && !supersededByNewerReply;
+        if (currentStateApplied) {
             const store = getStore();
             store.currentState = ensureMonotonicRevision(resultState, store.currentState);
             resultState = store.currentState;
@@ -4889,18 +4955,25 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
         }
 
         await target.context.saveChat?.();
-        finishTaskTrace('success', {
-            stage: 'committed',
+        if (!taskStillCurrent()) return resultState;
+        const completion = {
+            stage: currentStateApplied ? 'committed' : 'stored-only',
             commitOutcome: 'success',
+            currentStateApplied,
+            stateApplyReason: currentStateApplied ? 'applied' : supersededByNewerReply ? 'newer-reply' : 'branch-not-selected',
             committedAt: new Date().toISOString(),
-        });
+        };
+        if (currentStateApplied) finishTaskTrace('success', completion);
+        else finishTaskTrace('superseded', completion);
         setSyncStatus({
-            phase: supersededByNewerReply ? 'pending' : 'success',
-            message: supersededByNewerReply
-                ? '这一轮推演已经安全存档～但你已经走到更新正文啦，旧结果不会盖住当前状态，接下来直接追最新一轮'
-                : '最新正文已完成推演',
+            phase: currentStateApplied ? 'success' : 'pending',
+            message: currentStateApplied
+                ? '最新正文已完成推演'
+                : supersededByNewerReply
+                    ? '这一轮推演已经安全存档～但你已经走到更新正文啦，旧结果不会盖住当前状态，接下来直接追最新一轮'
+                    : '这一轮推演已存档，但当前选中的回复已改变，未更新当前世界',
             error: '',
-            succeededAt: supersededByNewerReply ? '' : new Date().toISOString(),
+            succeededAt: currentStateApplied ? new Date().toISOString() : '',
             method: runtime.syncStatus.method,
             summary,
         });
@@ -6727,6 +6800,11 @@ function buildDiagnosticReport() {
                 queued: Boolean(narrative.queued),
                 status: String(narrative.status || ''),
                 committed: Boolean(narrative.committed),
+                currentStateApplied: Boolean(narrative.currentStateApplied),
+                needsStateRestore: Boolean(narrative.needsStateRestore),
+                stateApplyReason: narrative.stateApplyReason || 'not-committed',
+                snapshotWorldMinute: narrative.snapshotWorldMinute ?? null,
+                currentWorldMinute: narrative.currentWorldMinute ?? null,
                 needsSimulation: Boolean(narrative.needsSimulation),
                 pendingTurns: Number(narrative.pendingTurns || 0),
                 hasLatest: Boolean(narrative.hasLatest),
@@ -6799,6 +6877,8 @@ function buildDiagnosticReport() {
                 parseOutcome: runtime.lastTaskTrace.parseOutcome,
                 validationOutcome: runtime.lastTaskTrace.validationOutcome,
                 commitOutcome: runtime.lastTaskTrace.commitOutcome,
+                currentStateApplied: Boolean(runtime.lastTaskTrace.currentStateApplied),
+                stateApplyReason: runtime.lastTaskTrace.stateApplyReason || 'not-applied',
                 responseCharacters: runtime.lastTaskTrace.responseCharacters,
                 errorType: runtime.lastTaskTrace.errorType,
                 errorSummary: redactDiagnosticText(runtime.lastTaskTrace.errorSummary || ''),
@@ -12623,6 +12703,7 @@ function initialize() {
         getTavernProfiles: listTavernConnectionProfiles,
         onAction: handleUiAction,
         pluginVersion: PLUGIN_VERSION,
+        ensureCurrentState: restoreCommittedCurrentState,
     });
 
     // Additive bridge for the companion phone. The world engine and its UI stay

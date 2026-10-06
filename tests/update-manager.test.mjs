@@ -27,7 +27,7 @@ function jsonResponse(body, status = 200) {
 test('test version stays aligned across runtime, manifest and package metadata', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    assert.equal(PLUGIN_VERSION, '2.5.7');
+    assert.match(PLUGIN_VERSION, /^\d+\.\d+\.\d+$/);
     assert.equal(manifest.version, PLUGIN_VERSION);
     assert.equal(pkg.version, PLUGIN_VERSION);
     assert.equal(manifest.auto_update, false, 'test builds may notify but must never silently self-update');

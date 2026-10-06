@@ -4375,6 +4375,7 @@ export function createWorldBackstageUI({
     getTavernProfiles = () => [],
     onAction,
     pluginVersion = '',
+    ensureCurrentState = () => false,
 }) {
     const root = document.createElement('div');
     root.id = 'world-backstage-root';
@@ -4396,6 +4397,7 @@ export function createWorldBackstageUI({
     syncVisualViewportInsets();
 
     function ensureMounted() {
+        ensureCurrentState();
         if (!root.isConnected) document.body.appendChild(root);
         syncVisualViewportInsets();
         const settings = getSettings();
@@ -4624,6 +4626,7 @@ export function createWorldBackstageUI({
     }
 
     function open() {
+        ensureCurrentState();
         window.clearTimeout(closeTimer);
         closing = false;
         panelEntrancePending = !isOpen;

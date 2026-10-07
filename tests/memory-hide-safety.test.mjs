@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyHistoryIndexResult, applyMemoryRollupResult, buildInjectionPackage,
+import { applyHistoryIndexResult, applyMemoryRollupResult, applySimulationResult, buildInjectionPackage,
     createInitialState, planMemoryRollup, selectRelevantStoryMemory, trimState } from '../core.js';
 import { AUTO_HIDDEN_MESSAGE_KEY, autoHideCandidateMessageIds, markAutoHiddenMessages,
     messageMemoryFingerprint, restoreUnsafeAutoHiddenMessages } from '../auto-hide.js';
@@ -12,6 +12,45 @@ const summariesFor = chat => chat.map((message, id) => ({
     id: `detail${id}`, level: 0, startMessageId: id, endMessageId: id,
     summary: `记忆${id}`, sourceFingerprint: messageMemoryFingerprint(message),
 }));
+
+test('repeated model summary IDs cannot overwrite different indexed floors', () => {
+    const turns = [0, 1, 2].map(id => ({ id: 'summary_l0_message_id',
+        source_message_id: id, summary: `第${id}楼独有内容` }));
+    let state = applyHistoryIndexResult(createInitialState(), { turn_summaries: turns },
+        { startMessageId: 0, endMessageId: 2 });
+    assert.equal(state.storyMemory.summaries.length, 3);
+    assert.equal(new Set(state.storyMemory.summaries.map(item => item.id)).size, 3);
+    state = applyHistoryIndexResult(state, { turn_summaries: [{ ...turns[1], summary: '第1楼修订' }] },
+        { startMessageId: 1, endMessageId: 1 });
+    assert.equal(state.storyMemory.summaries.length, 3);
+    assert.match(state.storyMemory.summaries.find(item => item.startMessageId === 0).summary, /独有/);
+    assert.equal(state.storyMemory.summaries.find(item => item.startMessageId === 1).summary, '第1楼修订');
+});
+
+test('simulation turn summaries also preserve each authorized floor despite repeated IDs', () => {
+    const state = applySimulationResult(createInitialState(), { memory_update: {
+        turn_summaries: [2, 4, 8].map(id => ({ id: 'summary_l0_message_id',
+            source_message_id: id, summary: `事件${id}` })),
+    } }, { messageId: 4, memorySummaryMessageIds: [2, 4] });
+    assert.deepEqual(state.storyMemory.summaries.map(item => item.startMessageId).sort((a,b) => a-b), [2,4]);
+});
+
+test('repairing legacy summary IDs preserves upper references and avoids old ID collisions', () => {
+    const state = createInitialState();
+    state.storyMemory.summaries = [
+        { id: 'summary_l0_0', level: 0, startMessageId: 1, endMessageId: 1, summary: '旧第1楼' },
+        { id: 'upper', level: 1, startMessageId: 1, endMessageId: 1, summary: '上层索引',
+            sourceSummaryIds: ['summary_l0_0'] },
+    ];
+    const updated = applyHistoryIndexResult(state, { turn_summaries: [
+        { source_message_id: 0, summary: '补回第0楼' },
+        { source_message_id: 1, summary: '修订第1楼' },
+    ] }, { startMessageId: 0, endMessageId: 1 });
+    assert.equal(new Set(updated.storyMemory.summaries.map(item => item.id)).size, 3);
+    assert.equal(updated.storyMemory.summaries.find(item => item.id === 'summary_l0_0').summary, '修订第1楼');
+    assert.deepEqual(updated.storyMemory.summaries.find(item => item.id === 'upper').sourceSummaryIds, ['summary_l0_0']);
+    assert.equal(updated.storyMemory.summaries.find(item => item.startMessageId === 0).summary, '补回第0楼');
+});
 
 test('an omitted one-off detail remains recallable after model rollup and serialization', () => {
     const chat = chatFixture();

@@ -1954,6 +1954,26 @@ function normalizeStorySummary(raw, existing = null) {
     };
 }
 
+function upsertTurnMemorySummary(summaries, normalized) {
+    // Models often copy the example ID. Floor identity comes from the host;
+    // preserve legacy IDs on updates so upper-layer references remain valid.
+    const existing = summaries.find(summary => (
+        Number(summary.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+        && Number(summary.startMessageId) === normalized.startMessageId
+        && Number(summary.endMessageId) === normalized.endMessageId
+    ));
+    if (existing) {
+        Object.assign(existing, normalized, { id: existing.id });
+        return;
+    }
+    const baseId = normalized.id;
+    let suffix = 1;
+    while (summaries.some(summary => summary.id === normalized.id)) {
+        normalized.id = `${baseId}_${suffix++}`;
+    }
+    summaries.push(normalized);
+}
+
 function normalizeClue(raw, existing = null, worldMinute = 0, {
     sourceMessageId = null,
     sourceSwipeId = null,
@@ -4572,7 +4592,7 @@ export function applySimulationResult(baseState, rawPayload, {
         ) continue;
         const preparedSummary = {
             ...rawTurn,
-            id: rawTurn?.id || `summary_l0_${summaryMessageId}`,
+            id: `summary_l0_${summaryMessageId}`,
             start_message_id: summaryMessageId,
             end_message_id: summaryMessageId,
             level: MEMORY_SUMMARY_LEVELS.DETAIL,
@@ -4580,16 +4600,7 @@ export function applySimulationResult(baseState, rawPayload, {
             source_summary_ids: [],
         };
         const normalizedSummary = normalizeStorySummary(preparedSummary);
-        const existingSummary = state.storyMemory.summaries.find(summary => (
-            summary.id === normalizedSummary.id
-            || (
-                Number(summary.level) === MEMORY_SUMMARY_LEVELS.DETAIL
-                && Number(summary.startMessageId) === summaryMessageId
-                && Number(summary.endMessageId) === summaryMessageId
-            )
-        ));
-        if (existingSummary) Object.assign(existingSummary, normalizedSummary);
-        else state.storyMemory.summaries.push(normalizedSummary);
+        upsertTurnMemorySummary(state.storyMemory.summaries, normalizedSummary);
     }
 
     applyMemoryFactUpdates(state, payload.memoryUpdates, {
@@ -6333,7 +6344,7 @@ export function applyHistoryIndexResult(inputState, rawPayload, {
         if (messageId < startMessageId || messageId > endMessageId || !rawTurn?.summary) continue;
         const prepared = {
             ...rawTurn,
-            id: rawTurn?.id || `summary_l0_${messageId}`,
+            id: `summary_l0_${messageId}`,
             source_fingerprint: asArray(messages).find(item => Number(item.id) === messageId)?.sourceFingerprint || '',
             start_message_id: messageId,
             end_message_id: messageId,
@@ -6342,16 +6353,7 @@ export function applyHistoryIndexResult(inputState, rawPayload, {
             source_summary_ids: [],
         };
         const normalized = normalizeStorySummary(prepared);
-        const existing = state.storyMemory.summaries.find(summary => (
-            summary.id === normalized.id
-            || (
-                Number(summary.level) === MEMORY_SUMMARY_LEVELS.DETAIL
-                && summary.startMessageId === messageId
-                && summary.endMessageId === messageId
-            )
-        ));
-        if (existing) Object.assign(existing, normalized);
-        else state.storyMemory.summaries.push(normalized);
+        upsertTurnMemorySummary(state.storyMemory.summaries, normalized);
         storedTurnSummaries += 1;
     }
 

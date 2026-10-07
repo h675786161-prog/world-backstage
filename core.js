@@ -1,3 +1,4 @@
+import { isRecallableStorySummary } from './auto-hide.js';
 import {
     buildClockAuthorityLines,
     normalizeClueTiming,
@@ -1934,6 +1935,7 @@ function normalizeStorySummary(raw, existing = null) {
         ),
         startMessageId,
         endMessageId,
+        sourceFingerprint: asString(raw?.source_fingerprint ?? raw?.sourceFingerprint, existing?.sourceFingerprint || '', 100),
         people: uniqueStrings(raw?.people ?? existing?.people, 20),
         locations: uniqueStrings(raw?.locations ?? existing?.locations, 16),
         tags: uniqueStrings(raw?.tags ?? existing?.tags, 20),
@@ -1950,6 +1952,26 @@ function normalizeStorySummary(raw, existing = null) {
         ),
         createdAt: asString(raw?.created_at ?? raw?.createdAt, existing?.createdAt || nowIso(), 40),
     };
+}
+
+function upsertTurnMemorySummary(summaries, normalized) {
+    // Models often copy the example ID. Floor identity comes from the host;
+    // preserve legacy IDs on updates so upper-layer references remain valid.
+    const existing = summaries.find(summary => (
+        Number(summary.level) === MEMORY_SUMMARY_LEVELS.DETAIL
+        && Number(summary.startMessageId) === normalized.startMessageId
+        && Number(summary.endMessageId) === normalized.endMessageId
+    ));
+    if (existing) {
+        Object.assign(existing, normalized, { id: existing.id });
+        return;
+    }
+    const baseId = normalized.id;
+    let suffix = 1;
+    while (summaries.some(summary => summary.id === normalized.id)) {
+        normalized.id = `${baseId}_${suffix++}`;
+    }
+    summaries.push(normalized);
 }
 
 function normalizeClue(raw, existing = null, worldMinute = 0, {
@@ -2172,9 +2194,10 @@ function retainStorySummaries(items) {
     // details lose to active/higher-level memory.  This makes LIMITS.storySummaries a
     // real upper bound in ordinary cases instead of a pool that can grow forever.
     const candidates = chronological
-        .filter(item => !keep.has(item.id) && item?.retentionState !== 'compacted')
+        .filter(item => !keep.has(item.id) && isRecallableStorySummary(item))
         .sort((a, b) => (
-            Number(b.level || 0) - Number(a.level || 0)
+            Number(b.retentionState !== 'compacted') - Number(a.retentionState !== 'compacted')
+            || Number(b.level || 0) - Number(a.level || 0)
             || Number(b.endMessageId || 0) - Number(a.endMessageId || 0)
         ));
     for (const item of candidates) {
@@ -3023,8 +3046,7 @@ function compactRolledUpSources(state, parentSummary, sources, { sourceMessageId
         if (Number(source.level || 0) >= MEMORY_SUMMARY_LEVELS.CHAPTER) continue;
         if (source.retentionState === 'compacted') continue;
         source.retentionState = 'compacted';
-        source.compactedReason = `细节已由 ${parentSummary.title || `L${parentSummary.level}`} 概括；原始正文仍可按消息范围回看。`;
-        source.summary = `细节已收进上层记忆；原始正文见消息 ${source.startMessageId}—${source.endMessageId}。`;
+        source.compactedReason = `已由 ${parentSummary.title || `L${parentSummary.level}`} 建立上层索引；逐楼细节保留用于相关检索。`;
         appendMemoryMetabolism(state, {
             kind: 'episode',
             action: 'compacted',
@@ -4570,7 +4592,7 @@ export function applySimulationResult(baseState, rawPayload, {
         ) continue;
         const preparedSummary = {
             ...rawTurn,
-            id: rawTurn?.id || `summary_l0_${summaryMessageId}`,
+            id: `summary_l0_${summaryMessageId}`,
             start_message_id: summaryMessageId,
             end_message_id: summaryMessageId,
             level: MEMORY_SUMMARY_LEVELS.DETAIL,
@@ -4578,16 +4600,7 @@ export function applySimulationResult(baseState, rawPayload, {
             source_summary_ids: [],
         };
         const normalizedSummary = normalizeStorySummary(preparedSummary);
-        const existingSummary = state.storyMemory.summaries.find(summary => (
-            summary.id === normalizedSummary.id
-            || (
-                Number(summary.level) === MEMORY_SUMMARY_LEVELS.DETAIL
-                && Number(summary.startMessageId) === summaryMessageId
-                && Number(summary.endMessageId) === summaryMessageId
-            )
-        ));
-        if (existingSummary) Object.assign(existingSummary, normalizedSummary);
-        else state.storyMemory.summaries.push(normalizedSummary);
+        upsertTurnMemorySummary(state.storyMemory.summaries, normalizedSummary);
     }
 
     applyMemoryFactUpdates(state, payload.memoryUpdates, {
@@ -5055,7 +5068,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     ));
     // Chat-derived summaries describe the written story, not omniscient NPC knowledge.
     const foregroundSummaries = injectMemory ? asArray(state?.storyMemory?.summaries)
-        .filter(item => item?.hierarchyManaged && !item?.manual && item?.retentionState !== 'compacted') : [];
+        .filter(item => item?.hierarchyManaged && !item?.manual && isRecallableStorySummary(item)) : [];
     // Filter before ranking so ineligible summaries cannot crowd out narrative recall.
     const narrativeArchive = injectMemory ? selectRelevantStoryMemory({
         ...state, storyMemory: { ...state.storyMemory, summaries: foregroundSummaries },
@@ -5436,7 +5449,7 @@ export function buildMemoryRollupPrompt(state, plan, { compact = false } = {}) {
         '要求：',
         '1. 只能使用给出的下层摘要；禁止补写不存在的情节。',
         '2. 优先保留关系变化、长期目标、承诺、关键转折、持续冲突、重要物品与未解决问题。普通动作、重复气氛和已经失效的枝节可以舍弃。',
-        '3. 新摘要是上层长期索引。source_summary_ids 与消息范围会保留，但普通下层摘要在建立上层后可能被压成轻量占位；因此真正会影响未来理解的细节必须进入上层，不重要的枝节可以主动放下。',
+        '3. 新摘要是上层长期索引。source_summary_ids 与消息范围会保留，但下层摘要会保留并按相关性检索；上层应概括因果和状态变化，不必复制全部细节。',
         '4. people / locations / tags 只保留真正贯穿这一段的重要项。',
         `5. ${lengthRule}`,
         '6. 只返回合法 JSON，不要代码围栏和解释。',
@@ -5650,7 +5663,7 @@ export function selectRelevantStoryMemory(state, narrativeText = '', {
             resolution: modelText(clue.resolution, 260),
         }));
     const scoredSummaries = memory.summaries
-        .filter(summary => summary.retentionState !== 'compacted')
+        .filter(summary => isRecallableStorySummary(summary))
         .map(summary => ({
             summary,
             score: memoryMatchScore(summary, narrativeText, { referenceMessageId }),
@@ -5947,6 +5960,7 @@ export function buildWorldBootstrapPrompt(state, {
 export function applyWorldBootstrapResult(inputState, rawPayload, {
     startMessageId = 0,
     endMessageId = 0,
+    messages = [],
     narrativeText = '',
     userName = '',
     allowUserInnerVoice = false,
@@ -5959,6 +5973,7 @@ export function applyWorldBootstrapResult(inputState, rawPayload, {
         state = applyHistoryIndexResult(state, rawPayload, {
             startMessageId,
             endMessageId,
+            messages,
         });
     }
 
@@ -6306,6 +6321,7 @@ export function buildHistoryIndexPrompt(state, {
 export function applyHistoryIndexResult(inputState, rawPayload, {
     startMessageId = 0,
     endMessageId = 0,
+    messages = [],
 } = {}) {
     const state = deepClone(inputState);
     state.storyMemory = normalizeStoryMemory(state.storyMemory, state.clock.absoluteMinute);
@@ -6328,7 +6344,8 @@ export function applyHistoryIndexResult(inputState, rawPayload, {
         if (messageId < startMessageId || messageId > endMessageId || !rawTurn?.summary) continue;
         const prepared = {
             ...rawTurn,
-            id: rawTurn?.id || `summary_l0_${messageId}`,
+            id: `summary_l0_${messageId}`,
+            source_fingerprint: asArray(messages).find(item => Number(item.id) === messageId)?.sourceFingerprint || '',
             start_message_id: messageId,
             end_message_id: messageId,
             level: MEMORY_SUMMARY_LEVELS.DETAIL,
@@ -6336,16 +6353,7 @@ export function applyHistoryIndexResult(inputState, rawPayload, {
             source_summary_ids: [],
         };
         const normalized = normalizeStorySummary(prepared);
-        const existing = state.storyMemory.summaries.find(summary => (
-            summary.id === normalized.id
-            || (
-                Number(summary.level) === MEMORY_SUMMARY_LEVELS.DETAIL
-                && summary.startMessageId === messageId
-                && summary.endMessageId === messageId
-            )
-        ));
-        if (existing) Object.assign(existing, normalized);
-        else state.storyMemory.summaries.push(normalized);
+        upsertTurnMemorySummary(state.storyMemory.summaries, normalized);
         storedTurnSummaries += 1;
     }
 

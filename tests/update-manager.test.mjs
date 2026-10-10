@@ -24,10 +24,10 @@ function jsonResponse(body, status = 200) {
     };
 }
 
-test('test version stays aligned across runtime, manifest and package metadata', () => {
+test('plugin version stays aligned across runtime, manifest and package metadata', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    assert.equal(PLUGIN_VERSION, '2.5.8');
+    assert.equal(PLUGIN_VERSION, '2.5.9');
     assert.equal(manifest.version, PLUGIN_VERSION);
     assert.equal(pkg.version, PLUGIN_VERSION);
     assert.equal(manifest.auto_update, false, 'test builds may notify but must never silently self-update');

@@ -308,7 +308,6 @@ function captureScope(surface) {
     return {
         ctx,
         store,
-        metadata: ctx?.chatMetadata ?? ctx?.chat_metadata,
         chatId: text(ctx?.chatId ?? ctx?.getCurrentChatId?.(), 240),
         branchKey: text(surface?.branchKey, 240),
     };
@@ -321,7 +320,6 @@ function scopeCurrent(scope) {
     return Boolean(
         scope?.store
         && store === scope.store
-        && (ctx?.chatMetadata ?? ctx?.chat_metadata) === scope.metadata
         && text(ctx?.chatId ?? ctx?.getCurrentChatId?.(), 240) === scope.chatId
         && text(surface?.branchKey, 240) === scope.branchKey
     );

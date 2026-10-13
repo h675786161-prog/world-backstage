@@ -1,6 +1,6 @@
 import { STATE_KEY } from './core.js';
 
-const PHONE_FEED_BRIDGE_VERSION = 1;
+const PHONE_FEED_BRIDGE_VERSION = 2;
 const CACHE_KEY = 'phoneFeedCacheV1';
 const SUPPORTED_PLATFORMS = new Set(['weibo', 'rednote']);
 const MINIMUM_FEED_ITEMS = Object.freeze({ weibo: 4, rednote: 4 });
@@ -18,16 +18,19 @@ function context() {
     try { return globalThis.SillyTavern?.getContext?.() || null; } catch { return null; }
 }
 
-function currentHost() {
-    const host = globalThis.worldBackstageHost;
-    return host && typeof host === 'object' ? host : null;
-}
-
-function currentStore() {
-    const ctx = context();
+function storeFromContext(ctx = context()) {
     return ctx?.chatMetadata?.[STATE_KEY]
         || ctx?.chat_metadata?.[STATE_KEY]
         || null;
+}
+
+function currentStore() {
+    return storeFromContext(context());
+}
+
+function currentHost() {
+    const host = globalThis.worldBackstageHost;
+    return host && typeof host === 'object' ? host : null;
 }
 
 function hash(value) {
@@ -50,6 +53,16 @@ function shallowCloneSurface(surface) {
     return surface && typeof surface === 'object' ? surface : {};
 }
 
+function momentCommentDescriptor(comment) {
+    return [
+        text(comment?.id, 160),
+        text(comment?.authorId, 160),
+        text(comment?.authorName ?? comment?.author, 80),
+        text(comment?.text, 360),
+        text(comment?.createdAt, 60),
+    ];
+}
+
 function visibleMomentDescriptor(moment) {
     return {
         id: text(moment?.id, 160),
@@ -58,6 +71,9 @@ function visibleMomentDescriptor(moment) {
         imageUrl: text(moment?.imageUrl, 500),
         worldMinute: Math.max(0, Number(moment?.worldMinute) || 0),
         createdAt: text(moment?.createdAt, 60),
+        likes: Math.max(0, Number(moment?.likes) || 0),
+        likedByUser: Boolean(moment?.likedByUser),
+        comments: list(moment?.comments).slice(-8).map(momentCommentDescriptor),
     };
 }
 
@@ -67,11 +83,16 @@ function sourceSignature(surface, platform) {
         : {};
     const social = surface?.social && typeof surface.social === 'object' ? surface.social : {};
     const minute = Math.max(0, Number(surface?.clock?.absoluteMinute) || 0);
+    const moments = list(social?.moments).filter(moment => moment?.visibility !== 'private');
+    const momentAuthorIds = new Set(moments.map(moment => text(moment?.personId, 160)).filter(Boolean));
     const descriptor = {
         platform,
         branchKey: text(surface?.branchKey, 240),
         worldName: text(surface?.worldName, 160),
         worldTimeBucket: Math.floor(minute / 180),
+        people: list(surface?.people)
+            .filter(person => momentAuthorIds.has(text(person?.id, 160)))
+            .map(person => [text(person?.id, 160), text(person?.name, 80)]),
         events: list(surface?.events).map(event => ({
             id: text(event?.id, 160),
             status: text(event?.status, 40),
@@ -97,34 +118,25 @@ function sourceSignature(surface, platform) {
                 text(item?.updatedAt ?? item?.updated_at, 60),
             ]),
         },
-        moments: list(social?.moments)
-            .filter(moment => moment?.visibility !== 'private')
-            .map(visibleMomentDescriptor),
+        moments: moments.map(visibleMomentDescriptor),
     };
     return hash(JSON.stringify(descriptor));
 }
 
-function cacheRoot(store = currentStore()) {
+function cacheRoot(store = currentStore(), { create = true } = {}) {
     if (!store || typeof store !== 'object') return null;
-    if (!store[CACHE_KEY] || typeof store[CACHE_KEY] !== 'object') store[CACHE_KEY] = {};
+    if (!store[CACHE_KEY] || typeof store[CACHE_KEY] !== 'object') {
+        if (!create) return null;
+        store[CACHE_KEY] = {};
+    }
     return store[CACHE_KEY];
 }
 
-function validCache(surface, platform) {
-    const root = cacheRoot();
+function validCache(surface, platform, store = currentStore()) {
+    const root = cacheRoot(store, { create: false });
     const cached = root?.[platform];
     if (!cached || typeof cached !== 'object') return null;
-    const signature = sourceSignature(surface, platform);
-    return cached.sourceSignature === signature ? cached : null;
-}
-
-function saveCache(platform, entry) {
-    const store = currentStore();
-    const root = cacheRoot(store);
-    if (!root) return;
-    root[platform] = entry;
-    const ctx = context();
-    if (ctx?.chatMetadata || ctx?.chat_metadata) ctx.saveMetadataDebounced?.();
+    return cached.sourceSignature === sourceSignature(surface, platform) ? cached : null;
 }
 
 function dispatchPhoneUpdate(detail = {}) {
@@ -147,17 +159,14 @@ function momentProjection(surface, platform) {
             const body = text(moment?.text, 700);
             const imageUrl = text(moment?.imageUrl, 500);
             if (!body && !imageUrl) return null;
-            const title = platform === 'rednote'
-                ? `${author}的日常`
-                : `${author}的动态`;
             const replies = list(moment?.comments).map(comment => ({
                 author: text(comment?.authorName ?? comment?.author, 60) || '朋友',
                 text: text(comment?.text, 360),
             })).filter(reply => reply.text).slice(-8);
             return {
                 id: `phonefeed_${platform}_moment_${text(moment?.id, 120) || index}`,
-                board: platform === 'rednote' ? author : author,
-                title,
+                board: author,
+                title: platform === 'rednote' ? `${author}的日常` : `${author}的动态`,
                 summary: body || '分享了一张照片。',
                 sourceType: 'unofficial',
                 scope: platform === 'rednote' ? '日常生活' : '朋友动态',
@@ -281,7 +290,7 @@ function mergeCacheIntoSurface(surface, cached, platform) {
 let installedHost = null;
 let originalGetPhoneSurface = null;
 let activePlatform = '';
-const requests = new Map();
+const requestsByStore = new WeakMap();
 
 function rawPhoneSurface() {
     return originalGetPhoneSurface?.() || {};
@@ -290,6 +299,55 @@ function rawPhoneSurface() {
 function ensureConnected(surface) {
     if (!surface?.connected) throw new Error('世界背面尚未初始化当前聊天');
     if (!text(surface?.branchKey, 240)) throw new Error('世界背面当前分支尚未稳定，稍后再刷新手机');
+}
+
+function captureScope(surface) {
+    const ctx = context();
+    const store = storeFromContext(ctx);
+    if (!ctx || !store) throw new Error('世界背面尚未初始化当前聊天');
+    return {
+        ctx,
+        store,
+        metadata: ctx?.chatMetadata ?? ctx?.chat_metadata,
+        chatId: text(ctx?.chatId ?? ctx?.getCurrentChatId?.(), 240),
+        branchKey: text(surface?.branchKey, 240),
+    };
+}
+
+function scopeCurrent(scope) {
+    const ctx = context();
+    const store = storeFromContext(ctx);
+    const surface = shallowCloneSurface(rawPhoneSurface());
+    return Boolean(
+        scope?.store
+        && store === scope.store
+        && (ctx?.chatMetadata ?? ctx?.chat_metadata) === scope.metadata
+        && text(ctx?.chatId ?? ctx?.getCurrentChatId?.(), 240) === scope.chatId
+        && text(surface?.branchKey, 240) === scope.branchKey
+    );
+}
+
+function assertScopeCurrent(scope) {
+    if (!scopeCurrent(scope)) {
+        throw new Error('生成期间切换了聊天或世界分支，本次手机刷新已作废');
+    }
+}
+
+function flightMapFor(store) {
+    let map = requestsByStore.get(store);
+    if (!map) {
+        map = new Map();
+        requestsByStore.set(store, map);
+    }
+    return map;
+}
+
+function saveCache(scope, platform, entry) {
+    assertScopeCurrent(scope);
+    const root = cacheRoot(scope.store);
+    if (!root) throw new Error('当前聊天没有可写入的世界背面存档');
+    root[platform] = entry;
+    scope.ctx?.saveMetadataDebounced?.();
 }
 
 async function requestPhoneFeed(options = {}) {
@@ -303,31 +361,32 @@ async function requestPhoneFeed(options = {}) {
 
     const before = shallowCloneSurface(rawPhoneSurface());
     ensureConnected(before);
-    const cached = !force ? validCache(before, platform) : null;
+    const scope = captureScope(before);
+    const flights = flightMapFor(scope.store);
+    const flightKey = `${platform}:${scope.branchKey}`;
+    if (flights.has(flightKey)) return flights.get(flightKey);
+
+    const cached = !force ? validCache(before, platform, scope.store) : null;
     if (cached) {
         dispatchPhoneUpdate({ kind: 'phone-feed-cache', platform, cacheHit: true });
         return { platform, cacheHit: true, generated: false, ...cached };
     }
 
-    const flightKey = `${platform}:${text(before.branchKey, 240)}:${force ? 'force' : 'normal'}`;
-    if (requests.has(flightKey)) return requests.get(flightKey);
-
-    const task = (async () => {
-        const startBranchKey = text(before.branchKey, 240);
+    let task;
+    task = (async () => {
         const beforeOpinionSignature = hash(JSON.stringify(before?.publicOpinion || {}));
         let usedPublicOpinionRefresh = false;
         let usedSandboxGeneration = false;
 
         if (force && typeof host.refreshPublicOpinion === 'function') {
             await host.refreshPublicOpinion();
+            assertScopeCurrent(scope);
             usedPublicOpinionRefresh = true;
         }
 
         let current = shallowCloneSurface(rawPhoneSurface());
         ensureConnected(current);
-        if (text(current.branchKey, 240) !== startBranchKey) {
-            throw new Error('生成期间切换了世界分支，本次手机刷新已作废');
-        }
+        assertScopeCurrent(scope);
 
         const opinionChanged = hash(JSON.stringify(current?.publicOpinion || {})) !== beforeOpinionSignature;
         const sparse = canonicalItemCount(current, platform) < (MINIMUM_FEED_ITEMS[platform] || 4);
@@ -336,14 +395,13 @@ async function requestPhoneFeed(options = {}) {
             && (sparse || (force && !opinionChanged))
         ) {
             await host.generatePublicOpinionSandbox();
+            assertScopeCurrent(scope);
             usedSandboxGeneration = true;
             current = shallowCloneSurface(rawPhoneSurface());
             ensureConnected(current);
-            if (text(current.branchKey, 240) !== startBranchKey) {
-                throw new Error('生成期间切换了世界分支，本次手机刷新已作废');
-            }
         }
 
+        assertScopeCurrent(scope);
         const publicSurface = typeof host.getPublicSurface === 'function'
             ? host.getPublicSurface()
             : {};
@@ -359,7 +417,7 @@ async function requestPhoneFeed(options = {}) {
             usedPublicOpinionRefresh,
             usedSandboxGeneration,
         };
-        saveCache(platform, entry);
+        saveCache(scope, platform, entry);
         dispatchPhoneUpdate({
             kind: 'phone-feed-ready',
             platform,
@@ -367,11 +425,16 @@ async function requestPhoneFeed(options = {}) {
             usedPublicOpinionRefresh,
             usedSandboxGeneration,
         });
-        return { platform, cacheHit: false, generated: usedPublicOpinionRefresh || usedSandboxGeneration, ...entry };
+        return {
+            platform,
+            cacheHit: false,
+            generated: usedPublicOpinionRefresh || usedSandboxGeneration,
+            ...entry,
+        };
     })().finally(() => {
-        requests.delete(flightKey);
+        if (flights.get(flightKey) === task) flights.delete(flightKey);
     });
-    requests.set(flightKey, task);
+    flights.set(flightKey, task);
     return task;
 }
 
@@ -384,12 +447,11 @@ function activatePhoneFeed(platformValue) {
 
 function peekPhoneFeed(platformValue) {
     const platform = cleanPlatform(platformValue);
-    const surface = rawPhoneSurface();
-    return validCache(surface, platform);
+    return validCache(rawPhoneSurface(), platform);
 }
 
 function clearPhoneFeedCache(platformValue = '') {
-    const root = cacheRoot();
+    const root = cacheRoot(currentStore(), { create: false });
     if (!root) return false;
     const platform = text(platformValue, 24).toLowerCase();
     if (platform && SUPPORTED_PLATFORMS.has(platform)) delete root[platform];
@@ -404,7 +466,10 @@ function clearPhoneFeedCache(platformValue = '') {
 export function installWorldPhoneFeedBridge() {
     const host = currentHost();
     if (!host || typeof host.getPhoneSurface !== 'function') return null;
-    if (host.phoneFeedBridgeVersion >= PHONE_FEED_BRIDGE_VERSION && typeof host.requestPhoneFeed === 'function') {
+    if (
+        host.phoneFeedBridgeVersion >= PHONE_FEED_BRIDGE_VERSION
+        && typeof host.requestPhoneFeed === 'function'
+    ) {
         installedHost = host;
         return host;
     }

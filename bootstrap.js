@@ -27,9 +27,9 @@ void import('./presentation-polish.js?v=251')
         import('./social-responsive-adapter.js?v=1'),
         import('./settings-responsive-adapter.js?v=1'),
         import('./tablet-responsive-adapter.js?v=1'),
-        import('./tablet-height-guard.js?v=2'),
         import('./mobile-news-discussion.js?v=1'),
     ]))
+    .then(() => import('./tablet-height-guard.js?v=3'))
     .catch(error => {
         console.error('[世界背面] 自适应表现层加载失败', error);
     });

@@ -27,7 +27,7 @@ void import('./presentation-polish.js?v=251')
         import('./social-responsive-adapter.js?v=1'),
         import('./settings-responsive-adapter.js?v=1'),
         import('./tablet-responsive-adapter.js?v=1'),
-        import('./tablet-height-guard.js?v=1'),
+        import('./tablet-height-guard.js?v=2'),
         import('./mobile-news-discussion.js?v=1'),
     ]))
     .catch(error => {

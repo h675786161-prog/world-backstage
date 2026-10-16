@@ -367,7 +367,7 @@ export function resolveNarrativeTimeTransition(text = '', {
         ) {
             target += MINUTES_PER_DAY;
         }
-        if (target >= baseAbsoluteMinute) {
+        if (target > baseAbsoluteMinute || (target === baseAbsoluteMinute && currentPrecision !== 'minute')) {
             return {
                 kind: exact.traditional ? 'structured-traditional-clock' : 'structured-clock',
                 targetAbsoluteMinute: target,
@@ -469,7 +469,7 @@ export function resolveNarrativeTimeTransition(text = '', {
     if (structuredScope && structuredTraditional && !structuredTraditional.precise && !exact) {
         const targetDay = structuredStoryDay ?? dayIndex(baseAbsoluteMinute);
         const target = targetDay * MINUTES_PER_DAY + structuredTraditional.minuteOfDay;
-        if (target >= baseAbsoluteMinute) {
+        if (target > baseAbsoluteMinute || (target === baseAbsoluteMinute && !['minute', 'daypart'].includes(currentPrecision))) {
             return {
                 kind: 'structured-traditional-period',
                 targetAbsoluteMinute: target,
@@ -487,7 +487,7 @@ export function resolveNarrativeTimeTransition(text = '', {
         if (desired !== null) {
             const targetDay = structuredStoryDay ?? dayIndex(baseAbsoluteMinute);
             const target = targetDay * MINUTES_PER_DAY + desired;
-            if (target >= baseAbsoluteMinute) {
+            if (target > baseAbsoluteMinute || (target === baseAbsoluteMinute && !['minute', 'daypart'].includes(currentPrecision))) {
                 return {
                     kind: 'structured-daypart',
                     targetAbsoluteMinute: target,

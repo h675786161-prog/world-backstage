@@ -3208,6 +3208,22 @@ function applyClueUpdates(state, {
 }
 
 function normalizeSimulationResult(payload, { peopleUpsertLimit = LIMITS.peoplePayload } = {}) {
+    const timeResolution = normalizeModelTimeResolution(
+        payload?.time_resolution ?? payload?.timeResolution ?? {},
+    );
+    const elapsedMinutes = asInteger(
+        payload?.elapsed_minutes ?? payload?.elapsedMinutes,
+        0, 0, 5 * 365 * MINUTES_PER_DAY,
+    );
+    // Some APIs fill the dedicated time verdict but leave the legacy duration
+    // at its template default. Consume a qualified current-scene estimate once;
+    // never add the two representations of the same duration together.
+    const useTimeEstimate = elapsedMinutes === 0
+        && timeResolution.scope === 'current'
+        && ['estimated_elapsed', 'duration_only'].includes(timeResolution.authority)
+        && timeResolution.needsElapsedEstimate
+        && ['medium', 'high'].includes(timeResolution.confidence)
+        && timeResolution.estimatedMinutes > 0;
     const rawClockAnchor = payload?.clock_anchor ?? payload?.clockAnchor ?? {};
     const anchorMode = ['none', 'initialize', 'calibrate'].includes(rawClockAnchor?.mode)
         ? rawClockAnchor.mode
@@ -3219,16 +3235,10 @@ function normalizeSimulationResult(payload, { peopleUpsertLimit = LIMITS.peopleP
         ? rawClockAnchor.confidence
         : 'low';
     return {
-        elapsedMinutes: asInteger(
-            payload?.elapsed_minutes ?? payload?.elapsedMinutes,
-            0,
-            0,
-            5 * 365 * MINUTES_PER_DAY,
-        ),
-        timeReason: asString(payload?.time_reason ?? payload?.timeReason, '', 320),
-        timeResolution: normalizeModelTimeResolution(
-            payload?.time_resolution ?? payload?.timeResolution ?? {},
-        ),
+        elapsedMinutes: useTimeEstimate ? timeResolution.estimatedMinutes : elapsedMinutes,
+        timeReason: asString(payload?.time_reason ?? payload?.timeReason, '', 320)
+            || (useTimeEstimate ? timeResolution.reason : ''),
+        timeResolution,
         nextTurnInjection: normalizeNextTurnInjection(
             payload?.next_turn_injection ?? payload?.nextTurnInjection ?? {},
         ),
@@ -3840,7 +3850,7 @@ export function applySimulationResult(baseState, rawPayload, {
         baseClockAnchored
         && (narrativeAnchor?.structured || modelSelectedCurrentEnd || narrativeTailExplicitEnd)
         && Number.isFinite(narrativeMinuteOfDay)
-        && narrativeMinuteOfDay >= currentMinuteOfDay
+        && narrativeMinuteOfDay > currentMinuteOfDay
     );
     const narrativeDayDelta = narrativeCalendar
         ? calendarDayDifference({
@@ -3863,7 +3873,10 @@ export function applySimulationResult(baseState, rawPayload, {
     );
     const narrativeDateCanCalibrate = Boolean(
         narrativeDateReliable
-        && (!baseClockAnchored || Number(narrativeDayDelta) >= 0)
+        // A repeated opening date/clock confirms existing context, not the end
+        // of this batch. It must not erase later transitions or elapsed actions.
+        && (!baseClockAnchored || Number(narrativeDayDelta) > 0
+            || (Number(narrativeDayDelta) === 0 && structuredForwardExact))
     );
 
     if (narrativeDateCanCalibrate) {
@@ -7467,7 +7480,7 @@ export function buildSimulationPrompt(state, {
         open: '开放估算：允许依据清楚的叙事时间变化估算经过时长，但仍不得把回复轮次当时间。',
         world: '世界钟模式：主世界时钟一旦建立就是连续时间基准。不要重新猜“现在几点”；只根据 new="true" 正文里真实发生的行动、路程、等待、睡眠、工作等估算本批实际经过时长。没有事件耗时就填 0；不得把回复轮次本身当时间。',
     }[timePolicy] || '严格时间：没有明确、可计算的时间证据就填 0。';
-    const clockAuthorityRule = '时间先判末尾再判耗时：当前场景有明确末尾日期/钟点时，time_resolution.evidence_found=true、authority=explicit_end_time、scope=current、confidence=high，elapsed_minutes=0；未来约定/回忆/转述不得当成当前时间。没有末尾时间但正文真实经历长途移动、睡眠、等待、工作等，needs_elapsed_estimate=true，并让 estimated_minutes 与 elapsed_minutes 一致。睡下后醒来、长途交通跨多个地区、多个班次/轮次/餐次、完成持续工作等都属于明确耗时语义，即使没有钟点也不能机械填0；按叙事尺度保守估算。time_resolution 的 authority/scope/confidence 每个字段只能填写一个合法值。绝对时间最终仍由插件确定性代码核验。';
+    const clockAuthorityRule = '时间先判末尾再判耗时：当前场景有明确末尾日期/钟点时，time_resolution.evidence_found=true、authority=explicit_end_time、scope=current、confidence=high，elapsed_minutes=0。正文开头重复的日期或钟点只是场景起点，不代表后续行动结束时仍停在该时刻；仅重复同一天日期也不能据此把耗时清零。未来约定/回忆/转述不得当成当前时间。没有明确钟点不等于没有耗时；例如本批确实吃完一餐、步行到另一个地点、完成收拾或工作时，应根据叙事内容保守估算，而不是因为没有“几分钟”就填0；瞬间点头或一句对话可以为0，禁止按回复轮数固定加时。没有末尾时间但正文真实经历长途移动、睡眠、等待、工作等，needs_elapsed_estimate=true，并让 estimated_minutes 与 elapsed_minutes 一致。睡下后醒来、长途交通跨多个地区、多个班次/轮次/餐次、完成持续工作等都属于明确耗时语义，即使没有钟点也不能机械填0；按叙事尺度保守估算。time_resolution 的 authority/scope/confidence 每个字段只能填写一个合法值。绝对时间最终仍由插件确定性代码核验。';
     const identityAnchor = modelText(playerIdentityAnchor, 400);
     const playerIdentityRule = identityAnchor
         ? `用户明确设定的玩家身份锚点：${identityAnchor}。涉及玩家的性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守，除非用户更新此锚点；不得根据外貌、衣着、身体或物种反推性别。`

@@ -8,6 +8,7 @@ import {
     buildInjectionPackage,
     createInitialState,
     formatWorldCalendar,
+    setWorldCalendar,
     trimState,
 } from '../core.js';
 
@@ -63,6 +64,143 @@ test('unbound world clock advances from elapsed duration and ignores model absol
     assert.equal(state.clock.absoluteMinute, before + 60);
     assert.equal(state.clock.precision, 'day');
     assert.notEqual(formatWorldCalendar(state).year, 9999);
+});
+
+function anchoredMorning() {
+    return setWorldCalendar(createInitialState(), {
+        calendarName: '主世界历', year: 2138, month: 1, day: 17, hour: 9, minute: 0,
+    });
+}
+
+test('repeated opening date does not discard elapsed work or downgrade known precision', () => {
+    const base = anchoredMorning();
+    const state = applySimulationResult(base, minimalPayload({ elapsed_minutes: 20 }), {
+        timePolicy: 'world',
+        narrativeText: '<details><summary>时间与地点</summary>2138年1月17日 · 港区</details>\n她吃完饭，收拾好了桌子。',
+    });
+    assert.equal(state.clock.absoluteMinute, base.clock.absoluteMinute + 20);
+    assert.equal(state.clock.precision, 'minute');
+});
+
+test('repeated opening clock does not swallow a subsequent deterministic duration', () => {
+    const base = anchoredMorning();
+    const state = applySimulationResult(base, minimalPayload({ elapsed_minutes: 30 }), {
+        timePolicy: 'world',
+        narrativeText: '<details><summary>时间与地点</summary>2138年1月17日 09:00 · 港区</details>\n半小时后，她听见了敲门声。',
+    });
+    assert.equal(state.clock.absoluteMinute, base.clock.absoluteMinute + 30);
+    assert.equal(state.lastTimeResolution.method, 'deterministic-transition');
+});
+
+test('repeated opening clock allows estimated elapsed actions exactly once across turns', () => {
+    let state = anchoredMorning();
+    const before = state.clock.absoluteMinute;
+    for (let i = 0; i < 3; i++) {
+        const time = formatWorldCalendar(state).time;
+        state = applySimulationResult(state, minimalPayload({ elapsed_minutes: 10 }), {
+            timePolicy: 'world', messageId: i + 1, sourceKey: `clock-turn:${i}`,
+            narrativeText: `<details><summary>时间与地点</summary>2138年1月17日 ${time} · 港区</details>\n她整理好资料，又倒了一杯茶。`,
+        });
+    }
+    assert.equal(state.clock.absoluteMinute, before + 30);
+});
+
+test('repeated date header cannot override a subsequent next-day scene transition', () => {
+    const base = anchoredMorning();
+    const state = applySimulationResult(base, minimalPayload(), {
+        timePolicy: 'world',
+        narrativeText: '<details><summary>时间与地点</summary>2138年1月17日 · 港区</details>\n第二天清晨，她出了门。',
+    });
+    assert.equal(formatWorldCalendar(state).dayOfMonth, 18);
+    assert.equal(state.clock.daypart, '清晨');
+});
+
+test('later explicit end clock still overrides model elapsed instead of double counting', () => {
+    const base = anchoredMorning();
+    const state = applySimulationResult(base, minimalPayload({ elapsed_minutes: 30 }), {
+        timePolicy: 'world',
+        narrativeText: '她整理完资料。\n<details><summary>时间与地点</summary>2138年1月17日 09:30 · 港区</details>',
+    });
+    assert.equal(state.clock.absoluteMinute, base.clock.absoluteMinute + 30);
+    assert.equal(state.lastTimeResolution.method, 'deterministic-anchor');
+});
+
+test('repeated same-day period does not freeze elapsed work or invent exact clock precision', () => {
+    const base = anchoredMorning();
+    base.clock.precision = 'daypart';
+    base.clock.daypart = '上午';
+    const state = applySimulationResult(base, minimalPayload({ elapsed_minutes: 10 }), {
+        timePolicy: 'world',
+        narrativeText: '<details><summary>时间与地点</summary>2138年1月17日 · 上午 · 港区</details>\n她整理好了一叠资料。',
+    });
+    assert.equal(state.clock.absoluteMinute, base.clock.absoluteMinute + 10);
+    assert.equal(state.clock.precision, 'daypart');
+});
+
+test('repeated clock with no elapsed action does not invent progress', () => {
+    const base = anchoredMorning();
+    const state = applySimulationResult(base, minimalPayload(), {
+        timePolicy: 'world',
+        narrativeText: '<details><summary>时间与地点</summary>2138年1月17日 09:00 · 港区</details>\n她点了点头。',
+    });
+    assert.equal(state.clock.absoluteMinute, base.clock.absoluteMinute);
+    assert.equal(state.clock.precision, 'minute');
+});
+
+test('API action-duration estimate advances time even when legacy elapsed field is zero', () => {
+    const base = anchoredMorning();
+    const state = applySimulationResult(base, minimalPayload({
+        time_resolution: {
+            evidence_found: false, authority: 'estimated_elapsed', scope: 'current',
+            needs_elapsed_estimate: true, estimated_minutes: 25, confidence: 'medium',
+            reason: '按吃完早餐、收拾餐具和步行到街角的行动估算。',
+        },
+    }), {
+        timePolicy: 'world',
+        narrativeText: '她吃完早餐，洗好餐具，然后步行到了街角。',
+    });
+    assert.equal(formatWorldCalendar(state).time, '09:25');
+    assert.equal(state.lastTimeResolution.method, 'model-elapsed');
+    assert.equal(state.lastTimeResolution.requestedElapsedMinutes, 25);
+    assert.match(state.lastTimeResolution.reason, /早餐/);
+});
+
+test('API elapsed estimate respects strict-time setting without explicit narrative evidence', () => {
+    const base = anchoredMorning();
+    const state = applySimulationResult(base, minimalPayload({
+        time_resolution: {
+            authority: 'estimated_elapsed', scope: 'current', needs_elapsed_estimate: true,
+            estimated_minutes: 25, confidence: 'medium',
+        },
+    }), { timePolicy: 'explicit', narrativeText: '她吃完早餐，洗好餐具，然后步行到了街角。' });
+    assert.equal(state.clock.absoluteMinute, base.clock.absoluteMinute);
+});
+
+test('API duration supplied in both formats is applied once and missing legacy field is supported', () => {
+    const base = anchoredMorning();
+    const time_resolution = {
+        authority: 'estimated_elapsed', scope: 'current', needs_elapsed_estimate: true,
+        estimated_minutes: 25, confidence: 'medium',
+    };
+    for (const payload of [{ time_resolution }, { time_resolution, elapsed_minutes: 25 }]) {
+        const state = applySimulationResult(base, payload, {
+            timePolicy: 'world', narrativeText: '她吃完早餐，洗好餐具，然后步行到了街角。',
+        });
+        assert.equal(state.clock.absoluteMinute, base.clock.absoluteMinute + 25);
+    }
+});
+
+test('future or recalled duration estimates cannot move the current scene clock', () => {
+    const base = anchoredMorning();
+    for (const scope of ['future', 'memory', 'reported']) {
+        const state = applySimulationResult(base, minimalPayload({
+            time_resolution: {
+                authority: 'estimated_elapsed', scope, needs_elapsed_estimate: true,
+                estimated_minutes: 120, confidence: 'high',
+            },
+        }), { timePolicy: 'world', narrativeText: '她想起了过去的旅途，又计划下一次出行。此刻仍在原地。' });
+        assert.equal(state.clock.absoluteMinute, base.clock.absoluteMinute, scope);
+    }
 });
 
 test('reliable foreground calendar date binds existing relative story day', () => {

@@ -3,6 +3,7 @@ import {
     eventProgress,
     formatDuration,
     formatWorldCalendar,
+    formatWorldClockFactLabel,
     formatWorldMinute,
     isActiveEvent,
     isTerminalEvent,
@@ -108,8 +109,19 @@ function formatLocalTimestamp(value) {
     });
 }
 
-function worldClockLabel(state, clock = formatWorldCalendar(state)) {
-    return state.clock?.anchored ? clock.stamp : '待从正文建立时间锚点';
+function estimatedClockProgress(state) {
+    const resolution = state.lastTimeResolution;
+    return resolution?.method === 'model-elapsed'
+        && state.clock?.source === 'world-clock'
+        && Number(resolution.afterMinute) === Number(state.clock.absoluteMinute)
+        ? Math.max(0, Number(resolution.afterMinute) - Number(resolution.beforeMinute)) || 0
+        : 0;
+}
+
+function worldClockLabel(state) {
+    const progress = estimatedClockProgress(state);
+    return formatWorldClockFactLabel(state)
+        + (progress > 0 ? ` · 本轮按行动估算推进约 ${formatDuration(progress)}` : '');
 }
 
 
@@ -787,7 +799,7 @@ function renderWorldbookImportActions(worldbook, selectedCount, draftUi = {}) {
 
 function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}, tavernProfiles = [], activeSection = 'common') {
     const clock = formatWorldCalendar(state);
-    const clockLabel = worldClockLabel(state, clock);
+    const clockLabel = worldClockLabel(state);
     const connection = syncStatus?.connection || {};
     const memory = syncStatus?.memory || {};
     const phase = syncStatus?.phase || 'idle';
@@ -2099,7 +2111,7 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
     const scopeKey = Object.hasOwn(scopeMeta, scope) ? scope : 'now';
     const scopeInfo = scopeMeta[scopeKey];
     const clock = formatWorldCalendar(state);
-    const clockLabel = worldClockLabel(state, clock);
+    const clockLabel = worldClockLabel(state);
     const memory = syncStatus?.memory || {};
     const historyRunning = memory.phase === 'running';
     const historyPercent = memory.total > 0
@@ -3013,7 +3025,7 @@ function renderLingqiView(lingqi = {}, draft = '', mascotOverride = '', openRead
 
 function renderNowView(state, observerMode, people, activeEvents, narrativeSync = {}) {
     const clock = formatWorldCalendar(state);
-    const clockLabel = worldClockLabel(state, clock);
+    const clockLabel = worldClockLabel(state);
     return `
         <div class="wb-overview">
             <section class="wb-world-card">
@@ -5040,7 +5052,20 @@ export function createWorldBackstageUI({
         const theme = themeFor(state, settings);
         const clock = formatWorldCalendar(state);
         const clockAnchored = Boolean(state.clock?.anchored);
-        const clockLabel = worldClockLabel(state, clock);
+        const clockMinuteKnown = state.clock?.precision === 'minute';
+        const clockEstimatedMinutes = estimatedClockProgress(state);
+        const clockTimeLabel = clockMinuteKnown
+            ? `${clockEstimatedMinutes > 0 ? '约 ' : ''}${clock.time}`
+            : state.clock?.precision === 'daypart' && state.clock?.daypart
+                ? state.clock.daypart
+                : clockAnchored ? '钟点未确定' : `第 ${clock.day} 日`;
+        const clockProgressLabel = !clockMinuteKnown && clockEstimatedMinutes > 0
+            ? `+约 ${formatDuration(clockEstimatedMinutes)}`
+            : clockTimeLabel;
+        const clockDateTime = clockAnchored
+            ? `${clock.year}-${String(clock.month).padStart(2, '0')}-${String(clock.dayOfMonth).padStart(2, '0')}${clockMinuteKnown ? `T${clock.time}` : ''}`
+            : '';
+        const clockLabel = worldClockLabel(state);
         const orbStyles = orbInlineStyles(settings.orbPosition);
         const currentView = VIEWS.find(view => view.id === activeView) || VIEWS[0];
         const userName = String(syncStatus.userName || '').toLocaleLowerCase();
@@ -5262,16 +5287,12 @@ export function createWorldBackstageUI({
                                 </div>
                             </div>
                             <time class="wb-mobile-clock-time"
-                                ${clockAnchored ? `datetime="${escapeAttr(
-                                    `${clock.year}-${String(clock.month).padStart(2, '0')}-${String(clock.dayOfMonth).padStart(2, '0')}T${clock.time}`,
-                                )}"` : ''}
-                                aria-label="${clockAnchored ? `主世界时间 ${escapeAttr(clock.time)}` : '主世界时间尚未校准'}">
-                                ${clockAnchored ? escapeHtml(clock.time) : '--:--'}
+                                ${clockDateTime ? `datetime="${escapeAttr(clockDateTime)}"` : ''}
+                                aria-label="${escapeAttr(clockLabel)}">
+                                ${escapeHtml(clockProgressLabel)}
                             </time>
                             <div class="wb-header-center">
-                                <time class="wb-world-calendar" ${clockAnchored ? `datetime="${escapeAttr(
-                                    `${clock.year}-${String(clock.month).padStart(2, '0')}-${String(clock.dayOfMonth).padStart(2, '0')}T${clock.time}`,
-                                )}"` : ''} aria-label="${escapeAttr(clockLabel)}">
+                                <time class="wb-world-calendar" ${clockDateTime ? `datetime="${escapeAttr(clockDateTime)}"` : ''} aria-label="${escapeAttr(clockLabel)}">
                                     ${clockAnchored ? `
                                         <span class="wb-calendar-page" aria-hidden="true">
                                             <small>${escapeHtml(`${clock.month}月`)}</small>
@@ -5280,17 +5301,17 @@ export function createWorldBackstageUI({
                                         <span class="wb-calendar-copy">
                                             <small>${escapeHtml(`${state.world.name} · ${clock.calendarName}`)}</small>
                                             <strong>${escapeHtml(`${clock.year} 年 ${clock.month} 月`)}</strong>
-                                            <em>${escapeHtml(clock.time)}</em>
+                                            <em>${escapeHtml(clockProgressLabel)}</em>
                                         </span>
                                     ` : `
                                         <span class="wb-calendar-page" aria-hidden="true">
-                                            <small>时间</small>
-                                            <strong>··</strong>
+                                            <small>故事日</small>
+                                            <strong>${escapeHtml(String(clock.day))}</strong>
                                         </span>
                                         <span class="wb-calendar-copy">
                                             <small>${escapeHtml(`${state.world.name} · 主世界钟`)}</small>
-                                            <strong>等待首次校准</strong>
-                                            <em>推演后建立</em>
+                                            <strong>故事第 ${escapeHtml(String(clock.day))} 日</strong>
+                                            <em>${escapeHtml(clockProgressLabel)}</em>
                                         </span>
                                     `}
                                 </time>

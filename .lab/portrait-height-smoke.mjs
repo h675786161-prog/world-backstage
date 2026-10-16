@@ -31,7 +31,7 @@ try {
     await page.waitForFunction(
         () => Boolean(
             document.getElementById('wb-tablet-responsive-adapter-v1')
-            && document.getElementById('wb-tablet-height-guard-v1')
+            && document.getElementById('wb-tablet-height-guard-v2')
         ),
         null,
         { timeout: 15_000 },

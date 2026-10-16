@@ -75,7 +75,8 @@ function updateControlCopies(value) {
         const row = toggle.closest('.wb-setting-toggle');
         const copy = row?.querySelector('div > span');
         if (copy) {
-            copy.textContent = `长期记忆确认收好后，自动隐藏更早楼层；当前保留最近 ${value} 层已归档正文和全部未归档正文。需要开启长期记忆注入，聊天记录不会删除。`;
+            const text = `长期记忆确认收好后，自动隐藏更早楼层；当前保留最近 ${value} 层已归档正文和全部未归档正文。需要开启长期记忆注入，聊天记录不会删除。`;
+            if (copy.textContent !== text) copy.textContent = text;
         }
     }
 }

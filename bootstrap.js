@@ -8,6 +8,7 @@ import './communication-voice-guard.js';
 import './observation-scene-overlap.js';
 import './settings-persistence-guard.js';
 import './social-notice-stability.js?v=3';
+import './auto-hide-settings-ui.js?v=1';
 import './index.js';
 import './phone-bridge-host.js?v=2';
 import './phone-feed-host.js?v=3';

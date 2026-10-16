@@ -40,6 +40,7 @@ const report = {
     matrix: [],
     settings: null,
     social: null,
+    socialSplitProbe: null,
     pageErrors,
 };
 
@@ -159,7 +160,7 @@ try {
     await page.waitForSelector('#world-backstage-root .wb-social-shell', { state: 'visible', timeout: 8_000 });
     await page.waitForTimeout(220);
 
-    report.social = await page.evaluate(() => {
+    const socialSnapshot = () => page.evaluate(() => {
         const layout = document.querySelector('#world-backstage-root .wb-social-layout');
         const shell = document.querySelector('#world-backstage-root .wb-social-shell');
         const sidebar = document.querySelector('#world-backstage-root .wb-social-sidebar');
@@ -178,11 +179,38 @@ try {
             threadDisplay: thread ? getComputedStyle(thread).display : '',
         };
     });
+
+    report.social = await socialSnapshot();
     assert(report.social?.shell && report.social?.layout, 'Social layout did not render');
     assert(report.social.layout.right <= report.social.shell.right + 1, 'Social layout overflows shell right edge');
     assert(report.social.layout.width <= report.social.shell.width + 1, 'Social layout wider than shell');
-    assert(report.social.layoutClasses.includes('wb-social-adaptive-split'), `Expected split social layout at 1024px: ${JSON.stringify(report.social)}`);
-    assert(report.social.sidebarDisplay !== 'none' && report.social.threadDisplay !== 'none', 'Social split columns are not both visible');
+
+    if (report.social.layoutClasses.includes('wb-social-adaptive-empty')) {
+        assert(report.social.sidebarDisplay === 'none', `Empty social state leaked a ghost sidebar: ${JSON.stringify(report.social)}`);
+        assert(report.social.threadDisplay !== 'none', `Empty social state hid its thread canvas: ${JSON.stringify(report.social)}`);
+        assert(Math.abs(report.social.thread.width - report.social.layout.width) <= 3, `Empty social state does not fill the layout: ${JSON.stringify(report.social)}`);
+
+        await page.evaluate(() => {
+            const conversations = document.querySelector('#world-backstage-root .wb-social-conversations');
+            if (!conversations) throw new Error('Conversation list missing for split-layout probe');
+            const probe = document.createElement('button');
+            probe.type = 'button';
+            probe.dataset.wbAction = 'social-select-conversation';
+            probe.dataset.conversationId = '__lab_tablet_probe__';
+            probe.dataset.wbTabletProbe = 'true';
+            probe.textContent = 'LAB tablet split probe';
+            conversations.appendChild(probe);
+        });
+        await page.waitForTimeout(220);
+        report.socialSplitProbe = await socialSnapshot();
+        assert(report.socialSplitProbe.layoutClasses.includes('wb-social-adaptive-split'), `Wide social layout did not switch to split after a conversation appeared: ${JSON.stringify(report.socialSplitProbe)}`);
+        assert(report.socialSplitProbe.sidebarDisplay !== 'none' && report.socialSplitProbe.threadDisplay !== 'none', `Social split columns are not both visible: ${JSON.stringify(report.socialSplitProbe)}`);
+    } else {
+        report.socialSplitProbe = report.social;
+        assert(report.social.layoutClasses.includes('wb-social-adaptive-split'), `Unexpected social mode at 1024px: ${JSON.stringify(report.social)}`);
+        assert(report.social.sidebarDisplay !== 'none' && report.social.threadDisplay !== 'none', 'Social split columns are not both visible');
+    }
+
     await page.screenshot({ path: path.join(evidenceDir, 'tablet-social-1024x768.png'), fullPage: false });
 
     assert(pageErrors.length === 0, `Browser page errors detected: ${pageErrors.join(' | ')}`);

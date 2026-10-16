@@ -481,6 +481,14 @@ export function installWorldPhoneFeedBridge() {
         return mergeCacheIntoSurface(surface, cached, activePlatform);
     };
     host.phoneFeedBridgeVersion = PHONE_FEED_BRIDGE_VERSION;
+    // Use the raw public surface, excluding our own projected cache. This lets
+    // phones detect real source changes without a refresh -> update loop.
+    host.getPhoneFeedSourceSignature = platform => {
+        const surface = rawPhoneSurface();
+        return surface?.connected
+            ? sourceSignature(surface, cleanPlatform(platform))
+            : '';
+    };
     host.requestPhoneFeed = requestPhoneFeed;
     host.activatePhoneFeed = activatePhoneFeed;
     host.peekPhoneFeed = peekPhoneFeed;

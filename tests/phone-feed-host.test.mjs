@@ -298,3 +298,21 @@ test('manual refresh uses world-backstage refresh first and discards a result af
         sample.cleanup();
     }
 });
+
+test('source signature ignores its own feed cache but detects public world changes without creating cache', async () => {
+    const sample = fixture();
+    try {
+        delete sample.store.phoneFeedCacheV1;
+        const host = await install(sample);
+        const first = host.getPhoneFeedSourceSignature('weibo');
+        assert.equal(sample.store.phoneFeedCacheV1, undefined);
+        await host.requestPhoneFeed({ platform: 'weibo' });
+        assert.equal(host.getPhoneFeedSourceSignature('weibo'), first);
+        host.activatePhoneFeed('rednote');
+        assert.equal(host.getPhoneFeedSourceSignature('weibo'), first);
+        sample.surface.events.push({ id: 'new', publicity: 'public', publicSummary: '夜市新开了咖啡摊' });
+        assert.notEqual(host.getPhoneFeedSourceSignature('weibo'), first);
+        sample.surface.connected = false;
+        assert.equal(host.getPhoneFeedSourceSignature('weibo'), '');
+    } finally { sample.cleanup(); }
+});

@@ -8,6 +8,7 @@ const LIVE_SEARCH_SELECTOR = [
 
 const AUTO_TRUNCATION_PREFIX = '本次推演内容超过当前输出上限，模型返回被截断；本轮没有提交任何世界状态。';
 const AUTO_TRUNCATION_MESSAGE = '本次推演在自动输出预算下仍被模型截断；本轮没有提交任何世界状态。自动模式会按任务规模分配请求上限，但并不等于无限输出；如果连续出现，可直接重试，或检查当前模型 / 服务端自身的最大输出限制。';
+const DAYPART_PATTERN = /(凌晨|黎明|清晨|早晨|早上|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|夜里|深夜)/u;
 
 const composingInputs = new WeakSet();
 const compositionFallbacks = new WeakMap();
@@ -48,12 +49,37 @@ function repairAutoTruncationMessage(root) {
     }
 }
 
+function repairEstimatedDaypartClock(root) {
+    const mobileClock = root?.querySelector?.('.wb-mobile-clock-time');
+    if (!mobileClock) return;
+    const progress = String(mobileClock.textContent || '').trim();
+    if (!progress.startsWith('+约 ')) return;
+
+    // ui.js 在只有时段精度时本来会得到“上午/下午”等标签，但估算推进量
+    // 随后把它整个覆盖掉。aria-label 仍保留事实时段，因此这里仅恢复展示，
+    // 不读取也不伪造内部分钟坐标。
+    const label = String(mobileClock.getAttribute('aria-label') || '');
+    const daypart = label.match(DAYPART_PATTERN)?.[1] || '';
+    if (!daypart) return;
+
+    const combined = `${daypart} · ${progress}`;
+    mobileClock.textContent = combined;
+    mobileClock.dataset.wbEstimatedDaypartFixed = 'true';
+
+    const desktopClock = root.querySelector?.('.wb-world-calendar em');
+    if (desktopClock && String(desktopClock.textContent || '').trim() === progress) {
+        desktopClock.textContent = combined;
+        desktopClock.dataset.wbEstimatedDaypartFixed = 'true';
+    }
+}
+
 function repairUi() {
     repairScheduled = false;
     const root = document.getElementById('world-backstage-root');
     if (!root) return;
     repairWorldTimeButtons(root);
     repairAutoTruncationMessage(root);
+    repairEstimatedDaypartClock(root);
 }
 
 function scheduleRepair() {

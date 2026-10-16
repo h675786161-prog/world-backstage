@@ -31,7 +31,7 @@ try {
     await page.waitForFunction(
         () => Boolean(
             document.getElementById('wb-tablet-responsive-adapter-v1')
-            && document.getElementById('wb-tablet-height-guard-v2')
+            && document.getElementById('wb-tablet-height-guard-v3')
         ),
         null,
         { timeout: 15_000 },
@@ -66,7 +66,7 @@ try {
         assert(snapshot.classes.includes('wb-tablet-portrait'), `${viewport.width}x${viewport.height}: portrait mode missing`);
         assert(snapshot.windowRect?.height >= viewport.height - 30, `${viewport.width}x${viewport.height}: window collapsed (${snapshot.windowRect?.height}px)`);
         assert(snapshot.bodyRect?.height >= viewport.height - 120, `${viewport.width}x${viewport.height}: body collapsed (${snapshot.bodyRect?.height}px)`);
-        assert(snapshot.windowRect.bottom <= viewport.height + 1, `${viewport.width}x${viewport.height}: window exceeds viewport`);
+        assert(snapshot.windowRect.y >= 0 && snapshot.windowRect.bottom <= viewport.height + 1, `${viewport.width}x${viewport.height}: window exceeds viewport`);
         results.push({ viewport, snapshot });
     }
 
@@ -95,7 +95,8 @@ try {
 
     assert(settings, 'Settings popover missing');
     assert(settings.height >= 400, `Portrait settings popover collapsed (${settings.height}px)`);
-    assert(settings.bottom <= 1181, `Portrait settings popover exceeds viewport: ${JSON.stringify(settings)}`);
+    assert(settings.y >= 0, `Portrait settings popover starts offscreen (${settings.y}px)`);
+    assert(settings.right <= 821 && settings.bottom <= 1181, `Portrait settings popover exceeds viewport: ${JSON.stringify(settings)}`);
     assert(settings.scrollWidth <= settings.clientWidth + 2, `Portrait settings has horizontal overflow: ${JSON.stringify(settings)}`);
     assert(pageErrors.length === 0, `Browser page errors detected: ${pageErrors.join(' | ')}`);
 

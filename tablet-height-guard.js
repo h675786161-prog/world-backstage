@@ -1,4 +1,4 @@
-const STYLE_ID = 'wb-tablet-height-guard-v1';
+const STYLE_ID = 'wb-tablet-height-guard-v2';
 
 function installTabletHeightGuard() {
     if (document.getElementById(STYLE_ID)) return;
@@ -6,24 +6,19 @@ function installTabletHeightGuard() {
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-/* Tablet height guard: percentage height inside the centered grid can collapse
-   on portrait medium viewports. Let the grid define the available block size
-   and stretch the window into it instead. */
-#world-backstage-root.wb-tablet-mode .wb-panel-scrim {
-    align-items: stretch !important;
-    justify-items: center !important;
-}
-
+/* Tablet height guard v2: percentage/auto height can collapse inside the centered
+   grid at 768/820px portrait widths. Use the visual viewport explicitly instead. */
 #world-backstage-root.wb-tablet-mode .wb-window {
-    align-self: stretch !important;
-    height: auto !important;
-    max-height: none !important;
+    height: calc(100vh - 20px) !important;
+    height: calc(100dvh - 20px) !important;
+    max-height: calc(100dvh - 20px) !important;
     min-height: 0 !important;
 }
 
 #world-backstage-root.wb-tablet-mode .wb-settings-layer {
-    height: 100% !important;
-    max-height: 100% !important;
+    height: calc(100vh - 20px) !important;
+    height: calc(100dvh - 20px) !important;
+    max-height: calc(100dvh - 20px) !important;
     min-height: 0 !important;
 }
 `;

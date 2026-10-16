@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const { chromium } = await import(process.env.LAB_PLAYWRIGHT_CORE_ENTRY);
 const baseUrl = process.env.LAB_ST_URL;
@@ -327,3 +328,19 @@ try {
 }
 
 console.log(JSON.stringify(report, null, 2));
+
+const importSmoke = spawnSync(process.execPath, [
+    new URL('../tests/worldbook-import-browser-smoke.mjs', import.meta.url).pathname,
+], {
+    stdio: 'inherit',
+    env: {
+        ...process.env,
+        WB_TAVERN_URL: baseUrl,
+        WB_EXTENSION_NAME: process.env.LAB_EXTENSION_NAME || 'world-backstage',
+        WB_PLAYWRIGHT_CORE_ENTRY: process.env.LAB_PLAYWRIGHT_CORE_ENTRY,
+        WB_CHROMIUM_EXECUTABLE: process.env.LAB_CHROME,
+        WB_IMPORT_EVIDENCE: path.join(evidenceDir, 'worldbook-import'),
+    },
+});
+if (importSmoke.error) throw importSmoke.error;
+if (importSmoke.status !== 0) throw new Error(`Worldbook import browser smoke failed: ${importSmoke.status}`);

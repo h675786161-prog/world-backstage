@@ -30,6 +30,7 @@ void import('./presentation-polish.js?v=251')
         import('./mobile-news-discussion.js?v=1'),
     ]))
     .then(() => import('./tablet-height-guard.js?v=4'))
+    .then(() => import('./tablet-clock-polish.js?v=1'))
     .catch(error => {
         console.error('[世界背面] 自适应表现层加载失败', error);
     });

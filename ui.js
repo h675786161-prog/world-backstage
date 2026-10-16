@@ -616,6 +616,175 @@ function renderSyncStrip(syncStatus) {
     `;
 }
 
+function coverageLabel(coverage) {
+    return `${Math.round(Math.max(0, Math.min(1, Number(coverage) || 0)) * 100)}%`;
+}
+
+// 报告显示来源核对、未导入的条目和失败的批次。
+function renderWorldbookImportReport(report) {
+    if (!report || report.phase === 'idle') return '';
+    if (report.running || report.phase === 'running') {
+        return `<div class="wb-worldbook-status is-running">${escapeHtml(report.message || '正在整理～')}</div>`;
+    }
+
+    // 审校台已经把命中率逐栏位摆出来了，这里就不再重复列一遍。
+    const inReview = report.phase === 'review-detail';
+    const reviewed = inReview
+        ? []
+        : (report.people || []).filter(person => person.review?.length || person.lengthFuse);
+    const dropped = (report.people || []).flatMap(person => (person.dropped || [])
+        .map(item => ({ ...item, name: person.name })));
+    const details = [
+        ...(report.renamed || []).map(item => `<li class="is-fixed">已把「${escapeHtml(item.from)}」的名字修正为 <strong>${escapeHtml(item.to)}</strong></li>`),
+        ...reviewed.map(person => `<li class="is-review"><strong>${escapeHtml(person.name)}</strong> 建议复核：${
+            person.lengthFuse
+                ? '整理结果比原文还长，可能有扩写'
+                : escapeHtml(person.review.map(item => `${item.label} ${coverageLabel(item.coverage)}`).join('、'))
+        }</li>`),
+        ...dropped.slice(0, 12).map(item => `<li class="is-dropped"><strong>${escapeHtml(item.name)}</strong> · ${escapeHtml(item.label)} 原文里查不到，已拦下：<em>${escapeHtml(String(item.text).slice(0, 60))}</em></li>`),
+        ...(report.untouched || []).map(item => `<li class="is-untouched">勾选的「${escapeHtml(item.name)}」没有产出人物：${escapeHtml(item.reason)}</li>`),
+        ...(report.skipped || []).map(item => `<li class="is-skipped">${escapeHtml(item.name || '无名条目')}：${escapeHtml(item.reason)}</li>`),
+        ...(report.failures || []).map(item => `<li class="is-failed">第 ${item.batch} 批没跑成功（${escapeHtml((item.entries || []).join('、'))}）：${escapeHtml(item.reason)}</li>`),
+    ];
+
+    return `
+        ${report.message ? `<div class="wb-worldbook-status is-${escapeAttr(report.phase)}">${escapeHtml(report.message)}</div>` : ''}
+        ${details.length ? `
+            <details class="wb-worldbook-import-report">
+                <summary><span>本次整理报告</span><small>${details.length} 条 · 点击展开</small></summary>
+                <ul>${details.join('')}</ul>
+                <p class="wb-worldbook-import-note">被拦下的内容不会丢：每个人物卡里的「世界书原始设定」保留完整来源正文。</p>
+            </details>
+        ` : ''}
+    `;
+}
+
+const IMPORT_FIELD_LABELS = Object.freeze({
+    identityAnchor: '身份锚点',
+    appearanceProfile: '外貌设定',
+    personalityAnchor: '人格锚点',
+    backgroundProfile: '背景与关系',
+    abilityProfile: '能力与限制',
+    speakingStyle: '说话习惯',
+    behaviorBoundaries: '行为边界',
+});
+
+// 审校台：整理结果先摆出来，勾选确认后才写进世界。高可信默认勾选，命中率偏低
+// 的标黄，明显查不到原文的在上一层就已经被丢弃，根本不会出现在这里。
+function renderWorldbookDraftReview(report, draftUi = {}) {
+    const people = Array.isArray(report?.people) ? report.people : [];
+    if (!people.length) return '';
+    const skipped = draftUi.skipped instanceof Set ? draftUi.skipped : new Set();
+    const droppedFields = draftUi.droppedFields instanceof Set ? draftUi.droppedFields : new Set();
+    const pickedFields = draftUi.pickedFields instanceof Set ? draftUi.pickedFields : new Set();
+    const targets = draftUi.targets instanceof Map ? draftUi.targets : new Map();
+    const chosen = people.filter(person => !skipped.has(person.reference));
+
+    return `
+        <div class="wb-worldbook-draft-review">
+            <div class="wb-worldbook-draft-head">
+                <strong>确认后写入</strong>
+                <small>共 ${people.length} 人 · 已选 ${chosen.length} 人。同名不同来源、有歧义的人物默认不选；确认写入位置后再勾选。标黄栏位也需主动确认。原文命中只核对文字出处，请同时确认人物归属。</small>
+            </div>
+            ${people.map(person => {
+                const personSkipped = skipped.has(person.reference);
+                const chosenTarget = String(targets.get(person.reference) || '');
+                const reviewFields = new Set((person.review || []).map(item => item.field));
+                const coverageOf = field => (person.review || []).find(item => item.field === field)?.coverage;
+                return `
+                <div class="wb-worldbook-draft-card ${personSkipped ? 'is-skipped' : ''}">
+                    <label class="wb-worldbook-draft-person">
+                        <input type="checkbox" data-wb-draft-person="${escapeAttr(person.reference)}"
+                            ${personSkipped ? '' : 'checked'}>
+                        <span>
+                            <strong>${escapeHtml(person.name)}</strong>
+                            ${chosenTarget === 'new'
+                                ? '<em>单独建立</em>'
+                                : chosenTarget.startsWith('draft:')
+                                    ? '<em>与上方同名草稿合并</em>'
+                                    : person.ambiguous && !chosenTarget.startsWith('person:')
+                                ? '<em class="is-warn">已有记录有歧义，请选择要补充的人物或单独建立</em>'
+                                : person.existing
+                                    ? `<em class="is-existing">更新已有的「${escapeHtml(person.existingName || person.name)}」</em>`
+                                    : '<em>新建</em>'}
+                            ${person.nameConflict ? '<em class="is-warn">同名不同来源，请确认是不是同一个人</em>' : ''}
+                            ${person.lengthFuse ? '<em class="is-warn">整理结果比原文长，疑似扩写</em>' : ''}
+                            <small>来自：${escapeHtml((person.sourceNames || []).join('、') || '未知条目')}</small>
+                        </span>
+                    </label>
+                    <label class="wb-worldbook-draft-target">写入位置
+                        <select data-wb-draft-target="${escapeAttr(person.reference)}">
+                            ${[...(person.ambiguous || person.nameConflict ? [] : [{ value: '', label: person.existing ? `补充已有的「${person.existingName}」` : '建立新人物' }]),
+                                { value: 'new', label: '单独建立，不与其他人物合并' },
+                                ...(person.candidates || []).map(candidate => ({ value: `person:${candidate.id}`, label: `补充「${candidate.name}」 · ${candidate.source}` })),
+                                ...people.slice(0, people.indexOf(person)).filter(other => other.name === person.name).map(other => ({ value: `draft:${other.reference}`, label: `与上方「${other.name}」合成同一个人` })),
+                            ].map(option => `<option value="${escapeAttr(option.value)}" ${String(targets.get(person.reference) || '') === option.value ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}
+                        </select>
+                    </label>
+                    <div class="wb-worldbook-draft-fields">
+                        ${Object.entries(person.values || {}).map(([field, value]) => {
+                            const key = `${person.reference}::${field}`;
+                            const low = reviewFields.has(field);
+                            // 命中率偏低的栏位默认不勾选：这个功能的核心是宁可漏掉
+                            // 也不要让模型延伸，所以存疑的内容要人主动确认才写入。
+                            const off = personSkipped
+                                || droppedFields.has(key)
+                                || (low && !pickedFields.has(key));
+                            const coverage = coverageOf(field);
+                            return `
+                            <label class="wb-worldbook-draft-field ${low ? 'is-low' : ''} ${off ? 'is-off' : ''}">
+                                <input type="checkbox" data-wb-draft-field="${escapeAttr(key)}"
+                                    ${off ? '' : 'checked'} ${personSkipped ? 'disabled' : ''}>
+                                <span>
+                                    <b>${escapeHtml(IMPORT_FIELD_LABELS[field] || field)}</b>
+                                    ${chosenTarget !== 'new' && person.retainedFields?.includes(field) ? '<em>已有作者填写的内容会保留；来源全文仍会保存。</em>' : ''}
+                                    ${low ? `<em>原文命中 ${coverageLabel(coverage)}，默认不写入，确认无误再勾上</em>` : ''}
+                                    <p>${escapeHtml(String(value))}</p>
+                                </span>
+                            </label>`;
+                        }).join('')}
+                    </div>
+                </div>`;
+            }).join('')}
+            <div class="wb-worldbook-draft-actions">
+                <button type="button" data-wb-action="discard-worldbook-drafts">放弃这次整理</button>
+                <button class="wb-primary-button" type="button" data-wb-action="commit-worldbook-drafts"
+                    ${chosen.length ? '' : 'disabled'}>
+                    ${chosen.length ? `确认写入（${chosen.length} 人）` : '没有勾选任何人'}
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function renderWorldbookImportActions(worldbook, selectedCount, draftUi = {}) {
+    const report = worldbook?.aiImport || null;
+    const running = Boolean(report?.running);
+    const disabled = !selectedCount || running ? 'disabled' : '';
+    const suffix = selectedCount ? `（${selectedCount}）` : '';
+    if (report?.phase === 'review') {
+        return `
+            <div class="wb-worldbook-status is-review">${escapeHtml(report.message || '')}</div>
+            ${renderWorldbookDraftReview(report, draftUi)}
+            ${renderWorldbookImportReport({ ...report, message: '', phase: 'review-detail' })}
+        `;
+    }
+    return `
+        <div class="wb-worldbook-import-actions">
+            <button class="wb-worldbook-import-button" type="submit" ${disabled}>
+                ${selectedCount ? `规则导入已选人物${suffix}` : '请选择要导入的人物'}
+            </button>
+            <button class="wb-primary-button wb-worldbook-ai-import-button" type="button"
+                data-wb-action="ai-import-worldbook" ${disabled}>
+                ${running ? '正在整理…' : `由 AI 整理后导入${suffix}`}
+            </button>
+        </div>
+        <p class="wb-worldbook-import-hint">规则导入不联网、按关键词切分；AI 整理会把设定重新归到对应栏位，只搬运不延伸，查不到原文的内容会被拦下。</p>
+        ${running ? '<button type="button" data-wb-action="discard-worldbook-drafts">取消整理</button>' : ''}
+        ${renderWorldbookImportReport(report)}
+    `;
+}
+
 function renderSettings(state, settings, syncStatus, openGroups = new Set(), openSubgroups = new Set(), apiDraft = null, tagFilterRules = null, tagCandidates = [], worldbookUi = {}, tavernProfiles = [], activeSection = 'common') {
     const clock = formatWorldCalendar(state);
     const clockLabel = worldClockLabel(state, clock);
@@ -1563,9 +1732,7 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                         </label>
                                     `).join('') : `<div class="wb-worldbook-empty">当前筛选下没有条目。可以取消筛选或换个关键词。</div>`}
                                 </div>
-                                <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>
-                                    ${worldbookSelectedCount ? `导入已选人物（${worldbookSelectedCount}）` : '请选择要导入的人物'}
-                                </button>
+                                ${renderWorldbookImportActions(worldbook, worldbookSelectedCount, worldbookUi.draft || {})}
                             </div>
                         ` : ''}
                     </form>
@@ -2194,7 +2361,7 @@ function renderModuleSettings(state, settings, syncStatus, scope = 'now', openSu
                                     </label>`;
                                 }).join('') : '<div class="wb-worldbook-empty">这里没找到合适的条目～换个关键词或者松一点筛选再让我找找。</div>'}
                             </div>
-                            <button class="wb-primary-button wb-worldbook-import-button" type="submit" ${worldbookSelectedCount ? '' : 'disabled'}>${worldbookSelectedCount ? `导入已选人物（${worldbookSelectedCount}）` : '请选择要导入的人物'}</button>
+                            ${renderWorldbookImportActions(worldbook, worldbookSelectedCount, worldbookUi.draft || {})}
                         </div>` : ''}
                 </form>
             </div>
@@ -2492,6 +2659,7 @@ function renderPersonDrawer(person, observerMode, worldMinute, {
                 ${person.backgroundProfile ? `
                     <div class="wb-drawer-section is-character-anchor"><span>背景与关系</span><strong>${escapeHtml(person.backgroundProfile)}</strong></div>
                 ` : ''}
+                ${person.abilityProfile ? `<div class="wb-drawer-section is-character-anchor"><span>能力与限制</span><strong>${escapeHtml(person.abilityProfile)}</strong></div>` : ''}
                 ${person.speakingStyle ? `
                     <div class="wb-drawer-section is-character-anchor"><span>说话习惯</span><strong>${escapeHtml(person.speakingStyle)}</strong></div>
                 ` : ''}
@@ -3226,19 +3394,20 @@ function renderPersonEditorModal(state, editor) {
                 </label>
                 <fieldset class="wb-character-anchor-fields">
                     <legend><span>角色约束</span><small>推演与即时观测都会遵守，AI 不会自动改写</small></legend>
-                    <label>角色身份锚点<textarea name="identityAnchor" maxlength="500" rows="3"
+                    <label>角色身份锚点<textarea name="identityAnchor" rows="3"
                         placeholder="例如：男性，外表偏女性，使用“他”和男性称谓；狐族人外。也可填写非二元、无性别或自定义称谓。">${escapeHtml(person?.identityAnchor || '')}</textarea>
                         <small>自由填写性别身份、称谓/代词、物种、年龄阶段与社会身份；外貌请单独写在“外貌设定”。不限制为男女二选一。</small>
                     </label>
-                    <label>外貌设定<textarea name="appearanceProfile" maxlength="700" rows="3"
+                    <label>外貌设定<textarea name="appearanceProfile" rows="3"
                         placeholder="例如：黑色短发，身高185cm，常穿深色衬衫。">${escapeHtml(person?.appearanceProfile || '')}</textarea></label>
-                    <label>人格锚点<textarea name="personalityAnchor" maxlength="600" rows="3"
+                    <label>人格锚点<textarea name="personalityAnchor" rows="3"
                         placeholder="例如：外冷内热，警惕权威；重视承诺，但不轻易示弱。">${escapeHtml(person?.personalityAnchor || '')}</textarea></label>
-                    <label>背景与关系<textarea name="backgroundProfile" maxlength="900" rows="4"
+                    <label>背景与关系<textarea name="backgroundProfile" rows="4"
                         placeholder="例如：成长经历、家庭关系、社会关系和既有重要经历。">${escapeHtml(person?.backgroundProfile || '')}</textarea></label>
-                    <label>说话习惯<textarea name="speakingStyle" maxlength="360" rows="2"
+                    <label>能力与限制<textarea name="abilityProfile" rows="5" placeholder="填写能力效果、作用范围、触发条件、代价、弱点与限制。未设定的能力不会自动补造。">${escapeHtml(person?.abilityProfile || '')}</textarea></label>
+                    <label>说话习惯<textarea name="speakingStyle" rows="2"
                         placeholder="例如：句子简短，很少使用感叹号；紧张时会转移话题。">${escapeHtml(person?.speakingStyle || '')}</textarea></label>
-                    <label>行为边界<textarea name="behaviorBoundaries" maxlength="500" rows="3"
+                    <label>行为边界<textarea name="behaviorBoundaries" rows="3"
                         placeholder="例如：不会无证据背叛同伴；不替玩家做决定；不知道的幕后信息不得说出口。">${escapeHtml(person?.behaviorBoundaries || '')}</textarea></label>
                 </fieldset>
                 <div class="wb-form-grid">
@@ -4520,6 +4689,11 @@ export function createWorldBackstageUI({
     let worldbookOnlyPeople = false;
     let worldbookOnlyEnabled = false;
     let worldbookSelectedIds = new Set();
+    let worldbookDraftToken = '';
+    let worldbookDraftSkipped = new Set();
+    let worldbookDraftDroppedFields = new Set();
+    let worldbookDraftPickedFields = new Set();
+    let worldbookDraftTargets = new Map();
     let worldbookListScrollTop = 0;
     let worldbookSearchTimer = null;
     let skipApiDraftCapture = false;
@@ -4713,6 +4887,16 @@ export function createWorldBackstageUI({
     }
 
     function render() {
+        // New drafts reset choices. Ambiguous people and low-coverage fields require explicit selection.
+        const worldbook = getSyncStatus()?.worldbook || {};
+        const draftToken = String(getSyncStatus()?.worldbook?.aiImport?.token || '');
+        if (draftToken !== worldbookDraftToken) {
+            worldbookDraftToken = draftToken;
+            worldbookDraftSkipped = new Set((worldbook.aiImport?.people || []).filter(person => person.ambiguous || person.nameConflict).map(person => person.reference));
+            worldbookDraftTargets = new Map((worldbook.aiImport?.people || []).map(person => [person.reference, person.ambiguous || person.nameConflict ? 'new' : '']));
+            worldbookDraftDroppedFields = new Set();
+            worldbookDraftPickedFields = new Set();
+        }
         const viewChanged = activeView !== renderedView;
         const animatePanelEntrance = Boolean(isOpen && panelEntrancePending);
         const previousContent = root.querySelector('.wb-view-content');
@@ -5234,6 +5418,7 @@ export function createWorldBackstageUI({
                                     onlyPeople: worldbookOnlyPeople,
                                     onlyEnabled: worldbookOnlyEnabled,
                                     selectedIds: worldbookSelectedIds,
+                                    draft: { skipped: worldbookDraftSkipped, droppedFields: worldbookDraftDroppedFields, pickedFields: worldbookDraftPickedFields, targets: worldbookDraftTargets },
                                 },
                                 tavernProfiles,
                                 settingsSection,
@@ -5253,6 +5438,11 @@ export function createWorldBackstageUI({
                                     onlyPeople: worldbookOnlyPeople,
                                     onlyEnabled: worldbookOnlyEnabled,
                                     selectedIds: worldbookSelectedIds,
+                                    draft: {
+                                        skipped: worldbookDraftSkipped,
+                                        droppedFields: worldbookDraftDroppedFields,
+                                        pickedFields: worldbookDraftPickedFields, targets: worldbookDraftTargets,
+                                    },
                                 },
                             )}
                         </div>
@@ -6348,6 +6538,55 @@ export function createWorldBackstageUI({
             render();
             return;
         }
+        if (action === 'commit-worldbook-drafts') {
+            const people = getSyncStatus()?.worldbook?.aiImport?.people || [];
+            const selections = people
+                .filter(person => !worldbookDraftSkipped.has(person.reference))
+                .map(person => {
+                    const lowFields = new Set((person.review || []).map(item => item.field));
+                    return {
+                        reference: person.reference,
+                        target: worldbookDraftTargets.get(person.reference) || '',
+                        // 与审校台的勾选状态保持一致：命中率偏低的栏位默认不写入，
+                        // 必须用户主动勾上。
+                        fields: Object.keys(person.values || {}).filter(field => {
+                            const key = `${person.reference}::${field}`;
+                            if (worldbookDraftDroppedFields.has(key)) return false;
+                            return !lowFields.has(field) || worldbookDraftPickedFields.has(key);
+                        }),
+                    };
+                })
+                .filter(item => item.fields.length);
+            const report = getSyncStatus()?.worldbook?.aiImport || {};
+            const done = await invokeAction('commit-worldbook-drafts', {
+                selections,
+                token: report.token || '',
+                bookName: report.bookName || '',
+            });
+            if (done) {
+                worldbookSelectedIds = new Set();
+                worldbookDraftSkipped = new Set();
+                worldbookDraftDroppedFields = new Set();
+                worldbookDraftPickedFields = new Set();
+            }
+            render();
+            return;
+        }
+        if (action === 'discard-worldbook-drafts') {
+            await invokeAction('discard-worldbook-drafts', {});
+            render();
+            return;
+        }
+        if (action === 'ai-import-worldbook') {
+            const form = target.closest('[data-wb-form="worldbook"]');
+            // 整理完只是产出待确认草稿，勾选要留到写入之后再清。
+            await invokeAction('ai-import-worldbook-people', {
+                bookName: form?.elements?.bookName?.value || '',
+                entryIds: [...worldbookSelectedIds],
+            });
+            render();
+            return;
+        }
         if (action === 'select-worldbook-visible' || action === 'clear-worldbook-visible') {
             const entries = Array.isArray(getSyncStatus()?.worldbook?.entries)
                 ? getSyncStatus().worldbook.entries
@@ -6713,6 +6952,12 @@ export function createWorldBackstageUI({
     });
 
     root.addEventListener('change', async event => {
+        if (event.target.matches?.('[data-wb-form="worldbook"] select[name="bookName"]')) {
+            worldbookSelectedIds = new Set();
+            await invokeAction('select-worldbook', { bookName: event.target.value });
+            render();
+            return;
+        }
         const apiForm = event.target.closest?.('[data-wb-form="api"]');
         if (apiForm) {
             if (event.target.matches?.('[data-wb-api-model-picker]')) {
@@ -6761,6 +7006,39 @@ export function createWorldBackstageUI({
             }
             const clearButton = root.querySelector('[data-wb-action="clear-memory-selection"]');
             if (clearButton) clearButton.disabled = memorySelectedKeys.size === 0;
+            return;
+        }
+
+        if (event.target.matches?.('[data-wb-draft-target]')) {
+            worldbookDraftTargets = new Map(worldbookDraftTargets).set(event.target.dataset.wbDraftTarget, event.target.value);
+            render();
+            return;
+        }
+
+        if (event.target.matches?.('[data-wb-draft-person]')) {
+            const reference = String(event.target.dataset.wbDraftPerson || '');
+            const next = new Set(worldbookDraftSkipped);
+            if (event.target.checked) next.delete(reference);
+            else next.add(reference);
+            worldbookDraftSkipped = next;
+            render();
+            return;
+        }
+
+        if (event.target.matches?.('[data-wb-draft-field]')) {
+            const key = String(event.target.dataset.wbDraftField || '');
+            const dropped = new Set(worldbookDraftDroppedFields);
+            const picked = new Set(worldbookDraftPickedFields);
+            if (event.target.checked) {
+                dropped.delete(key);
+                picked.add(key);
+            } else {
+                dropped.add(key);
+                picked.delete(key);
+            }
+            worldbookDraftDroppedFields = dropped;
+            worldbookDraftPickedFields = picked;
+            render();
             return;
         }
 
@@ -7077,6 +7355,7 @@ export function createWorldBackstageUI({
                 personalityAnchor: data.personalityAnchor || '',
                 appearanceProfile: data.appearanceProfile || '',
                 backgroundProfile: data.backgroundProfile || '',
+                abilityProfile: data.abilityProfile || '',
                 speakingStyle: data.speakingStyle || '',
                 behaviorBoundaries: data.behaviorBoundaries || '',
                 knowledge: data.knowledge || 'backstage',

@@ -181,6 +181,7 @@ function momentProjection(surface, platform) {
                 phoneFeed: true,
                 phonePlatform: platform,
                 sourceKind: 'moment',
+                sourceMomentId: text(moment?.id, 160),
             };
         })
         .filter(Boolean)

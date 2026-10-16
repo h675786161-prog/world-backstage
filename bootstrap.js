@@ -10,6 +10,7 @@ import './settings-persistence-guard.js';
 import './social-notice-stability.js?v=3';
 import './index.js';
 import './phone-bridge-host.js?v=2';
+import './phone-feed-host.js?v=3';
 
 void import('./update-manager.js?v=2')
     .then(() => import('./update-session-refresh.js?v=1'))

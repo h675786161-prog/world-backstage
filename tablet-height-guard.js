@@ -1,4 +1,4 @@
-const STYLE_ID = 'wb-tablet-height-guard-v3';
+const STYLE_ID = 'wb-tablet-height-guard-v4';
 
 function installTabletHeightGuard() {
     if (document.getElementById(STYLE_ID)) return;
@@ -6,8 +6,8 @@ function installTabletHeightGuard() {
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-/* Tablet height guard v3. This module is loaded strictly after the base tablet
-   adapter so these viewport rules win deterministically instead of racing it. */
+/* Tablet height/position guard v4. Loaded strictly after the responsive adapters.
+   Tablet uses its own viewport box instead of inheriting the desktop centered stage. */
 #world-backstage-root.wb-tablet-mode .wb-window {
     height: calc(100vh - 20px) !important;
     height: calc(100dvh - 20px) !important;
@@ -16,14 +16,20 @@ function installTabletHeightGuard() {
 }
 
 #world-backstage-root.wb-tablet-mode .wb-settings-layer {
+    top: max(10px, env(safe-area-inset-top, 0px)) !important;
+    right: auto !important;
+    bottom: auto !important;
+    left: max(10px, env(safe-area-inset-left, 0px)) !important;
+    width: calc(100vw - 20px) !important;
+    width: calc(100dvw - 20px) !important;
     height: calc(100vh - 20px) !important;
     height: calc(100dvh - 20px) !important;
+    max-width: calc(100dvw - 20px) !important;
     max-height: calc(100dvh - 20px) !important;
     min-height: 0 !important;
+    transform: none !important;
 }
 
-/* Desktop settings are vertically centered with a transform. Tablet positions
-   the panel from the top edge, so carrying that transform over sends it offscreen. */
 #world-backstage-root.wb-tablet-mode .wb-settings-layer > .wb-settings-popover {
     transform: none !important;
 }

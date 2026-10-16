@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from './version.js';
 import {
     MODULE_ID,
     SCHEMA_VERSION,
@@ -165,7 +166,6 @@ import {
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
-const PLUGIN_VERSION = '2.5.7';
 const DEFAULT_SETTINGS = Object.freeze({
     settingsVersion: 32,
     enabled: true,

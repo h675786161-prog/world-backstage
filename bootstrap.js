@@ -26,6 +26,7 @@ void import('./presentation-polish.js?v=251')
     .then(() => Promise.all([
         import('./social-responsive-adapter.js?v=1'),
         import('./settings-responsive-adapter.js?v=1'),
+        import('./tablet-responsive-adapter.js?v=1'),
         import('./mobile-news-discussion.js?v=1'),
     ]))
     .catch(error => {

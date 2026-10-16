@@ -31,7 +31,7 @@ try {
     await page.waitForFunction(
         () => Boolean(
             document.getElementById('wb-tablet-responsive-adapter-v1')
-            && document.getElementById('wb-tablet-height-guard-v3')
+            && document.getElementById('wb-tablet-height-guard-v4')
         ),
         null,
         { timeout: 15_000 },
@@ -77,8 +77,10 @@ try {
     await page.waitForTimeout(160);
 
     const settings = await page.evaluate(() => {
+        const layer = document.querySelector('#world-backstage-root .wb-settings-layer');
         const pop = document.querySelector('#world-backstage-root .wb-settings-popover');
         const r = pop?.getBoundingClientRect();
+        const lr = layer?.getBoundingClientRect();
         return r ? {
             x: r.x,
             y: r.y,
@@ -90,6 +92,7 @@ try {
             scrollWidth: pop.scrollWidth,
             clientHeight: pop.clientHeight,
             scrollHeight: pop.scrollHeight,
+            layer: lr ? { x: lr.x, y: lr.y, width: lr.width, height: lr.height, right: lr.right, bottom: lr.bottom } : null,
         } : null;
     });
 

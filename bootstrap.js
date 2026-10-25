@@ -8,8 +8,10 @@ import './communication-voice-guard.js';
 import './observation-scene-overlap.js';
 import './settings-persistence-guard.js';
 import './social-notice-stability.js?v=3';
+import './auto-hide-settings-ui.js?v=1';
 import './index.js';
 import './phone-bridge-host.js?v=2';
+import './phone-feed-host.js?v=3';
 
 void import('./update-manager.js?v=2')
     .then(() => import('./update-session-refresh.js?v=1'))
@@ -25,8 +27,11 @@ void import('./presentation-polish.js?v=251')
     .then(() => Promise.all([
         import('./social-responsive-adapter.js?v=1'),
         import('./settings-responsive-adapter.js?v=1'),
+        import('./tablet-responsive-adapter.js?v=1'),
         import('./mobile-news-discussion.js?v=1'),
     ]))
+    .then(() => import('./tablet-height-guard.js?v=4'))
+    .then(() => import('./tablet-clock-polish.js?v=1'))
     .catch(error => {
         console.error('[世界背面] 自适应表现层加载失败', error);
     });

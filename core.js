@@ -1,4 +1,5 @@
 import { isRecallableStorySummary } from './auto-hide.js';
+import { readCharacterProfile, readWorldbookProvenance, profilePromptText } from './character-profiles.js';
 import {
     buildClockAuthorityLines,
     normalizeClueTiming,
@@ -84,6 +85,7 @@ const LIMITS = Object.freeze({
     worldbookRaw: 4000,
     speakingStyle: 360,
     behaviorBoundaries: 500,
+    abilityProfile: 1200,
     cognitiveRefs: 32,
     personState: 220,
     personAvatarData: 180000,
@@ -2439,55 +2441,9 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
     );
     // These are author-owned character anchors. A routine simulation may use
     // them as constraints, but must never silently rewrite an existing card.
-    const identityAnchor = asString(
-        existing
-            ? existing.identityAnchor
-            : (raw?.identity_anchor ?? raw?.identityAnchor),
-        '',
-        LIMITS.identityAnchor,
-    );
-    const personalityAnchor = asString(
-        existing
-            ? existing.personalityAnchor
-            : (raw?.personality_anchor ?? raw?.personalityAnchor),
-        '',
-        LIMITS.personalityAnchor,
-    );
-    const appearanceProfile = asString(
-        existing
-            ? existing.appearanceProfile
-            : (raw?.appearance_profile ?? raw?.appearanceProfile),
-        '',
-        LIMITS.appearanceProfile,
-    );
-    const backgroundProfile = asString(
-        existing
-            ? existing.backgroundProfile
-            : (raw?.background_profile ?? raw?.backgroundProfile),
-        '',
-        LIMITS.backgroundProfile,
-    );
-    const worldbookRaw = asString(
-        existing
-            ? existing.worldbookRaw
-            : (raw?.worldbook_raw ?? raw?.worldbookRaw),
-        '',
-        LIMITS.worldbookRaw,
-    );
-    const speakingStyle = asString(
-        existing
-            ? existing.speakingStyle
-            : (raw?.speaking_style ?? raw?.speakingStyle),
-        '',
-        LIMITS.speakingStyle,
-    );
-    const behaviorBoundaries = asString(
-        existing
-            ? existing.behaviorBoundaries
-            : (raw?.behavior_boundaries ?? raw?.behaviorBoundaries),
-        '',
-        LIMITS.behaviorBoundaries,
-    );
+    const { identityAnchor, personalityAnchor, appearanceProfile, backgroundProfile, abilityProfile, speakingStyle, behaviorBoundaries } = readCharacterProfile(raw, existing);
+    const provenance = readWorldbookProvenance(raw, existing);
+    const worldbookRaw = provenance.worldbookRaw;
     const suppliedInnerVoiceAt = raw?.inner_voice_at ?? raw?.innerVoiceAt;
     const suppliedLastSeen = raw?.last_seen_message_id ?? raw?.lastSeenMessageId;
     const presentInScene = raw?.present_in_scene ?? raw?.presentInScene;
@@ -2530,6 +2486,8 @@ function normalizePerson(raw, existing = null, worldMinute = 0, {
         personalityAnchor,
         appearanceProfile,
         backgroundProfile,
+        abilityProfile,
+        ...provenance,
         worldbookRaw,
         speakingStyle,
         behaviorBoundaries,
@@ -3272,6 +3230,22 @@ function applyClueUpdates(state, {
 }
 
 function normalizeSimulationResult(payload, { peopleUpsertLimit = LIMITS.peoplePayload } = {}) {
+    const timeResolution = normalizeModelTimeResolution(
+        payload?.time_resolution ?? payload?.timeResolution ?? {},
+    );
+    const elapsedMinutes = asInteger(
+        payload?.elapsed_minutes ?? payload?.elapsedMinutes,
+        0, 0, 5 * 365 * MINUTES_PER_DAY,
+    );
+    // Some APIs fill the dedicated time verdict but leave the legacy duration
+    // at its template default. Consume a qualified current-scene estimate once;
+    // never add the two representations of the same duration together.
+    const useTimeEstimate = elapsedMinutes === 0
+        && timeResolution.scope === 'current'
+        && ['estimated_elapsed', 'duration_only'].includes(timeResolution.authority)
+        && timeResolution.needsElapsedEstimate
+        && ['medium', 'high'].includes(timeResolution.confidence)
+        && timeResolution.estimatedMinutes > 0;
     const rawClockAnchor = payload?.clock_anchor ?? payload?.clockAnchor ?? {};
     const anchorMode = ['none', 'initialize', 'calibrate'].includes(rawClockAnchor?.mode)
         ? rawClockAnchor.mode
@@ -3283,16 +3257,10 @@ function normalizeSimulationResult(payload, { peopleUpsertLimit = LIMITS.peopleP
         ? rawClockAnchor.confidence
         : 'low';
     return {
-        elapsedMinutes: asInteger(
-            payload?.elapsed_minutes ?? payload?.elapsedMinutes,
-            0,
-            0,
-            5 * 365 * MINUTES_PER_DAY,
-        ),
-        timeReason: asString(payload?.time_reason ?? payload?.timeReason, '', 320),
-        timeResolution: normalizeModelTimeResolution(
-            payload?.time_resolution ?? payload?.timeResolution ?? {},
-        ),
+        elapsedMinutes: useTimeEstimate ? timeResolution.estimatedMinutes : elapsedMinutes,
+        timeReason: asString(payload?.time_reason ?? payload?.timeReason, '', 320)
+            || (useTimeEstimate ? timeResolution.reason : ''),
+        timeResolution,
         nextTurnInjection: normalizeNextTurnInjection(
             payload?.next_turn_injection ?? payload?.nextTurnInjection ?? {},
         ),
@@ -3904,7 +3872,7 @@ export function applySimulationResult(baseState, rawPayload, {
         baseClockAnchored
         && (narrativeAnchor?.structured || modelSelectedCurrentEnd || narrativeTailExplicitEnd)
         && Number.isFinite(narrativeMinuteOfDay)
-        && narrativeMinuteOfDay >= currentMinuteOfDay
+        && narrativeMinuteOfDay > currentMinuteOfDay
     );
     const narrativeDayDelta = narrativeCalendar
         ? calendarDayDifference({
@@ -3927,7 +3895,10 @@ export function applySimulationResult(baseState, rawPayload, {
     );
     const narrativeDateCanCalibrate = Boolean(
         narrativeDateReliable
-        && (!baseClockAnchored || Number(narrativeDayDelta) >= 0)
+        // A repeated opening date/clock confirms existing context, not the end
+        // of this batch. It must not erase later transitions or elapsed actions.
+        && (!baseClockAnchored || Number(narrativeDayDelta) > 0
+            || (Number(narrativeDayDelta) === 0 && structuredForwardExact))
     );
 
     if (narrativeDateCanCalibrate) {
@@ -6232,11 +6203,11 @@ export function buildHistoryIndexPrompt(state, {
         : '输出应紧凑：每条 turn_summaries.summary 约80—180字，memory_digest.text 约300—600字；facts_upsert 最多8条，clues_upsert 最多6条。';
     const identityAnchor = modelText(playerIdentityAnchor, 400);
     const characterIdentityAnchors = asArray(state?.people)
-        .filter(person => modelText(person?.identityAnchor, LIMITS.identityAnchor))
+        .filter(person => profilePromptText(person?.identityAnchor, LIMITS.identityAnchor))
         .slice(0, LIMITS.peopleModelContext)
         .map(person => ({
             name: modelText(person?.name, 80),
-            identity_anchor: modelText(person?.identityAnchor, LIMITS.identityAnchor),
+            identity_anchor: profilePromptText(person?.identityAnchor, LIMITS.identityAnchor),
         }));
 
     return [
@@ -6554,9 +6525,9 @@ export function buildPersonObservationPrompt(state, person, {
         }))
         .slice(0, 8);
 
-    const observedIdentityAnchor = modelText(person?.identityAnchor, LIMITS.identityAnchor);
-    const observedAppearanceProfile = modelText(person?.appearanceProfile, LIMITS.appearanceProfile);
-    const observedBackgroundProfile = modelText(person?.backgroundProfile, LIMITS.backgroundProfile);
+    const observedIdentityAnchor = profilePromptText(person?.identityAnchor, LIMITS.identityAnchor);
+    const observedAppearanceProfile = profilePromptText(person?.appearanceProfile, LIMITS.appearanceProfile);
+    const observedBackgroundProfile = profilePromptText(person?.backgroundProfile, LIMITS.backgroundProfile);
 
     return [
         '你是“世界背面”的人物即时观测器。',
@@ -6585,6 +6556,7 @@ export function buildPersonObservationPrompt(state, person, {
         '3. 严守该角色的知识边界。唯一可当作该角色知识的内容，是下方 known_event_views / known_fact_beliefs / known_clue_ids 明确允许的版本。',
         '3A. known_event_views 中的 what_this_character_knows 才是角色所知版本；绝不能从 event_id、世界背景或常识反推出该事件的幕后真相。没有提供事件的实时地点/状态是刻意的；角色不会自动知道它后来是否转移、结束或变化。',
         '3B. certainty=suspected 只是怀疑/推测，写作时必须保持不确定，不能当成确认事实。',
+        '能力与限制（ability_profile）是硬约束：效果、范围、触发条件、代价、弱点必须同时遵守；资料节选不代表未展示条件已失效，不得凭空补足能力或知识。',
         '3C. physical_state / emotional_state / resource_state 是当前状态约束。行动、注意力和即时判断必须受伤势、疲劳、情绪与资源限制影响；不得凭空获得能力、装备、权限或知识。',
         observedIdentityAnchor
             ? `该角色的身份锚点：${observedIdentityAnchor}。性别身份、称谓/代词、物种、年龄阶段与社会身份必须逐项遵守，不得根据外貌或其他表面特征擅自改写。`
@@ -6621,12 +6593,13 @@ export function buildPersonObservationPrompt(state, person, {
             action: person?.action,
             intent: person?.intent,
             long_term_goal: person?.longTermGoal,
-            identity_anchor: person?.identityAnchor,
-            personality_anchor: person?.personalityAnchor,
-            appearance_profile: person?.appearanceProfile,
-            background_profile: person?.backgroundProfile,
-            speaking_style: person?.speakingStyle,
-            behavior_boundaries: person?.behaviorBoundaries,
+            identity_anchor: profilePromptText(person?.identityAnchor, LIMITS.identityAnchor),
+            personality_anchor: profilePromptText(person?.personalityAnchor, LIMITS.personalityAnchor),
+            appearance_profile: profilePromptText(person?.appearanceProfile, LIMITS.appearanceProfile),
+            background_profile: profilePromptText(person?.backgroundProfile, LIMITS.backgroundProfile),
+            ability_profile: profilePromptText(person?.abilityProfile, LIMITS.abilityProfile),
+            speaking_style: profilePromptText(person?.speakingStyle, LIMITS.speakingStyle),
+            behavior_boundaries: profilePromptText(person?.behaviorBoundaries, LIMITS.behaviorBoundaries),
             inner_voice: person?.innerVoice,
             knowledge: person?.knowledge,
             cognition_ready: person?.cognitionReady,
@@ -6904,12 +6877,13 @@ export function compactStateForModel(state, {
                 action: modelText(person.action, 180),
                 intent: modelText(person.intent, 180),
                 long_term_goal: modelText(person.longTermGoal, 220),
-                identity_anchor: modelText(person.identityAnchor, LIMITS.identityAnchor),
-                personality_anchor: modelText(person.personalityAnchor, LIMITS.personalityAnchor),
-                appearance_profile: modelText(person.appearanceProfile, 360),
-                background_profile: modelText(person.backgroundProfile, 500),
-                speaking_style: modelText(person.speakingStyle, LIMITS.speakingStyle),
-                behavior_boundaries: modelText(person.behaviorBoundaries, LIMITS.behaviorBoundaries),
+                identity_anchor: profilePromptText(person.identityAnchor, LIMITS.identityAnchor),
+                personality_anchor: profilePromptText(person.personalityAnchor, LIMITS.personalityAnchor),
+                appearance_profile: profilePromptText(person.appearanceProfile, 360),
+                background_profile: profilePromptText(person.backgroundProfile, 500),
+                ability_profile: profilePromptText(person.abilityProfile, LIMITS.abilityProfile),
+                speaking_style: profilePromptText(person.speakingStyle, LIMITS.speakingStyle),
+                behavior_boundaries: profilePromptText(person.behaviorBoundaries, LIMITS.behaviorBoundaries),
                 inner_voice: isUser && !includeUserInnerVoice
                     ? ''
                     : modelText(person.innerVoice, 160),
@@ -7031,6 +7005,7 @@ function correctionEvidenceSupported(state, narrativeText, correction) {
             person.identityAnchor,
             person.personalityAnchor,
             person.backgroundProfile,
+            person.abilityProfile,
             person.worldbookRaw,
             person.speakingStyle,
             person.behaviorBoundaries,
@@ -7121,10 +7096,11 @@ export function buildStateCorrectionPrompt(state, {
                 resource_state: modelText(person.resourceState, 180),
             },
             author_anchors: {
-                identity: modelText(person.identityAnchor, 360),
-                background: modelText(person.backgroundProfile, 700),
+                identity: profilePromptText(person.identityAnchor, 360),
+                background: profilePromptText(person.backgroundProfile, 700),
+                ability: profilePromptText(person.abilityProfile, LIMITS.abilityProfile),
                 worldbook_raw: modelText(person.worldbookRaw, 1200),
-                behavior_boundaries: modelText(person.behaviorBoundaries, 320),
+                behavior_boundaries: profilePromptText(person.behaviorBoundaries, 320),
             },
         }));
 
@@ -7512,7 +7488,7 @@ export function buildSimulationPrompt(state, {
         open: '开放估算：允许依据清楚的叙事时间变化估算经过时长，但仍不得把回复轮次当时间。',
         world: '世界钟模式：主世界时钟一旦建立就是连续时间基准。不要重新猜“现在几点”；只根据 new="true" 正文里真实发生的行动、路程、等待、睡眠、工作等估算本批实际经过时长。没有事件耗时就填 0；不得把回复轮次本身当时间。',
     }[timePolicy] || '严格时间：没有明确、可计算的时间证据就填 0。';
-    const clockAuthorityRule = '时间先判末尾再判耗时：当前场景有明确末尾日期/钟点时，time_resolution.evidence_found=true、authority=explicit_end_time、scope=current、confidence=high，elapsed_minutes=0；未来约定/回忆/转述不得当成当前时间。没有末尾时间但正文真实经历长途移动、睡眠、等待、工作等，needs_elapsed_estimate=true，并让 estimated_minutes 与 elapsed_minutes 一致。睡下后醒来、长途交通跨多个地区、多个班次/轮次/餐次、完成持续工作等都属于明确耗时语义，即使没有钟点也不能机械填0；按叙事尺度保守估算。time_resolution 的 authority/scope/confidence 每个字段只能填写一个合法值。绝对时间最终仍由插件确定性代码核验。';
+    const clockAuthorityRule = '时间先判末尾再判耗时：当前场景有明确末尾日期/钟点时，time_resolution.evidence_found=true、authority=explicit_end_time、scope=current、confidence=high，elapsed_minutes=0。正文开头重复的日期或钟点只是场景起点，不代表后续行动结束时仍停在该时刻；仅重复同一天日期也不能据此把耗时清零。未来约定/回忆/转述不得当成当前时间。没有明确钟点不等于没有耗时；例如本批确实吃完一餐、步行到另一个地点、完成收拾或工作时，应根据叙事内容保守估算，而不是因为没有“几分钟”就填0；瞬间点头或一句对话可以为0，禁止按回复轮数固定加时。没有末尾时间但正文真实经历长途移动、睡眠、等待、工作等，needs_elapsed_estimate=true，并让 estimated_minutes 与 elapsed_minutes 一致。睡下后醒来、长途交通跨多个地区、多个班次/轮次/餐次、完成持续工作等都属于明确耗时语义，即使没有钟点也不能机械填0；按叙事尺度保守估算。time_resolution 的 authority/scope/confidence 每个字段只能填写一个合法值。绝对时间最终仍由插件确定性代码核验。';
     const identityAnchor = modelText(playerIdentityAnchor, 400);
     const playerIdentityRule = identityAnchor
         ? `用户明确设定的玩家身份锚点：${identityAnchor}。涉及玩家的性别身份、称谓/代词、外貌表达、身体设定、物种、年龄阶段或社会身份时必须逐项遵守，除非用户更新此锚点；不得根据外貌、衣着、身体或物种反推性别。`
@@ -7648,7 +7624,7 @@ const activeDirectorNotes = asArray(directorNotes)
         '4. 不输出百分比。duration/scheduled 事件由插件按时间计算；active 事件只填写本轮实际工作的 worked_minutes；condition 事件等待条件。',
         '5. 到时事件必须给出 resolved/cancelled/missed 之一及具体 result，或明确保持 ready；不能用 99%/100% 长期悬挂。',
         '6. NPC 第一视角独白写入 inner_voice，必须是该人物自己的口吻、20—80字，只在该人物的处境、目标或情绪有真实变化时更新。不要让所有人物每轮集体独白。',
-        '人物状态中的 identity_anchor、personality_anchor、appearance_profile、background_profile、speaking_style 与 behavior_boundaries 是用户维护的稳定角色设定：必须遵守，不得在 people_upsert 中重写。identity_anchor 可包含任意性别身份、称谓/代词、物种、年龄阶段与社会身份；appearance_profile 负责外貌与身体特征；background_profile 负责背景、经历与关系。不得根据外貌、衣着、身体或物种反推或改写身份。没有身份锚点且正文也不明确时使用中性表述。',
+        '人物状态中的 identity_anchor、personality_anchor、appearance_profile、background_profile、ability_profile、speaking_style 与 behavior_boundaries 是用户维护的稳定角色设定：必须遵守，不得在 people_upsert 中重写。identity_anchor 可包含任意性别身份、称谓/代词、物种、年龄阶段与社会身份；appearance_profile 负责外貌与身体特征；background_profile 负责背景、经历与关系；ability_profile 中能力的效果、范围、触发条件、代价和弱点必须同时遵守，资料节选不代表未展示的条件已失效。不得根据外貌、衣着、身体或物种反推或改写身份。没有身份锚点且正文也不明确时使用中性表述。',
         '人物 author_managed=true 表示由用户手动添加或从世界书导入：可以正常更新其位置、行动、意图和状态，但绝不能放进 people_remove。people_remove 只用于清理插件自行生成、且已经确定不再需要保留的临时后台人物。用户人物、author_managed 人物与 locked_profile 人物都不得由 routine simulation 删除。',
         `7. ${userVoiceRule} ${playerIdentityRule}`,
         '8. long_term_goal 是人物较稳定的长期方向；只有目标真正建立、完成、放弃或转向时才更新，不能把本轮动作重复填进去。',

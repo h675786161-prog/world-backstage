@@ -416,6 +416,8 @@ export function mergePublicOpinionStream(previousRaw, nextRaw, {
         return {
             ...previousItem,
             ...item,
+            id: previousItem?.id || item.id,
+            publishedWorldMinute: previousItem?.publishedWorldMinute ?? previousItem?.worldMinute ?? item.publishedWorldMinute ?? item.worldMinute,
             publishedAt: previousItem?.publishedAt || item.publishedAt || generatedAt,
             updatedAt: changed
                 ? (item.updatedAt || generatedAt)
@@ -430,18 +432,28 @@ export function mergePublicOpinionStream(previousRaw, nextRaw, {
         !item.relatedEventId || !nextNewsEventIds.has(String(item.relatedEventId))
     ));
 
-    const nextForumEventIds = new Set(
-        next.forums.map(item => String(item.relatedEventId || '')).filter(Boolean),
-    );
-    const freshForums = next.forums.map(item => ({
-        ...item,
-        publishedAt: item.publishedAt || generatedAt,
-        updatedAt: item.updatedAt || generatedAt,
-        worldMinute: Number(item.worldMinute ?? next.sourceWorldMinute ?? -1),
-    }));
-    const retainedForums = previous.forums.filter(item => (
-        !item.relatedEventId || !nextForumEventIds.has(String(item.relatedEventId))
-    ));
+    const consumedForums = new Set();
+    const freshForums = next.forums.map(item => {
+        const sameSource = previousItem => previousItem.relatedEventId === item.relatedEventId
+            && previousItem.board === item.board && !consumedForums.has(previousItem.id);
+        const previousItem = previous.forums.find(candidate => sameSource(candidate) && candidate.id === item.id)
+            || previous.forums.find(candidate => sameSource(candidate) && candidate.title === item.title);
+        if (previousItem) consumedForums.add(previousItem.id);
+        const replies = uniqueBy([...(previousItem?.replies || []), ...(item.replies || [])],
+            reply => `${reply.author}\u0000${reply.text}`).slice(-8);
+        const changed = opinionItemChanged(previousItem, item, ['title', 'summary', 'claimStatus', 'heat'])
+            || JSON.stringify(previousItem?.replies || []) !== JSON.stringify(replies);
+        return {
+            ...previousItem, ...item,
+            id: previousItem?.id || item.id,
+            replies,
+            publishedAt: previousItem?.publishedAt || item.publishedAt || generatedAt,
+            publishedWorldMinute: previousItem?.publishedWorldMinute ?? previousItem?.worldMinute ?? item.publishedWorldMinute ?? item.worldMinute,
+            updatedAt: changed ? (item.updatedAt || generatedAt) : (previousItem?.updatedAt || item.updatedAt || generatedAt),
+            worldMinute: changed ? Number(item.worldMinute ?? next.sourceWorldMinute ?? -1) : Number(previousItem?.worldMinute ?? item.worldMinute ?? -1),
+        };
+    });
+    const retainedForums = previous.forums.filter(item => !consumedForums.has(item.id));
 
     const news = uniqueBy(
         [...freshNews, ...retainedNews]
@@ -483,6 +495,7 @@ export function buildPublicOpinionPrompt(state, {
             .filter(item => wantedIds.has(String(item.relatedEventId || '')))
             .slice(0, 8)
             .map(item => ({
+                id: item.id,
                 headline: item.headline,
                 summary: item.summary,
                 source_type: item.sourceType,
@@ -494,6 +507,8 @@ export function buildPublicOpinionPrompt(state, {
             .filter(item => wantedIds.has(String(item.relatedEventId || '')))
             .slice(0, 8)
             .map(item => ({
+                id: item.id,
+                replies: item.replies,
                 board: item.board,
                 title: item.title,
                 summary: item.summary,
@@ -528,6 +543,7 @@ export function buildPublicOpinionPrompt(state, {
         '新闻偏事实传播：只报道有公共传播价值的内容；无法确认的原因不要擅自下结论。世界事件只提供公开事实候选，新闻不会绕过本轮时间门槛被系统强行补出来；你生成的新闻也不能改变或增加事件事实。同一 related_event_id 是同一条持续新闻线，有足够世界时间和公开进展时可以写后续报道，不要把同一事件拆成互相重复的平行新闻。论坛偏群众反应：允许猜测、误解、玩梗和传闻，但必须通过 claim_status 明确区分 fact / mixed / rumor，且不得把传闻写回成事实。',
         'user_world_focus 是用户设置的世界推演侧重点。它可以决定候选里的选题优先级与报道角度，但不是事实来源：如果候选中没有对应公开事件，不能为了迎合它虚构新闻。',
         '不要把 visibility=direct/known 或与眼前人物更近误当成更值得报道。publicity 才决定能否传播。候选覆盖多个地点、行业或事件线时，容量允许就分散选题，避免新闻和论坛全部挤在同一条当前剧情线上；但不得为了多样性捏造候选外事实。',
+        '延续 previous_snapshot 中同一论坛主题时必须保留该帖 id，可更新正文并补充回复；不同话题是新帖，不得复用旧 id。不要重复输出已有回复。',
         '每条消息给出 audience_tags：只写“哪些类型的人可能更关注这条消息”，例如当地居民、行业从业者、某组织成员、记者、学生等。它只是受众标签，不代表任何具体 NPC 已经看到或相信该消息，也不需要读取完整世界书。',
         'scope 用一句很短的话概括传播范围，例如“本地居民圈”“行业内部”“全城公开”“小范围匿名流传”。',
         'related_event_id 必须来自 public_event_candidates 中已有的 id。不得虚构新的事件 ID。',
@@ -536,6 +552,7 @@ export function buildPublicOpinionPrompt(state, {
         JSON.stringify({
             output_schema: {
                 news: [{
+                    id: '持续报道可保留原 id，新条目留空',
                     category: '城市 / 社会 / 商业 / 公告 / 其他',
                     headline: '标题',
                     summary: '简短报道，1-3句',
@@ -548,6 +565,7 @@ export function buildPublicOpinionPrompt(state, {
                     heat: '1-3',
                 }],
                 forums: [{
+                    id: '续帖必须保留 previous_snapshot 的 id，新帖留空',
                     board: '版块名称',
                     title: '帖子标题',
                     summary: '楼主或主题摘要',
@@ -579,6 +597,7 @@ export function normalizePublicOpinionPayload(payload, {
     lastNewsWorldMinute = sourceWorldMinute,
     maximumNews = 3,
     maximumForums = 4,
+    maximumReplies = 4,
 } = {}) {
     const allowedIds = new Set(asArray(validEventIds).map(item => String(item || '')).filter(Boolean));
     const visibilityFor = id => String(eventVisibilityById?.[id] || '');
@@ -594,7 +613,7 @@ export function normalizePublicOpinionPayload(payload, {
             if (!headline || !summary) return null;
             const confidenceRaw = asText(item?.confidence, 20).toLowerCase();
             return {
-                id: asText(item?.id, 160) || `news_${index}_${relatedEventId}`,
+                id: asText(item?.id, 160) || `news_${relatedEventId}`,
                 category: asText(item?.category, 40) || '世界新闻',
                 headline,
                 summary,
@@ -608,6 +627,7 @@ export function normalizePublicOpinionPayload(payload, {
                 worldSynced: Boolean(item?.worldSynced ?? item?.world_synced),
                 eventStatus: asText(item?.eventStatus ?? item?.event_status, 30),
                 temporalState: asText(item?.temporalState ?? item?.temporal_state, 20),
+                publishedWorldMinute: clampInteger(item?.publishedWorldMinute ?? item?.published_world_minute, item?.worldMinute ?? sourceWorldMinute, -1, Number.MAX_SAFE_INTEGER),
                 publishedAt: asText(item?.publishedAt ?? item?.published_at, 40) || asText(generatedAt, 40),
                 updatedAt: asText(item?.updatedAt ?? item?.updated_at, 40) || asText(generatedAt, 40),
                 worldMinute: clampInteger(
@@ -635,13 +655,13 @@ export function normalizePublicOpinionPayload(payload, {
                 const text = asText(reply?.text ?? reply?.content, 360);
                 if (!text) return null;
                 return {
-                    id: `reply_${index}_${replyIndex}`,
+                    id: `reply_${publicSignalHash(`${asText(reply?.author ?? reply?.name, 60)}|${text}`)}`,
                     author: asText(reply?.author ?? reply?.name, 60) || `匿名${replyIndex + 1}`,
                     text,
                 };
-            }).filter(Boolean).slice(0, 4);
+            }).filter(Boolean).slice(-Math.min(8, Math.max(1, Number(maximumReplies) || 4)));
             return {
-                id: asText(item?.id, 160) || `forum_${index}_${relatedEventId}`,
+                id: asText(item?.id, 160) || `forum_${relatedEventId}_${publicSignalHash(`${asText(item?.board, 60)}|${title}`)}`,
                 board: asText(item?.board, 60) || '闲聊',
                 title,
                 summary,
@@ -656,6 +676,7 @@ export function normalizePublicOpinionPayload(payload, {
                     : (VALID_CLAIM_STATUS.has(claimRaw) ? claimRaw : 'mixed'),
                 heat: clampInteger(item?.heat, 1, 1, 5),
                 replies,
+                publishedWorldMinute: clampInteger(item?.publishedWorldMinute ?? item?.published_world_minute, item?.worldMinute ?? sourceWorldMinute, -1, Number.MAX_SAFE_INTEGER),
                 publishedAt: asText(item?.publishedAt ?? item?.published_at, 40) || asText(generatedAt, 40),
                 updatedAt: asText(item?.updatedAt ?? item?.updated_at, 40) || asText(generatedAt, 40),
                 worldMinute: clampInteger(
@@ -702,6 +723,7 @@ export function normalizePublicOpinionCache(raw) {
         lastNewsWorldMinute: raw?.lastNewsWorldMinute ?? sourceWorldMinute,
         maximumNews: 18,
         maximumForums: 12,
+        maximumReplies: 8,
     });
 }
 

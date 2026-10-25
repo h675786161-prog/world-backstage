@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { applyHistoryIndexResult, applyMemoryRollupResult, applySimulationResult, buildInjectionPackage,
     createInitialState, planMemoryRollup, selectRelevantStoryMemory, trimState } from '../core.js';
 import { AUTO_HIDDEN_MESSAGE_KEY, autoHideCandidateMessageIds, markAutoHiddenMessages,
-    messageMemoryFingerprint, restoreUnsafeAutoHiddenMessages } from '../auto-hide.js';
+    messageMemoryFingerprint, restoreUnsafeAutoHiddenMessages, storyMemoryScanStartMessageId } from '../auto-hide.js';
 
 const chatFixture = () => Array.from({ length: 16 }, (_, id) => ({
     mes: `正文${id}`, is_user: id % 2 === 0, is_system: false, extra: {},
@@ -105,4 +105,44 @@ test('legacy coverage is bound on hiding and cannot re-hide edited messages', ()
     chat[2].mes = '新内容';
     assert.deepEqual(restoreUnsafeAutoHiddenMessages(chat, 15, { summaries }), [2]);
     assert.ok(!markAutoHiddenMessages(chat, 15, { summaries }).includes(2));
+});
+
+
+test('changing the keep window restores only unsafe floors and preserves edit signatures', () => {
+    const chat = chatFixture(), summaries = summariesFor(chat);
+    chat[1].is_system = true;
+    for (const item of summaries) delete item.sourceFingerprint;
+    markAutoHiddenMessages(chat, 15, { summaries, keepRecent: 0 });
+    const marker = chat[0].extra[AUTO_HIDDEN_MESSAGE_KEY];
+    chat[2].mes = '编辑后的楼层不能重新隐藏';
+    assert.deepEqual(restoreUnsafeAutoHiddenMessages(chat, 15, { summaries, keepRecent: 8 }),
+        [2, 8, 9, 10, 11, 12, 13, 14, 15]);
+    markAutoHiddenMessages(chat, 15, { summaries, keepRecent: 8 });
+    assert.equal(chat[0].extra[AUTO_HIDDEN_MESSAGE_KEY], marker);
+    assert.equal(chat[1].is_system, true);
+    assert.equal(chat[2].is_system, false);
+    assert.ok(chat.slice(8).every(message => !message.is_system));
+    restoreUnsafeAutoHiddenMessages(chat, 15, { summaries, keepRecent: 0 });
+    markAutoHiddenMessages(chat, 15, { summaries, keepRecent: 0 });
+    assert.equal(chat[2].is_system, false);
+    assert.equal(chat[15].is_system, true);
+    assert.equal(chat[15].extra[AUTO_HIDDEN_MESSAGE_KEY].keepRecent, 0);
+});
+
+test('automatic indexing advances new history instead of resubmitting capacity-evicted floors', () => {
+    const chat = Array.from({ length: 2601 }, (_, id) => ({ mes: `楼层${id}`, is_user: id % 2 === 0 }));
+    // Reproduce retention pressure with compacted old L0 plus retained chapter indexes.
+    const state = createInitialState();
+    state.storyMemory.indexedThroughMessageId = 2599;
+    state.storyMemory.summaries = Array.from({ length: 2600 }, (_, id) => ({
+        id: `floor${id}`, level: 0, startMessageId: id, endMessageId: id,
+        summary: `普通细节${id}`, hierarchyManaged: true, retentionState: 'compacted', parentId: 'chapter',
+    }));
+    const retained = trimState(state).storyMemory;
+    assert.ok(retained.summaries.length <= 2400);
+    assert.equal(storyMemoryScanStartMessageId(chat, retained), 12);
+    assert.equal(storyMemoryScanStartMessageId(chat, retained, { automatic: true }), 2600);
+    // Once caught up, automatic scans have no old history to repair again.
+    retained.indexedThroughMessageId = 2600;
+    assert.equal(storyMemoryScanStartMessageId(chat, retained, { automatic: true }), chat.length);
 });

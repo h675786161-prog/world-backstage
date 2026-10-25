@@ -1,4 +1,6 @@
-export const AUTO_HIDE_KEEP_RECENT_MESSAGES = 5;
+export let AUTO_HIDE_KEEP_RECENT_MESSAGES = 5;
+export const AUTO_HIDE_KEEP_RECENT_MIN = 0;
+export const AUTO_HIDE_KEEP_RECENT_MAX = 100;
 export const AUTO_HIDDEN_MESSAGE_KEY = 'world_backstage_auto_hidden';
 
 export function isRecallableStorySummary(item) {
@@ -31,6 +33,25 @@ function normalizedInteger(value, fallback = -1) {
     return Number.isFinite(number) ? number : fallback;
 }
 
+export function normalizeAutoHideKeepRecentMessages(value, fallback = 5) {
+    const safeFallback = Math.min(
+        AUTO_HIDE_KEEP_RECENT_MAX,
+        Math.max(AUTO_HIDE_KEEP_RECENT_MIN, normalizedInteger(fallback, 5)),
+    );
+    return Math.min(
+        AUTO_HIDE_KEEP_RECENT_MAX,
+        Math.max(AUTO_HIDE_KEEP_RECENT_MIN, normalizedInteger(value, safeFallback)),
+    );
+}
+
+export function setAutoHideKeepRecentMessages(value) {
+    AUTO_HIDE_KEEP_RECENT_MESSAGES = normalizeAutoHideKeepRecentMessages(
+        value,
+        AUTO_HIDE_KEEP_RECENT_MESSAGES,
+    );
+    return AUTO_HIDE_KEEP_RECENT_MESSAGES;
+}
+
 export function autoHideThroughMessageId(chatLength, indexedThroughMessageId, keepRecent = AUTO_HIDE_KEEP_RECENT_MESSAGES) {
     const length = Math.max(0, normalizedInteger(chatLength, 0));
     if (!length) return -1;
@@ -39,7 +60,7 @@ export function autoHideThroughMessageId(chatLength, indexedThroughMessageId, ke
         length - 1,
         Math.max(-1, normalizedInteger(indexedThroughMessageId, -1)),
     );
-    const keep = Math.max(0, normalizedInteger(keepRecent, AUTO_HIDE_KEEP_RECENT_MESSAGES));
+    const keep = normalizeAutoHideKeepRecentMessages(keepRecent, AUTO_HIDE_KEEP_RECENT_MESSAGES);
     return indexedThrough - keep;
 }
 
@@ -72,14 +93,20 @@ export function autoHiddenMessageIds(chat) {
     return ids;
 }
 
-
 export function markAutoHiddenMessages(chat, indexedThroughMessageId, {
     keepRecent = AUTO_HIDE_KEEP_RECENT_MESSAGES,
     hiddenAt = new Date().toISOString(),
     summaries = null,
 } = {}) {
     const messages = Array.isArray(chat) ? chat : [];
-    const messageIds = autoHideCandidateMessageIds(messages, indexedThroughMessageId, { keepRecent, summaries });
+    const resolvedKeepRecent = normalizeAutoHideKeepRecentMessages(
+        keepRecent,
+        AUTO_HIDE_KEEP_RECENT_MESSAGES,
+    );
+    const messageIds = autoHideCandidateMessageIds(messages, indexedThroughMessageId, {
+        keepRecent: resolvedKeepRecent,
+        summaries,
+    });
     for (const messageId of messageIds) {
         const message = messages[messageId];
         if (!message || message.is_system) continue;
@@ -95,7 +122,7 @@ export function markAutoHiddenMessages(chat, indexedThroughMessageId, {
             version: 1,
             hiddenAt,
             indexedThroughMessageId: Number(indexedThroughMessageId),
-            keepRecent,
+            keepRecent: resolvedKeepRecent,
             sourceFingerprint: messageMemoryFingerprint(message),
         };
     }
@@ -145,4 +172,13 @@ export function firstUncoveredStoryMessageId(chat, indexedThroughMessageId, summ
         if (String(message.mes || '').trim() && !covered.has(id)) return id;
     }
     return -1;
+}
+
+// Automatic maintenance only follows new history. Old gaps may be intentional
+// capacity eviction, so repairing them requires an explicit manual scan.
+export function storyMemoryScanStartMessageId(chat, memory, { automatic = false } = {}) {
+    const cursor = Math.max(0, normalizedInteger(memory?.indexedThroughMessageId) + 1);
+    if (automatic) return cursor;
+    const gap = firstUncoveredStoryMessageId(chat, memory?.indexedThroughMessageId, memory?.summaries);
+    return gap >= 0 ? Math.min(cursor, gap) : cursor;
 }

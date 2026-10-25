@@ -163,6 +163,13 @@ function normalizedMoment(raw = {}, validPersonIds = null) {
         imageError: text(raw.imageError ?? raw.image_error, 360),
         likedByUser: Boolean(raw.likedByUser ?? raw.liked_by_user),
         likes: Math.max(0, Math.min(9999, Number(raw.likes) || 0)),
+        comments: (Array.isArray(raw.comments) ? raw.comments : []).map(comment => ({
+            id: text(comment?.id, 160),
+            authorId: text(comment?.authorId, 120),
+            authorName: text(comment?.authorName, 80),
+            text: text(comment?.text, 500),
+            createdAt: text(comment?.createdAt, 80),
+        })).filter(comment => comment.id && comment.text).slice(-50),
         createdAt: text(raw.createdAt ?? raw.created_at, 80) || new Date().toISOString(),
     };
 }

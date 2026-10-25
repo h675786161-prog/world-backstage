@@ -94,15 +94,13 @@ function fixtureStore() {
 test('world phone bridge exposes only phone-visible world surface and canonical social writes', async () => {
     const store = fixtureStore();
     let saves = 0;
-    globalThis.SillyTavern = {
-        getContext() {
-            return {
-                name1: '你',
-                chatMetadata: { [STATE_KEY]: store },
-                saveMetadataDebounced() { saves += 1; },
-            };
-        },
+    const ctx = {
+        name1: '你',
+        chatId: 'fixture-chat',
+        chatMetadata: { [STATE_KEY]: store },
+        async saveMetadata() { saves += 1; },
     };
+    globalThis.SillyTavern = { getContext: () => ctx };
 
     const module = await import(`../phone-bridge-host.js?test=${Date.now()}`);
     const initial = module.getWorldPhoneSurface();
@@ -134,15 +132,15 @@ test('world phone bridge exposes only phone-visible world surface and canonical 
     assert.equal('evidence' in initial.social.connections[0], false);
     assert.equal('decisionReason' in initial.social.connections[0], false);
 
-    module.handleWorldPhoneAction('social-send-message', { conversationId: 'direct-p1', text: '马上下来。' });
+    await module.handleWorldPhoneAction('social-send-message', { conversationId: 'direct-p1', text: '马上下来。' });
     assert.equal(store.social.conversations[0].rawMessages.at(-1).senderId, 'user');
     assert.equal(store.social.conversations[0].rawMessages.at(-1).text, '马上下来。');
     assert.equal(store.social.conversations[0].rawMessages.at(-1).worldMinute, 123);
 
-    module.handleWorldPhoneAction('social-read-conversation', { conversationId: 'direct-p1' });
+    await module.handleWorldPhoneAction('social-read-conversation', { conversationId: 'direct-p1' });
     assert.ok(store.social.notices[0].readAt);
 
-    module.handleWorldPhoneAction('social-set-moment-like', { momentId: 'moment-1', liked: true });
+    await module.handleWorldPhoneAction('social-set-moment-like', { momentId: 'moment-1', liked: true });
     assert.equal(store.social.moments[0].likedByUser, true);
     assert.equal(store.social.moments[0].likes, 3);
     assert.ok(saves >= 3);

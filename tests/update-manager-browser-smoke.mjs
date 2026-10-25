@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { PLUGIN_VERSION } from '../version.js';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
@@ -130,7 +131,7 @@ try {
     report.mamaNoteDismissed = await dismissMamaNote();
 
     const initial = await page.evaluate(() => globalThis.worldBackstageUpdateManager.getStatus());
-    assert.equal(initial.currentVersion, '2.5.7');
+    assert.equal(initial.currentVersion, PLUGIN_VERSION);
     assert.equal(initial.extensionName, 'world-backstage-test');
 
     // localStorage was deliberately seeded as "just checked". The per-session guard must still

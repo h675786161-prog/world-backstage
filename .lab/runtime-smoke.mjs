@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const { chromium } = await import(process.env.LAB_PLAYWRIGHT_CORE_ENTRY);
 const baseUrl = process.env.LAB_ST_URL;
@@ -275,11 +276,61 @@ try {
         };
     });
 
+    // Exercise the custom buffer through real settings events after an edit.
+    // Keeping valid hide markers avoids losing the ownership/signature history.
+    await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        globalThis.__wbKeepMarker = context.chat[0].extra.world_backstage_auto_hidden;
+        context.chat[49].mes = '本楼已编辑，旧记忆不再覆盖当前正文。';
+    });
+    const setKeepRecent = async value => {
+        await page.locator('[data-wb-auto-hide-keep="true"]').first().evaluate((input, value) => {
+            input.value = String(value);
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }, value);
+    };
+    await setKeepRecent(8);
+    await page.waitForFunction(() => {
+        const chat = globalThis.SillyTavern.getContext().chat;
+        return chat[49].is_system === false && chat.slice(-8).every(message => !message.is_system);
+    });
+    const customRuntime = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext(), chat = context.chat;
+        return {
+            customKeepSaved: context.extensionSettings.world_backstage.autoHideKeepRecentMessages === 8,
+            editedVisible: chat[49].is_system === false,
+            missingVisible: chat[50].is_system === false,
+            recentEightVisible: chat.slice(-8).every(message => !message.is_system),
+            validMarkerPreserved: chat[0].extra.world_backstage_auto_hidden === globalThis.__wbKeepMarker,
+            hiddenWithEight: chat.filter(message => message.extra?.world_backstage_auto_hidden).length,
+        };
+    });
+    await setKeepRecent(0);
+    await page.waitForFunction(() => globalThis.SillyTavern.getContext().chat[120].is_system === true);
+    Object.assign(customRuntime, await page.evaluate(() => {
+        const chat = globalThis.SillyTavern.getContext().chat;
+        const hiddenWithZero = chat.filter(message => message.extra?.world_backstage_auto_hidden).length;
+        // Preserve a manual hide while rolling the archive cursor back entirely.
+        delete chat[51].extra.world_backstage_auto_hidden;
+        chat[51].is_system = true;
+        const coreKey = 'world_backstage_v1';
+        globalThis.SillyTavern.getContext().chatMetadata[coreKey].currentState.storyMemory.indexedThroughMessageId = -1;
+        return { hiddenWithZero, editStillVisible: !chat[49].is_system };
+    }));
+    await setKeepRecent(5);
+    await page.waitForFunction(() => !globalThis.SillyTavern.getContext().chat.some(message => message.extra?.world_backstage_auto_hidden));
+    customRuntime.rollbackRestoredOnlyOwned = await page.evaluate(() => {
+        const chat = globalThis.SillyTavern.getContext().chat;
+        delete globalThis.__wbKeepMarker;
+        return chat[51].is_system === true && chat.every((message, id) => id === 51 || !message.is_system);
+    });
+
     report = {
         pluginLoaded: true,
         helper,
         runtime,
         longRuntime,
+        customRuntime,
         ui: {
             autoHideToggleRendered: true,
             restoreButtonRendered: true,
@@ -312,6 +363,14 @@ try {
         'passwordRecalled', 'latestHolderRecalled']) {
         if (!longRuntime[key]) throw new Error(`Real ST long-floor recall failed: ${key}`);
     }
+    if (customRuntime.hiddenWithEight !== 111 || customRuntime.hiddenWithZero !== 119) {
+        throw new Error(`Custom buffer counts failed: ${JSON.stringify(customRuntime)}`);
+    }
+    for (const [key, value] of Object.entries(customRuntime)) {
+        if (!['hiddenWithEight', 'hiddenWithZero'].includes(key) && value !== true) {
+            throw new Error(`Custom buffer safety check failed: ${key}`);
+        }
+    }
     if (pageErrors.length) throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);
 } finally {
     await fs.mkdir(evidenceDir, { recursive: true });
@@ -327,3 +386,19 @@ try {
 }
 
 console.log(JSON.stringify(report, null, 2));
+
+const importSmoke = spawnSync(process.execPath, [
+    new URL('../tests/worldbook-import-browser-smoke.mjs', import.meta.url).pathname,
+], {
+    stdio: 'inherit',
+    env: {
+        ...process.env,
+        WB_TAVERN_URL: baseUrl,
+        WB_EXTENSION_NAME: process.env.LAB_EXTENSION_NAME || 'world-backstage',
+        WB_PLAYWRIGHT_CORE_ENTRY: process.env.LAB_PLAYWRIGHT_CORE_ENTRY,
+        WB_CHROMIUM_EXECUTABLE: process.env.LAB_CHROME,
+        WB_IMPORT_EVIDENCE: path.join(evidenceDir, 'worldbook-import'),
+    },
+});
+if (importSmoke.error) throw importSmoke.error;
+if (importSmoke.status !== 0) throw new Error(`Worldbook import browser smoke failed: ${importSmoke.status}`);

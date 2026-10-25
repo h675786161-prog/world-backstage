@@ -598,7 +598,8 @@ test('old item password survives 120 model-indexed floors and a newer knock code
     const rhythm = buildInjectionPackage(state, {
         enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
     }, '现在核对正文：最新敲门节奏是什么？');
-    assert.match(rhythm.supportText, /一长两短/);
+    // Retained floor 92 is later than floor 90 and must override the stale digest.
+    assert.match(rhythm.supportText, /两短一长/);
 
     const handoff = state.storyMemory.summaries.find(item => item.level === 0 && item.startMessageId === 70);
     handoff.retentionState = 'active';
@@ -611,7 +612,7 @@ test('old item password survives 120 model-indexed floors and a newer knock code
         enabled: true, worldSimulationEnabled: false, memorySystemEnabled: true,
     }, '最初做了什么？取回银书签的暗号是什么？当前银书签由谁保管？最新敲门节奏是什么？');
     assert.match(currentHolder.supportText, /第 70—70 层：[^\n]*交给乔/);
-    assert.match(currentHolder.supportText, /一长两短/);
+    assert.match(currentHolder.supportText, /两短一长/);
     assert.ok(currentHolder.text.length <= 4200);
 
     const knockRhythm = state.storyMemory.summaries.find(item => item.level === 0 && item.startMessageId === 92);

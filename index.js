@@ -174,6 +174,10 @@ import {
     AUTO_HIDE_KEEP_RECENT_MESSAGES,
     markAutoHiddenMessages,
     restoreAutoHiddenMessages,
+    restoreUnsafeAutoHiddenMessages,
+    messageMemoryFingerprint,
+    storyMemoryScanStartMessageId,
+    isRecallableStorySummary,
 } from './auto-hide.js';
 
 const PROMPT_KEY = 'world_backstage_authoritative_state';
@@ -2065,11 +2069,13 @@ async function applyAutoHideArchivedFloors({
 
     const indexedThroughMessageId = Number(getState()?.storyMemory?.indexedThroughMessageId ?? -1);
     const summaries = getState()?.storyMemory?.summaries || [];
+    const restoredIds = restoreUnsafeAutoHiddenMessages(context.chat, indexedThroughMessageId, { summaries });
+    for (const messageId of restoredIds) setMessageHiddenDomState(messageId, false);
     const messageIds = markAutoHiddenMessages(context.chat, indexedThroughMessageId, {
         keepRecent: AUTO_HIDE_KEEP_RECENT_MESSAGES,
         summaries,
     });
-    if (!messageIds.length) return { hiddenCount: 0, messageIds: [] };
+    if (!messageIds.length && !restoredIds.length) return { hiddenCount: 0, messageIds: [] };
 
     for (const messageId of messageIds) {
         setMessageHiddenDomState(messageId, true);
@@ -2128,7 +2134,7 @@ async function reconcileAutoHidePrerequisites(expectedChatToken = currentChatTok
     }
 
     const settings = getSettings();
-    if (settings.enabled && settings.memorySystemEnabled && settings.injectionMemory) {
+    if (settings.enabled && settings.memorySystemEnabled && settings.injectionMemory && settings.autoHideArchivedFloors) {
         return { restoredCount: 0, messageIds: [] };
     }
 
@@ -3596,6 +3602,7 @@ function nextHistoryBatch(cursor, {
             swipe: message.is_user ? 0 : Number(message.swipe_id ?? 0),
             role,
             content,
+            sourceFingerprint: messageMemoryFingerprint(message),
         });
         characters = nextCharacters;
         userTurns = nextUserTurns;
@@ -5849,7 +5856,7 @@ function hasL0SummaryForMessage(state, messageId) {
         Number(summary?.level) === 0
         && Number(summary?.startMessageId) === Number(messageId)
         && Number(summary?.endMessageId) === Number(messageId)
-        && Boolean(String(summary?.summary || '').trim())
+        && isRecallableStorySummary(summary)
     ));
 }
 
@@ -5893,6 +5900,8 @@ function scheduleAutoMemoryIndex() {
     if (!settings.enabled || !settings.memorySystemEnabled || interval <= 0) return;
     const hasNewHistory = unindexedAssistantCount() >= interval;
     const hasPendingRollup = Boolean(planMemoryRollup(getState()));
+    // Capacity eviction or an old archive gap must not repeatedly bill the model.
+    // Unsafe hidden floors are restored independently; manual indexing repairs gaps.
     if (!hasNewHistory && !hasPendingRollup) return;
     if (runtime.autoMemoryTimer !== null) return;
 
@@ -6044,6 +6053,8 @@ globalThis.worldBackstageGenerationInterceptor = runPreGenerationConsistencyBarr
 
 function onGenerationStarted(type, _options, dryRun) {
     if (dryRun || ['quiet', 'impersonate', 'first_message'].includes(type)) return;
+    void reconcileAutoHidePrerequisites();
+    void applyAutoHideArchivedFloors().catch(error => console.warn('[世界背面] 自动隐藏安全校验失败', error));
     const offer = offerGenerationInjection(type);
     if (!String(runtime.injection.text || '').trim()) return;
     toast(
@@ -8401,6 +8412,7 @@ async function bootstrapWorldFromHistory() {
             stagedState = applyWorldBootstrapResult(stagedState, payload, {
                 startMessageId: batch.startMessageId,
                 endMessageId: batch.endMessageId,
+                messages: batch.messages,
                 narrativeText,
                 userName: context?.name1 || '',
                 allowUserInnerVoice: false,
@@ -8553,7 +8565,7 @@ async function scanStoryMemoryHistory({
     if (!chatLength) throw new Error('当前聊天还没有可扫描的正文');
 
     let state = getState();
-    let cursor = Math.max(0, Number(state.storyMemory?.indexedThroughMessageId ?? -1) + 1);
+    let cursor = storyMemoryScanStartMessageId(context?.chat, state.storyMemory, { automatic });
     const initialRollupPlan = planMemoryRollup(state);
     if (cursor >= chatLength && !initialRollupPlan) {
         if (!automatic) toast('历史档案已经追到最新一层啦～', 'info');
@@ -8710,6 +8722,7 @@ async function scanStoryMemoryHistory({
             state = applyHistoryIndexResult(state, payload, {
                 startMessageId: batch.startMessageId,
                 endMessageId: batch.endMessageId,
+                messages: batch.messages,
             });
             cursor = batch.nextCursor;
             completedBatches += 1;

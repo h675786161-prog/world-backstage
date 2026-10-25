@@ -4,7 +4,7 @@ import {
     AUTO_HIDE_KEEP_RECENT_MIN,
     markAutoHiddenMessages,
     normalizeAutoHideKeepRecentMessages,
-    restoreAutoHiddenMessages,
+    restoreUnsafeAutoHiddenMessages,
     setAutoHideKeepRecentMessages,
 } from './auto-hide.js';
 
@@ -56,9 +56,11 @@ async function reconcileAutoHiddenFloors(keepRecent) {
     const state = currentWorldState(context);
     const memory = state?.storyMemory;
     const indexedThroughMessageId = Number(memory?.indexedThroughMessageId ?? -1);
-    if (indexedThroughMessageId < 0) return;
 
-    const restoredIds = restoreAutoHiddenMessages(context.chat);
+    const restoredIds = restoreUnsafeAutoHiddenMessages(context.chat, indexedThroughMessageId, {
+        keepRecent,
+        summaries: memory?.summaries || [],
+    });
     for (const messageId of restoredIds) setMessageHiddenDomState(messageId, false);
 
     const hiddenIds = markAutoHiddenMessages(context.chat, indexedThroughMessageId, {

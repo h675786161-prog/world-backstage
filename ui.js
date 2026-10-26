@@ -949,12 +949,14 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
         observation: 120000,
         history: 300000,
         opinion: 150000,
+        affinity: 120000,
     };
     const generationModuleLabel = {
         simulation: '世界推演',
         observation: '人物观测',
         history: '历史 / 记忆',
         opinion: '舆情 / 闲逛',
+        affinity: '关系与好感度',
     };
     const generationLimitFor = key => generationLimits[key] || { maxTokens: 0, timeoutMs: 0 };
     const effectiveGenerationTokenLabel = key => {
@@ -1406,6 +1408,9 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                 </label>
                                 <label>世界舆情
                                     <select data-wb-api-route="opinion">${routeOptions(apiModuleRoutes.opinion || 'default')}</select>
+                                </label>
+                                <label>关系与好感度
+                                    <select data-wb-api-route="affinity">${routeOptions(apiModuleRoutes.affinity || 'default')}</select>
                                 </label>
                             </div>
                         </div>
@@ -1927,12 +1932,46 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                     ${generationModuleRow('observation')}
                                     ${generationModuleRow('history')}
                                     ${generationModuleRow('opinion')}
+                                    ${generationModuleRow('affinity')}
                                 </div>
                             </details>
 
                             <div class="wb-generation-defaults">
                                 <strong>自动等待参考</strong>
-                                <span>世界推演 180s · 人物观测 120s · 历史/记忆 300s · 舆情/闲逛 150s</span>
+                                <span>世界推演 180s · 人物观测 120s · 历史/记忆 300s · 舆情/闲逛 150s · 关系分析 120s</span>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="wb-settings-subgroup" data-settings-subgroup="advanced-affinity" ${subgroupOpen('advanced-affinity')}>
+                        <summary><span>关系与好感度</span><small>独立情感判断与事件分析</small></summary>
+                        <div class="wb-settings-subgroup-body">
+                            <div class="wb-setting-toggle">
+                                <div>
+                                    <strong>启用关系系统</strong>
+                                    <span>关闭后不再分析新的关系事件；已保存的关系与历史不会删除。</span>
+                                </div>
+                                <label class="wb-switch"><input type="checkbox" data-wb-setting="affinityEnabled" ${settings.affinityEnabled !== false ? 'checked' : ''}><i></i></label>
+                            </div>
+                            <div class="wb-setting-toggle">
+                                <div>
+                                    <strong>自动分析有效互动</strong>
+                                    <span>只对正文中出现已知人物且含有关系线索的候选事件调用模型，不按每条消息无条件刷分。</span>
+                                </div>
+                                <label class="wb-switch"><input type="checkbox" data-wb-setting="affinityAutoEnabled" ${settings.affinityAutoEnabled !== false ? 'checked' : ''}><i></i></label>
+                            </div>
+                            <div class="wb-setting-toggle">
+                                <div>
+                                    <strong>启用恋爱倾向维度</strong>
+                                    <span>关闭后停止产生恋爱倾向变化，但不删除既有记录。</span>
+                                </div>
+                                <label class="wb-switch"><input type="checkbox" data-wb-setting="affinityRomanceEnabled" ${settings.affinityRomanceEnabled !== false ? 'checked' : ''}><i></i></label>
+                            </div>
+                            <div class="wb-setting-block">
+                                <label for="wb-affinity-prompt">情感判断提示词</label>
+                                <textarea id="wb-affinity-prompt" data-wb-setting="affinityPrompt" rows="12" maxlength="12000">${escapeHtml(settings.affinityPrompt || '')}</textarea>
+                                <p class="wb-setting-explanation">这里调整情感判断风格。JSON 输出格式、人物 ID、单次变化范围和写入权限由插件固定校验。</p>
+                                <div class="wb-setting-actions"><button type="button" data-wb-action="reset-affinity-prompt">恢复默认提示词</button></div>
                             </div>
                         </div>
                     </details>
@@ -7090,7 +7129,7 @@ export function createWorldBackstageUI({
         }
 
         const apiRouteKey = event.target.dataset?.wbApiRoute;
-        if (apiRouteKey && ['simulation', 'observation', 'history', 'opinion'].includes(apiRouteKey)) {
+        if (apiRouteKey && ['simulation', 'observation', 'history', 'opinion', 'affinity'].includes(apiRouteKey)) {
             const settings = getSettings();
             const routes = {
                 ...(settings.apiModuleRoutes || {}),
@@ -7131,7 +7170,7 @@ export function createWorldBackstageUI({
         const generationLimitModule = event.target.dataset.module;
         if (
             generationLimitField
-            && ['simulation', 'observation', 'history', 'opinion'].includes(generationLimitModule)
+            && ['simulation', 'observation', 'history', 'opinion', 'affinity'].includes(generationLimitModule)
         ) {
             const settings = getSettings();
             const current = settings.generationModuleLimits && typeof settings.generationModuleLimits === 'object'

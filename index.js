@@ -185,7 +185,7 @@ import {
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 33,
+    settingsVersion: 34,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -256,6 +256,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     affinityEnabled: true,
     affinityAutoEnabled: true,
     affinityRomanceEnabled: true,
+    affinityContextInjection: true,
     affinityPrompt: DEFAULT_AFFINITY_PROMPT,
     // 0 = automatic task budget. A positive value is a global upper cap.
     maxOutputTokens: 0,
@@ -1419,7 +1420,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 33;
+    settings.settingsVersion = 34;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -1456,6 +1457,7 @@ function getSettings() {
     settings.affinityEnabled = settings.affinityEnabled !== false;
     settings.affinityAutoEnabled = settings.affinityAutoEnabled !== false;
     settings.affinityRomanceEnabled = settings.affinityRomanceEnabled !== false;
+    settings.affinityContextInjection = settings.affinityContextInjection !== false;
     settings.affinityPrompt = String(settings.affinityPrompt || DEFAULT_AFFINITY_PROMPT).slice(0, 12000);
     settings.maxOutputTokens = normalizeGenerationTokenLimit(settings.maxOutputTokens);
     settings.generationTimeoutMs = normalizeGenerationTimeoutMs(settings.generationTimeoutMs);
@@ -1466,7 +1468,7 @@ function getSettings() {
         : settings.orbEnabled !== false;
     settings.orbEdgeHide = Boolean(settings.orbEdgeHide);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 33) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 34) context.saveSettingsDebounced?.();
     return settings;
 }
 

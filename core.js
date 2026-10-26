@@ -5257,7 +5257,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
             recentText,
             { romanceEnabled: settings.affinityRomanceEnabled !== false },
         );
-        if (relationshipContext) supportLines.push(...relationshipContext.split('\\n'));
+        if (relationshipContext) supportLines.push(...relationshipContext.split('\n'));
     }
 
     if (foregroundInfluences.length || deliveries.length) {

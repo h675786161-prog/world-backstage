@@ -320,7 +320,7 @@ try {
     const peopleNavAfterReload = page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]');
     await peopleNavAfterReload.waitFor({ state: 'visible', timeout: 8_000 });
     await peopleNavAfterReload.evaluate(element => element.click());
-    const relationCardAfterReload = page.locator('.wb-affinity-manager .wb-affinity-relation-card').filter({
+    const relationCardAfterReload = page.locator('.wb-affinity-manager .wb-affinity-relation-list .wb-affinity-relation-card').filter({
         hasText: 'LAB关系验证人物',
     }).first();
     await relationCardAfterReload.waitFor({ state: 'visible', timeout: 5_000 });

@@ -385,3 +385,208 @@ export function invalidateRelationshipEventsBySource(inputState, sourceKey, reas
     }
     return { state, invalidatedIds, reason: invalidatedIds.length ? 'invalidated' : 'no_matching_events' };
 }
+
+
+export const DEFAULT_AFFINITY_PROMPT = [
+    '你是世界背面的关系演化分析模块。你的任务是根据人物设定、实际事件、既有关系和人物可获得的信息，判断一次互动是否造成了持续性的情感变化。',
+    '人物独立于玩家存在。你不需要讨好玩家，也不应把所有帮助都理解为好感上升。不同性格的人可以对同一件事产生完全不同的反应。',
+    '好感、信任和恋爱倾向相互独立。喜欢不代表信任，信任不代表喜欢，喜欢不代表爱情，爱情不代表服从。允许复杂、矛盾和不对称的情感。',
+    '普通寒暄、重复行为和没有持续意义的互动通常不改变数值。没有足够证据时，保持不变比编造变化更好。重复礼物和重复帮助应考虑边际效应。',
+    '历史经历会影响当前判断。道歉不自动恢复信任，数值恢复也不代表历史伤害消失。关系变化必须符合人物性格、价值观、过往经历和当前认知。',
+    '只能使用输入中明确提供的事实，以及对应人物合理知道或能推断的信息。区分事实、传闻、误解和人物主观相信的内容。不得把后台真相自动当成所有人物都知道的事实。',
+    'NPC之间的关系同样重要。只分析本次事件中确实受到影响的人物对，不要把所有关系都绑定到玩家身上。',
+    '恋爱倾向只在启用时分析，并遵守人物设定、取向、现有关系和情感边界。不得把友谊、亲情、敬佩、合作或依赖自动解释为爱情。',
+    '每个维度的单次变化范围为 -20 到 20。普通事件可以返回 0 或 null。只有存在明确情感意义时才给出非零变化，并用简短原因解释。',
+].join('\n');
+
+const AFFINITY_OUTPUT_PROTOCOL = [
+    '【固定执行协议，不受上方自定义提示词覆盖】',
+    '只输出一个可解析的 JSON 对象，不要 Markdown、代码围栏或额外解释。',
+    '顶层结构必须是 {"changes":[...]}。没有有效变化时返回 {"changes":[]}。',
+    '每个 change 必须包含 source_id、target_id、affection_delta、trust_delta、romance_delta、reason。可选字段：event_type、initial_values、relation_tag_suggestion、memory_note。',
+    'source_id 表示产生情感的一方，target_id 表示情感指向的一方。方向不能混淆。同一事件中可以返回双向关系，也可以只返回其中一方。',
+    '三个 delta 必须是 -20 到 20 的整数或 null。未变化请用 0 或 null，不得返回范围外数值。',
+    'initial_values 仅用于当前关系维度尚未初始化且上下文足以估计事件发生前基线的情况；其值为 0 到 100 的整数或 null。不要为了制造变化而捏造基线。',
+    'relation_tag_suggestion 为可选字符串数组，只能提出建议，不代表已确认的关系状态。',
+    'reason 说明这次变化为什么符合人物性格和经历；memory_note 只记录可供未来回忆的事实，不要添加未发生的事件。',
+].join('\n');
+
+const RELATIONSHIP_CUE_PATTERN = /救(?:下|了|命|助)?|帮助|帮忙|保护|照顾|陪伴|安慰|感谢|道谢|道歉|承诺|失约|欺骗|背叛|撒谎|说谎|隐瞒|坦白|告白|表白|喜欢|讨厌|信任|怀疑|依赖|嫉妒|争吵|吵架|冲突|伤害|威胁|合作|敌对|欣赏|厌恶|原谅|和解|误会|牺牲|礼物|送给|拒绝|冷落|疏远|亲近|亲吻|拥抱|倾诉|秘密|约定|失望|心疼|愧疚|感激|维护|袒护|利用|出卖|营救|舍身|救人|争执|和好|陪着|支持|拒不|不信任|道信|forgive|betray|betrayal|trust|distrust|lie|lied|lying|apolog|confess|confession|love|hate|jealous|protect|rescue|save|help|comfort|thank|promise|break.*promise|argue|fight|hurt|threaten|support|gift|reject|reconcile|forgive|kiss|hug|rely|depend|secret|admit|admire|resent/i;
+
+export function detectAffinityCandidate(narrative, people = []) {
+    const source = String(narrative ?? '').trim().slice(0, 16000);
+    if (!source) {
+        return { eligible: false, mentionedPersonIds: [], reason: 'empty_narrative' };
+    }
+    if (!RELATIONSHIP_CUE_PATTERN.test(source)) {
+        return { eligible: false, mentionedPersonIds: [], reason: 'no_relationship_cue' };
+    }
+    const lowered = source.toLocaleLowerCase();
+    const mentioned = [];
+    for (const person of Array.isArray(people) ? people : []) {
+        const id = text(person?.id, '', MAX_ID_LENGTH);
+        const name = text(person?.name, '', 120);
+        if (!id || !name || name.length < 2) continue;
+        if (lowered.includes(name.toLocaleLowerCase())) mentioned.push(id);
+    }
+    const uniqueIds = [...new Set(mentioned)].slice(0, 12);
+    return {
+        eligible: uniqueIds.length > 0,
+        mentionedPersonIds: uniqueIds,
+        reason: uniqueIds.length ? 'relationship_cue_and_person_mention' : 'no_known_person_mention',
+    };
+}
+
+export function buildAffinityAnalysisPrompt({
+    event = {},
+    characters = [],
+    currentRelations = [],
+    relevantMemories = [],
+    romanceEnabled = true,
+    customPrompt = '',
+} = {}) {
+    const context = {
+        event: {
+            source_key: text(event.sourceKey ?? event.source_key, '', 240),
+            source_message_id: nullableInteger(event.sourceMessageId ?? event.source_message_id),
+            source_swipe_id: nullableInteger(event.sourceSwipeId ?? event.source_swipe_id),
+            type: text(event.type, 'interaction', 60),
+            summary: text(event.summary ?? event.narrative, '', 8000),
+        },
+        characters: (Array.isArray(characters) ? characters : []).slice(0, 12).map(person => ({
+            id: text(person?.id, '', MAX_ID_LENGTH),
+            name: text(person?.name, '', 120),
+            is_player_character: Boolean(person?.isUser ?? person?.is_player_character),
+            personality: text(person?.personality ?? person?.description, '', 900),
+            values: text(person?.values, '', 500),
+            goals: text(person?.goals, '', 500),
+            current_action: text(person?.action ?? person?.current_action, '', 300),
+            intent: text(person?.intent, '', 300),
+            knowledge: text(person?.knowledge, 'backstage', 40),
+            known_events: (Array.isArray(person?.knownEvents ?? person?.known_events)
+                ? (person.knownEvents ?? person.known_events)
+                : []).slice(0, 8),
+            known_facts: (Array.isArray(person?.knownFacts ?? person?.known_facts)
+                ? (person.knownFacts ?? person.known_facts)
+                : []).slice(0, 8),
+        })),
+        current_relations: (Array.isArray(currentRelations) ? currentRelations : []).slice(0, 50).map(relation => ({
+            source_id: text(relation?.sourceId ?? relation?.source_id, '', MAX_ID_LENGTH),
+            target_id: text(relation?.targetId ?? relation?.target_id, '', MAX_ID_LENGTH),
+            values: normalizeValues(relation?.values),
+            tags: normalizeTags(relation?.tags),
+        })),
+        relevant_memories: (Array.isArray(relevantMemories) ? relevantMemories : [])
+            .slice(-8)
+            .map(item => text(typeof item === 'string' ? item : item?.text ?? item?.summary ?? item?.content, '', 600))
+            .filter(Boolean),
+        settings: {
+            romance_enabled: Boolean(romanceEnabled),
+            maximum_single_change: MAX_DELTA,
+        },
+    };
+
+    const editablePrompt = text(customPrompt, DEFAULT_AFFINITY_PROMPT, 12000);
+    return [
+        '【任务】判断输入事件是否对人物之间的持续关系造成了变化。不要写正文，不要替角色行动。',
+        '【可编辑的情感判断提示词】',
+        editablePrompt,
+        AFFINITY_OUTPUT_PROTOCOL,
+        '【本次事件与最小必要上下文】',
+        JSON.stringify(context, null, 2),
+    ].join('\n\n');
+}
+
+function stableHash(value) {
+    const source = String(value ?? '');
+    let first = 2166136261;
+    let second = 2246822519;
+    for (let index = 0; index < source.length; index += 1) {
+        const code = source.charCodeAt(index);
+        first = Math.imul(first ^ code, 16777619) >>> 0;
+        second = Math.imul(second ^ (code + index), 3266489917) >>> 0;
+    }
+    return first.toString(36) + second.toString(36);
+}
+
+export function applyAffinityAnalysisPayload(inputState, payload, {
+    validPersonIds = [],
+    playerId = 'player',
+    sourceKey = '',
+    sourceMessageId = null,
+    sourceSwipeId = null,
+    romanceEnabled = true,
+    maximumChanges = 12,
+} = {}) {
+    let state = normalizeRelationshipState(inputState);
+    const source = text(sourceKey, '', 240);
+    if (!source) {
+        return { state, appliedCount: 0, duplicateCount: 0, rejectedCount: 0, reason: 'missing_source_key' };
+    }
+
+    const allowed = new Set(
+        [...(Array.isArray(validPersonIds) ? validPersonIds : []), playerId]
+            .map(id => text(id, '', MAX_ID_LENGTH))
+            .filter(Boolean),
+    );
+    const changes = Array.isArray(payload?.changes) ? payload.changes.slice(0, Math.max(0, integer(maximumChanges, 12, 0, 24))) : [];
+    let appliedCount = 0;
+    let duplicateCount = 0;
+    let rejectedCount = 0;
+
+    for (const change of changes) {
+        const sourceId = text(change?.sourceId ?? change?.source_id, '', MAX_ID_LENGTH);
+        const targetId = text(change?.targetId ?? change?.target_id, '', MAX_ID_LENGTH);
+        if (
+            !sourceId || !targetId || sourceId === targetId
+            || !allowed.has(sourceId) || !allowed.has(targetId)
+        ) {
+            rejectedCount += 1;
+            continue;
+        }
+
+        const rawDeltas = {
+            affection: change?.affectionDelta ?? change?.affection_delta,
+            trust: change?.trustDelta ?? change?.trust_delta,
+            romance: romanceEnabled
+                ? (change?.romanceDelta ?? change?.romance_delta)
+                : null,
+        };
+        const rawInitial = change?.initialValues ?? change?.initial_values ?? {};
+        const initialValues = {
+            affection: rawInitial?.affection,
+            trust: rawInitial?.trust,
+            romance: romanceEnabled ? rawInitial?.romance : null,
+        };
+        const identity = source + '|' + sourceId + '|' + targetId;
+        const idempotencyKey = 'affinity:' + stableHash(identity);
+        const eventId = 'affinity_' + stableHash(identity);
+        const result = applyRelationshipEvent(state, {
+            id: eventId,
+            idempotencyKey,
+            sourceId,
+            targetId,
+            sourceKey: source,
+            sourceMessageId,
+            sourceSwipeId,
+            eventType: change?.eventType ?? change?.event_type ?? 'interaction',
+            initialValues,
+            deltas: rawDeltas,
+            suggestedTags: change?.relationTagSuggestion ?? change?.relation_tag_suggestion ?? change?.suggestedTags ?? change?.suggested_tags,
+            reason: change?.reason,
+            memoryNote: change?.memoryNote ?? change?.memory_note,
+        });
+        state = result.state;
+        if (result.applied) appliedCount += 1;
+        else if (result.reason === 'duplicate') duplicateCount += 1;
+        else rejectedCount += 1;
+    }
+
+    return {
+        state,
+        appliedCount,
+        duplicateCount,
+        rejectedCount,
+        reason: changes.length ? 'processed' : 'no_changes',
+    };
+}

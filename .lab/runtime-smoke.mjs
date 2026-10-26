@@ -82,21 +82,21 @@ try {
     await settingsButton.evaluate(element => element.click());
     await page.waitForTimeout(160);
 
-    await page.locator('button[data-wb-action="settings-section"][data-section="connection"]').click();
+    await page.locator('button[data-wb-action="settings-section"][data-section="connection"]').evaluate(element => element.click());
     const affinityRouteGroup = page.locator('details[data-settings-subgroup="connection-routing"]');
     await affinityRouteGroup.waitFor({ state: 'attached', timeout: 5000 });
     if (await affinityRouteGroup.getAttribute('open') === null) {
-        await affinityRouteGroup.locator('summary').click();
+        await affinityRouteGroup.locator('summary').evaluate(element => element.click());
     }
     const affinityRoute = page.locator('select[data-wb-api-route="affinity"]');
     await affinityRoute.waitFor({ state: 'visible', timeout: 5000 });
     const affinityRouteValue = await affinityRoute.inputValue();
 
-    await page.locator('button[data-wb-action="settings-section"][data-section="advanced"]').click();
+    await page.locator('button[data-wb-action="settings-section"][data-section="advanced"]').evaluate(element => element.click());
     const affinitySettingsGroup = page.locator('details[data-settings-subgroup="advanced-affinity"]');
     await affinitySettingsGroup.waitFor({ state: 'attached', timeout: 5000 });
     if (await affinitySettingsGroup.getAttribute('open') === null) {
-        await affinitySettingsGroup.locator('summary').click();
+        await affinitySettingsGroup.locator('summary').evaluate(element => element.click());
     }
     const affinityPrompt = page.locator('textarea[data-wb-setting="affinityPrompt"]');
     await affinityPrompt.waitFor({ state: 'visible', timeout: 5000 });

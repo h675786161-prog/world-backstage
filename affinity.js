@@ -602,3 +602,110 @@ export function applyAffinityAnalysisPayload(inputState, payload, {
         reason: changes.length ? 'processed' : 'no_changes',
     };
 }
+
+
+function affinityQualitativeLabel(value) {
+    const normalized = score(value);
+    if (normalized === null) return '未知';
+    if (normalized <= 20) return '极低';
+    if (normalized <= 40) return '偏低';
+    if (normalized <= 60) return '中等';
+    if (normalized <= 80) return '偏高';
+    return '很高';
+}
+
+export function buildRelationshipContext(inputState, people = [], recentText = '', {
+    romanceEnabled = true,
+    maximumRelations = 6,
+} = {}) {
+    const state = inputState && typeof inputState === 'object' ? inputState : {};
+    const relations = Array.isArray(state.relations) ? state.relations : [];
+    const events = Array.isArray(state.events) ? state.events : [];
+    const roster = Array.isArray(people) ? people : [];
+    const loweredText = String(recentText ?? '').toLocaleLowerCase();
+    if (!loweredText || !relations.length) return '';
+
+    const mentionedIds = new Set();
+    const nameById = new Map();
+    for (const person of roster) {
+        const id = text(person?.id, '', MAX_ID_LENGTH);
+        const name = text(person?.name, '', 120);
+        if (!id || !name) continue;
+        nameById.set(id, name);
+        if (name.length >= 2 && loweredText.includes(name.toLocaleLowerCase())) {
+            mentionedIds.add(id);
+        }
+    }
+    if (!mentionedIds.size) return '';
+
+    const playerPerson = roster.find(person => Boolean(person?.isUser ?? person?.is_player_character));
+    const playerId = text(playerPerson?.id, '', MAX_ID_LENGTH);
+    const playerIds = new Set(['__wb_player__', 'player']);
+    if (playerId) playerIds.add(playerId);
+    const playerLabel = text(playerPerson?.name, '玩家角色', 120);
+    nameById.set('__wb_player__', playerLabel);
+    nameById.set('player', playerLabel);
+
+    const latestEventByPair = new Map();
+    for (const event of events) {
+        if (event?.status !== 'active') continue;
+        const sourceId = text(event.sourceId, '', MAX_ID_LENGTH);
+        const targetId = text(event.targetId, '', MAX_ID_LENGTH);
+        if (!sourceId || !targetId) continue;
+        const key = pairKey(sourceId, targetId);
+        const current = latestEventByPair.get(key);
+        if (!current || Number(event.sequence || 0) >= Number(current.sequence || 0)) {
+            latestEventByPair.set(key, event);
+        }
+    }
+
+    const relevant = relations.map(relation => {
+        const sourceId = text(relation?.sourceId, '', MAX_ID_LENGTH);
+        const targetId = text(relation?.targetId, '', MAX_ID_LENGTH);
+        const isMentionedPair = mentionedIds.has(sourceId) && mentionedIds.has(targetId);
+        const isPlayerPair = (
+            (playerIds.has(sourceId) && mentionedIds.has(targetId))
+            || (playerIds.has(targetId) && mentionedIds.has(sourceId))
+        );
+        if (!sourceId || !targetId || (!isMentionedPair && !isPlayerPair)) return null;
+        const latestEvent = latestEventByPair.get(pairKey(sourceId, targetId)) || null;
+        const values = normalizeValues(relation.values);
+        const tags = normalizeTags(relation.tags);
+        if (
+            AFFINITY_DIMENSIONS.every(key => values[key] === null)
+            && !tags.length
+            && !latestEvent?.memoryNote
+            && !latestEvent?.reason
+        ) return null;
+        return { relation, sourceId, targetId, values, tags, latestEvent };
+    }).filter(Boolean)
+        .sort((a, b) => Number(b.latestEvent?.sequence || 0) - Number(a.latestEvent?.sequence || 0))
+        .slice(0, integer(maximumRelations, 6, 1, 12));
+
+    if (!relevant.length) return '';
+    const lines = [
+        '当前人物关系连续性参考（后台辅助信息，不代表角色共同知识）：',
+    ];
+    for (const item of relevant) {
+        const parts = [];
+        if (item.values.affection !== null) {
+            parts.push('好感' + affinityQualitativeLabel(item.values.affection));
+        }
+        if (item.values.trust !== null) {
+            parts.push('信任' + affinityQualitativeLabel(item.values.trust));
+        }
+        if (romanceEnabled && item.values.romance !== null) {
+            parts.push('恋爱倾向' + affinityQualitativeLabel(item.values.romance));
+        }
+        if (item.tags.length) parts.push('关系标签：' + item.tags.join('、'));
+        const sourceName = nameById.get(item.sourceId) || item.sourceId;
+        const targetName = nameById.get(item.targetId) || item.targetId;
+        lines.push('- ' + sourceName + ' → ' + targetName + '：' + (parts.join('；') || '关系状态尚不明确'));
+        const note = text(item.latestEvent?.memoryNote || item.latestEvent?.reason, '', 220);
+        if (note) lines.push('  相关经历：' + note);
+    }
+    lines.push(
+        '这些信息只用于指导人物自然、连续的行为，不得向玩家直接报出数值，也不得仅凭等级强制表白、服从、背叛或固定台词。每个角色只能知道其认知账本允许其知道的信息，不得把他人的隐藏情感直接当成已知事实。',
+    );
+    return lines.join('\n');
+}

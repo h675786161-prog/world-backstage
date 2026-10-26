@@ -9,13 +9,14 @@ import {
     WORLD_BACKSTAGE_CORE_REASONING_PROTOCOL,
     WORLD_SIMULATION_REASONING_PROTOCOL,
 } from './reasoning-protocol.js';
+import { createInitialRelationshipState, normalizeRelationshipState } from './affinity.js';
 
 const WB_STATE_RECONCILE_ORDER = Object.freeze([3, 1, 4, 2]);
 
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 export const MAX_CALENDAR_YEAR = 999999;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
@@ -1847,6 +1848,7 @@ export function createInitialState({
             daypart: '',
         },
         people: [],
+        relationships: createInitialRelationshipState(),
         events: [],
         echoes: [],
         archive: [],
@@ -8508,6 +8510,7 @@ export function trimState(inputState) {
             seenPersonIds.add(nextId);
             return person;
         });
+    state.relationships = normalizeRelationshipState(state.relationships);
 
     const events = asArray(state.events)
         .map(event => normalizeEvent(event, state.clock.absoluteMinute, event));

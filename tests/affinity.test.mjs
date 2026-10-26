@@ -402,3 +402,77 @@ test('relationship context can be disabled independently of saved relationship d
     assert.equal(disabled.supportText.includes('阿什莉'), false);
     assert.equal(state.relationships.events.length, 1);
 });
+
+test('manual relationship edits preserve unknown values and record manual provenance', () => {
+    const result = applyManualRelationshipEdit(createInitialRelationshipState(), {
+        sourceId: 'npc_a',
+        targetId: 'npc_b',
+        validPersonIds: ['npc_a', 'npc_b'],
+        values: { affection: 74, trust: null, romance: 18 },
+        tags: ['朋友', '戒备'],
+    });
+    assert.equal(result.applied, true);
+    const relation = getRelationship(result.state, 'npc_a', 'npc_b');
+    assert.deepEqual(relation.values, { affection: 74, trust: null, romance: 18 });
+    assert.deepEqual(relation.tags, ['朋友', '戒备']);
+    assert.equal(result.state.events[0].origin, 'manual');
+    assert.equal(result.state.events[0].eventType, 'manual-edit');
+});
+
+test('manual reset is auditable and invalidating it restores the previous relationship', () => {
+    let state = apply(createInitialRelationshipState(), {
+        id: 'ai-before-manual',
+        sourceId: 'npc_a',
+        targetId: 'npc_b',
+        sourceKey: 'message:1:0:hash',
+        initialValues: { affection: 50, trust: 45 },
+        deltas: { affection: 12, trust: 4 },
+    });
+    const manual = applyManualRelationshipEdit(state, {
+        sourceId: 'npc_a',
+        targetId: 'npc_b',
+        validPersonIds: ['npc_a', 'npc_b'],
+        values: { affection: null, trust: null, romance: null },
+        tags: [],
+        reason: '用户重置关系状态',
+    });
+    assert.equal(manual.applied, true);
+    assert.deepEqual(getRelationship(manual.state, 'npc_a', 'npc_b').values, {
+        affection: null,
+        trust: null,
+        romance: null,
+    });
+    assert.deepEqual(getRelationship(manual.state, 'npc_a', 'npc_b').tags, []);
+    assert.equal(manual.state.events.length, 2);
+
+    const restored = invalidateRelationshipEvent(manual.state, manual.eventId, '撤销手动重置');
+    assert.equal(restored.invalidated, true);
+    assert.deepEqual(getRelationship(restored.state, 'npc_a', 'npc_b').values, {
+        affection: 62,
+        trust: 49,
+        romance: null,
+    });
+    assert.equal(restored.state.events.find(event => event.eventType === 'manual-edit').status, 'invalidated');
+});
+
+test('manual relationship edits reject unknown people and out-of-range values', () => {
+    const unknown = applyManualRelationshipEdit(createInitialRelationshipState(), {
+        sourceId: 'missing',
+        targetId: 'npc_b',
+        validPersonIds: ['npc_b'],
+        values: { affection: 50 },
+    });
+    assert.equal(unknown.applied, false);
+    assert.equal(unknown.reason, 'unknown_person');
+
+    const invalid = applyManualRelationshipEdit(createInitialRelationshipState(), {
+        sourceId: 'npc_a',
+        targetId: 'npc_b',
+        validPersonIds: ['npc_a', 'npc_b'],
+        values: { affection: 101 },
+    });
+    assert.equal(invalid.applied, false);
+    assert.equal(invalid.reason, 'invalid_values');
+    assert.equal(invalid.state.events.length, 0);
+});
+

@@ -3385,7 +3385,8 @@ function renderRelationshipManager(state, people) {
     const playerName = String(player?.name || '玩家角色');
     const names = new Map(roster.map(person => [String(person.id), String(person.name || person.id)]));
     names.set('__wb_player__', playerName);
-    const options = [{ id: '__wb_player__', name: playerName }, ...roster
+    names.set(playerId, playerName);
+    const options = [{ id: playerId, name: playerName }, ...roster
         .filter(person => !person.isUser)
         .map(person => ({ id: String(person.id || ''), name: String(person.name || person.id || '未知人物') }))]
         .filter((item, index, all) => item.id && all.findIndex(other => other.id === item.id) === index);

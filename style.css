@@ -12542,3 +12542,31 @@
 }#world-backstage-root .wb-worldbook-draft-target { display: grid; gap: 5px; min-width: 0; font-size: 12px; color: var(--wb-text-soft); }
 #world-backstage-root .wb-worldbook-draft-target select { min-width: 0; width: 100%; max-width: 100%; }
 #world-backstage-root .wb-worldbook-draft-fields p { overflow-wrap: anywhere; white-space: pre-wrap; max-height: 14rem; overflow: auto; }
+
+
+/* Relationship details stay in the people view and collapse cleanly on narrow screens. */
+.wb-affinity-manager { margin-top: 1rem; padding: 1rem; border: 1px solid var(--wb-line, rgba(255,255,255,.12)); border-radius: 1rem; background: var(--wb-surface, rgba(255,255,255,.035)); }
+.wb-affinity-manager-heading, .wb-affinity-history-item > div, .wb-affinity-actions { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; }
+.wb-affinity-manager p, .wb-affinity-relation-card small, .wb-affinity-history small { color: var(--wb-muted, #aaa); }
+.wb-affinity-create { margin: .8rem 0; padding: .65rem; border: 1px solid var(--wb-line, rgba(255,255,255,.12)); border-radius: .75rem; }
+.wb-affinity-create > summary, .wb-affinity-history > summary { cursor: pointer; }
+.wb-affinity-relation-list { display: grid; gap: .75rem; }
+.wb-affinity-relation-card { min-width: 0; padding: .8rem; border: 1px solid var(--wb-line, rgba(255,255,255,.12)); border-radius: .8rem; }
+.wb-affinity-relation-card > strong, .wb-affinity-relation-card > small { display: block; margin-bottom: .35rem; }
+.wb-affinity-edit-form { display: grid; gap: .65rem; margin-top: .65rem; }
+.wb-affinity-edit-form > label, .wb-affinity-score-field { display: grid; gap: .3rem; min-width: 0; }
+.wb-affinity-score-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .55rem; }
+.wb-affinity-edit-form input, .wb-affinity-edit-form select { box-sizing: border-box; width: 100%; min-width: 0; }
+.wb-affinity-actions { justify-content: flex-start; }
+.wb-affinity-history { margin-top: .75rem; }
+.wb-affinity-history-item { margin-top: .5rem; padding: .55rem; border-left: 2px solid var(--wb-accent, #a99ad8); background: rgba(255,255,255,.025); }
+.wb-affinity-history-item.is-invalidated { opacity: .68; border-left-color: var(--wb-muted, #777); }
+.wb-affinity-history-item p { margin: .35rem 0; overflow-wrap: anywhere; }
+.wb-affinity-history-item small { display: block; overflow-wrap: anywhere; }
+.wb-affinity-empty { padding: .7rem; }
+@media (max-width: 560px) {
+    .wb-affinity-manager { padding: .7rem; }
+    .wb-affinity-score-grid { grid-template-columns: 1fr; }
+    .wb-affinity-edit-form input, .wb-affinity-edit-form select { min-height: 2.6rem; }
+    .wb-affinity-actions > button { flex: 1 1 8rem; min-height: 2.7rem; }
+}

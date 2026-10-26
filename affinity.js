@@ -770,7 +770,7 @@ export function buildRelationshipContext(inputState, people = [], recentText = '
         const targetName = nameById.get(item.targetId) || item.targetId;
         lines.push('- ' + sourceName + ' → ' + targetName + '：' + (parts.join('；') || '关系状态尚不明确'));
         const note = text(item.latestEvent?.memoryNote || item.latestEvent?.reason, '', 220);
-        if (note) lines.push('  相关经历：' + note);
+        if (note) lines.push('  关系账本备注（可能含角色主观理解或分析推断，不等同于已确认事实）：' + note);
     }
     lines.push(
         '这些信息只用于指导人物自然、连续的行为，不得向玩家直接报出数值，也不得仅凭等级强制表白、服从、背叛或固定台词。每个角色只能知道其认知账本允许其知道的信息，不得把他人的隐藏情感直接当成已知事实。',

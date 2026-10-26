@@ -1967,6 +1967,13 @@ function renderSettings(state, settings, syncStatus, openGroups = new Set(), ope
                                 </div>
                                 <label class="wb-switch"><input type="checkbox" data-wb-setting="affinityRomanceEnabled" ${settings.affinityRomanceEnabled !== false ? 'checked' : ''}><i></i></label>
                             </div>
+                            <div class="wb-setting-toggle">
+                                <div>
+                                    <strong>将关系状态注入正文上下文</strong>
+                                    <span>只向当前场景注入相关人物的精简关系摘要，不暴露原始数值，也不替角色越过认知边界。</span>
+                                </div>
+                                <label class="wb-switch"><input type="checkbox" data-wb-setting="affinityContextInjection" ${settings.affinityContextInjection !== false ? 'checked' : ''}><i></i></label>
+                            </div>
                             <div class="wb-setting-block">
                                 <label for="wb-affinity-prompt">情感判断提示词</label>
                                 <textarea id="wb-affinity-prompt" data-wb-setting="affinityPrompt" rows="12" maxlength="12000">${escapeHtml(settings.affinityPrompt || '')}</textarea>

@@ -137,6 +137,9 @@ function normalizeEvent(raw, fallbackSequence = 1) {
         beforeValues: normalizeValues(raw?.beforeValues ?? raw?.before_values),
         afterValues: normalizeValues(raw?.afterValues ?? raw?.after_values),
         suggestedTags: normalizeTags(raw?.suggestedTags ?? raw?.suggested_tags),
+        manualEdit: raw?.manualEdit === true || raw?.manual_edit === true,
+        manualValues: normalizeValues(raw?.manualValues ?? raw?.manual_values),
+        manualTags: normalizeTags(raw?.manualTags ?? raw?.manual_tags),
         reason: text(raw?.reason, '', 1000),
         memoryNote: text(raw?.memoryNote ?? raw?.memory_note, '', 1000),
         createdAt: text(raw?.createdAt ?? raw?.created_at, nowIso(), 40),
@@ -146,6 +149,7 @@ function normalizeEvent(raw, fallbackSequence = 1) {
 }
 
 function applyEventValues(values, event) {
+    if (event.manualEdit) return normalizeValues(event.manualValues);
     const next = { ...values };
     for (const key of AFFINITY_DIMENSIONS) {
         if (next[key] === null && event.initialValues[key] !== null) {
@@ -183,6 +187,7 @@ function ensureRelation(state, sourceId, targetId) {
 
 function rebuildRelation(relation, events, { touch = false } = {}) {
     let values = normalizeValues(relation.baseValues);
+    let tags = normalizeTags(relation.baseTags);
     const ordered = events
         .filter(event => (
             event.status === 'active'
@@ -195,10 +200,12 @@ function rebuildRelation(relation, events, { touch = false } = {}) {
         event.beforeValues = clone(values);
         values = applyEventValues(values, event);
         event.afterValues = clone(values);
+        if (event.manualEdit) tags = normalizeTags(event.manualTags);
+        else if (event.suggestedTags.length) tags = normalizeTags(event.suggestedTags);
     }
 
     relation.values = values;
-    relation.tags = normalizeTags(relation.baseTags);
+    relation.tags = tags;
     relation.lastEventId = ordered.at(-1)?.id || '';
     if (touch) relation.updatedAt = nowIso();
     return relation;
@@ -603,6 +610,66 @@ export function applyAffinityAnalysisPayload(inputState, payload, {
     };
 }
 
+
+
+export function applyManualRelationshipEdit(inputState, {
+    sourceId = '',
+    targetId = '',
+    values = {},
+    tags = [],
+    validPersonIds = [],
+    playerId = '__wb_player__',
+    reason = '',
+} = {}) {
+    const state = normalizeRelationshipState(inputState);
+    const from = text(sourceId, '', MAX_ID_LENGTH);
+    const to = text(targetId, '', MAX_ID_LENGTH);
+    if (!from || !to || from === to) {
+        return { state, applied: false, reason: 'invalid_direction' };
+    }
+
+    const allowed = new Set(
+        [...(Array.isArray(validPersonIds) ? validPersonIds : []), playerId]
+            .map(id => text(id, '', MAX_ID_LENGTH))
+            .filter(Boolean),
+    );
+    if (!allowed.has(from) || !allowed.has(to)) {
+        return { state, applied: false, reason: 'unknown_person' };
+    }
+
+    const rawValues = values && typeof values === 'object' ? values : {};
+    if (AFFINITY_DIMENSIONS.some(key => !validScoreInput(rawValues[key]))) {
+        return { state, applied: false, reason: 'invalid_values' };
+    }
+    if (!Array.isArray(tags) || tags.length > MAX_TAGS
+        || tags.some(tag => typeof tag !== 'string' || tag.trim().length > 48)) {
+        return { state, applied: false, reason: 'invalid_tags' };
+    }
+
+    const manualValues = Object.fromEntries(
+        AFFINITY_DIMENSIONS.map(key => [key, hasInput(rawValues[key]) ? Number(rawValues[key]) : null]),
+    );
+    const manualTags = normalizeTags(tags);
+    const now = nowIso();
+    const eventId = 'manual_' + state.nextSequence.toString(36) + '_' + Date.now().toString(36);
+    const result = applyRelationshipEvent(state, {
+        id: eventId,
+        idempotencyKey: eventId,
+        sourceId: from,
+        targetId: to,
+        eventType: 'manual-edit',
+        source: 'manual',
+        sourceKey: 'manual:' + eventId,
+        manualEdit: true,
+        manualValues,
+        manualTags,
+        reason: text(reason, '用户手动调整关系', 1000),
+        createdAt: now,
+        deltas: {},
+        initialValues: {},
+    });
+    return { ...result, reason: result.applied ? 'manual_edit_applied' : result.reason };
+}
 
 function affinityQualitativeLabel(value) {
     const normalized = score(value);

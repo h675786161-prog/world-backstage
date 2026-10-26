@@ -7093,6 +7093,53 @@ export function createWorldBackstageUI({
             return;
         }
 
+        if (action === 'save-relationship' || action === 'reset-relationship') {
+            const form = target.closest('[data-wb-relationship-form]');
+            if (!form) return;
+            const sourceId = String(form.elements?.sourceId?.value || '').trim();
+            const targetId = String(form.elements?.targetId?.value || '').trim();
+            let values;
+            let tags;
+            if (action === 'reset-relationship') {
+                const confirmed = globalThis.confirm?.('确定将这条有向关系重置为未知吗？当前关系事件会保留，并新增一条手动重置记录。');
+                if (confirmed === false) return;
+                values = { affection: null, trust: null, romance: null };
+                tags = [];
+            } else {
+                const parseScore = name => {
+                    const raw = String(form.elements?.[name]?.value ?? '').trim();
+                    if (!raw) return null;
+                    const parsed = Number(raw);
+                    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+                        throw new Error('关系数值必须是 0 到 100 的整数；留空表示未知。');
+                    }
+                    return parsed;
+                };
+                try {
+                    values = {
+                        affection: parseScore('affection'),
+                        trust: parseScore('trust'),
+                        romance: parseScore('romance'),
+                    };
+                } catch (error) {
+                    notify(String(error?.message || error), 'error');
+                    return;
+                }
+                tags = String(form.elements?.tags?.value || '')
+                    .split(/[,，、]/).map(item => item.trim()).filter(Boolean);
+            }
+            const result = await invokeAction('edit-relationship', {
+                sourceId,
+                targetId,
+                values,
+                tags,
+                reset: action === 'reset-relationship',
+            });
+            if (result) notify(action === 'reset-relationship' ? '关系已重置，历史仍保留。' : '关系已保存为手动记录。', 'success');
+            render();
+            return;
+        }
+
         await invokeAction(action, {});
         render();
     });

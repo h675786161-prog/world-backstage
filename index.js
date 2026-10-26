@@ -104,6 +104,12 @@ import {
     toggleMomentLike,
 } from './social-terminal.js';
 import { buildBackstageMessages } from './prompt-bridge.js';
+import {
+    DEFAULT_AFFINITY_PROMPT,
+    applyAffinityAnalysisPayload,
+    buildAffinityAnalysisPrompt,
+    detectAffinityCandidate,
+} from './affinity.js';
 import { normalizeClueTiming, resolveFutureTimeExpression } from './world-clock-authority.js';
 import { INTERNAL_COMPAT_SYSTEM_PROMPT } from './internal-compat.js';
 import {
@@ -179,7 +185,7 @@ import {
 const PROMPT_KEY = 'world_backstage_authoritative_state';
 const SUPPORT_PROMPT_KEY = 'world_backstage_context_support';
 const DEFAULT_SETTINGS = Object.freeze({
-    settingsVersion: 32,
+    settingsVersion: 33,
     enabled: true,
     promptInjection: true,
     worldSimulationEnabled: true,
@@ -243,9 +249,14 @@ const DEFAULT_SETTINGS = Object.freeze({
         observation: 'default',
         history: 'default',
         opinion: 'default',
+        affinity: 'default',
     },
     publicOpinionRevealMode: 'observe',
     publicOpinionAutoEnabled: true,
+    affinityEnabled: true,
+    affinityAutoEnabled: true,
+    affinityRomanceEnabled: true,
+    affinityPrompt: DEFAULT_AFFINITY_PROMPT,
     // 0 = automatic task budget. A positive value is a global upper cap.
     maxOutputTokens: 0,
     // 0 = module-aware automatic timeout. This counts active request time only.
@@ -255,6 +266,7 @@ const DEFAULT_SETTINGS = Object.freeze({
         observation: { maxTokens: 0, timeoutMs: 0 },
         history: { maxTokens: 0, timeoutMs: 0 },
         opinion: { maxTokens: 0, timeoutMs: 0 },
+        affinity: { maxTokens: 0, timeoutMs: 0 },
     },
     tagFilterEnabled: true,
     tagFilterRules: DEFAULT_TAG_FILTER_RULES.map(rule => ({ ...rule })),
@@ -1162,6 +1174,7 @@ function normalizeApiModuleRoutes(value, profiles = []) {
         observation: normalizeRoute(raw.observation),
         history: normalizeRoute(raw.history),
         opinion: normalizeRoute(raw.opinion),
+        affinity: normalizeRoute(raw.affinity),
     };
 }
 
@@ -1171,6 +1184,7 @@ const AUTO_GENERATION_TIMEOUT_MS = Object.freeze({
     observation: 120000,
     history: 300000,
     opinion: 150000,
+    affinity: 120000,
 });
 
 function normalizeGenerationTokenLimit(value) {
@@ -1190,7 +1204,7 @@ function normalizeGenerationTimeoutMs(value) {
 function normalizeGenerationModuleLimits(value) {
     const raw = value && typeof value === 'object' ? value : {};
     const result = {};
-    for (const key of ['simulation', 'observation', 'history', 'opinion']) {
+    for (const key of ['simulation', 'observation', 'history', 'opinion', 'affinity']) {
         const item = raw[key] && typeof raw[key] === 'object' ? raw[key] : {};
         result[key] = {
             maxTokens: normalizeGenerationTokenLimit(item.maxTokens),
@@ -1405,7 +1419,7 @@ function getSettings() {
     if (previousSettingsVersion < 15) {
         settings.timePolicy = 'world';
     }
-    settings.settingsVersion = 32;
+    settings.settingsVersion = 33;
     if (!['world', 'explicit', 'cautious', 'open'].includes(settings.timePolicy)) {
         settings.timePolicy = 'world';
     }
@@ -1439,6 +1453,10 @@ function getSettings() {
         settings.publicOpinionRevealMode = 'observe';
     }
     settings.publicOpinionAutoEnabled = settings.publicOpinionAutoEnabled !== false;
+    settings.affinityEnabled = settings.affinityEnabled !== false;
+    settings.affinityAutoEnabled = settings.affinityAutoEnabled !== false;
+    settings.affinityRomanceEnabled = settings.affinityRomanceEnabled !== false;
+    settings.affinityPrompt = String(settings.affinityPrompt || DEFAULT_AFFINITY_PROMPT).slice(0, 12000);
     settings.maxOutputTokens = normalizeGenerationTokenLimit(settings.maxOutputTokens);
     settings.generationTimeoutMs = normalizeGenerationTimeoutMs(settings.generationTimeoutMs);
     settings.generationModuleLimits = normalizeGenerationModuleLimits(settings.generationModuleLimits);
@@ -1448,7 +1466,7 @@ function getSettings() {
         : settings.orbEnabled !== false;
     settings.orbEdgeHide = Boolean(settings.orbEdgeHide);
     context.extensionSettings[MODULE_ID] = settings;
-    if (previousSettingsVersion < 32) context.saveSettingsDebounced?.();
+    if (previousSettingsVersion < 33) context.saveSettingsDebounced?.();
     return settings;
 }
 
@@ -2162,6 +2180,7 @@ function latestAssistantEntry() {
 }
 
 function taskRouteKey(taskKind = 'simulation') {
+    if (taskKind === 'affinity') return 'affinity';
     if (taskKind === 'person-observation' || taskKind === 'worldbook-import' || taskKind === 'lingqi' || taskKind === 'social') return 'observation';
     if (taskKind === 'public-opinion' || taskKind === 'public-opinion-sandbox') return 'opinion';
     if (taskKind === 'history' || taskKind === 'history-index' || taskKind === 'memory') return 'history';
@@ -4568,7 +4587,7 @@ async function backgroundSimulation(prompt, {
         error.name = 'AbortError';
         throw error;
     }
-    const foregroundNeutralTask = ['public-opinion-sandbox', 'lingqi', 'social', 'worldbook-import'].includes(taskKind);
+    const foregroundNeutralTask = ['public-opinion-sandbox', 'lingqi', 'social', 'worldbook-import', 'affinity'].includes(taskKind);
 
     if (route.mode === 'tavern-profile') {
         const profileId = String(route.profileId || '');
@@ -4779,6 +4798,188 @@ async function backgroundSimulation(prompt, {
         if (!foregroundNeutralTask) runtime.inBackgroundGeneration = false;
         refreshInjection();
     }
+}
+
+
+async function analyzeAffinityForNarrative(state, narrativeText, {
+    sourceKey = '',
+    messageId = null,
+    swipeId = null,
+    playerName = '',
+    signal = null,
+    isCurrent = () => true,
+} = {}) {
+    const settings = getSettings();
+    if (!settings.affinityEnabled || !settings.affinityAutoEnabled) {
+        return { state, appliedCount: 0, reason: 'disabled' };
+    }
+
+    const people = Array.isArray(state?.people) ? state.people : [];
+    const candidate = detectAffinityCandidate(narrativeText, people);
+    if (!candidate.eligible) {
+        return { state, appliedCount: 0, reason: candidate.reason };
+    }
+
+    const playerPerson = people.find(person => isStoredPlayerCharacter(person, playerName)) || null;
+    const playerId = String(playerPerson?.id || '__wb_player__');
+    const mentionedNpcIds = candidate.mentionedPersonIds.filter(id => {
+        const person = people.find(item => String(item?.id || '') === id);
+        return person && !isStoredPlayerCharacter(person, playerName);
+    });
+    if (!mentionedNpcIds.length) {
+        return { state, appliedCount: 0, reason: 'no_npc_mention' };
+    }
+
+    const participantIds = new Set([...candidate.mentionedPersonIds, ...mentionedNpcIds, playerId]);
+    const characters = people
+        .filter(person => participantIds.has(String(person?.id || '')))
+        .map(person => ({
+            id: String(person.id || ''),
+            name: String(person.name || ''),
+            isUser: isStoredPlayerCharacter(person, playerName),
+            personality: [
+                person.identityAnchor,
+                person.personalityAnchor,
+                person.speakingStyle,
+                person.behaviorBoundaries,
+            ].filter(Boolean).join('；').slice(0, 900),
+            values: String(person.values || person.valuesAndBeliefs || '').slice(0, 500),
+            goals: String(person.longTermGoal || person.intent || '').slice(0, 500),
+            action: String(person.action || person.physicalState || person.emotionalState || '').slice(0, 300),
+            intent: String(person.intent || person.longTermGoal || '').slice(0, 300),
+            knowledge: String(person.knowledge || 'backstage'),
+            knownEvents: (Array.isArray(person.knownEventViews) ? person.knownEventViews : [])
+                .slice(-6)
+                .map(item => [
+                    item?.title || item?.eventName || item?.eventId || '',
+                    item?.belief || item?.summary || item?.description || '',
+                ].filter(Boolean).join('：').slice(0, 220))
+                .filter(Boolean),
+            knownFacts: (Array.isArray(person.knownFactBeliefs) ? person.knownFactBeliefs : [])
+                .slice(-6)
+                .map(item => [
+                    item?.key || '',
+                    item?.value || '',
+                    item?.certainty ? '(' + item.certainty + ')' : '',
+                ].filter(Boolean).join('：').slice(0, 220))
+                .filter(Boolean),
+        }));
+
+    if (!characters.some(person => person.id === playerId)) {
+        characters.push({
+            id: playerId,
+            name: String(playerName || '玩家角色').slice(0, 120),
+            isUser: true,
+            personality: '玩家角色；只依据本次 RP 正文明确呈现的行为判断，不推断现实用户的感情。',
+            values: '',
+            goals: '',
+            action: '',
+            intent: '',
+            knowledge: 'narrative-only',
+            knownEvents: [],
+            knownFacts: [],
+        });
+    }
+
+    const participantIdSet = new Set(characters.map(person => person.id));
+    const currentRelations = (Array.isArray(state.relationships?.relations) ? state.relationships.relations : [])
+        .filter(relation => (
+            participantIdSet.has(relation.sourceId)
+            && participantIdSet.has(relation.targetId)
+        ));
+    const personNameById = new Map(characters.map(person => [person.id, person.name || person.id]));
+    const relevantMemories = (Array.isArray(state.relationships?.events) ? state.relationships.events : [])
+        .filter(event => (
+            event.status === 'active'
+            && participantIdSet.has(event.sourceId)
+            && participantIdSet.has(event.targetId)
+            && Boolean(event.memoryNote || event.reason)
+        ))
+        .slice(-8)
+        .map(event => [
+            personNameById.get(event.sourceId) || event.sourceId,
+            ' → ',
+            personNameById.get(event.targetId) || event.targetId,
+            ': ',
+            event.memoryNote || event.reason,
+        ].join('').slice(0, 520));
+
+    const prompt = buildAffinityAnalysisPrompt({
+        event: {
+            sourceKey,
+            sourceMessageId: messageId,
+            sourceSwipeId: swipeId,
+            type: 'assistant-narrative',
+            summary: String(narrativeText || '').slice(0, 8000),
+        },
+        characters,
+        currentRelations,
+        relevantMemories,
+        romanceEnabled: settings.affinityRomanceEnabled !== false,
+        customPrompt: settings.affinityPrompt,
+    });
+
+    const previousMethod = runtime.syncStatus.method;
+    let payload;
+    try {
+        payload = await runWithRetries(async attempt => {
+            const raw = await backgroundSimulation(retryJsonPrompt(prompt, attempt), {
+                maxTokens: 1800,
+                temperature: attempt > 0 ? 0.08 : 0.12,
+                signal,
+                taskKind: 'affinity',
+                rejectTruncated: true,
+            });
+            const parsed = extractJsonObject(raw);
+            if (!parsed || !Array.isArray(parsed.changes)) {
+                throw unreadableJsonError(raw);
+            }
+            return parsed;
+        }, {
+            retries: Math.min(1, Math.max(0, Number(settings.autoRetryCount) || 0)),
+            shouldRetry: shouldRetryWorldGeneration,
+            ...retryTaskOptions('affinity', 'affinity:' + currentChatToken() + ':' + sourceKey),
+            signal,
+        });
+    } finally {
+        runtime.syncStatus.method = previousMethod;
+    }
+
+    if (signal?.aborted) {
+        const error = new Error('关系分析已取消');
+        error.name = 'AbortError';
+        throw error;
+    }
+    if (!isCurrent()) return { state, appliedCount: 0, reason: 'stale_context' };
+    const currentSettings = getSettings();
+    if (!currentSettings.affinityEnabled || !currentSettings.affinityAutoEnabled) {
+        return { state, appliedCount: 0, reason: 'disabled_during_request' };
+    }
+
+    const settled = applyAffinityAnalysisPayload(state.relationships, payload, {
+        validPersonIds: characters.map(person => person.id),
+        playerId,
+        sourceKey,
+        sourceMessageId: messageId,
+        sourceSwipeId: swipeId,
+        romanceEnabled: currentSettings.affinityRomanceEnabled !== false,
+    });
+    if (settled.appliedCount <= 0) {
+        return {
+            state,
+            appliedCount: 0,
+            duplicateCount: settled.duplicateCount,
+            rejectedCount: settled.rejectedCount,
+            reason: settled.reason,
+        };
+    }
+    return {
+        state: { ...state, relationships: settled.state },
+        appliedCount: settled.appliedCount,
+        duplicateCount: settled.duplicateCount,
+        rejectedCount: settled.rejectedCount,
+        reason: settled.reason,
+    };
 }
 
 async function runSimulationForMessage(messageId, {
@@ -5210,6 +5411,33 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
             messageId,
             expireAfter: 3,
         });
+        if (getSettings().affinityEnabled && getSettings().affinityAutoEnabled) {
+            try {
+                const affinityResult = await analyzeAffinityForNarrative(
+                    resultState,
+                    newAssistantTexts.join('\n\n'),
+                    {
+                        sourceKey,
+                        messageId,
+                        swipeId,
+                        playerName: beforeContext?.name1 || '',
+                        signal: controller.signal,
+                        isCurrent: taskStillCurrent,
+                    },
+                );
+                if (
+                    affinityResult.appliedCount > 0
+                    && taskStillCurrent()
+                    && getSettings().affinityEnabled
+                    && getSettings().affinityAutoEnabled
+                ) {
+                    resultState = affinityResult.state;
+                }
+            } catch (affinityError) {
+                if (controller.signal.aborted || isAbortError(affinityError)) throw affinityError;
+                console.warn('[世界背面] 关系分析失败，本轮世界推演仍会正常提交', affinityError);
+            }
+        }
         const nextInjection = buildInjectionPackage(resultState, settings, recentChatText(), {
                 contextText: recentForegroundIntentText(),
             });

@@ -365,6 +365,46 @@ test('relationship context uses qualitative labels and only includes scene-relev
     assert.equal(irrelevant, '');
 });
 
+test('relationship ledger notes stay separate from factual memory and disappear when source events invalidate', () => {
+    const world = createInitialState();
+    world.people.push({ id: 'npc_memory', name: '林医生', isUser: false });
+    world.relationships = apply(world.relationships, {
+        id: 'inferred-note-event',
+        sourceId: 'npc_memory',
+        targetId: '__wb_player__',
+        sourceKey: 'chat:7:swipe:1',
+        initialValues: { affection: 64, trust: 20 },
+        deltas: { affection: 0, trust: 0 },
+        memoryNote: '林医生认为玩家可能隐瞒了部分情况。',
+    });
+
+    assert.equal(world.storyMemory?.summaries?.some(item =>
+        String(item.summary || '').includes('林医生认为玩家可能隐瞒了部分情况'),
+    ), false);
+    const context = buildRelationshipContext(
+        world.relationships,
+        world.people,
+        '林医生走进房间。',
+    );
+    assert.ok(context.includes('可能含角色主观理解或分析推断'));
+    assert.ok(context.includes('可能隐瞒了部分情况'));
+
+    const invalidated = invalidateRelationshipEventsBySource(
+        world.relationships,
+        'chat:7:swipe:1',
+        'LAB 删除来源消息',
+    );
+    assert.equal(invalidated.invalidatedIds.length, 1);
+    assert.equal(buildRelationshipContext(
+        invalidated.state,
+        world.people,
+        '林医生走进房间。',
+    ), '');
+    assert.equal(world.storyMemory?.summaries?.some(item =>
+        String(item.summary || '').includes('林医生认为玩家可能隐瞒了部分情况'),
+    ), false);
+});
+
 test('relationship context can be disabled independently of saved relationship data', () => {
     const state = createInitialState();
     state.people.push({ id: 'npc_ash', name: '阿什莉', isUser: false });

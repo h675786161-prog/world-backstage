@@ -411,7 +411,7 @@ const AFFINITY_OUTPUT_PROTOCOL = [
     'reason 说明这次变化为什么符合人物性格和经历；memory_note 只记录可供未来回忆的事实，不要添加未发生的事件。',
 ].join('\n');
 
-const RELATIONSHIP_CUE_PATTERN = /救(?:下|了|命|助)?|帮助|帮忙|保护|照顾|陪伴|安慰|感谢|道谢|道歉|承诺|失约|欺骗|背叛|撒谎|说谎|隐瞒|坦白|告白|表白|喜欢|讨厌|信任|怀疑|依赖|嫉妒|争吵|吵架|冲突|伤害|威胁|合作|敌对|欣赏|厌恶|原谅|和解|误会|牺牲|礼物|送给|拒绝|冷落|疏远|亲近|亲吻|拥抱|倾诉|秘密|约定|失望|心疼|愧疚|感激|维护|袒护|利用|出卖|营救|舍身|救人|争执|和好|陪着|支持|拒不|不信任|道信|forgive|betray|betrayal|trust|distrust|lie|lied|lying|apolog|confess|confession|love|hate|jealous|protect|rescue|save|help|comfort|thank|promise|break.*promise|argue|fight|hurt|threaten|support|gift|reject|reconcile|forgive|kiss|hug|rely|depend|secret|admit|admire|resent/i;
+const RELATIONSHIP_CUE_PATTERN = /救(?:下|了|命|助)?|帮助|帮忙|保护|照顾|陪伴|安慰|感谢|道谢|道歉|承诺|失约|欺骗|背叛|撒谎|说谎|隐瞒|坦白|告白|表白|喜欢|讨厌|信任|怀疑|依赖|嫉妒|争吵|吵架|冲突|伤害|威胁|合作|敌对|欣赏|厌恶|原谅|和解|误会|牺牲|礼物|送给|拒绝|冷落|疏远|亲近|亲吻|拥抱|倾诉|秘密|约定|失望|心疼|愧疚|感激|维护|袒护|利用|出卖|营救|舍身|救人|争执|和好|陪着|支持|拒不|不信任|forgive|betray|betrayal|trust|distrust|lie|lied|lying|apolog|confess|confession|love|hate|jealous|protect|rescue|save|help|comfort|thank|promise|break.*promise|argue|fight|hurt|threaten|support|gift|reject|reconcile|forgive|kiss|hug|rely|depend|secret|admit|admire|resent/i;
 
 export function detectAffinityCandidate(narrative, people = []) {
     const source = String(narrative ?? '').trim().slice(0, 16000);
@@ -465,10 +465,22 @@ export function buildAffinityAnalysisPrompt({
             knowledge: text(person?.knowledge, 'backstage', 40),
             known_events: (Array.isArray(person?.knownEvents ?? person?.known_events)
                 ? (person.knownEvents ?? person.known_events)
-                : []).slice(0, 8),
+                : []).slice(-8).map(item => text(
+                    typeof item === 'string'
+                        ? item
+                        : item?.summary ?? item?.description ?? item?.title ?? item?.text ?? item?.belief,
+                    '',
+                    220,
+                )).filter(Boolean),
             known_facts: (Array.isArray(person?.knownFacts ?? person?.known_facts)
                 ? (person.knownFacts ?? person.known_facts)
-                : []).slice(0, 8),
+                : []).slice(-8).map(item => text(
+                    typeof item === 'string'
+                        ? item
+                        : [item?.key, item?.value, item?.certainty].filter(Boolean).join(': '),
+                    '',
+                    220,
+                )).filter(Boolean),
         })),
         current_relations: (Array.isArray(currentRelations) ? currentRelations : []).slice(0, 50).map(relation => ({
             source_id: text(relation?.sourceId ?? relation?.source_id, '', MAX_ID_LENGTH),

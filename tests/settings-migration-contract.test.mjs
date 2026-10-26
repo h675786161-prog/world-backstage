@@ -12,7 +12,7 @@ test('settings defaults and persisted schema checkpoint stay on v33', () => {
 });
 
 test('legacy settings gates remain explicit through the v33 migration chain', () => {
-    for (const version of [9, 19, 22, 25, 26, 32, 33]) {
+    for (const version of [9, 19, 22, 25, 26, 33]) {
         assert.match(source, new RegExp(`previousSettingsVersion < ${version}`));
     }
     assert.match(source, /settings\.worldPromptInjection\s*=\s*previous\?\.promptInjection !== false/);

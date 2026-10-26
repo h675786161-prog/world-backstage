@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    applyAffinityAnalysisPayload,
     applyRelationshipEvent,
+    buildAffinityAnalysisPrompt,
     createInitialRelationshipState,
+    DEFAULT_AFFINITY_PROMPT,
+    detectAffinityCandidate,
     getRelationship,
     invalidateRelationshipEvent,
     invalidateRelationshipEventsBySource,
@@ -222,4 +226,104 @@ test('compact branch snapshots preserve and restore relationship state', () => {
     const restoredAfter = restoreCompactSnapshot(after);
     assert.equal(getRelationship(restoredBefore.relationships, 'npc', 'player'), null);
     assert.equal(getRelationship(restoredAfter.relationships, 'npc', 'player').values.trust, 37);
+});
+
+
+test('candidate filter requires both a relationship cue and a known person mention', () => {
+    const people = [
+        { id: 'npc_ash', name: '阿什莉' },
+        { id: 'npc_mira', name: '米拉' },
+    ];
+    const relevant = detectAffinityCandidate('阿什莉把你从火场里救了出来。', people);
+    assert.equal(relevant.eligible, true);
+    assert.deepEqual(relevant.mentionedPersonIds, ['npc_ash']);
+
+    const noCue = detectAffinityCandidate('阿什莉走进房间，拿起桌上的杯子。', people);
+    assert.equal(noCue.eligible, false);
+    assert.equal(noCue.reason, 'no_relationship_cue');
+
+    const noKnownPerson = detectAffinityCandidate('有人向你道歉，并承诺以后不会再撒谎。', people);
+    assert.equal(noKnownPerson.eligible, false);
+    assert.equal(noKnownPerson.reason, 'no_known_person_mention');
+});
+
+test('affinity prompt keeps the output protocol fixed and includes only bounded context', () => {
+    const prompt = buildAffinityAnalysisPrompt({
+        event: {
+            sourceKey: '15:0:hash',
+            summary: '阿什莉救了玩家。',
+        },
+        characters: [{
+            id: 'npc_ash',
+            name: '阿什莉',
+            personality: '骄傲、多疑',
+            knownEvents: ['她曾经被欺骗'],
+            knownFacts: ['玩家救过她'],
+        }],
+        currentRelations: [{
+            sourceId: 'npc_ash',
+            targetId: 'player',
+            values: { affection: 42, trust: 18, romance: null },
+        }],
+        romanceEnabled: false,
+        customPrompt: '自定义情感判断风格',
+    });
+    assert.ok(prompt.includes('自定义情感判断风格'));
+    assert.ok(prompt.includes('固定执行协议'));
+    assert.ok(prompt.includes('"romance_enabled": false'));
+    assert.ok(prompt.includes('"source_key": "15:0:hash"'));
+    assert.ok(prompt.includes(DEFAULT_AFFINITY_PROMPT));
+});
+
+test('affinity payload rejects unknown people, honors romance switch, and is idempotent', () => {
+    const payload = {
+        changes: [
+            {
+                source_id: 'npc',
+                target_id: 'player',
+                initial_values: { affection: 50, trust: 40, romance: 20 },
+                affection_delta: 5,
+                trust_delta: -2,
+                romance_delta: 12,
+                reason: '玩家救了角色。',
+                memory_note: '玩家曾救下角色。',
+            },
+            {
+                source_id: 'unlisted-npc',
+                target_id: 'player',
+                initial_values: { affection: 50 },
+                affection_delta: 10,
+                trust_delta: 0,
+                romance_delta: 0,
+                reason: '这名人物不在本次上下文中。',
+            },
+        ],
+    };
+    const first = applyAffinityAnalysisPayload(createInitialRelationshipState(), payload, {
+        validPersonIds: ['npc'],
+        playerId: 'player',
+        sourceKey: '15:0:hash',
+        sourceMessageId: 15,
+        sourceSwipeId: 0,
+        romanceEnabled: false,
+    });
+    assert.equal(first.appliedCount, 1);
+    assert.equal(first.rejectedCount, 1);
+    assert.deepEqual(getRelationship(first.state, 'npc', 'player').values, {
+        affection: 55,
+        trust: 38,
+        romance: null,
+    });
+
+    const duplicate = applyAffinityAnalysisPayload(first.state, payload, {
+        validPersonIds: ['npc'],
+        playerId: 'player',
+        sourceKey: '15:0:hash',
+        sourceMessageId: 15,
+        sourceSwipeId: 0,
+        romanceEnabled: false,
+    });
+    assert.equal(duplicate.appliedCount, 0);
+    assert.equal(duplicate.duplicateCount, 1);
+    assert.equal(getRelationship(duplicate.state, 'npc', 'player').values.affection, 55);
 });

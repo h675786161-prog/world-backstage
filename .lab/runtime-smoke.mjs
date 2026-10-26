@@ -242,6 +242,145 @@ try {
         };
     }));
 
+    // Exercise the relationship details UI in real SillyTavern, including
+    // manual settlement, persisted chat metadata, confirmed reset and narrow view.
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        const affinity = await import('/scripts/extensions/third-party/world-backstage/affinity.js');
+        const store = context.chatMetadata[core.STATE_KEY];
+        if (!store) throw new Error('No chat store available for relationship UI smoke');
+        let state = store.currentState || core.createInitialState();
+        state.people = Array.isArray(state.people) ? state.people : [];
+        if (!state.people.some(person => person.id === 'lab_affinity_npc')) {
+            state.people.push({
+                id: 'lab_affinity_npc', name: 'LAB关系验证人物', isUser: false,
+                knowledge: 'backstage', locked: true,
+            });
+        }
+        const seeded = affinity.applyRelationshipEvent(
+            affinity.createInitialRelationshipState(),
+            {
+                id: 'lab-affinity-ui-seed', idempotencyKey: 'lab-affinity-ui-seed',
+                sourceId: 'lab_affinity_npc', targetId: '__wb_player__',
+                sourceKey: 'lab:affinity-ui-seed',
+                initialValues: { affection: null, trust: 31, romance: null },
+                deltas: { affection: 0, trust: 0, romance: 0 },
+                reason: 'LAB 历史记录：角色曾因玩家的可靠行动建立初步信任。',
+                createdAt: new Date().toISOString(),
+            },
+        );
+        if (!seeded.applied) throw new Error('Could not seed relationship UI state');
+        state.relationships = seeded.state;
+        store.currentState = state;
+        await context.saveChat?.();
+        globalThis.worldBackstageHost.open();
+    });
+    const peopleNav = page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]');
+    await peopleNav.waitFor({ state: 'visible', timeout: 8_000 });
+    await peopleNav.evaluate(element => element.click());
+    const relationManager = page.locator('.wb-affinity-manager');
+    await relationManager.waitFor({ state: 'visible', timeout: 5_000 });
+    const relationCard = relationManager.locator('.wb-affinity-relation-card').filter({
+        hasText: 'LAB关系验证人物',
+    }).first();
+    await relationCard.waitFor({ state: 'visible', timeout: 5_000 });
+    const unknownBeforeEdit = await relationCard.locator('input[name="affection"]').inputValue() === ''
+        && await relationCard.locator('input[name="romance"]').inputValue() === '';
+    const historyBeforeEdit = await relationCard.locator('.wb-affinity-history').innerText();
+    if (!historyBeforeEdit.includes('LAB 历史记录')) throw new Error('Relationship event history was not rendered');
+    await relationCard.locator('input[name="affection"]').fill('67');
+    await relationCard.locator('input[name="trust"]').fill('44');
+    await relationCard.locator('input[name="tags"]').fill('朋友，戒备');
+    await relationCard.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
+    await page.waitForFunction(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const state = context.chatMetadata?.world_backstage?.currentState;
+        const relation = state?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return relation?.values?.affection === 67 && relation?.values?.trust === 44
+            && relation?.tags?.includes('朋友') && state.relationships.events.at(-1)?.origin === 'manual';
+    }, null, { timeout: 5_000 });
+    const desktopManagerBox = await relationManager.boundingBox();
+    await page.screenshot({
+        path: path.join(evidenceDir, 'world-backstage-affinity-relationship-desktop.png'),
+        fullPage: true,
+    });
+    await page.evaluate(() => globalThis.SillyTavern.getContext().saveChat?.());
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await page.waitForFunction(
+        () => Boolean(globalThis.__worldBackstageLoaded && globalThis.worldBackstageHost),
+        null,
+        { timeout: 30_000 },
+    );
+    await page.waitForFunction(() => Boolean(globalThis.SillyTavern?.getContext?.()?.chatId), null, {
+        timeout: 15_000,
+    });
+    await page.evaluate(() => globalThis.worldBackstageHost.open());
+    const peopleNavAfterReload = page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]');
+    await peopleNavAfterReload.waitFor({ state: 'visible', timeout: 8_000 });
+    await peopleNavAfterReload.evaluate(element => element.click());
+    const relationCardAfterReload = page.locator('.wb-affinity-manager .wb-affinity-relation-card').filter({
+        hasText: 'LAB关系验证人物',
+    }).first();
+    await relationCardAfterReload.waitFor({ state: 'visible', timeout: 5_000 });
+    const persistedAfterRefresh = await relationCardAfterReload.locator('input[name="affection"]').inputValue() === '67'
+        && await relationCardAfterReload.locator('input[name="trust"]').inputValue() === '44';
+    const invalidationDialog = page.waitForEvent('dialog');
+    await relationCardAfterReload.locator('[data-wb-action="reset-relationship"]').evaluate(element => element.click());
+    const dialog = await invalidationDialog;
+    const resetConfirmationShown = dialog.type() === 'confirm';
+    await dialog.accept();
+    await page.waitForFunction(() => {
+        const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage?.currentState;
+        const relation = state?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return relation?.values?.affection === null && relation?.values?.trust === null
+            && relation?.values?.romance === null;
+    }, null, { timeout: 5_000 });
+    const resetPreservedHistory = (await relationCardAfterReload.locator('.wb-affinity-history').innerText())
+        .includes('用户手动重置');
+    await relationCardAfterReload.locator('input[name="affection"]').fill('101');
+    await relationCardAfterReload.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
+    await page.waitForTimeout(200);
+    const invalidInputRejected = await page.evaluate(() => {
+        const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage?.currentState;
+        const relation = state?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return relation?.values?.affection === null;
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(100);
+    const mobileManagerBox = await page.locator('.wb-affinity-manager').boundingBox();
+    const mobileLayout = Boolean(mobileManagerBox && mobileManagerBox.width <= 390
+        && await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    await page.screenshot({
+        path: path.join(evidenceDir, 'world-backstage-affinity-relationship-mobile.png'),
+        fullPage: true,
+    });
+    const affinityUiRuntime = {
+        unknownBeforeEdit,
+        historyRendered: historyBeforeEdit.includes('LAB 历史记录'),
+        manuallySaved: true,
+        persistedAfterRefresh,
+        resetConfirmationShown,
+        resetPreservedHistory,
+        invalidInputRejected,
+        desktopWidth: desktopManagerBox?.width || 0,
+        mobileWidth: mobileManagerBox?.width || 0,
+        mobileLayout,
+    };
+    await fs.writeFile(
+        path.join(evidenceDir, 'world-backstage-affinity-relationship-ui.json'),
+        JSON.stringify(affinityUiRuntime, null, 2),
+    );
+    if (!unknownBeforeEdit) throw new Error('Unknown relationship dimensions were not blank');
+    if (!persistedAfterRefresh) throw new Error('Manual relationship edit did not survive refresh');
+    if (!resetConfirmationShown) throw new Error('Relationship reset did not ask for confirmation');
+    if (!resetPreservedHistory) throw new Error('Relationship reset did not preserve its audit history');
+    if (!invalidInputRejected) throw new Error('Out-of-range relationship input was persisted');
+    if (!mobileLayout) throw new Error('Relationship detail layout overflows the 390px viewport');
+
     // Run a 121-floor archived chat through the real ST context, settings UI and
     // extension prompt bridge. A missing L0 at floor 50 must remain visible.
     await page.evaluate(async () => {
@@ -345,6 +484,7 @@ try {
         helper,
         runtime,
         longRuntime,
+        affinityUiRuntime,
         ui: {
             autoHideToggleRendered: true,
             restoreButtonRendered: true,

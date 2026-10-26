@@ -33,6 +33,27 @@ try {
             sourceKey: 'lab:affinity:1', initialValues: { affection: 40 },
             deltas: { affection: 5 },
         });
+        const relationshipState = core.createInitialState();
+        relationshipState.people.push({ id: 'npc_ash', name: '阿什莉', isUser: false });
+        const relationshipSettled = affinity.applyRelationshipEvent(relationshipState.relationships, {
+            id: 'lab-relationship-context', sourceId: 'npc_ash', targetId: '__wb_player__',
+            sourceKey: 'lab:relationship-context:1',
+            initialValues: { affection: 87, trust: 13 },
+            deltas: { affection: 0, trust: 0 },
+            memoryNote: '阿什莉记得玩家曾在危机中帮助她。',
+        });
+        relationshipState.relationships = relationshipSettled.state;
+        const relationshipPackage = core.buildInjectionPackage(relationshipState, {
+            enabled: true, worldSimulationEnabled: false, worldPromptInjection: true,
+            affinityContextInjection: true, affinityRomanceEnabled: true,
+            memorySystemEnabled: false, injectionMemory: false,
+        }, '阿什莉向你道歉。');
+        const relationshipPackageDisabled = core.buildInjectionPackage(relationshipState, {
+            enabled: true, worldSimulationEnabled: false, worldPromptInjection: true,
+            affinityContextInjection: false, affinityRomanceEnabled: true,
+            memorySystemEnabled: false, injectionMemory: false,
+        }, '阿什莉向你道歉。');
+        const relationshipSupport = relationshipPackage.supportText || '';
         const chat = Array.from({ length: 10 }, () => ({ extra: {} }));
         chat[1].is_system = true;
         const hidden = module.markAutoHiddenMessages(chat, 9, {
@@ -72,6 +93,11 @@ try {
             affinityModuleLoaded: typeof affinity.detectAffinityCandidate === 'function',
             affinitySettlementWorks: affinitySettled.applied
                 && affinity.getRelationship(affinitySettled.state, 'npc', 'player')?.values.affection === 45,
+            affinityContextInjected: relationshipSupport.includes('阿什莉')
+                && relationshipSupport.includes('好感很高')
+                && relationshipSupport.includes('信任极低'),
+            affinityScoresHidden: !relationshipSupport.includes('87') && !relationshipSupport.includes('13'),
+            affinityContextToggleWorks: !String(relationshipPackageDisabled.supportText || '').includes('阿什莉'),
         };
     });
 
@@ -336,6 +362,9 @@ try {
     if (!helper.missingTurnsStayVisible) throw new Error('Uncovered turns were hidden from the model');
     if (!helper.affinityModuleLoaded) throw new Error('Affinity module did not load in the real browser');
     if (!helper.affinitySettlementWorks) throw new Error('Affinity relationship settlement failed in the real browser');
+    if (!helper.affinityContextInjected) throw new Error('Relationship continuity was not injected into the RP support context');
+    if (!helper.affinityScoresHidden) throw new Error('Raw relationship scores leaked into the RP support context');
+    if (!helper.affinityContextToggleWorks) throw new Error('Relationship context injection toggle did not disable injection');
     if (!affinityUi.routeVisible || !affinityUi.promptVisible) throw new Error('Affinity route or prompt settings are not visible');
     if (!affinityUi.enabledToggleVisible || !affinityUi.autoToggleVisible || !affinityUi.romanceToggleVisible) {
         throw new Error('One or more affinity settings toggles are missing');

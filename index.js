@@ -5434,7 +5434,7 @@ directorNotes: normalizeLingqiState(getStore().lingqi || emptyLingqiState()).not
                     resultState = affinityResult.state;
                 }
             } catch (affinityError) {
-                if (controller.signal.aborted || isAbortError(affinityError)) throw affinityError;
+                if (controller.signal.aborted) throw affinityError;
                 console.warn('[世界背面] 关系分析失败，本轮世界推演仍会正常提交', affinityError);
             }
         }

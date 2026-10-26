@@ -3402,8 +3402,8 @@ function renderRelationshipManager(state, people) {
                 <form class="wb-affinity-edit-form" data-wb-relationship-form>
                     ${relation
                         ? `<input type="hidden" name="sourceId" value="${escapeAttr(sourceId)}"><input type="hidden" name="targetId" value="${escapeAttr(targetId)}">`
-                        : `<label><span>来源人物</span><select name="sourceId">${options.map(item => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select></label>
-                           <label><span>目标人物</span><select name="targetId">${options.map(item => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select></label>`}
+                        : `<label><span>来源人物</span><select name="sourceId">${options.map((item, index) => `<option value="${escapeAttr(item.id)}" ${index === 0 ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label>
+                           <label><span>目标人物</span><select name="targetId">${options.map((item, index) => `<option value="${escapeAttr(item.id)}" ${index === 1 ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label>`}
                     <div class="wb-affinity-score-grid">
                         ${affinityScoreField('affection', '好感', values.affection)}
                         ${affinityScoreField('trust', '信任', values.trust)}

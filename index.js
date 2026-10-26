@@ -12053,6 +12053,9 @@ async function refreshSocialMoments() {
 
 async function handleUiAction(action, payload = {}) {
     if (action === 'edit-relationship') {
+        // A pending analysis may have captured the pre-edit relationship state.
+        // Invalidate it before applying the manual event so a late response cannot overwrite this edit.
+        invalidateAsyncWorldContext();
         const store = getStore();
         const context = getContext();
         const people = Array.isArray(store.currentState?.people) ? store.currentState.people : [];

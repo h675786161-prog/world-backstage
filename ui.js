@@ -3365,6 +3365,84 @@ function renderSocialView(state, social = {}, settings = {}, {
     `;
 }
 
+
+function affinityScoreField(name, label, value) {
+    return `<label class="wb-affinity-score-field"><span>${escapeHtml(label)}</span>
+        <input type="number" name="${escapeAttr(name)}" min="0" max="100" step="1"
+            value="${value === null || value === undefined ? '' : escapeAttr(value)}"
+            placeholder="未知" inputmode="numeric"></label>`;
+}
+
+function renderRelationshipManager(state, people) {
+    const data = state?.relationships && typeof state.relationships === 'object'
+        ? state.relationships
+        : { relations: [], events: [] };
+    const relations = Array.isArray(data.relations) ? data.relations : [];
+    const events = Array.isArray(data.events) ? data.events : [];
+    const roster = Array.isArray(people) ? people : [];
+    const player = roster.find(person => person.isUser) || null;
+    const playerId = String(player?.id || '__wb_player__');
+    const playerName = String(player?.name || '玩家角色');
+    const names = new Map(roster.map(person => [String(person.id), String(person.name || person.id)]));
+    names.set('__wb_player__', playerName);
+    const options = [{ id: '__wb_player__', name: playerName }, ...roster
+        .filter(person => !person.isUser)
+        .map(person => ({ id: String(person.id || ''), name: String(person.name || person.id || '未知人物') }))]
+        .filter((item, index, all) => item.id && all.findIndex(other => other.id === item.id) === index);
+    const form = (relation = null) => {
+        const values = relation?.values || {};
+        const sourceId = String(relation?.sourceId || '');
+        const targetId = String(relation?.targetId || '');
+        const history = events.filter(event => event.sourceId === sourceId && event.targetId === targetId)
+            .sort((a, b) => Number(b.sequence || 0) - Number(a.sequence || 0)).slice(0, 20);
+        return `
+            <article class="wb-affinity-relation-card">
+                <strong>${escapeHtml(names.get(sourceId) || sourceId)} → ${escapeHtml(names.get(targetId) || targetId)}</strong>
+                <small>单向关系 · 空白数值表示未知</small>
+                <form class="wb-affinity-edit-form" data-wb-relationship-form>
+                    ${relation
+                        ? `<input type="hidden" name="sourceId" value="${escapeAttr(sourceId)}"><input type="hidden" name="targetId" value="${escapeAttr(targetId)}">`
+                        : `<label><span>来源人物</span><select name="sourceId">${options.map(item => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select></label>
+                           <label><span>目标人物</span><select name="targetId">${options.map(item => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select></label>`}
+                    <div class="wb-affinity-score-grid">
+                        ${affinityScoreField('affection', '好感', values.affection)}
+                        ${affinityScoreField('trust', '信任', values.trust)}
+                        ${affinityScoreField('romance', '恋爱倾向', values.romance)}
+                    </div>
+                    <label class="wb-affinity-tags-field"><span>关系标签</span>
+                        <input type="text" name="tags" maxlength="800" value="${escapeAttr((relation?.tags || []).join('，'))}"
+                            placeholder="用逗号分隔，例如：朋友，戒备"></label>
+                    <div class="wb-affinity-actions">
+                        <button type="button" data-wb-action="save-relationship">${relation ? '保存关系' : '创建关系'}</button>
+                        ${relation ? '<button type="button" class="is-danger" data-wb-action="reset-relationship">重置为未知</button>' : ''}
+                    </div>
+                </form>
+                <details class="wb-affinity-history">
+                    <summary>关系事件历史 · ${history.length}</summary>
+                    ${history.length ? history.map(event => `
+                        <div class="wb-affinity-history-item ${event.status === 'active' ? '' : 'is-invalidated'}">
+                            <div><span>${event.origin === 'manual' ? '手动调整' : 'AI 分析'}</span>
+                                <span>${event.status === 'active' ? '当前有效' : '已失效'}</span>
+                                <time>${escapeHtml(formatLocalTimestamp(event.createdAt))}</time></div>
+                            <p>${escapeHtml(event.reason || event.memoryNote || '未提供原因')}</p>
+                            ${event.sourceKey ? `<small>来源：${escapeHtml(event.sourceKey)}</small>` : ''}
+                        </div>
+                    `).join('') : '<p>尚无事件记录。</p>'}
+                </details>
+            </article>`;
+    };
+    return `
+        <section class="wb-affinity-manager" aria-label="人物关系">
+            <div class="wb-affinity-manager-heading"><strong>人物关系</strong>
+                <span>${relations.length} 条有向关系</span></div>
+            <p>关系方向彼此独立。编辑和重置会留下手动事件记录；不会把未知自动改成 0。</p>
+            <details class="wb-affinity-create"><summary>＋ 新建有向关系</summary>${form()}</details>
+            <div class="wb-affinity-relation-list">
+                ${relations.map(form).join('') || '<p class="wb-affinity-empty">还没有关系记录。</p>'}
+            </div>
+        </section>`;
+}
+
 function renderPeopleView(state, observerMode, people, openFolds = new Set(), {
     selectionMode = false,
     selectedIds = new Set(),
@@ -3411,6 +3489,7 @@ function renderPeopleView(state, observerMode, people, openFolds = new Set(), {
                 observerMode === 'known' ? '切回幕后视角可以查看未知轨迹。' : '回复后自动推演或手动推演一次。',
             )}
         </div>
+        ${renderRelationshipManager(state, people)}
     `;
 }
 

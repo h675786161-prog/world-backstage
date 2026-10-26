@@ -4,6 +4,7 @@ import {
     applyAffinityAnalysisPayload,
     applyRelationshipEvent,
     buildAffinityAnalysisPrompt,
+    buildRelationshipContext,
     createInitialRelationshipState,
     DEFAULT_AFFINITY_PROMPT,
     detectAffinityCandidate,
@@ -13,6 +14,7 @@ import {
     normalizeRelationshipState,
 } from '../affinity.js';
 import {
+    buildInjectionPackage,
     createCompactSnapshot,
     createInitialState,
     restoreCompactSnapshot,
@@ -327,4 +329,76 @@ test('affinity payload rejects unknown people, honors romance switch, and is ide
     assert.equal(duplicate.appliedCount, 0);
     assert.equal(duplicate.duplicateCount, 1);
     assert.equal(getRelationship(duplicate.state, 'npc', 'player').values.affection, 55);
+});
+
+
+test('relationship context uses qualitative labels and only includes scene-relevant relations', () => {
+    let state = createInitialRelationshipState();
+    state = apply(state, {
+        id: 'context-event',
+        sourceId: 'npc_ash',
+        targetId: '__wb_player__',
+        sourceKey: 'context:1',
+        initialValues: { affection: 87, trust: 13 },
+        deltas: { affection: 0, trust: 0 },
+        memoryNote: '阿什莉在危机后开始依赖玩家，但仍然保持戒备。',
+    });
+
+    const context = buildRelationshipContext(
+        state,
+        [{ id: 'npc_ash', name: '阿什莉' }],
+        '阿什莉向你道歉。',
+    );
+    assert.ok(context.includes('阿什莉 → 玩家角色'));
+    assert.ok(context.includes('好感很高'));
+    assert.ok(context.includes('信任极低'));
+    assert.ok(context.includes('仍然保持戒备'));
+    assert.equal(context.includes('87'), false);
+    assert.equal(context.includes('13'), false);
+
+    const irrelevant = buildRelationshipContext(
+        state,
+        [{ id: 'npc_ash', name: '阿什莉' }],
+        '苏姨走进房间。',
+    );
+    assert.equal(irrelevant, '');
+});
+
+test('relationship context can be disabled independently of saved relationship data', () => {
+    const state = createInitialState();
+    state.people.push({ id: 'npc_ash', name: '阿什莉', isUser: false });
+    state.relationships = apply(state.relationships, {
+        id: 'injection-event',
+        sourceId: 'npc_ash',
+        targetId: '__wb_player__',
+        sourceKey: 'injection:1',
+        initialValues: { affection: 75, trust: 35 },
+        deltas: { affection: 0, trust: 0 },
+        memoryNote: '阿什莉记得玩家曾帮助她。',
+    });
+
+    const enabled = buildInjectionPackage(state, {
+        enabled: true,
+        worldSimulationEnabled: false,
+        worldPromptInjection: true,
+        affinityContextInjection: true,
+        affinityRomanceEnabled: true,
+        memorySystemEnabled: false,
+        injectionMemory: false,
+    }, '阿什莉向你道谢。');
+    assert.ok(enabled.supportText.includes('阿什莉'));
+    assert.ok(enabled.supportText.includes('好感偏高'));
+    assert.equal(enabled.supportText.includes('75'), false);
+
+    const disabled = buildInjectionPackage(state, {
+        enabled: true,
+        worldSimulationEnabled: false,
+        worldPromptInjection: true,
+        affinityContextInjection: false,
+        affinityRomanceEnabled: true,
+        memorySystemEnabled: false,
+        injectionMemory: false,
+    }, '阿什莉向你道谢。');
+    assert.equal(disabled.supportText.includes('阿什莉'), false);
+    assert.equal(state.relationships.events.length, 1);
 });

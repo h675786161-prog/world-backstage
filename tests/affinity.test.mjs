@@ -272,7 +272,8 @@ test('affinity prompt keeps the output protocol fixed and includes only bounded 
     assert.ok(prompt.includes('固定执行协议'));
     assert.ok(prompt.includes('"romance_enabled": false'));
     assert.ok(prompt.includes('"source_key": "15:0:hash"'));
-    assert.ok(prompt.includes(DEFAULT_AFFINITY_PROMPT));
+    const defaultPrompt = buildAffinityAnalysisPrompt({ event: { summary: '普通互动' } });
+    assert.ok(defaultPrompt.includes(DEFAULT_AFFINITY_PROMPT));
 });
 
 test('affinity payload rejects unknown people, honors romance switch, and is idempotent', () => {

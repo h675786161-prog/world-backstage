@@ -26,6 +26,13 @@ try {
     const helper = await page.evaluate(async () => {
         const module = await import('/scripts/extensions/third-party/world-backstage/auto-hide.js?lab-smoke=1');
         const core = await import('/scripts/extensions/third-party/world-backstage/core.js?lab-smoke=1');
+        const affinity = await import('/scripts/extensions/third-party/world-backstage/affinity.js?lab-smoke=1');
+        const affinityInitial = affinity.createInitialRelationshipState();
+        const affinitySettled = affinity.applyRelationshipEvent(affinityInitial, {
+            id: 'lab-affinity-event', sourceId: 'npc', targetId: 'player',
+            sourceKey: 'lab:affinity:1', initialValues: { affection: 40 },
+            deltas: { affection: 5 },
+        });
         const chat = Array.from({ length: 10 }, () => ({ extra: {} }));
         chat[1].is_system = true;
         const hidden = module.markAutoHiddenMessages(chat, 9, {
@@ -62,6 +69,9 @@ try {
             memoryRecalled: continuity.supportText.includes('施工人员拦下主角'),
             missingTurnsStayVisible: safelyHidden.every(id => id < 2)
                 && incompleteChat[2].is_system !== true,
+            affinityModuleLoaded: typeof affinity.detectAffinityCandidate === 'function',
+            affinitySettlementWorks: affinitySettled.applied
+                && affinity.getRelationship(affinitySettled.state, 'npc', 'player')?.values.affection === 45,
         };
     });
 
@@ -71,6 +81,34 @@ try {
     if (!(await settingsButton.count())) throw new Error('Global settings button not rendered');
     await settingsButton.evaluate(element => element.click());
     await page.waitForTimeout(160);
+
+    await page.locator('button[data-wb-action="settings-section"][data-section="connection"]').click();
+    const affinityRouteGroup = page.locator('details[data-settings-subgroup="connection-routing"]');
+    await affinityRouteGroup.waitFor({ state: 'attached', timeout: 5000 });
+    if (await affinityRouteGroup.getAttribute('open') === null) {
+        await affinityRouteGroup.locator('summary').click();
+    }
+    const affinityRoute = page.locator('select[data-wb-api-route="affinity"]');
+    await affinityRoute.waitFor({ state: 'visible', timeout: 5000 });
+    const affinityRouteValue = await affinityRoute.inputValue();
+
+    await page.locator('button[data-wb-action="settings-section"][data-section="advanced"]').click();
+    const affinitySettingsGroup = page.locator('details[data-settings-subgroup="advanced-affinity"]');
+    await affinitySettingsGroup.waitFor({ state: 'attached', timeout: 5000 });
+    if (await affinitySettingsGroup.getAttribute('open') === null) {
+        await affinitySettingsGroup.locator('summary').click();
+    }
+    const affinityPrompt = page.locator('textarea[data-wb-setting="affinityPrompt"]');
+    await affinityPrompt.waitFor({ state: 'visible', timeout: 5000 });
+    const affinityUi = {
+        routeVisible: true,
+        routeValue: affinityRouteValue,
+        promptVisible: true,
+        promptLength: (await affinityPrompt.inputValue()).length,
+        enabledToggleVisible: await page.locator('input[data-wb-setting="affinityEnabled"]').isVisible(),
+        autoToggleVisible: await page.locator('input[data-wb-setting="affinityAutoEnabled"]').isVisible(),
+        romanceToggleVisible: await page.locator('input[data-wb-setting="affinityRomanceEnabled"]').isVisible(),
+    };
 
     const toggle = page.locator('[data-wb-setting="autoHideArchivedFloors"]').first();
     const restoreButton = page.locator('[data-wb-action="restore-auto-hidden-floors"]').first();
@@ -286,6 +324,7 @@ try {
             restoreButtonRendered: true,
             persistedSetting: persistedSetting === true,
             disabledAfterRestore,
+            affinity: affinityUi,
         },
         pageErrors,
     };
@@ -295,6 +334,13 @@ try {
     if (!helper.autoHideRestored) throw new Error('Auto-hide helper failed to restore its own messages');
     if (!helper.memoryRecalled) throw new Error('Narrative memory was absent from the foreground prompt');
     if (!helper.missingTurnsStayVisible) throw new Error('Uncovered turns were hidden from the model');
+    if (!helper.affinityModuleLoaded) throw new Error('Affinity module did not load in the real browser');
+    if (!helper.affinitySettlementWorks) throw new Error('Affinity relationship settlement failed in the real browser');
+    if (!affinityUi.routeVisible || !affinityUi.promptVisible) throw new Error('Affinity route or prompt settings are not visible');
+    if (!affinityUi.enabledToggleVisible || !affinityUi.autoToggleVisible || !affinityUi.romanceToggleVisible) {
+        throw new Error('One or more affinity settings toggles are missing');
+    }
+    if (affinityUi.promptLength < 100) throw new Error('Default affinity prompt did not load');
     if (persistedSetting !== true) throw new Error('Auto-hide setting did not persist through the real UI');
     if (!disabledAfterRestore) throw new Error('Restore action did not disable auto-hide before restoring floors');
     if (JSON.stringify(runtime.hiddenIds) !== JSON.stringify([0, 2, 4, 5, 6])) {

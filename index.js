@@ -12174,6 +12174,16 @@ async function handleUiAction(action, payload = {}) {
         return null;
     }
 
+    if (action === 'reset-affinity-prompt') {
+        const context = getContext();
+        const settings = getSettings();
+        settings.affinityPrompt = DEFAULT_AFFINITY_PROMPT;
+        context.extensionSettings[MODULE_ID] = settings;
+        saveSettings(['affinityPrompt']);
+        runtime.ui?.render();
+        return true;
+    }
+
     if (action === 'update-settings') {
         const context = getContext();
         const settings = getSettings();

@@ -107,6 +107,7 @@ import { buildBackstageMessages } from './prompt-bridge.js';
 import {
     DEFAULT_AFFINITY_PROMPT,
     applyAffinityAnalysisPayload,
+    applyManualRelationshipEdit,
     buildAffinityAnalysisPrompt,
     detectAffinityCandidate,
 } from './affinity.js';
@@ -12051,6 +12052,54 @@ async function refreshSocialMoments() {
 }
 
 async function handleUiAction(action, payload = {}) {
+    if (action === 'edit-relationship') {
+        const store = getStore();
+        const context = getContext();
+        const people = Array.isArray(store.currentState?.people) ? store.currentState.people : [];
+        const playerPerson = people.find(person => isStoredPlayerCharacter(person, context?.name1 || '')) || null;
+        const playerId = String(playerPerson?.id || '__wb_player__');
+        const result = applyManualRelationshipEdit(store.currentState.relationships, {
+            sourceId: payload.sourceId,
+            targetId: payload.targetId,
+            values: payload.values,
+            tags: payload.tags,
+            validPersonIds: people.map(person => String(person?.id || '')).filter(Boolean),
+            playerId,
+            reason: payload.reset === true ? '用户手动重置关系为未知' : '用户手动编辑关系状态',
+        });
+        if (!result.applied) {
+            throw new Error(result.reason === 'unknown_person'
+                ? '来源或目标人物已经不存在，请刷新人物列表后重试。'
+                : result.reason === 'invalid_tags'
+                    ? '标签最多 16 个，每个不超过 48 个字符。'
+                    : result.reason === 'invalid_values'
+                        ? '关系数值必须是 0 到 100 的整数或留空。'
+                        : '这条有向关系无效，不能指向自己。');
+        }
+
+        store.currentState = { ...store.currentState, relationships: result.state };
+        const latest = latestAssistantEntry();
+        const message = latest?.message;
+        if (latest && message) {
+            const swipeId = Number(message.swipe_id ?? 0);
+            const sourceKey = branchSourceKey(latest.index, message, swipeId);
+            const record = branchDataFromMessage(message, swipeId);
+            if (committedBranchMatchesSource(record, sourceKey)) {
+                record.result = createBranchSnapshot(store.currentState, {
+                    messageId: latest.index,
+                    swipeId,
+                    sourceKey,
+                    kind: 'result',
+                });
+                await context?.saveChat?.();
+            }
+        }
+        await saveStore(store, { immediate: true });
+        refreshInjection();
+        runtime.ui?.render();
+        return { ok: true, eventId: result.eventId };
+    }
+
     if (action === 'test-image-api') {
         const result = await requestImageGeneration({
             imageApiUrl: payload.imageApiUrl,

@@ -281,7 +281,7 @@ try {
     await peopleNav.evaluate(element => element.click());
     const relationManager = page.locator('.wb-affinity-manager');
     await relationManager.waitFor({ state: 'visible', timeout: 5_000 });
-    const relationCard = relationManager.locator('.wb-affinity-relation-card').filter({
+    const relationCard = relationManager.locator('.wb-affinity-relation-list .wb-affinity-relation-card').filter({
         hasText: 'LAB关系验证人物',
     }).first();
     await relationCard.waitFor({ state: 'visible', timeout: 5_000 });

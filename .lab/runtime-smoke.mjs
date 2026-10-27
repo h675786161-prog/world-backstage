@@ -1610,6 +1610,8 @@ try {
     // extension prompt bridge. A missing L0 at floor 50 must remain visible.
     await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
+        await context.openCharacterChat('WB-long-floor-' + Date.now());
+        await context.reloadCurrentChat();
         const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
         const lines = Array.from({ length: 121 }, (_, id) => `第${id}层：圣堂里的日常对话。`);
         lines[0] = '我初到圣堂，跨门槛时踢歪了门垫。';
@@ -1656,6 +1658,7 @@ try {
         const store = context.chatMetadata[core.STATE_KEY];
         if (!store) throw new Error('Long-floor chat did not attach to World Backstage');
         store.currentState = state;
+        await context.saveChat();
     });
     await page.evaluate(() => globalThis.worldBackstageHost?.open?.());
     const memorySetting = page.locator('[data-wb-setting="memorySystemEnabled"]').first();

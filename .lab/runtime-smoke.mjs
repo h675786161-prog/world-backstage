@@ -470,6 +470,86 @@ try {
     if (!invalidInputRejected) throw new Error('Out-of-range relationship input was persisted');
     if (!mobileLayout) throw new Error('Relationship detail layout overflows the 390px viewport');
 
+    // An older committed result may already have an override, while a newer
+    // assistant message has no simulation snapshot. Edits must update the
+    // recoverable override without altering the sibling swipe.
+    const branchFixture = await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        const affinity = await import('/scripts/extensions/third-party/world-backstage/affinity.js');
+        const store = context.chatMetadata[core.STATE_KEY];
+        const texts = ['LAB分支甲', 'LAB分支乙'];
+        const keys = texts.map((text, swipe) => `0:${swipe}:${core.hashText(text)}`);
+        function stateFor(value, key, swipe) {
+            const state = structuredClone(store.currentState);
+            const changed = affinity.applyManualRelationshipEdit(state.relationships, {
+                sourceId: 'lab_affinity_npc', targetId: '__wb_player__',
+                validPersonIds: ['lab_affinity_npc'], playerId: '__wb_player__',
+                values: { affection: value, trust: 44, romance: null }, tags: [],
+            });
+            if (!changed.applied) throw new Error('Could not build branch fixture');
+            state.relationships = changed.state;
+            state.lastCommit = { messageId: 0, swipeId: swipe, sourceKey: key, at: 0 };
+            return state;
+        }
+        const originalA = stateFor(10, keys[0], 0);
+        const priorOverrideA = stateFor(25, keys[0], 0);
+        const stateB = stateFor(40, keys[1], 1);
+        const snapshot = (state, key, swipe) => core.createCompactSnapshot(state, {
+            messageId: 0, swipeId: swipe, sourceKey: key, kind: 'result',
+        });
+        const records = [
+            { sourceKey: keys[0], status: 'committed', result: snapshot(originalA, keys[0], 0), stale: false },
+            { sourceKey: keys[1], status: 'committed', result: snapshot(stateB, keys[1], 1), stale: false },
+        ];
+        context.chat.splice(0, context.chat.length,
+            { name: context.name2, is_user: false, is_system: false, mes: texts[0], swipes: texts,
+                swipe_id: 0, swipe_info: records.map(record => ({ extra: { [core.SNAPSHOT_KEY]: record } })), extra: {} },
+            { name: context.name2, is_user: false, is_system: false, mes: '未推演的新正文', extra: {} });
+        store.currentState = priorOverrideA;
+        store.branchOverrides = {
+            [keys[0]]: snapshot(priorOverrideA, keys[0], 0),
+            [keys[1]]: snapshot(stateB, keys[1], 1),
+        };
+        globalThis.worldBackstageHost.open();
+        return { keys };
+    });
+    const branchCard = page.locator('.wb-affinity-manager .wb-affinity-relation-list .wb-affinity-relation-card')
+        .filter({ hasText: 'LAB关系验证人物' }).first();
+    await branchCard.waitFor({ state: 'visible', timeout: 5_000 });
+    await branchCard.locator('input[name="affection"]').evaluate(input => {
+        input.value = '73';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await branchCard.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
+    await page.waitForFunction(key => {
+        const store = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1;
+        return store?.branchOverrides?.[key]?.state?.relationships?.relations
+            ?.find(item => item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')
+            ?.values?.affection === 73;
+    }, branchFixture.keys[0], { timeout: 5_000 });
+    const siblingBeforeSwitch = await page.evaluate(key => {
+        const store = globalThis.SillyTavern.getContext().chatMetadata.world_backstage_v1;
+        return store.branchOverrides[key].state.relationships.relations
+            .find(item => item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__').values.affection;
+    }, branchFixture.keys[1]);
+    if (siblingBeforeSwitch !== 40) throw new Error('Manual edit changed the sibling branch');
+    for (const [swipe, expected] of [[1, 40], [0, 73]]) {
+        await page.evaluate(async index => {
+            const context = globalThis.SillyTavern.getContext();
+            context.chat[0].swipe_id = index;
+            context.chat[0].mes = context.chat[0].swipes[index];
+            const types = context.eventTypes || context.event_types;
+            await context.eventSource.emit(types.MESSAGE_SWIPED, 0);
+        }, swipe);
+        await page.waitForFunction(value => {
+            const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1?.currentState;
+            return state?.relationships?.relations?.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')
+                ?.values?.affection === value;
+        }, expected, { timeout: 5_000 });
+    }
+
     // Run a 121-floor archived chat through the real ST context, settings UI and
     // extension prompt bridge. A missing L0 at floor 50 must remain visible.
     await page.evaluate(async () => {

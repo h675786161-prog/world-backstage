@@ -442,7 +442,42 @@ try {
         '.wb-root:visible .wb-side-nav [data-wb-action="set-view"][data-view="people"]',
     );
     await peopleNavAfterReload.waitFor({ state: 'visible', timeout: 8_000 });
-    await peopleNavAfterReload.click();
+    const reloadNavigationBlocker = await page.evaluate(() => {
+        const visibleRoot = [...document.querySelectorAll('.wb-root')]
+            .find(element => element.getClientRects().length > 0);
+        return {
+            dialogs: [...document.querySelectorAll('dialog[open]')].map(dialog => ({
+                className: dialog.className,
+                text: dialog.innerText.slice(0, 1600),
+                buttons: [...dialog.querySelectorAll('button')].map(button => ({
+                    text: button.innerText.trim(),
+                    disabled: button.disabled,
+                })),
+                html: dialog.outerHTML.slice(0, 8000),
+            })),
+            heading: visibleRoot?.querySelector('.wb-view-header h2')?.textContent || '',
+            nav: [...(visibleRoot?.querySelectorAll('.wb-side-nav [data-wb-action="set-view"]') || [])]
+                .map(button => ({
+                    view: button.dataset.view,
+                    current: button.getAttribute('aria-current'),
+                    visible: Boolean(button.getClientRects().length),
+                })),
+            panelClass: visibleRoot?.querySelector('.wb-panel')?.className || '',
+            currentChatId: globalThis.SillyTavern?.getContext?.()?.chatId || '',
+        };
+    });
+    console.log(`Before reload navigation click: ${JSON.stringify(reloadNavigationBlocker)}`);
+    if (reloadNavigationBlocker.dialogs.length) {
+        await fs.writeFile(
+            path.join(evidenceDir, 'world-backstage-affinity-reload-navigation-blocker.json'),
+            JSON.stringify(reloadNavigationBlocker, null, 2),
+        );
+        await page.screenshot({
+            path: path.join(evidenceDir, 'world-backstage-affinity-reload-navigation-blocker.png'),
+            fullPage: true,
+        });
+    }
+    await peopleNavAfterReload.click({ timeout: 3_000 });
     await page.waitForFunction(() => [...document.querySelectorAll(
         '.wb-root .wb-side-nav [data-wb-action="set-view"][data-view="people"]',
     )].some(button => button.closest('.wb-root')?.getClientRects().length

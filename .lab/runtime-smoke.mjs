@@ -348,11 +348,12 @@ try {
     });
     await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
-        if (!context.chatId) await context.selectCharacterById(0);
+        await context.selectCharacterById(0);
     });
-    await page.waitForFunction(() => Boolean(globalThis.SillyTavern?.getContext?.()?.chatId), null, {
-        timeout: 15_000,
-    });
+    await page.waitForFunction(() => {
+        const context = globalThis.SillyTavern?.getContext?.();
+        return Boolean(context?.chat?.length && context?.chatMetadata?.world_backstage_v1);
+    }, null, { timeout: 15_000 });
     await page.evaluate(() => globalThis.worldBackstageHost.open());
     const peopleNavAfterReload = page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]');
     await peopleNavAfterReload.waitFor({ state: 'visible', timeout: 8_000 });

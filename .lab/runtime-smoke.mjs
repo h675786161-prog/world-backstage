@@ -364,6 +364,18 @@ try {
     const peopleNavAfterReload = page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]');
     await peopleNavAfterReload.waitFor({ state: 'visible', timeout: 8_000 });
     await peopleNavAfterReload.evaluate(element => element.click());
+    await page.waitForTimeout(250);
+    console.log(`After reload relationship state: ${JSON.stringify(await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const state = context.chatMetadata?.world_backstage_v1?.currentState;
+        return {
+            chatId: context.chatId,
+            metadataKeys: Object.keys(context.chatMetadata || {}),
+            people: state?.people?.map(person => ({ id: person.id, name: person.name })),
+            relations: state?.relationships?.relations,
+            cards: [...document.querySelectorAll('.wb-affinity-relation-card')].map(card => card.innerText.slice(0, 120)),
+        };
+    }))}`);
     const relationCardAfterReload = page.locator('.wb-affinity-manager .wb-affinity-relation-list .wb-affinity-relation-card').filter({
         hasText: 'LAB关系验证人物',
     }).first();

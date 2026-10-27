@@ -866,12 +866,13 @@ try {
                 memory_note: '可控夹具记载：玩家救下了LAB关系验证人物。',
             }],
         };
-        const response = () => ({
+        const response = (analysisPayload = payload) => ({
             ok: true, status: 200,
-            text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) }, finish_reason: 'stop' }] }),
+            text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify(analysisPayload) }, finish_reason: 'stop' }] }),
         });
         const fixture = {
             calls: { simulation: 0, affinity: 0 }, heldAffinity: null, holdNextAffinity: false,
+            neutralUnheldAffinity: false,
             restore: () => { globalThis.fetch = originalFetch; },
             releaseHeldAffinity() {
                 const held = this.heldAffinity;
@@ -879,8 +880,8 @@ try {
                 held.released = true;
                 held.signalAbortedAtRelease = Boolean(held.signal?.aborted);
                 held.resolve({
-                    ...response(),
-                    text: async () => { held.responseRead = true; return (await response().text()); },
+                    ...response(held.payload),
+                    text: async () => { held.responseRead = true; return (await response(held.payload).text()); },
                 });
             },
         };
@@ -892,16 +893,17 @@ try {
             try { body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body || {}); } catch {}
             if (body.includes(marker)) {
                 fixture.calls.affinity += 1;
+                const analysisPayload = fixture.neutralUnheldAffinity ? { changes: [] } : payload;
                 if (fixture.holdNextAffinity) {
                     fixture.holdNextAffinity = false;
                     return new Promise(resolve => {
                         fixture.heldAffinity = {
-                            resolve, signal: options.signal, released: false,
+                            resolve, payload: analysisPayload, signal: options.signal, released: false,
                             responseRead: false, signalAbortedAtRelease: false,
                         };
                     });
                 }
-                return Promise.resolve(response());
+                return Promise.resolve(response(analysisPayload));
             }
             fixture.calls.simulation += 1;
             return Promise.resolve({
@@ -1025,7 +1027,11 @@ try {
         return relation?.values?.affection === 73 && relation?.values?.trust === 44
             && state.relationships.events.at(-1)?.origin === 'manual';
     }, null, { timeout: 5_000 });
-    await page.evaluate(() => globalThis.__wbAffinityFixture.releaseHeldAffinity());
+    await page.evaluate(() => {
+            const fixture = globalThis.__wbAffinityFixture;
+            fixture.neutralUnheldAffinity = true;
+            fixture.releaseHeldAffinity();
+        });
     await page.waitForFunction(() => {
         const task = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.();
         return task?.lastTask?.phase === 'cancelled' && task.lastTask.stage === 'cancelled'
@@ -1360,6 +1366,7 @@ try {
             }
             await context.saveChat();
             fixture.heldAffinity = null;
+            fixture.neutralUnheldAffinity = false;
             fixture.holdNextAffinity = true;
             await context.eventSource.emit(types.MESSAGE_RECEIVED, messageId, 'normal');
             return { messageId, chatId: context.getCurrentChatId(), typeName: types.MESSAGE_RECEIVED };
@@ -1485,77 +1492,9 @@ try {
         await stop.waitFor({ state: 'visible', timeout: 5_000 });
         await stop.evaluate(element => element.click());
     });
-    const chatSwitchRace = await runLateAffinityCase('chat-switch', async () => {
-        await page.evaluate(async name => {
-            const context = globalThis.SillyTavern.getContext();
-            await context.saveChat();
-            await context.openCharacterChat(name);
-        }, separateChats.nameB);
-    });
-    await page.evaluate(async name => {
-        const context = globalThis.SillyTavern.getContext();
-        await context.openCharacterChat(name);
-        await context.reloadCurrentChat();
-    }, separateChats.a.name);
-    const afterChatSwitchA = await page.evaluate(() => {
-        const context = globalThis.SillyTavern.getContext();
-        const store = context.chatMetadata.world_backstage_v1;
-        return {
-            chatId: context.getCurrentChatId(),
-            values: store.currentState.relationships.relations.find(item =>
-                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values || null,
-            events: store.currentState.relationships.events.map(item => item.id),
-            hasLate: store.currentState.relationships.events.some(item =>
-                item.origin === 'ai' && item.reason?.includes('可控响应：救援')),
-        };
-    });
-    await page.evaluate(async name => {
-        const context = globalThis.SillyTavern.getContext();
-        await context.openCharacterChat(name);
-        await context.reloadCurrentChat();
-    }, separateChats.nameB);
-    const afterChatSwitchB = await page.evaluate(() => {
-        const context = globalThis.SillyTavern.getContext();
-        const store = context.chatMetadata.world_backstage_v1;
-        return {
-            chatId: context.getCurrentChatId(),
-            values: store.currentState.relationships.relations.find(item =>
-                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values || null,
-            historyHasB: store.currentState.relationships.events.some(item =>
-                item.reason === 'CHAT_B_UNIQUE_HISTORY_MARKER'),
-            lateAiEvents: store.currentState.relationships.events.filter(item =>
-                item.origin === 'ai' && item.reason?.includes('可控响应')).length,
-        };
-    });
-    await page.evaluate(async name => {
-        const context = globalThis.SillyTavern.getContext();
-        await context.openCharacterChat(name);
-        await context.reloadCurrentChat();
-    }, separateChats.a.name);
-
-    if (chatSwitchRace.beforeRelease.chatId !== separateChats.nameB
-        || !chatSwitchRace.noLateCommit
-        || afterChatSwitchA.values?.affection !== 73
-        || afterChatSwitchA.values?.trust !== 44
-        || afterChatSwitchA.hasLate
-        || afterChatSwitchB.values?.affection !== 24
-        || afterChatSwitchB.values?.trust !== 76
-        || !afterChatSwitchB.historyHasB || afterChatSwitchB.lateAiEvents !== 0) {
-        throw new Error('Late affinity result crossed or altered real chat files: ' +
-            JSON.stringify({ chatSwitchRace, afterChatSwitchA, afterChatSwitchB }));
-    }
-
-    // Explicit recovery path after a cancelled task: a user-triggered manual sync
-    // must process the still-valid pending source once. This uses the actual UI.
-    const stopRace = await runLateAffinityCase('stop', async () => {
-        const stop = page.locator('[data-wb-action="cancel-simulation"]:visible').last();
-        await stop.waitFor({ state: 'visible', timeout: 5_000 });
-        await stop.evaluate(element => element.click());
-    });
-
-    // Retry precisely the stopped source through the visible user action. A new
-    // message would not prove that cancellation left the original source retryable.
+    const stopRace = lateAffinityResults.find(item => item.name === 'stop');
     const retryMessage = stopRace.prepared.messageId;
+    await page.evaluate(() => { globalThis.__wbAffinityFixture.neutralUnheldAffinity = false; });
     await page.locator('[data-wb-action="manual-sync"]:visible').last()
         .evaluate(element => element.click());
     await page.waitForFunction(expected => {
@@ -1577,11 +1516,67 @@ try {
             task: globalThis.worldBackstageHost.getRuntimeTaskStatus().lastTask,
         };
     }, retryMessage);
-    console.log('Explicit retry after cancellation: ' + JSON.stringify(retryResult));
-    await page.evaluate(data => {
-        globalThis.__wbAffinityAcceptanceEvidence ||= {};
-        globalThis.__wbAffinityAcceptanceEvidence.retryAfterCancel = data;
-    }, retryResult);
+
+    const chatSwitchRace = await runLateAffinityCase('chat-switch', async () => {
+        await page.evaluate(async name => {
+            const context = globalThis.SillyTavern.getContext();
+            await context.saveChat();
+            await context.openCharacterChat(name);
+        }, separateChats.nameB);
+    });
+    await page.evaluate(async name => {
+        const context = globalThis.SillyTavern.getContext();
+        await context.openCharacterChat(name);
+        await context.reloadCurrentChat();
+    }, separateChats.a.name);
+    const afterChatSwitchA = await page.evaluate(expectedMessageId => {
+        const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata.world_backstage_v1;
+        return {
+            chatId: context.getCurrentChatId(),
+            values: store.currentState.relationships.relations.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values || null,
+            events: store.currentState.relationships.events.map(item => item.id),
+            lateSourceEvents: store.currentState.relationships.events.filter(item =>
+                item.origin === 'ai' && item.sourceMessageId === expectedMessageId),
+        };
+    }, chatSwitchRace.prepared.messageId);
+    await page.evaluate(async name => {
+        const context = globalThis.SillyTavern.getContext();
+        await context.openCharacterChat(name);
+        await context.reloadCurrentChat();
+    }, separateChats.nameB);
+    const afterChatSwitchB = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata.world_backstage_v1;
+        return {
+            chatId: context.getCurrentChatId(),
+            values: store.currentState.relationships.relations.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values || null,
+            historyHasB: store.currentState.relationships.events.some(item =>
+                item.origin === 'manual' && item.manualValues?.affection === 24),
+            lateAiEvents: store.currentState.relationships.events.filter(item =>
+                item.origin === 'ai' && item.sourceMessageId === chatSwitchRace.prepared.messageId).length,
+        };
+    });
+    await page.evaluate(async name => {
+        const context = globalThis.SillyTavern.getContext();
+        await context.openCharacterChat(name);
+        await context.reloadCurrentChat();
+    }, separateChats.a.name);
+
+    if (chatSwitchRace.beforeRelease.chatId !== separateChats.nameB
+        || !chatSwitchRace.noLateCommit
+        || afterChatSwitchA.values?.affection !== 90
+        || afterChatSwitchA.values?.trust !== 33
+        || afterChatSwitchA.lateSourceEvents.length !== 0
+        || afterChatSwitchB.values?.affection !== 24
+        || afterChatSwitchB.values?.trust !== 76
+        || !afterChatSwitchB.historyHasB || afterChatSwitchB.lateAiEvents !== 0) {
+        throw new Error('Late affinity result crossed or altered real chat files: ' +
+            JSON.stringify({ chatSwitchRace, afterChatSwitchA, afterChatSwitchB }));
+    }
+
     if (retryResult.eventCount !== 1 || retryResult.sourceStatus !== 'committed'
         || retryResult.values?.affection !== 90 || retryResult.values?.trust !== 33) {
         throw new Error('Cancelled affinity source could not be explicitly retried exactly once: ' + JSON.stringify(retryResult));

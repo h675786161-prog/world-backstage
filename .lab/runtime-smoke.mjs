@@ -343,6 +343,10 @@ try {
         null,
         { timeout: 30_000 },
     );
+    await page.evaluate(async () => {
+        const { getCharacters } = await import('/script.js');
+        await getCharacters();
+    });
     await page.waitForFunction(() => Boolean(globalThis.SillyTavern?.getContext?.()?.characters?.length), null, {
         timeout: 15_000,
     });

@@ -963,8 +963,8 @@ try {
     await page.waitForFunction(() => {
         const fixture = globalThis.__wbAffinityFixture;
         const task = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.();
-        return fixture?.calls.affinity >= 2 && task?.activeTasks?.length === 0;
-    }, null, { timeout: 20_000 });
+        return fixture?.calls.affinity === 1 && task?.activeTasks?.length === 0;
+    }, null, { timeout: 5_000 });
     const duplicate = await page.evaluate(() => {
         const state = globalThis.SillyTavern.getContext().chatMetadata.world_backstage_v1.currentState;
         const relation = state.relationships.relations.find(item =>
@@ -976,7 +976,7 @@ try {
             aiEvents: state.relationships.events.filter(event => event.origin === 'ai').length,
         };
     });
-    if (duplicate.calls < 2 || duplicate.values?.affection !== 57 || duplicate.values?.trust !== 29
+    if (duplicate.calls !== 1 || duplicate.values?.affection !== 57 || duplicate.values?.trust !== 29
         || duplicate.values?.romance !== null || !duplicate.tags.includes('感激')
         || !duplicate.tags.includes('谨慎') || duplicate.aiEvents !== 1) {
         throw new Error('Repeated source processing accumulated a duplicate relationship: ' + JSON.stringify(duplicate));

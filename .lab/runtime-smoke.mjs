@@ -1126,7 +1126,9 @@ try {
     const memorySetting = page.locator('[data-wb-setting="memorySystemEnabled"]').first();
     const settingsLayer = page.locator('.wb-root:visible .wb-settings-layer');
     if (!(await settingsLayer.isVisible())) {
-        await page.locator('.wb-root:visible [data-wb-action="toggle-settings"]').first().click();
+        const toggleSettings = page.locator('.wb-root [data-wb-action="toggle-settings"]').first();
+        await toggleSettings.waitFor({ state: 'attached', timeout: 5_000 });
+        await toggleSettings.evaluate(element => element.click());
         await settingsLayer.waitFor({ state: 'visible', timeout: 5_000 });
     }
     await memorySetting.waitFor({ state: 'attached', timeout: 5_000 });

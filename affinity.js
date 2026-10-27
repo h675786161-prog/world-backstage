@@ -545,7 +545,7 @@ export function applyAffinityAnalysisPayload(inputState, payload, {
     }
 
     const allowed = new Set(
-        [...(Array.isArray(validPersonIds) ? validPersonIds : []), playerId, '__wb_player__', 'player']
+        [...(Array.isArray(validPersonIds) ? validPersonIds : []), playerId]
             .map(id => text(id, '', MAX_ID_LENGTH))
             .filter(Boolean),
     );
@@ -630,7 +630,7 @@ export function applyManualRelationshipEdit(inputState, {
     }
 
     const allowed = new Set(
-        [...(Array.isArray(validPersonIds) ? validPersonIds : []), playerId]
+        [...(Array.isArray(validPersonIds) ? validPersonIds : []), playerId, '__wb_player__', 'player']
             .map(id => text(id, '', MAX_ID_LENGTH))
             .filter(Boolean),
     );

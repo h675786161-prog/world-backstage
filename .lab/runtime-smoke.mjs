@@ -1380,7 +1380,8 @@ try {
             const task = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.()?.lastTask;
             return task?.phase === 'cancelled' && task.stage === 'cancelled'
                 && task.finishedAt && task.messageId === expected.messageId
-                && task.chatToken === expected.chatId;
+                && task.chatToken === expected.chatId
+                && globalThis.worldBackstageHost.getRuntimeTaskStatus().activeTasks.length === 0;
         }, { messageId: prepared.messageId, chatId: prepared.chatId }, { timeout: 20_000 });
         const afterRelease = await page.evaluate(() => {
             const context = globalThis.SillyTavern.getContext();
@@ -1406,7 +1407,13 @@ try {
                 event.sourceMessageId === prepared.messageId
                 && event.memoryNote?.includes('可控夹具记载'))
             && afterRelease.held.released && afterRelease.held.responseRead
-            && afterRelease.held.abortedAtRelease && afterRelease.activeTasks.length === 0;
+            && afterRelease.held.abortedAtRelease
+            && afterRelease.task?.phase === 'cancelled'
+            && afterRelease.task?.commitOutcome === 'none'
+            && afterRelease.task?.finishedAt
+            && afterRelease.task?.messageId === prepared.messageId
+            && afterRelease.task?.chatToken === prepared.chatId
+            && afterRelease.activeTasks.length === 0;
         const result = { name, prepared, beforeRelease, afterRelease, noLateCommit };
         lateAffinityResults.push(result);
         await page.evaluate(data => {

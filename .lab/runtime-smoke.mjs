@@ -798,9 +798,9 @@ try {
         throw new Error(`Committed swipe edit/delete rollback mismatch: ${JSON.stringify(committedSourceLifecycle)}`);
     }
 
-    // Hold the real runtime's completion fetch, commit a manual relationship
-    // edit through the UI while it is in flight, then release the old response.
-    const delayedRequestReady = await page.evaluate(async () => {
+    // Use a real MESSAGE_RECEIVED host event and a controlled proxy response
+    // that distinguishes world simulation from the subsequent affinity task.
+    const affinityFixtureReady = await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
         const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
         const affinity = await import('/scripts/extensions/third-party/world-backstage/affinity.js');
@@ -819,7 +819,7 @@ try {
             validPersonIds: ['lab_affinity_npc'], playerId: '__wb_player__',
             values: { affection: 40, trust: 40, romance: null }, tags: [],
         });
-        if (!baseline.applied) throw new Error('Could not seed delayed-request relationship');
+        if (!baseline.applied) throw new Error('Could not seed affinity fixture relationship');
         state.relationships = baseline.state;
         store.currentState = state;
         store.branchOverrides = {};
@@ -827,58 +827,150 @@ try {
             { name: context.name1, is_user: true, is_system: false, mes: '我和她一起经历了危险。', extra: {} },
             {
                 name: context.name2, is_user: false, is_system: false,
-                mes: 'LAB关系验证人物：谢谢你救了我，我很感谢你。',
-                swipes: ['LAB关系验证人物：谢谢你救了我，我很感谢你。'],
+                mes: 'LAB关系验证人物：谢谢你救了我，我很感谢你，也开始信任你。',
+                swipes: ['LAB关系验证人物：谢谢你救了我，我很感谢你，也开始信任你。'],
                 swipe_id: 0, extra: {},
             });
         const settings = context.extensionSettings.world_backstage;
-        globalThis.__wbDelayedRequestSavedSettings = structuredClone(settings);
+        globalThis.__wbAffinityFixtureSavedSettings = structuredClone(settings);
         Object.assign(settings, {
-            enabled: true,
-            worldSimulationEnabled: true,
-            worldAutoEnabled: true,
-            autoSimulationInterval: 1,
-            affinityEnabled: true,
-            affinityAutoEnabled: true,
-            apiMode: 'custom',
+            enabled: true, worldSimulationEnabled: true, worldAutoEnabled: true,
+            autoSimulationInterval: 1, affinityEnabled: true, affinityAutoEnabled: true,
+            affinityRomanceEnabled: false, apiMode: 'custom',
             customApiUrl: 'https://controlled-response.invalid/v1/chat/completions',
-            customApiKey: 'fixture-only',
-            customApiModel: 'controlled-response-fixture',
-            customApiTransport: 'proxy',
-            autoRetryCount: 0,
+            customApiKey: 'fixture-only', customApiModel: 'controlled-response-fixture',
+            customApiTransport: 'proxy', autoRetryCount: 0,
             apiModuleRoutes: { ...(settings.apiModuleRoutes || {}), simulation: 'default', affinity: 'default' },
         });
         const originalFetch = globalThis.fetch.bind(globalThis);
-        const held = { started: false, released: false, textRead: false, signalAbortedAtRelease: false };
-        held.restore = () => { globalThis.fetch = originalFetch; };
-        held.release = null;
-        globalThis.__wbDelayedRequest = held;
+        const payload = {
+            changes: [{
+                source_id: 'lab_affinity_npc', target_id: '__wb_player__',
+                affection_delta: 17, trust_delta: -11, romance_delta: 19,
+                relation_tag_suggestion: ['感激', '谨慎'],
+                reason: '可控响应：救援带来感激，但戒心仍在。',
+                memory_note: '可控夹具记载：玩家救下了LAB关系验证人物。',
+            }],
+        };
+        const response = () => ({
+            ok: true, status: 200,
+            text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) }, finish_reason: 'stop' }] }),
+        });
+        const fixture = {
+            calls: { simulation: 0, affinity: 0 }, heldAffinity: null, holdNextAffinity: false,
+            restore: () => { globalThis.fetch = originalFetch; },
+            releaseHeldAffinity() {
+                const held = this.heldAffinity;
+                if (!held) throw new Error('No held affinity request');
+                held.released = true;
+                held.signalAbortedAtRelease = Boolean(held.signal?.aborted);
+                held.resolve({
+                    ...response(),
+                    text: async () => { held.responseRead = true; return (await response().text()); },
+                });
+            },
+        };
+        globalThis.__wbAffinityFixture = fixture;
+        const marker = '【任务】判断输入事件是否对人物之间的持续关系造成了变化。';
         globalThis.fetch = (input, options = {}) => {
-            if (!String(input).includes('/api/backends/chat-completions/generate')) {
-                return originalFetch(input, options);
-            }
-            held.started = true;
-            return new Promise(resolve => {
-                held.release = () => {
-                    held.released = true;
-                    held.signalAbortedAtRelease = Boolean(options.signal?.aborted);
-                    resolve({
-                        ok: true,
-                        status: 200,
-                        text: async () => {
-                            held.textRead = true;
-                            return JSON.stringify({
-                                choices: [{ message: { content: '{}' }, finish_reason: 'stop' }],
-                            });
-                        },
+            if (!String(input).includes('/api/backends/chat-completions/generate')) return originalFetch(input, options);
+            let body = '';
+            try { body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body || {}); } catch {}
+            if (body.includes(marker)) {
+                fixture.calls.affinity += 1;
+                if (fixture.holdNextAffinity) {
+                    fixture.holdNextAffinity = false;
+                    return new Promise(resolve => {
+                        fixture.heldAffinity = {
+                            resolve, signal: options.signal, released: false,
+                            responseRead: false, signalAbortedAtRelease: false,
+                        };
                     });
-                };
+                }
+                return Promise.resolve(response());
+            }
+            fixture.calls.simulation += 1;
+            return Promise.resolve({
+                ok: true, status: 200,
+                text: async () => JSON.stringify({ choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] }),
             });
         };
         globalThis.worldBackstageHost.open();
         return true;
     });
-    if (!delayedRequestReady) throw new Error('Could not prepare delayed runtime request');
+    if (!affinityFixtureReady) throw new Error('Could not prepare affinity response fixture');
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const types = context.eventTypes || context.event_types;
+        await context.eventSource.emit(types.MESSAGE_RECEIVED, 1, 'normal');
+    });
+    await page.waitForFunction(() => {
+        const status = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.();
+        return status?.lastTask?.phase === 'success'
+            && status.lastTask.stage === 'committed'
+            && status.lastTask.commitOutcome === 'success'
+            && status.lastTask.finishedAt && status.activeTasks.length === 0;
+    }, null, { timeout: 30_000 });
+    const positive = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const state = context.chatMetadata.world_backstage_v1.currentState;
+        const relation = state.relationships.relations.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        const event = [...state.relationships.events].reverse().find(item =>
+            item.origin === 'ai' && item.sourceMessageId === 1);
+        return {
+            calls: { ...globalThis.__wbAffinityFixture.calls },
+            values: relation?.values || null, tags: relation?.tags || [],
+            event: event || null,
+            prompt: context.extensionPrompts.world_backstage_context_support?.value || '',
+            romanceDisabled: context.extensionSettings.world_backstage.affinityRomanceEnabled === false,
+        };
+    });
+    console.log('Affinity positive control: ' + JSON.stringify(positive));
+    if (positive.calls.simulation < 1 || positive.calls.affinity !== 1
+        || positive.values?.affection !== 57 || positive.values?.trust !== 29
+        || positive.values?.romance !== null
+        || !positive.tags.includes('感激') || !positive.tags.includes('谨慎')
+        || positive.event?.sourceId !== 'lab_affinity_npc'
+        || positive.event?.targetId !== '__wb_player__'
+        || !positive.event?.reason?.includes('可控响应')
+        || !positive.event?.memoryNote?.includes('救下')
+        || positive.event?.sourceMessageId !== 1
+        || !positive.romanceDisabled) {
+        throw new Error('Affinity positive-control payload did not commit: ' + JSON.stringify(positive));
+    }
+
+    // Reprocessing the committed host message must not create another affinity event.
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const types = context.eventTypes || context.event_types;
+        await context.eventSource.emit(types.MESSAGE_RECEIVED, 1, 'normal');
+    });
+    const duplicate = await page.evaluate(() => ({
+        calls: globalThis.__wbAffinityFixture.calls.affinity,
+        aiEvents: globalThis.SillyTavern.getContext().chatMetadata.world_backstage_v1.currentState.relationships.events
+            .filter(event => event.origin === 'ai').length,
+    }));
+    if (duplicate.calls !== 1 || duplicate.aiEvents !== 1) {
+        throw new Error('Repeated source processing was not idempotent: ' + JSON.stringify(duplicate));
+    }
+
+    const readyForLateAffinity = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const fixture = globalThis.__wbAffinityFixture;
+        fixture.holdNextAffinity = true;
+        context.chat.push(
+            { name: context.name1, is_user: true, is_system: false, mes: '我又想起那次危险。', extra: {} },
+            {
+                name: context.name2, is_user: false, is_system: false,
+                mes: 'LAB关系验证人物：我感谢你救了我，但信任需要时间。',
+                swipes: ['LAB关系验证人物：我感谢你救了我，但信任需要时间。'],
+                swipe_id: 0, extra: {},
+            },
+        );
+        return true;
+    });
+    if (!readyForLateAffinity) throw new Error('Could not prepare delayed affinity event');
     const peopleNavForRace = page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]');
     await peopleNavForRace.waitFor({ state: 'visible', timeout: 5_000 });
     await peopleNavForRace.evaluate(element => element.click());
@@ -888,12 +980,12 @@ try {
     await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
         const types = context.eventTypes || context.event_types;
-        await context.eventSource.emit(types.MESSAGE_RECEIVED, 1, 'normal');
+        await context.eventSource.emit(types.MESSAGE_RECEIVED, 3, 'normal');
     });
-    await page.waitForFunction(() => globalThis.__wbDelayedRequest?.started === true, null, { timeout: 15_000 });
+    await page.waitForFunction(() => Boolean(globalThis.__wbAffinityFixture?.heldAffinity), null, { timeout: 30_000 });
     await raceCard.evaluate(card => {
         for (const [name, value] of Object.entries({ affection: '73', trust: '44', tags: '朋友，戒备' })) {
-            const input = card.querySelector(`[name="${name}"]`);
+            const input = card.querySelector('[name="' + name + '"]');
             input.value = value;
             input.dispatchEvent(new Event('input', { bubbles: true }));
         }
@@ -906,40 +998,50 @@ try {
         return relation?.values?.affection === 73 && relation?.values?.trust === 44
             && state.relationships.events.at(-1)?.origin === 'manual';
     }, null, { timeout: 5_000 });
-    await page.evaluate(() => globalThis.__wbDelayedRequest.release());
-    await page.waitForFunction(() => globalThis.__wbDelayedRequest?.textRead === true, null, { timeout: 10_000 });
-    const delayedResponseOutcome = await page.evaluate(() => {
+    await page.evaluate(() => globalThis.__wbAffinityFixture.releaseHeldAffinity());
+    await page.waitForFunction(() => {
+        const task = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.();
+        return task?.lastTask?.phase === 'cancelled' && task.lastTask.stage === 'cancelled'
+            && task.lastTask.finishedAt && task.activeTasks.length === 0;
+    }, null, { timeout: 20_000 });
+    const delayed = await page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();
         const store = context.chatMetadata.world_backstage_v1;
-        const relation = store.currentState.relationships.relations.find(item =>
+        const state = store.currentState;
+        const relation = state.relationships.relations.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
-        const sourceRecord = context.chat[1]?.extra?.world_backstage;
+        const held = globalThis.__wbAffinityFixture.heldAffinity;
+        const source = context.chat[3]?.extra?.world_backstage;
+        const prompt = context.extensionPrompts.world_backstage_context_support?.value || '';
         return {
-            affection: relation?.values?.affection ?? null,
-            trust: relation?.values?.trust ?? null,
-            lastEventOrigin: store.currentState.relationships.events.at(-1)?.origin || '',
-            sourceStatus: sourceRecord?.status || '',
-            responseReleased: globalThis.__wbDelayedRequest.released,
-            responseRead: globalThis.__wbDelayedRequest.textRead,
-            signalAborted: globalThis.__wbDelayedRequest.signalAbortedAtRelease,
+            values: relation?.values || null, tags: relation?.tags || [],
+            lastOrigin: state.relationships.events.at(-1)?.origin || '',
+            lateAiEvent: state.relationships.events.some(event =>
+                event.origin === 'ai' && event.sourceMessageId === 3),
+            manualEvent: state.relationships.events.some(event =>
+                event.origin === 'manual' && event.manualValues?.affection === 73),
+            promptHasManual: prompt.includes('朋友') && prompt.includes('戒备'),
+            sourceStatus: source?.status || '',
+            released: held.released, responseRead: held.responseRead,
+            abortedAtRelease: held.signalAbortedAtRelease,
+            task: globalThis.worldBackstageHost.getRuntimeTaskStatus().lastTask,
         };
     });
+    console.log('Delayed affinity response after manual edit: ' + JSON.stringify(delayed));
     await page.evaluate(() => {
-        globalThis.__wbDelayedRequest?.restore?.();
-        Object.assign(
-            globalThis.SillyTavern.getContext().extensionSettings.world_backstage,
-            globalThis.__wbDelayedRequestSavedSettings || {},
-        );
-        delete globalThis.__wbDelayedRequest;
-        delete globalThis.__wbDelayedRequestSavedSettings;
+        globalThis.__wbAffinityFixture?.restore?.();
+        Object.assign(globalThis.SillyTavern.getContext().extensionSettings.world_backstage,
+            globalThis.__wbAffinityFixtureSavedSettings || {});
+        delete globalThis.__wbAffinityFixture;
+        delete globalThis.__wbAffinityFixtureSavedSettings;
     });
-    console.log(`Delayed stale response after manual edit: ${JSON.stringify(delayedResponseOutcome)}`);
-    if (delayedResponseOutcome.affection !== 73 || delayedResponseOutcome.trust !== 44
-        || delayedResponseOutcome.lastEventOrigin !== 'manual'
-        || delayedResponseOutcome.sourceStatus === 'committed'
-        || !delayedResponseOutcome.responseReleased || !delayedResponseOutcome.responseRead
-        || !delayedResponseOutcome.signalAborted) {
-        throw new Error(`Delayed API response overwrote a manual relationship edit: ${JSON.stringify(delayedResponseOutcome)}`);
+    if (delayed.values?.affection !== 73 || delayed.values?.trust !== 44
+        || !delayed.tags.includes('朋友') || !delayed.tags.includes('戒备')
+        || delayed.lastOrigin !== 'manual' || delayed.lateAiEvent || !delayed.manualEvent
+        || !delayed.promptHasManual || delayed.sourceStatus === 'committed'
+        || !delayed.released || !delayed.responseRead || !delayed.abortedAtRelease
+        || delayed.task.phase !== 'cancelled') {
+        throw new Error('Late affinity payload overwrote manual state: ' + JSON.stringify(delayed));
     }
 
     // Run a 121-floor archived chat through the real ST context, settings UI and
@@ -993,6 +1095,7 @@ try {
         if (!store) throw new Error('Long-floor chat did not attach to World Backstage');
         store.currentState = state;
     });
+    await page.evaluate(() => globalThis.worldBackstageHost?.open?.());
     const memorySetting = page.locator('[data-wb-setting="memorySystemEnabled"]').first();
     const settingsLayer = page.locator('.wb-root:visible .wb-settings-layer');
     if (!(await settingsLayer.isVisible())) {

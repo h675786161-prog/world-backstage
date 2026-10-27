@@ -293,6 +293,14 @@ try {
     await relationCard.locator('input[name="affection"]').fill('67');
     await relationCard.locator('input[name="trust"]').fill('44');
     await relationCard.locator('input[name="tags"]').fill('朋友，戒备');
+    const editorBeforeSave = await relationCard.evaluate(card => ({
+        fields: [...card.querySelectorAll('[name]')].map(input => ({ name: input.name, value: input.value })),
+        forms: [...card.querySelectorAll('form')].map(form => ({
+            hasRelationshipMarker: form.hasAttribute('data-wb-relationship-form'),
+            fields: [...form.elements].map(input => ({ name: input.name, value: input.value })),
+        })),
+    }));
+    console.log(`Relationship editor fields before save: ${JSON.stringify(editorBeforeSave)}`);
     await relationCard.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
     const manualSaveCommitted = await page.waitForFunction(() => {
         const context = globalThis.SillyTavern.getContext();

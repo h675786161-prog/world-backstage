@@ -5037,6 +5037,16 @@ export function createWorldBackstageUI({
         }
         const viewChanged = activeView !== renderedView;
         const animatePanelEntrance = Boolean(isOpen && panelEntrancePending);
+        const relationshipDrafts = [...root.querySelectorAll('.wb-affinity-relation-card')].map(card => {
+            const field = name => card.querySelector(`[name="${name}"]`);
+            const sourceId = String(field('sourceId')?.value || '');
+            const targetId = String(field('targetId')?.value || '');
+            return sourceId && targetId ? {
+                sourceId, targetId,
+                values: Object.fromEntries(['affection', 'trust', 'romance', 'tags']
+                    .map(name => [name, String(field(name)?.value ?? '')])),
+            } : null;
+        }).filter(Boolean);
         const previousContent = root.querySelector('.wb-view-content');
         if (previousContent) viewScrollTop.set(renderedView, previousContent.scrollTop);
 
@@ -5646,6 +5656,21 @@ export function createWorldBackstageUI({
                 </div>
             ` : ''}
         `;
+        if (relationshipDrafts.length) {
+            for (const card of root.querySelectorAll('.wb-affinity-relation-card')) {
+                const field = name => card.querySelector(`[name="${name}"]`);
+                const sourceId = String(field('sourceId')?.value || '');
+                const targetId = String(field('targetId')?.value || '');
+                const draft = relationshipDrafts.find(item => (
+                    item.sourceId === sourceId && item.targetId === targetId
+                ));
+                if (!draft) continue;
+                for (const [name, value] of Object.entries(draft.values)) {
+                    const input = field(name);
+                    if (input) input.value = value;
+                }
+            }
+        }
         panelEntrancePending = false;
 
         const currentContent = root.querySelector('.wb-view-content');

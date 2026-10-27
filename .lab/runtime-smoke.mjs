@@ -1565,7 +1565,7 @@ try {
         await context.openCharacterChat(name);
         await context.reloadCurrentChat();
     }, separateChats.nameB);
-    const afterChatSwitchB = await page.evaluate(() => {
+    const afterChatSwitchB = await page.evaluate(expectedMessageId => {
         const context = globalThis.SillyTavern.getContext();
         const store = context.chatMetadata.world_backstage_v1;
         return {
@@ -1575,9 +1575,9 @@ try {
             historyHasB: store.currentState.relationships.events.some(item =>
                 item.origin === 'manual' && item.manualValues?.affection === 24),
             lateAiEvents: store.currentState.relationships.events.filter(item =>
-                item.origin === 'ai' && item.sourceMessageId === chatSwitchRace.prepared.messageId).length,
+                item.origin === 'ai' && item.sourceMessageId === expectedMessageId).length,
         };
-    });
+    }, chatSwitchRace.prepared.messageId);
     await page.evaluate(async name => {
         const context = globalThis.SillyTavern.getContext();
         await context.openCharacterChat(name);

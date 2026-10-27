@@ -682,6 +682,150 @@ try {
         throw new Error(`Committed swipe edit/delete rollback mismatch: ${JSON.stringify(committedSourceLifecycle)}`);
     }
 
+    // Hold the real runtime's completion fetch, commit a manual relationship
+    // edit through the UI while it is in flight, then release the old response.
+    const delayedRequestReady = await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        const affinity = await import('/scripts/extensions/third-party/world-backstage/affinity.js');
+        const store = context.chatMetadata[core.STATE_KEY];
+        const state = structuredClone(store.currentState);
+        state.people = Array.isArray(state.people) ? state.people : [];
+        if (!state.people.some(person => person.id === 'lab_affinity_npc')) {
+            state.people.push({
+                id: 'lab_affinity_npc', name: 'LAB关系验证人物', isUser: false,
+                knowledge: 'known', locked: true,
+            });
+        }
+        state.lastCommit = null;
+        const baseline = affinity.applyManualRelationshipEdit(state.relationships, {
+            sourceId: 'lab_affinity_npc', targetId: '__wb_player__',
+            validPersonIds: ['lab_affinity_npc'], playerId: '__wb_player__',
+            values: { affection: 40, trust: 40, romance: null }, tags: [],
+        });
+        if (!baseline.applied) throw new Error('Could not seed delayed-request relationship');
+        state.relationships = baseline.state;
+        store.currentState = state;
+        store.branchOverrides = {};
+        context.chat.splice(0, context.chat.length,
+            { name: context.name1, is_user: true, is_system: false, mes: '我和她一起经历了危险。', extra: {} },
+            {
+                name: context.name2, is_user: false, is_system: false,
+                mes: 'LAB关系验证人物：谢谢你救了我，我很感谢你。',
+                swipes: ['LAB关系验证人物：谢谢你救了我，我很感谢你。'],
+                swipe_id: 0, extra: {},
+            });
+        const settings = context.extensionSettings.world_backstage;
+        globalThis.__wbDelayedRequestSavedSettings = structuredClone(settings);
+        Object.assign(settings, {
+            enabled: true,
+            worldSimulationEnabled: true,
+            worldAutoEnabled: true,
+            autoSimulationInterval: 1,
+            affinityEnabled: true,
+            affinityAutoEnabled: true,
+            apiMode: 'custom',
+            customApiUrl: 'https://controlled-response.invalid/v1/chat/completions',
+            customApiKey: 'fixture-only',
+            customApiModel: 'controlled-response-fixture',
+            customApiTransport: 'proxy',
+            autoRetryCount: 0,
+            apiModuleRoutes: { ...(settings.apiModuleRoutes || {}), simulation: 'default', affinity: 'default' },
+        });
+        const originalFetch = globalThis.fetch.bind(globalThis);
+        const held = { started: false, released: false, textRead: false, signalAbortedAtRelease: false };
+        held.restore = () => { globalThis.fetch = originalFetch; };
+        held.release = null;
+        globalThis.__wbDelayedRequest = held;
+        globalThis.fetch = (input, options = {}) => {
+            if (!String(input).includes('/api/backends/chat-completions/generate')) {
+                return originalFetch(input, options);
+            }
+            held.started = true;
+            return new Promise(resolve => {
+                held.release = () => {
+                    held.released = true;
+                    held.signalAbortedAtRelease = Boolean(options.signal?.aborted);
+                    resolve({
+                        ok: true,
+                        status: 200,
+                        text: async () => {
+                            held.textRead = true;
+                            return JSON.stringify({
+                                choices: [{ message: { content: '{}' }, finish_reason: 'stop' }],
+                            });
+                        },
+                    });
+                };
+            });
+        };
+        globalThis.worldBackstageHost.open();
+        return true;
+    });
+    if (!delayedRequestReady) throw new Error('Could not prepare delayed runtime request');
+    const peopleNavForRace = page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]');
+    await peopleNavForRace.waitFor({ state: 'visible', timeout: 5_000 });
+    await peopleNavForRace.evaluate(element => element.click());
+    const raceCard = page.locator('.wb-affinity-manager .wb-affinity-relation-list .wb-affinity-relation-card')
+        .filter({ hasText: 'LAB关系验证人物' }).first();
+    await raceCard.waitFor({ state: 'visible', timeout: 5_000 });
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const types = context.eventTypes || context.event_types;
+        await context.eventSource.emit(types.MESSAGE_RECEIVED, 1, 'normal');
+    });
+    await page.waitForFunction(() => globalThis.__wbDelayedRequest?.started === true, null, { timeout: 15_000 });
+    await raceCard.evaluate(card => {
+        for (const [name, value] of Object.entries({ affection: '73', trust: '44', tags: '朋友，戒备' })) {
+            const input = card.querySelector(`[name="${name}"]`);
+            input.value = value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    });
+    await raceCard.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
+    await page.waitForFunction(() => {
+        const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1?.currentState;
+        const relation = state?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return relation?.values?.affection === 73 && relation?.values?.trust === 44
+            && state.relationships.events.at(-1)?.origin === 'manual';
+    }, null, { timeout: 5_000 });
+    await page.evaluate(() => globalThis.__wbDelayedRequest.release());
+    await page.waitForFunction(() => globalThis.__wbDelayedRequest?.textRead === true, null, { timeout: 10_000 });
+    const delayedResponseOutcome = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata.world_backstage_v1;
+        const relation = store.currentState.relationships.relations.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        const sourceRecord = context.chat[1]?.extra?.world_backstage;
+        return {
+            affection: relation?.values?.affection ?? null,
+            trust: relation?.values?.trust ?? null,
+            lastEventOrigin: store.currentState.relationships.events.at(-1)?.origin || '',
+            sourceStatus: sourceRecord?.status || '',
+            responseReleased: globalThis.__wbDelayedRequest.released,
+            responseRead: globalThis.__wbDelayedRequest.textRead,
+            signalAborted: globalThis.__wbDelayedRequest.signalAbortedAtRelease,
+        };
+    });
+    await page.evaluate(() => {
+        globalThis.__wbDelayedRequest?.restore?.();
+        Object.assign(
+            globalThis.SillyTavern.getContext().extensionSettings.world_backstage,
+            globalThis.__wbDelayedRequestSavedSettings || {},
+        );
+        delete globalThis.__wbDelayedRequest;
+        delete globalThis.__wbDelayedRequestSavedSettings;
+    });
+    console.log(`Delayed stale response after manual edit: ${JSON.stringify(delayedResponseOutcome)}`);
+    if (delayedResponseOutcome.affection !== 73 || delayedResponseOutcome.trust !== 44
+        || delayedResponseOutcome.lastEventOrigin !== 'manual'
+        || delayedResponseOutcome.sourceStatus === 'committed'
+        || !delayedResponseOutcome.responseReleased || !delayedResponseOutcome.responseRead
+        || !delayedResponseOutcome.signalAborted) {
+        throw new Error(`Delayed API response overwrote a manual relationship edit: ${JSON.stringify(delayedResponseOutcome)}`);
+    }
+
     // Run a 121-floor archived chat through the real ST context, settings UI and
     // extension prompt bridge. A missing L0 at floor 50 must remain visible.
     await page.evaluate(async () => {

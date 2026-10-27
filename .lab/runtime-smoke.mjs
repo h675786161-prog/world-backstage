@@ -1258,8 +1258,13 @@ try {
     }, separateChats.nameB);
     await page.waitForFunction(() => {
         const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata?.world_backstage_v1;
+        const relation = store?.currentState?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
         const prompt = context.extensionPrompts.world_backstage_context_support?.value || '';
-        return prompt.includes('B-only') && prompt.includes('B-history');
+        return relation?.values?.affection === 24 && relation?.values?.trust === 76
+            && store.branchOverrides?.root
+            && prompt.includes('B-only') && prompt.includes('B-history');
     }, null, { timeout: 10_000 });
     const reloadedB = await page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();

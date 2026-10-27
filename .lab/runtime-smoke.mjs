@@ -272,6 +272,7 @@ try {
         );
         if (!seeded.applied) throw new Error('Could not seed relationship UI state');
         state.relationships = seeded.state;
+        store.branchOverrides = {};
         store.currentState = state;
         await context.saveChat?.();
         globalThis.worldBackstageHost.open();
@@ -330,6 +331,21 @@ try {
             };
         });
         throw new Error(`Manual relationship save did not persist: ${JSON.stringify(diagnostic)}`);
+    }
+    const rootOverrideAfterEdit = await page.evaluate(() => {
+        const store = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1;
+        const snapshot = store?.branchOverrides?.root;
+        const relation = snapshot?.state?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return {
+            sourceKey: snapshot?.meta?.sourceKey || null,
+            affection: relation?.values?.affection ?? null,
+            trust: relation?.values?.trust ?? null,
+        };
+    });
+    if (rootOverrideAfterEdit.sourceKey !== 'root'
+        || rootOverrideAfterEdit.affection !== 67 || rootOverrideAfterEdit.trust !== 44) {
+        throw new Error(`Manual edit has no recoverable root override: ${JSON.stringify(rootOverrideAfterEdit)}`);
     }
     const desktopManagerBox = await relationManager.boundingBox();
     await page.screenshot({

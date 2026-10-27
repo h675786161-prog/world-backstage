@@ -393,29 +393,6 @@ try {
         context.chat[0].mes = '根前编辑后的正文';
         await context.eventSource.emit(types.MESSAGE_EDITED, 0);
         const afterEdit = read();
-        const futureText = '删除点之后的已推演正文';
-        const futureKey = `1:0:${core.hashText(futureText)}`;
-        const futureState = structuredClone(store.currentState);
-        const futureEdit = affinity.applyManualRelationshipEdit(futureState.relationships, {
-            sourceId: 'lab_affinity_npc', targetId: '__wb_player__',
-            validPersonIds: ['lab_affinity_npc'], playerId: '__wb_player__',
-            values: { affection: 55, trust: 51, romance: null }, tags: [],
-        });
-        if (!futureEdit.applied) throw new Error('Could not prepare post-source snapshot');
-        futureState.relationships = futureEdit.state;
-        futureState.lastCommit = { messageId: 1, swipeId: 0, sourceKey: futureKey, at: 1 };
-        const futureRecord = {
-            sourceKey: futureKey, status: 'committed', stale: false,
-            result: core.createCompactSnapshot(futureState, {
-                messageId: 1, swipeId: 0, sourceKey: futureKey, kind: 'result',
-            }),
-        };
-        const futureMessage = context.chat[1];
-        futureMessage.name = context.name2;
-        futureMessage.is_user = false;
-        futureMessage.mes = futureText;
-        futureMessage.extra ||= {};
-        futureMessage.extra[core.SNAPSHOT_KEY] = futureRecord;
         context.chat.splice(0, 1);
         await context.eventSource.emit(types.MESSAGE_DELETED, 0);
         return { swipeStates, afterEdit, afterDelete: read(), events: store.currentState.relationships.events };

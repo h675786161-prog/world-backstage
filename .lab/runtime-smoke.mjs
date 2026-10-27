@@ -353,6 +353,8 @@ try {
     await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
         await context.selectCharacterById(0);
+        const { getChat } = await import('/script.js');
+        await getChat();
     });
     await page.waitForFunction(() => {
         const context = globalThis.SillyTavern?.getContext?.();

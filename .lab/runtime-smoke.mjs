@@ -1074,7 +1074,8 @@ try {
         const nameA = context.getCurrentChatId();
         await context.saveChat();
         const storeA = context.chatMetadata[core.STATE_KEY];
-        globalThis.__wbChatIsolationAStore = structuredClone(storeA);
+        const aState = structuredClone(storeA.currentState);
+        aState.lastCommit = null;
         const a = {
             name: nameA,
             relation: storeA.currentState.relationships.relations.find(item =>
@@ -1085,42 +1086,60 @@ try {
         };
         const nameB = 'WB-affinity-isolation-' + Date.now();
         await context.openCharacterChat(nameB);
-        // Use the actual host chatMetadata slot and save/reload the newly-created
-        // B file. This copies a persisted baseline, then later edits B through UI.
-        context.chatMetadata[core.STATE_KEY] = structuredClone(globalThis.__wbChatIsolationAStore);
         context.chat.splice(0, context.chat.length,
             { name: context.name1, is_user: true, is_system: false, mes: 'CHAT_B_ONLY_MARKER：LAB关系验证人物，我在聊天B记下这段关系。', extra: {} },
             { name: context.name2, is_user: false, is_system: false, mes: 'LAB关系验证人物记住了聊天B。', extra: {} });
         await context.saveChat();
-        await context.reloadCurrentChat();
-        const storeB = context.chatMetadata[core.STATE_KEY];
-        const relation = storeB.currentState.relationships.relations.find(item =>
-            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
-        return {
-            a, nameB,
-            initialB: {
-                values: relation?.values || null,
-                eventCount: storeB.currentState.relationships.events.length,
-                personPresent: storeB.currentState.people.some(person => person.id === 'lab_affinity_npc'),
-                rootOverride: Boolean(storeB.branchOverrides?.root),
-            },
-        };
+        return { a, aState, nameB };
     });
-    if (!separateChats.a.name || !separateChats.nameB || !separateChats.initialB.personPresent
-        || separateChats.initialB.values?.affection !== 73
-        || separateChats.initialB.values?.trust !== 44) {
-        throw new Error('Separate-chat setup failed: ' + JSON.stringify(separateChats));
+    if (!separateChats.a.name || !separateChats.nameB
+        || separateChats.a.relation?.values?.affection !== 73
+        || separateChats.a.relation?.values?.trust !== 44
+        || !separateChats.a.branchOverrides.length) {
+        throw new Error('Chat A did not have the expected persisted relationship baseline: ' + JSON.stringify(separateChats.a));
     }
+    await page.evaluate(() => globalThis.worldBackstageHost?.open?.());
+    const settingsLayerForImport = page.locator('.wb-root .wb-settings-layer');
+    if (!(await settingsLayerForImport.isVisible())) {
+        await page.locator('.wb-root button[data-wb-action="toggle-settings"][aria-label="全局设置"]')
+            .first().evaluate(element => element.click());
+        await settingsLayerForImport.waitFor({ state: 'visible', timeout: 5_000 });
+    }
+    const advancedData = page.locator('details[data-settings-subgroup="advanced-data"]').first();
+    await advancedData.evaluate(element => { element.open = true; });
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('.wb-import-input').first().setInputFiles({
+        name: 'chat-a-relationship-baseline.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify({
+            format: 'world-backstage-state', version: 26,
+            state: separateChats.aState,
+        })),
+    });
+    await page.waitForFunction(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata?.world_backstage_v1;
+        const relation = store?.currentState?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return store?.currentState?.people?.some(person => person.id === 'lab_affinity_npc')
+            && relation?.values?.affection === 73 && relation?.values?.trust === 44
+            && store.branchOverrides?.root;
+    }, null, { timeout: 10_000 });
     await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
-        const store = context.chatMetadata.world_backstage_v1;
-        // The new file has no valid result snapshot, so make the first manual
-        // B edit explicitly anchor to its own chat root. Persist the matching
-        // initial state first, so restoration has a real person/relationship baseline.
-        store.currentState.lastCommit = null;
-        store.initialState = structuredClone(store.currentState);
-        await context.saveMetadata();
         await context.saveChat();
+        await context.reloadCurrentChat();
+    });
+    await page.waitForFunction(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata?.world_backstage_v1;
+        const relation = store?.currentState?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return relation?.values?.affection === 73 && relation?.values?.trust === 44;
+    }, null, { timeout: 10_000 });
+    await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        context.chatMetadata.world_backstage_v1.currentState.lastCommit = null;
         globalThis.worldBackstageHost?.refreshLauncher?.();
     });
     await page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]:visible').last()

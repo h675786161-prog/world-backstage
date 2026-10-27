@@ -1192,14 +1192,31 @@ try {
         const context = globalThis.SillyTavern.getContext();
         await context.openCharacterChat(name);
     }, separateChats.a.name);
-    await page.waitForFunction(expected => {
+    await page.waitForFunction(expected =>
+        globalThis.SillyTavern.getContext().getCurrentChatId() === expected,
+    separateChats.a.name, { timeout: 10_000 });
+    const switchedBackA = await page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();
         const store = context.chatMetadata?.world_backstage_v1;
         const relation = store?.currentState?.relationships?.relations?.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
-        return context.getCurrentChatId() === expected && relation?.values?.affection === 73
-            && relation?.values?.trust === 44;
-    }, separateChats.a.name, { timeout: 10_000 });
+        return {
+            chatId: context.getCurrentChatId(),
+            values: relation?.values || null,
+            tags: relation?.tags || [],
+            history: store?.currentState?.relationships?.events?.map(item => ({
+                id: item.id, origin: item.origin, values: item.manualValues, reason: item.reason,
+            })) || [],
+            rootOverride: Boolean(store?.branchOverrides?.root),
+            branchKeys: Object.keys(store?.branchOverrides || {}).filter(key => key !== 'root'),
+            initialRelation: store?.initialState?.relationships?.relations?.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values || null,
+        };
+    });
+    console.log('A chat after file switch before reload: ' + JSON.stringify(switchedBackA));
+    if (switchedBackA.values?.affection !== 73 || switchedBackA.values?.trust !== 44) {
+        throw new Error('Chat A state did not restore after switching back: ' + JSON.stringify(switchedBackA));
+    }
     await page.evaluate(async () => globalThis.SillyTavern.getContext().reloadCurrentChat());
     const reloadedA = await page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();

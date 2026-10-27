@@ -9,13 +9,14 @@ import {
     WORLD_BACKSTAGE_CORE_REASONING_PROTOCOL,
     WORLD_SIMULATION_REASONING_PROTOCOL,
 } from './reasoning-protocol.js';
+import { buildRelationshipContext, createInitialRelationshipState, normalizeRelationshipState } from './affinity.js';
 
 const WB_STATE_RECONCILE_ORDER = Object.freeze([3, 1, 4, 2]);
 
 export const MODULE_ID = 'world_backstage';
 export const STATE_KEY = 'world_backstage_v1';
 export const SNAPSHOT_KEY = 'world_backstage';
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 export const MAX_CALENDAR_YEAR = 999999;
 export const MINUTES_PER_DAY = 24 * 60;
 export const RECOVERY_LIMIT = 3;
@@ -1847,6 +1848,7 @@ export function createInitialState({
             daypart: '',
         },
         people: [],
+        relationships: createInitialRelationshipState(),
         events: [],
         echoes: [],
         archive: [],
@@ -4928,6 +4930,8 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
     const injectMemory = settings.memorySystemEnabled !== false
         && settings.memoryPromptInjection !== false
         && settings.injectionMemory !== false;
+    const injectAffinity = settings.affinityContextInjection !== false
+        && settings.worldPromptInjection !== false;
     const timeMode = worldRunning && ['full', 'anchor', 'off'].includes(settings.injectionTimeMode)
         ? settings.injectionTimeMode
         : (worldRunning ? 'full' : 'off');
@@ -4939,6 +4943,7 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
         && !injectEchoes
         && !injectFacts
         && !injectMemory
+        && !injectAffinity
         && timeMode === 'off'
     ) {
         return { text: '', authorityText: '', supportText: '', eventIds: [], liveInfluenceIds: [] };
@@ -5243,6 +5248,16 @@ export function buildInjectionPackage(state, settings = {}, recentText = '', { c
             supportLines.push(`- 线索｜${clue.title}：${clue.text}`);
         }
         supportLines.push('只用于维持回忆、承诺与前后呼应；不得把未列出的隐藏记忆补写成角色知识。');
+    }
+
+    if (injectAffinity) {
+        const relationshipContext = buildRelationshipContext(
+            state.relationships,
+            state.people,
+            recentText,
+            { romanceEnabled: settings.affinityRomanceEnabled !== false },
+        );
+        if (relationshipContext) supportLines.push(...relationshipContext.split('\n'));
     }
 
     if (foregroundInfluences.length || deliveries.length) {
@@ -8508,6 +8523,7 @@ export function trimState(inputState) {
             seenPersonIds.add(nextId);
             return person;
         });
+    state.relationships = normalizeRelationshipState(state.relationships);
 
     const events = asArray(state.events)
         .map(event => normalizeEvent(event, state.clock.absoluteMinute, event));

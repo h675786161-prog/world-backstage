@@ -5049,6 +5049,10 @@ export function createWorldBackstageUI({
                     .map(name => [name, String(field(name)?.value ?? '')])),
             } : null;
         }).filter(Boolean);
+        for (const draft of relationshipDrafts) {
+            const key = `${draft.sourceId}\\u0000${draft.targetId}`;
+            Object.assign(draft.values, relationshipDraftsByKey.get(key) || {});
+        }
         const previousContent = root.querySelector('.wb-view-content');
         if (previousContent) viewScrollTop.set(renderedView, previousContent.scrollTop);
 

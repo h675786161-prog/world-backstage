@@ -343,6 +343,13 @@ try {
         null,
         { timeout: 30_000 },
     );
+    await page.waitForFunction(() => Boolean(globalThis.SillyTavern?.getContext?.()?.characters?.length), null, {
+        timeout: 15_000,
+    });
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        if (!context.chatId) await context.selectCharacterById(0);
+    });
     await page.waitForFunction(() => Boolean(globalThis.SillyTavern?.getContext?.()?.chatId), null, {
         timeout: 15_000,
     });

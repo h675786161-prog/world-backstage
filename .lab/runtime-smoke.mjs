@@ -1403,7 +1403,8 @@ try {
             && !afterRelease.state.relationships.events.some(event =>
                 event.origin === 'ai' && event.sourceMessageId === prepared.messageId)
             && !afterRelease.state.relationships.events.some(event =>
-                event.memoryNote?.includes('可控夹具记载'))
+                event.sourceMessageId === prepared.messageId
+                && event.memoryNote?.includes('可控夹具记载'))
             && afterRelease.held.released && afterRelease.held.responseRead
             && afterRelease.held.abortedAtRelease && afterRelease.activeTasks.length === 0;
         const result = { name, prepared, beforeRelease, afterRelease, noLateCommit };

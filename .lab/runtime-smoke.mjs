@@ -1698,9 +1698,18 @@ try {
     await page.waitForFunction(() =>
         globalThis.SillyTavern.getContext().extensionSettings.world_backstage.memorySystemEnabled === true,
     );
-    await page.locator('[data-wb-setting="autoHideArchivedFloors"]').first().evaluate(el => {
-        if (!el.checked) el.click();
-    });
+    const autoHideSetting = page.locator('[data-wb-setting="autoHideArchivedFloors"]').first();
+    const autoHideCurrentlyEnabled = await autoHideSetting.evaluate(element => element.checked);
+    if (autoHideCurrentlyEnabled) {
+        await autoHideSetting.evaluate(element => element.click());
+        await page.waitForFunction(() =>
+            globalThis.SillyTavern.getContext().extensionSettings.world_backstage.autoHideArchivedFloors === false,
+        null, { timeout: 5_000 });
+    }
+    await autoHideSetting.evaluate(element => element.click());
+    await page.waitForFunction(() =>
+        globalThis.SillyTavern.getContext().extensionSettings.world_backstage.autoHideArchivedFloors === true,
+    null, { timeout: 5_000 });
     await page.waitForFunction(() => {
         const context = globalThis.SillyTavern.getContext();
         return context.chat[0]?.is_system === true

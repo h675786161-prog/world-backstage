@@ -438,25 +438,87 @@ try {
         return Boolean(context?.chat?.length && context?.chatMetadata?.world_backstage_v1);
     }, null, { timeout: 15_000 });
     await page.evaluate(() => globalThis.worldBackstageHost.open());
-    const peopleNavAfterReload = page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]');
+    const peopleNavAfterReload = page.locator(
+        '.wb-root:visible .wb-side-nav [data-wb-action="set-view"][data-view="people"]',
+    );
     await peopleNavAfterReload.waitFor({ state: 'visible', timeout: 8_000 });
-    await peopleNavAfterReload.evaluate(element => element.click());
-    await page.waitForTimeout(250);
-    console.log(`After reload relationship state: ${JSON.stringify(await page.evaluate(() => {
+    await peopleNavAfterReload.click();
+    await page.waitForFunction(() => [...document.querySelectorAll(
+        '.wb-root .wb-side-nav [data-wb-action="set-view"][data-view="people"]',
+    )].some(button => button.closest('.wb-root')?.getClientRects().length
+        && button.getAttribute('aria-current') === 'page'), null, { timeout: 5_000 });
+
+    const relationshipReloadDiagnostics = async () => page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();
-        const state = context.chatMetadata?.world_backstage_v1?.currentState;
+        const store = context.chatMetadata?.world_backstage_v1;
+        const state = store?.currentState;
+        const root = [...document.querySelectorAll('.wb-root')]
+            .find(element => element.getClientRects().length > 0);
+        const nav = [...(root?.querySelectorAll('.wb-side-nav [data-wb-action="set-view"]') || [])]
+            .map(button => ({
+                view: button.dataset.view,
+                current: button.getAttribute('aria-current'),
+                className: button.className,
+                visible: Boolean(button.getClientRects().length),
+            }));
+        const content = root?.querySelector('.wb-view-content');
         return {
             chatId: context.chatId,
+            chatLength: context.chat?.length || 0,
             metadataKeys: Object.keys(context.chatMetadata || {}),
-            people: state?.people?.map(person => ({ id: person.id, name: person.name })),
-            relations: state?.relationships?.relations,
-            cards: [...document.querySelectorAll('.wb-affinity-relation-card')].map(card => card.innerText.slice(0, 120)),
+            people: state?.people?.map(person => ({ id: person.id, name: person.name })) || [],
+            relations: state?.relationships?.relations || [],
+            activeNavigation: nav,
+            viewHeading: root?.querySelector('.wb-view-header h2')?.textContent || '',
+            viewContentClass: content?.className || '',
+            visibleText: content?.innerText?.slice(0, 3000) || '',
+            rootClass: root?.className || '',
+            rootPanel: root?.querySelector('.wb-panel')?.className || '',
+            settingsPanelCount: root?.querySelectorAll('.wb-settings-panel').length || 0,
+            relationshipManagerCount: root?.querySelectorAll('.wb-affinity-manager').length || 0,
+            cards: [...(root?.querySelectorAll('.wb-affinity-relation-card') || [])]
+                .map(card => card.innerText.slice(0, 180)),
+            rootHtml: root?.innerHTML?.slice(0, 16_000) || '',
         };
-    }))}`);
-    const relationCardAfterReload = page.locator('.wb-affinity-manager .wb-affinity-relation-list .wb-affinity-relation-card').filter({
-        hasText: 'LAB关系验证人物',
-    }).first();
-    await relationCardAfterReload.waitFor({ state: 'visible', timeout: 5_000 });
+    });
+    const relationCardAfterReload = page.locator(
+        '.wb-root:visible .wb-affinity-manager .wb-affinity-relation-list .wb-affinity-relation-card',
+    ).filter({ hasText: 'LAB关系验证人物' }).first();
+    try {
+        await relationCardAfterReload.waitFor({ state: 'visible', timeout: 5_000 });
+    } catch (error) {
+        const diagnostics = await relationshipReloadDiagnostics();
+        const evidence = {
+            failure: String(error?.stack || error),
+            diagnostics,
+        };
+        await fs.writeFile(
+            path.join(evidenceDir, 'world-backstage-affinity-reload-failure.json'),
+            JSON.stringify(evidence, null, 2),
+        );
+        await page.screenshot({
+            path: path.join(evidenceDir, 'world-backstage-affinity-reload-failure.png'),
+            fullPage: true,
+        });
+        console.log(`Affinity reload failure DOM evidence: ${JSON.stringify(evidence)}`);
+        throw new Error(`Reloaded relationship UI failed: ${String(error?.message || error)}; ${JSON.stringify({
+            chatId: diagnostics.chatId,
+            viewHeading: diagnostics.viewHeading,
+            activeNavigation: diagnostics.activeNavigation,
+            relationshipManagerCount: diagnostics.relationshipManagerCount,
+            relationCount: diagnostics.relations.length,
+            cards: diagnostics.cards,
+        })}`);
+    }
+    const relationshipReloadState = await relationshipReloadDiagnostics();
+    console.log(`After reload relationship state: ${JSON.stringify({
+        chatId: relationshipReloadState.chatId,
+        viewHeading: relationshipReloadState.viewHeading,
+        activeNavigation: relationshipReloadState.activeNavigation,
+        people: relationshipReloadState.people,
+        relations: relationshipReloadState.relations,
+        cards: relationshipReloadState.cards,
+    })}`);
     const persistedAfterRefresh = await relationCardAfterReload.locator('input[name="affection"]').inputValue() === '67'
         && await relationCardAfterReload.locator('input[name="trust"]').inputValue() === '44';
     const invalidationDialog = page.waitForEvent('dialog');

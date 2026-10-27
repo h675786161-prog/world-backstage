@@ -294,14 +294,29 @@ try {
     await relationCard.locator('input[name="trust"]').fill('44');
     await relationCard.locator('input[name="tags"]').fill('朋友，戒备');
     await relationCard.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
-    await page.waitForFunction(() => {
+    const manualSaveCommitted = await page.waitForFunction(() => {
         const context = globalThis.SillyTavern.getContext();
         const state = context.chatMetadata?.world_backstage_v1?.currentState;
         const relation = state?.relationships?.relations?.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
         return relation?.values?.affection === 67 && relation?.values?.trust === 44
             && relation?.tags?.includes('朋友') && state.relationships.events.at(-1)?.origin === 'manual';
-    }, null, { timeout: 5_000 });
+    }, null, { timeout: 5_000 }).then(() => true).catch(() => false);
+    if (!manualSaveCommitted) {
+        const diagnostic = await page.evaluate(() => {
+            const context = globalThis.SillyTavern.getContext();
+            const state = context.chatMetadata?.world_backstage_v1?.currentState;
+            const relation = state?.relationships?.relations?.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+            return {
+                chatMetadataKeys: Object.keys(context.chatMetadata || {}),
+                relation: relation || null,
+                latestEvents: state?.relationships?.events?.slice(-3) || [],
+                alerts: [...document.querySelectorAll('[role="alert"]')].map(element => element.innerText),
+            };
+        });
+        throw new Error(`Manual relationship save did not persist: ${JSON.stringify(diagnostic)}`);
+    }
     const desktopManagerBox = await relationManager.boundingBox();
     await page.screenshot({
         path: path.join(evidenceDir, 'world-backstage-affinity-relationship-desktop.png'),

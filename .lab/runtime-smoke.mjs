@@ -357,10 +357,6 @@ try {
         return { chatId: context.chatId, chatFile: context.characters[0]?.chat };
     });
     console.log(`Pre-reload relationship chat: ${JSON.stringify(relationshipChat)}`);
-    await page.evaluate(async () => {
-        const { saveMetadata } = await import('/script.js');
-        await saveMetadata();
-    });
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForFunction(
         () => Boolean(globalThis.__worldBackstageLoaded && globalThis.worldBackstageHost),
@@ -408,10 +404,11 @@ try {
     const persistedAfterRefresh = await relationCardAfterReload.locator('input[name="affection"]').inputValue() === '67'
         && await relationCardAfterReload.locator('input[name="trust"]').inputValue() === '44';
     const invalidationDialog = page.waitForEvent('dialog');
-    await relationCardAfterReload.locator('[data-wb-action="reset-relationship"]').evaluate(element => element.click());
+    const resetClick = relationCardAfterReload.locator('[data-wb-action="reset-relationship"]').evaluate(element => element.click());
     const dialog = await invalidationDialog;
     const resetConfirmationShown = dialog.type() === 'confirm';
     await dialog.accept();
+    await resetClick;
     await page.waitForFunction(() => {
         const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1?.currentState;
         const relation = state?.relationships?.relations?.find(item =>

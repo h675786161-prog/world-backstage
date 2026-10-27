@@ -5024,6 +5024,8 @@ export function createWorldBackstageUI({
         render();
     }
 
+    const relationshipDraftsByKey = new Map();
+
     function render() {
         // New drafts reset choices. Ambiguous people and low-coverage fields require explicit selection.
         const worldbook = getSyncStatus()?.worldbook || {};
@@ -7164,6 +7166,7 @@ export function createWorldBackstageUI({
                 reset: action === 'reset-relationship',
             });
             if (result) {
+                relationshipDraftsByKey.delete(`${sourceId}\\u0000${targetId}`);
                 for (const name of ['affection', 'trust', 'romance']) {
                     const input = editor.querySelector(`[name="${name}"]`);
                     if (input) input.value = values[name] === null ? '' : String(values[name]);
@@ -7389,6 +7392,18 @@ export function createWorldBackstageUI({
     });
 
     root.addEventListener('input', event => {
+        const relationshipCard = event.target.closest?.('.wb-affinity-relation-card');
+        if (relationshipCard && event.target.matches?.('[name="affection"], [name="trust"], [name="romance"], [name="tags"]')) {
+            const sourceId = String(relationshipCard.querySelector('[name="sourceId"]')?.value || '');
+            const targetId = String(relationshipCard.querySelector('[name="targetId"]')?.value || '');
+            if (sourceId && targetId) {
+                const key = `${sourceId}\\u0000${targetId}`;
+                const draft = relationshipDraftsByKey.get(key) || {};
+                draft[event.target.name] = String(event.target.value ?? '');
+                relationshipDraftsByKey.set(key, draft);
+            }
+            return;
+        }
         if (event.target.matches?.('[data-wb-form="social-message"] textarea[name="text"]')) {
             socialDraft = String(event.target.value || '').slice(0, 1600);
             return;

@@ -1071,11 +1071,23 @@ try {
     const separateChats = await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
         const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        const types = context.eventTypes || context.event_types;
+        // The manual-edit race above deliberately leaves its source pending.
+        // Roll that source back through the real host deletion event before
+        // using this chat as a persistence baseline.
+        if (context.chat.length > 3) {
+            context.chat.splice(2);
+            await context.eventSource.emit(types.MESSAGE_DELETED, 2);
+        }
         const nameA = context.getCurrentChatId();
+        const preIsolationStore = context.chatMetadata[core.STATE_KEY];
+        preIsolationStore.currentState.pendingSync = false;
+        await context.saveMetadata();
         await context.saveChat();
         const storeA = context.chatMetadata[core.STATE_KEY];
         const aState = structuredClone(storeA.currentState);
         aState.lastCommit = null;
+        aState.pendingSync = false;
         const a = {
             name: nameA,
             relation: storeA.currentState.relationships.relations.find(item =>

@@ -606,6 +606,47 @@ try {
         }, expected, { timeout: 5_000 });
     }
 
+    const committedSourceLifecycle = await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata.world_backstage_v1;
+        const source = context.chat[0];
+        const types = context.eventTypes || context.event_types;
+        source.swipe_id = 0;
+        source.mes = '编辑已提交的 swipe A';
+        await context.eventSource.emit(types.MESSAGE_EDITED, 0);
+        const afterEdit = {
+            selectedAStale: source.swipe_info[0].extra.world_backstage.status === 'committed'
+                && source.swipe_info[0].extra.world_backstage.stale === true,
+            siblingBStillValid: source.swipe_info[1].extra.world_backstage.status === 'committed'
+                && source.swipe_info[1].extra.world_backstage.stale === false,
+            currentAffection: store.currentState.relationships.relations.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null,
+        };
+        source.swipe_id = 1;
+        source.mes = source.swipes[1];
+        await context.eventSource.emit(types.MESSAGE_SWIPED, 0);
+        afterEdit.siblingRestore = store.currentState.relationships.relations.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null;
+        context.chat.splice(0, 1);
+        await context.eventSource.emit(types.MESSAGE_DELETED, 0);
+        return {
+            afterEdit,
+            deletedRecordsStale: source.swipe_info.every(info =>
+                info.extra.world_backstage.stale === true),
+            afterDeleteAffection: store.currentState.relationships.relations.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null,
+        };
+    });
+    console.log(`Committed source lifecycle: ${JSON.stringify(committedSourceLifecycle)}`);
+    if (!committedSourceLifecycle.afterEdit.selectedAStale
+        || !committedSourceLifecycle.afterEdit.siblingBStillValid
+        || committedSourceLifecycle.afterEdit.currentAffection !== null
+        || committedSourceLifecycle.afterEdit.siblingRestore !== 40
+        || !committedSourceLifecycle.deletedRecordsStale
+        || committedSourceLifecycle.afterDeleteAffection !== null) {
+        throw new Error(`Committed swipe edit/delete rollback mismatch: ${JSON.stringify(committedSourceLifecycle)}`);
+    }
+
     // Run a 121-floor archived chat through the real ST context, settings UI and
     // extension prompt bridge. A missing L0 at floor 50 must remain visible.
     await page.evaluate(async () => {

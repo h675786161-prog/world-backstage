@@ -1106,9 +1106,9 @@ try {
             },
         };
     });
-    if (!separateChats.a.name || !separateChats.nameB || !separateChats.initialB.eventMarker
-        || separateChats.initialB.values?.affection !== 18
-        || separateChats.initialB.values?.trust !== 81) {
+    if (!separateChats.a.name || !separateChats.nameB || !separateChats.initialB.personPresent
+        || separateChats.initialB.values?.affection !== 67
+        || separateChats.initialB.values?.trust !== 44 || !separateChats.initialB.rootOverride) {
         throw new Error('Separate-chat setup failed: ' + JSON.stringify(separateChats));
     }
     await page.evaluate(() => globalThis.worldBackstageHost?.refreshLauncher?.());

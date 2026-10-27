@@ -477,7 +477,15 @@ try {
             fullPage: true,
         });
     }
-    await peopleNavAfterReload.click({ timeout: 3_000 });
+    const onboardingDialog = page.locator('dialog[open]').filter({ hasText: 'Welcome to SillyTavern!' });
+    if (await onboardingDialog.count()) {
+        const personaName = onboardingDialog.locator('textarea.popup-input');
+        await personaName.waitFor({ state: 'visible', timeout: 3_000 });
+        await personaName.fill('LAB测试用户');
+        await onboardingDialog.locator('.popup-button-ok').click();
+        await onboardingDialog.waitFor({ state: 'hidden', timeout: 5_000 });
+    }
+    await peopleNavAfterReload.click({ timeout: 5_000 });
     await page.waitForFunction(() => [...document.querySelectorAll(
         '.wb-root .wb-side-nav [data-wb-action="set-view"][data-view="people"]',
     )].some(button => button.closest('.wb-root')?.getClientRects().length

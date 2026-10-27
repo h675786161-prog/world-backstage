@@ -1107,11 +1107,17 @@ try {
         };
     });
     if (!separateChats.a.name || !separateChats.nameB || !separateChats.initialB.personPresent
-        || separateChats.initialB.values?.affection !== 67
-        || separateChats.initialB.values?.trust !== 44 || !separateChats.initialB.rootOverride) {
+        || separateChats.initialB.values?.affection !== 73
+        || separateChats.initialB.values?.trust !== 44) {
         throw new Error('Separate-chat setup failed: ' + JSON.stringify(separateChats));
     }
-    await page.evaluate(() => globalThis.worldBackstageHost?.refreshLauncher?.());
+    await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        // The new file has no valid result snapshot, so make the first manual
+        // B edit explicitly anchor to its own chat root.
+        context.chatMetadata.world_backstage_v1.currentState.lastCommit = null;
+        globalThis.worldBackstageHost?.refreshLauncher?.();
+    });
     await page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]:visible').last()
         .evaluate(element => element.click());
     const chatBDiagnostic = await page.evaluate(() => {

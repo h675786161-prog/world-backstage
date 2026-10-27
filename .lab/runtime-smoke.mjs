@@ -1628,10 +1628,20 @@ try {
 
     // Run a 121-floor archived chat through the real ST context, settings UI and
     // extension prompt bridge. A missing L0 at floor 50 must remain visible.
-    await page.evaluate(async () => {
+    const longFloorRestoreMarker = await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
         await context.openCharacterChat('WB-long-floor-' + Date.now());
+        const storeBeforeReload = context.chatMetadata?.world_backstage_v1;
+        const marker = storeBeforeReload?.updatedAt || '';
         await context.reloadCurrentChat();
+        return marker;
+    });
+    await page.waitForFunction(marker => {
+        const store = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1;
+        return store?.updatedAt && store.updatedAt !== marker;
+    }, longFloorRestoreMarker, { timeout: 10_000 });
+    await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
         const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
         const lines = Array.from({ length: 121 }, (_, id) => `第${id}层：圣堂里的日常对话。`);
         lines[0] = '我初到圣堂，跨门槛时踢歪了门垫。';

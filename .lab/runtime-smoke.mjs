@@ -1387,6 +1387,7 @@ try {
                 state: structuredClone(state),
                 branchOverrides: structuredClone(store?.branchOverrides || {}),
                 injection: context.extensionPrompts.world_backstage_context_support?.value || '',
+                sourceSnapshot: structuredClone(context.chat[expected.messageId]?.extra?.world_backstage || null),
                 task: task && { ...task },
                 sourcePresent: Boolean(context.chat[expected.messageId]),
             };
@@ -1399,7 +1400,7 @@ try {
                 && task.chatToken === expected.chatId
                 && globalThis.worldBackstageHost.getRuntimeTaskStatus().activeTasks.length === 0;
         }, { messageId: prepared.messageId, chatId: prepared.chatId }, { timeout: 20_000 });
-        const afterRelease = await page.evaluate(() => {
+        const afterRelease = await page.evaluate(expected => {
             const context = globalThis.SillyTavern.getContext();
             const store = context.chatMetadata?.world_backstage_v1;
             const held = globalThis.__wbAffinityFixture.heldAffinity;
@@ -1409,12 +1410,20 @@ try {
                 state: structuredClone(store?.currentState),
                 branchOverrides: structuredClone(store?.branchOverrides || {}),
                 injection: context.extensionPrompts.world_backstage_context_support?.value || '',
+                sourceSnapshot: structuredClone(context.chat[expected.messageId]?.extra?.world_backstage || null),
                 held: { released: held.released, responseRead: held.responseRead, abortedAtRelease: held.signalAbortedAtRelease },
                 task: task && { ...task },
                 activeTasks: globalThis.worldBackstageHost.getRuntimeTaskStatus().activeTasks,
             };
-        });
-        const noLateCommit = JSON.stringify(beforeRelease.state) === JSON.stringify(afterRelease.state)
+        }, prepared);
+        const comparableState = state => {
+            if (!state) return state;
+            const copy = structuredClone(state);
+            delete copy.updatedAt;
+            return copy;
+        };
+        const noLateCommit = JSON.stringify(comparableState(beforeRelease.state)) === JSON.stringify(comparableState(afterRelease.state))
+            && JSON.stringify(beforeRelease.sourceSnapshot) === JSON.stringify(afterRelease.sourceSnapshot)
             && JSON.stringify(beforeRelease.branchOverrides) === JSON.stringify(afterRelease.branchOverrides)
             && beforeRelease.injection === afterRelease.injection
             && !afterRelease.state.relationships.events.some(event =>

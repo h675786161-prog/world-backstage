@@ -1349,7 +1349,18 @@ try {
             const context = globalThis.SillyTavern.getContext();
             const fixture = globalThis.__wbAffinityFixture;
             const types = context.eventTypes || context.event_types;
-            const messageId = context.chat.length + 1;
+            const priorTaskMessageId = Number(
+                globalThis.worldBackstageHost.getRuntimeTaskStatus().lastTask?.messageId ?? -1,
+            );
+            let messageId = context.chat.length + 1;
+            while (messageId <= priorTaskMessageId) {
+                const pad = context.chat.length;
+                context.chat.push(
+                    { name: context.name1, is_user: true, is_system: false, mes: '旧任务之后的隔离占位', extra: {} },
+                    { name: context.name2, is_user: false, is_system: false, mes: '隔离占位，不触发关系事件。', extra: {} },
+                );
+                messageId = pad + 3;
+            }
             const text = '我冒险救下了LAB关系验证人物。';
             context.chat.push(
                 { name: context.name1, is_user: true, is_system: false, mes: text, extra: {} },

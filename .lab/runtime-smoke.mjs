@@ -1424,12 +1424,37 @@ try {
             await context.eventSource.emit(types.MESSAGE_RECEIVED, messageId, 'normal');
             return { messageId, chatId: context.getCurrentChatId(), typeName: types.MESSAGE_RECEIVED };
         }, name);
-        await page.waitForFunction(expected => {
-            const fixture = globalThis.__wbAffinityFixture;
-            const task = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.()?.lastTask;
-            return fixture?.heldAffinity && task?.messageId === expected.messageId
-                && task?.chatToken === expected.chatId;
-        }, { messageId: prepared.messageId, chatId: prepared.chatId }, { timeout: 30_000 });
+        console.log('Late affinity prepared: ' + JSON.stringify({ name, prepared }));
+        try {
+            await page.waitForFunction(expected => {
+                const fixture = globalThis.__wbAffinityFixture;
+                const task = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.()?.lastTask;
+                return fixture?.heldAffinity && task?.messageId === expected.messageId
+                    && task?.chatToken === expected.chatId;
+            }, { messageId: prepared.messageId, chatId: prepared.chatId }, { timeout: 30_000 });
+        } catch (error) {
+            const diagnostic = await page.evaluate(expected => {
+                const context = globalThis.SillyTavern.getContext();
+                const status = globalThis.worldBackstageHost.getRuntimeTaskStatus();
+                const fixture = globalThis.__wbAffinityFixture;
+                return {
+                    expected,
+                    chatId: context.getCurrentChatId(),
+                    chatLength: context.chat.length,
+                    sourceText: context.chat[expected.messageId]?.mes || '',
+                    sourceSwipe: context.chat[expected.messageId]?.swipe_id ?? null,
+                    activeTasks: status.activeTasks,
+                    lastTask: status.lastTask,
+                    calls: { ...fixture.calls },
+                    holdNextAffinity: fixture.holdNextAffinity,
+                    heldAffinity: Boolean(fixture.heldAffinity),
+                    pendingSync: context.chatMetadata?.world_backstage_v1?.currentState?.pendingSync,
+                    affinityEnabled: context.extensionSettings.world_backstage.affinityEnabled,
+                    affinityAutoEnabled: context.extensionSettings.world_backstage.affinityAutoEnabled,
+                };
+            }, prepared);
+            throw new Error(name + ': affinity stage was not held; ' + JSON.stringify(diagnostic) + '; ' + error.message);
+        }
         const heldBeforeOperation = await page.evaluate(() => {
             const held = globalThis.__wbAffinityFixture.heldAffinity;
             return Boolean(held && !held.released && !held.responseRead);

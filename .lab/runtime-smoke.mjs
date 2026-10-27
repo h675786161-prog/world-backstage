@@ -1494,6 +1494,7 @@ try {
     });
     const stopRace = lateAffinityResults.find(item => item.name === 'stop');
     const retryMessage = stopRace.prepared.messageId;
+    const affinityCallsBeforeRetry = await page.evaluate(() => globalThis.__wbAffinityFixture.calls.affinity);
     await page.evaluate(() => { globalThis.__wbAffinityFixture.neutralUnheldAffinity = false; });
     await page.locator('[data-wb-action="manual-sync"]:visible').last()
         .evaluate(element => element.click());
@@ -1514,8 +1515,15 @@ try {
                 item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values || null,
             sourceStatus: context.chat[id]?.extra?.world_backstage?.status || '',
             task: globalThis.worldBackstageHost.getRuntimeTaskStatus().lastTask,
+            affinityCalls: globalThis.__wbAffinityFixture.calls.affinity,
         };
     }, retryMessage);
+    retryResult.callsBefore = affinityCallsBeforeRetry;
+    console.log('Explicit retry after cancellation: ' + JSON.stringify(retryResult));
+    await page.evaluate(data => {
+        globalThis.__wbAffinityAcceptanceEvidence ||= {};
+        globalThis.__wbAffinityAcceptanceEvidence.retryAfterCancel = data;
+    }, retryResult);
 
     const chatSwitchRace = await runLateAffinityCase('chat-switch', async () => {
         await page.evaluate(async name => {
@@ -1578,6 +1586,7 @@ try {
     }
 
     if (retryResult.eventCount !== 1 || retryResult.sourceStatus !== 'committed'
+        || retryResult.affinityCalls - retryResult.callsBefore !== 1
         || retryResult.values?.affection !== 90 || retryResult.values?.trust !== 33) {
         throw new Error('Cancelled affinity source could not be explicitly retried exactly once: ' + JSON.stringify(retryResult));
     }

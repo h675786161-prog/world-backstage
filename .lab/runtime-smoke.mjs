@@ -373,6 +373,36 @@ try {
         throw new Error(`Chat-root manual relationship edit was lost on a pre-snapshot swipe: ${JSON.stringify(rootSwipeState)}`);
     }
 
+    const preSnapshotLifecycle = await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        const store = context.chatMetadata[core.STATE_KEY];
+        const types = context.eventTypes || context.event_types;
+        const read = () => {
+            const relation = store.currentState.relationships.relations.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+            return relation?.values?.affection ?? null;
+        };
+        const swipeStates = [];
+        for (const swipe of [0, 1, 0]) {
+            context.chat[0].swipe_id = swipe;
+            context.chat[0].mes = context.chat[0].swipes[swipe];
+            await context.eventSource.emit(types.MESSAGE_SWIPED, 0);
+            swipeStates.push(read());
+        }
+        context.chat[0].mes = '根前编辑后的正文';
+        await context.eventSource.emit(types.MESSAGE_EDITED, 0);
+        const afterEdit = read();
+        context.chat.splice(0, 1);
+        await context.eventSource.emit(types.MESSAGE_DELETED, 0);
+        return { swipeStates, afterEdit, afterDelete: read(), events: store.currentState.relationships.events };
+    });
+    console.log(`Pre-snapshot root lifecycle: ${JSON.stringify(preSnapshotLifecycle)}`);
+    if (preSnapshotLifecycle.swipeStates.join(',') !== '67,67,67'
+        || preSnapshotLifecycle.afterEdit !== 67 || preSnapshotLifecycle.afterDelete !== 67) {
+        throw new Error(`Root relationship semantics changed across swipe/edit/delete: ${JSON.stringify(preSnapshotLifecycle)}`);
+    }
+
     const desktopManagerBox = await relationManager.boundingBox();
     await page.screenshot({
         path: path.join(evidenceDir, 'world-backstage-affinity-relationship-desktop.png'),

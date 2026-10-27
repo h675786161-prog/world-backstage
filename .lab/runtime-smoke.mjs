@@ -994,10 +994,12 @@ try {
         store.currentState = state;
     });
     const memorySetting = page.locator('[data-wb-setting="memorySystemEnabled"]').first();
-    if (!(await memorySetting.isVisible())) {
-        await page.locator('[data-wb-action="toggle-settings"]').first().evaluate(element => element.click());
-        await memorySetting.waitFor({ state: 'visible', timeout: 5_000 });
+    const settingsLayer = page.locator('.wb-root:visible .wb-settings-layer');
+    if (!(await settingsLayer.isVisible())) {
+        await page.locator('.wb-root:visible [data-wb-action="toggle-settings"]').first().click();
+        await settingsLayer.waitFor({ state: 'visible', timeout: 5_000 });
     }
+    await memorySetting.waitFor({ state: 'attached', timeout: 5_000 });
     await memorySetting.evaluate(el => {
         if (!el.checked) el.click();
     });

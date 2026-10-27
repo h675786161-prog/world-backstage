@@ -7097,7 +7097,7 @@ export function createWorldBackstageUI({
         if (action === 'save-relationship' || action === 'reset-relationship') {
             const form = target.closest('[data-wb-relationship-form]');
             if (!form) return;
-            const readFormValue = name => form.elements?.namedItem?.(name)?.value ?? '';
+            const readFormValue = name => form.querySelector(`[name="${name}"]`)?.value ?? '';
             const sourceId = String(readFormValue('sourceId') || '').trim();
             const targetId = String(readFormValue('targetId') || '').trim();
             let values;

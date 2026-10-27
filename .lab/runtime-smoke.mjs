@@ -1111,11 +1111,16 @@ try {
         || separateChats.initialB.values?.trust !== 44) {
         throw new Error('Separate-chat setup failed: ' + JSON.stringify(separateChats));
     }
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata.world_backstage_v1;
         // The new file has no valid result snapshot, so make the first manual
-        // B edit explicitly anchor to its own chat root.
-        context.chatMetadata.world_backstage_v1.currentState.lastCommit = null;
+        // B edit explicitly anchor to its own chat root. Persist the matching
+        // initial state first, so restoration has a real person/relationship baseline.
+        store.currentState.lastCommit = null;
+        store.initialState = structuredClone(store.currentState);
+        await context.saveMetadata();
+        await context.saveChat();
         globalThis.worldBackstageHost?.refreshLauncher?.();
     });
     await page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]:visible').last()

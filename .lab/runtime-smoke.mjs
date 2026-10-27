@@ -1266,7 +1266,10 @@ try {
         const diskResponse = await fetch('/api/chats/get', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ch_name: context.name2, file_name: context.getCurrentChatId() }),
+            body: JSON.stringify({
+                ch_name: context.name2, file_name: context.getCurrentChatId(),
+                avatar_url: context.characters?.[context.characterId]?.avatar,
+            }),
         });
         const diskPayload = await diskResponse.json();
         const diskStore = diskPayload?.[0]?.chat_metadata?.world_backstage_v1;
@@ -1325,10 +1328,14 @@ try {
             const fixture = globalThis.__wbAffinityFixture;
             const types = context.eventTypes || context.event_types;
             const messageId = context.chat.length + 1;
-            const text = 'LAB迟到请求 ' + name + '：角色关系事件候选。';
+            const text = '我冒险救下了LAB关系验证人物。';
             context.chat.push(
                 { name: context.name1, is_user: true, is_system: false, mes: text, extra: {} },
-                { name: context.name2, is_user: false, is_system: false, mes: 'LAB关系验证人物正在回应 ' + name, extra: {} },
+                {
+                    name: context.name2, is_user: false, is_system: false,
+                    mes: 'LAB关系验证人物：我感谢你救了我，我开始信任你。',
+                    extra: {},
+                },
             );
             if (name === 'swipe') {
                 const assistant = context.chat[messageId];

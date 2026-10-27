@@ -1323,6 +1323,22 @@ try {
 
     const lateAffinityResults = [];
     const runLateAffinityCase = async (name, operation) => {
+        await page.waitForFunction(() => {
+            const status = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.();
+            return status && status.activeTasks.length === 0
+                && !['running', 'cancelling'].includes(status.lastTask?.phase);
+        }, null, { timeout: 30_000 });
+        const preflight = await page.evaluate(() => {
+            const context = globalThis.SillyTavern.getContext();
+            const status = globalThis.worldBackstageHost.getRuntimeTaskStatus();
+            return {
+                chatId: context.getCurrentChatId(),
+                calls: { ...globalThis.__wbAffinityFixture.calls },
+                activeTasks: status.activeTasks,
+                lastTask: status.lastTask,
+            };
+        });
+        console.log('Late affinity preflight: ' + JSON.stringify({ name, ...preflight }));
         const prepared = await page.evaluate(async name => {
             const context = globalThis.SillyTavern.getContext();
             const fixture = globalThis.__wbAffinityFixture;

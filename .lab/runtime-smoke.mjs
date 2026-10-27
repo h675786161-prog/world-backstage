@@ -291,8 +291,11 @@ try {
     const historyBeforeEdit = await relationCard.locator('.wb-affinity-history').innerText();
     if (!historyBeforeEdit.includes('LAB 历史记录')) throw new Error('Relationship event history was not rendered');
     await relationCard.locator('input[name="affection"]').fill('67');
+    console.log(`After affection fill: ${JSON.stringify(await relationCard.locator('input[name="affection"]').inputValue())}`);
     await relationCard.locator('input[name="trust"]').fill('44');
+    console.log(`After trust fill: ${JSON.stringify(await relationCard.locator('input[name="trust"]').inputValue())}`);
     await relationCard.locator('input[name="tags"]').fill('朋友，戒备');
+    console.log(`After tags fill: ${JSON.stringify(await relationCard.locator('input[name="tags"]').inputValue())}`);
     const editorBeforeSave = await relationCard.evaluate(card => ({
         fields: [...card.querySelectorAll('[name]')].map(input => ({ name: input.name, value: input.value })),
         forms: [...card.querySelectorAll('form')].map(form => ({

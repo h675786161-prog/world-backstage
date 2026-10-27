@@ -946,13 +946,26 @@ try {
         const types = context.eventTypes || context.event_types;
         await context.eventSource.emit(types.MESSAGE_RECEIVED, 1, 'normal');
     });
-    const duplicate = await page.evaluate(() => ({
-        calls: globalThis.__wbAffinityFixture.calls.affinity,
-        aiEvents: globalThis.SillyTavern.getContext().chatMetadata.world_backstage_v1.currentState.relationships.events
-            .filter(event => event.origin === 'ai').length,
-    }));
-    if (duplicate.calls !== 1 || duplicate.aiEvents !== 1) {
-        throw new Error('Repeated source processing was not idempotent: ' + JSON.stringify(duplicate));
+    await page.waitForFunction(() => {
+        const fixture = globalThis.__wbAffinityFixture;
+        const task = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.();
+        return fixture?.calls.affinity >= 2 && task?.activeTasks?.length === 0;
+    }, null, { timeout: 20_000 });
+    const duplicate = await page.evaluate(() => {
+        const state = globalThis.SillyTavern.getContext().chatMetadata.world_backstage_v1.currentState;
+        const relation = state.relationships.relations.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return {
+            calls: globalThis.__wbAffinityFixture.calls.affinity,
+            values: relation?.values || null,
+            tags: relation?.tags || [],
+            aiEvents: state.relationships.events.filter(event => event.origin === 'ai').length,
+        };
+    });
+    if (duplicate.calls < 2 || duplicate.values?.affection !== 57 || duplicate.values?.trust !== 29
+        || duplicate.values?.romance !== null || !duplicate.tags.includes('感激')
+        || !duplicate.tags.includes('谨慎') || duplicate.aiEvents !== 1) {
+        throw new Error('Repeated source processing accumulated a duplicate relationship: ' + JSON.stringify(duplicate));
     }
 
     const readyForLateAffinity = await page.evaluate(() => {

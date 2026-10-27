@@ -13361,6 +13361,9 @@ function initialize() {
                     stage: String(trace.stage || ''),
                     commitOutcome: String(trace.commitOutcome || ''),
                     finishedAt: String(trace.finishedAt || ''),
+                    messageId: Number.isFinite(Number(trace.messageId)) ? Number(trace.messageId) : null,
+                    sourceKey: String(trace.sourceKey || ''),
+                    chatToken: String(trace.chatToken || ''),
                 } : null,
                 recentRequestOutcomes: runtime.apiRequestTimeline
                     .filter(item => item.chatToken === currentChatToken())

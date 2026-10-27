@@ -12097,6 +12097,7 @@ async function handleUiAction(action, payload = {}) {
             }
         }
         await saveStore(store, { immediate: true });
+        await context?.saveChat?.();
         refreshInjection();
         runtime.ui?.render();
         return { ok: true, eventId: result.eventId };

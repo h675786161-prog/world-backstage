@@ -416,18 +416,28 @@ try {
         return relation?.values?.affection === null && relation?.values?.trust === null
             && relation?.values?.romance === null;
     }, null, { timeout: 5_000 });
-    await relationCardAfterReload.locator('.wb-affinity-history summary').evaluate(element => element.click());
-    const resetPreservedHistory = (await relationCardAfterReload.locator('.wb-affinity-history').innerText())
-        .includes('用户手动重置');
-    await relationCardAfterReload.locator('input[name="affection"]').fill('101');
+    const history = relationCardAfterReload.locator('.wb-affinity-history');
+    await page.waitForFunction(() => [...document.querySelectorAll('.wb-affinity-relation-list .wb-affinity-history')]
+        .some(element => element.textContent.includes('用户手动重置')), null, { timeout: 5_000 });
+    if (await history.getAttribute('open') === null) {
+        await history.locator('summary').evaluate(element => element.click());
+    }
+    await history.locator('.wb-affinity-history-item').filter({ hasText: '用户手动重置' }).waitFor({ state: 'visible', timeout: 5_000 });
+    const resetPreservedHistory = (await history.innerText()).includes('用户手动重置');
+    const eventCountBeforeInvalidInput = await page.evaluate(() =>
+        globalThis.SillyTavern.getContext().chatMetadata.world_backstage_v1.currentState.relationships.events.length);
+    await relationCardAfterReload.locator('input[name="affection"]').evaluate(input => {
+        input.value = '101';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const invalidValueEntered = await relationCardAfterReload.locator('input[name="affection"]').inputValue() === '101';
     await relationCardAfterReload.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
-    await page.waitForTimeout(200);
-    const invalidInputRejected = await page.evaluate(() => {
+    const invalidInputRejected = invalidValueEntered && await page.evaluate(expectedCount => {
         const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1?.currentState;
         const relation = state?.relationships?.relations?.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
-        return relation?.values?.affection === null;
-    });
+        return relation?.values?.affection === null && state.relationships.events.length === expectedCount;
+    }, eventCountBeforeInvalidInput);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(100);
     const mobileManagerBox = await page.locator('.wb-affinity-manager').boundingBox();

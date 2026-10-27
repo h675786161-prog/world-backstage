@@ -877,10 +877,12 @@ try {
         if (!store) throw new Error('Long-floor chat did not attach to World Backstage');
         store.currentState = state;
     });
-    if (!(await page.locator('[data-wb-setting="memorySystemEnabled"]').count())) {
+    const memorySetting = page.locator('[data-wb-setting="memorySystemEnabled"]').first();
+    if (!(await memorySetting.isVisible())) {
         await page.locator('[data-wb-action="toggle-settings"]').first().evaluate(element => element.click());
+        await memorySetting.waitFor({ state: 'visible', timeout: 5_000 });
     }
-    await page.locator('[data-wb-setting="memorySystemEnabled"]').first().evaluate(el => {
+    await memorySetting.evaluate(el => {
         if (!el.checked) el.click();
     });
     // Disabling memory in the earlier scenario also disables auto-hide by design.

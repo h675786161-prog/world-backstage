@@ -496,6 +496,19 @@ test('manual reset is auditable and invalidating it restores the previous relati
     assert.equal(restored.state.events.find(event => event.eventType === 'manual-edit').status, 'invalidated');
 });
 
+test('manual edits accept the reserved player endpoint used by existing AI relations', () => {
+    const result = applyManualRelationshipEdit(createInitialRelationshipState(), {
+        sourceId: 'npc_a',
+        targetId: '__wb_player__',
+        validPersonIds: ['npc_a', 'stored-player-id'],
+        playerId: 'stored-player-id',
+        values: { affection: 55, trust: null, romance: null },
+        tags: ['熟识'],
+    });
+    assert.equal(result.applied, true);
+    assert.equal(getRelationship(result.state, 'npc_a', '__wb_player__')?.values.affection, 55);
+});
+
 test('manual relationship edits reject unknown people and out-of-range values', () => {
     const unknown = applyManualRelationshipEdit(createInitialRelationshipState(), {
         sourceId: 'missing',

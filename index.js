@@ -3290,6 +3290,12 @@ function currentAnchorKey() {
     return state.lastCommit?.sourceKey || 'root';
 }
 
+function restoreRootBranchState(store = getStore()) {
+    return store.branchOverrides.root
+        ? restoreBranchSnapshot(store.branchOverrides.root, store.initialState)
+        : clone(store.initialState);
+}
+
 function restoreSurfaceForState(store, state, { seedFallback = true } = {}) {
     const restored = restoreBranchSurface(store, branchSurfaceKeyFromState(state), {
         fallbackSocial: emptySocialState(),
@@ -3390,9 +3396,7 @@ function restoreLatestBranch({ pending = false } = {}) {
     let state = latest
         ? stateWithBranchOverride(latest.snapshot, store)
         : (
-            store.branchOverrides.root
-                ? restoreBranchSnapshot(store.branchOverrides.root, store.initialState)
-                : clone(store.initialState)
+            restoreRootBranchState(store)
         );
     if (pending) state = markPendingSync(state, true);
     store.currentState = trimState(state);
@@ -6304,7 +6308,7 @@ function restoreExistingSwipe(messageId) {
             ? restoreBranchSnapshot(data.base, store.initialState)
             : (previous
                 ? stateWithBranchOverride(previous.snapshot, store)
-                : clone(store.initialState));
+                : restoreRootBranchState(store));
         store.currentState = markPendingSync(base, true);
         const pendingSourceKey = messageId + ':' + swipeId + ':pending';
         const pending = {
@@ -6336,7 +6340,7 @@ function restoreExistingSwipe(messageId) {
     } else {
         const previous = findLatestResultSnapshot(Number(messageId));
         store.currentState = markPendingSync(
-            previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState),
+            previous ? stateWithBranchOverride(previous.snapshot, store) : restoreRootBranchState(store),
             true,
         );
     }
@@ -6401,7 +6405,7 @@ function onMessageEdited(messageId) {
         const previous = findLatestResultSnapshot(index);
         const safeBase = existing.base && !existing.stale
             ? restoreBranchSnapshot(existing.base, store.initialState)
-            : (previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState));
+            : (previous ? stateWithBranchOverride(previous.snapshot, store) : restoreRootBranchState(store));
         store.currentState = markPendingSync(safeBase, true);
         restoreSurfaceForState(store, store.currentState);
         saveStore(store, { immediate: true });
@@ -6424,7 +6428,7 @@ function onMessageEdited(messageId) {
     const store = getStore();
     captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
     store.currentState = markPendingSync(
-        previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState),
+        previous ? stateWithBranchOverride(previous.snapshot, store) : restoreRootBranchState(store),
         true,
     );
     restoreSurfaceForState(store, store.currentState);
@@ -6523,7 +6527,7 @@ async function resolveMessageEdit(mode) {
     const store = getStore();
     const previous = findLatestResultSnapshot(decision.messageId);
     store.currentState = markPendingSync(
-        previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState),
+        previous ? stateWithBranchOverride(previous.snapshot, store) : restoreRootBranchState(store),
         true,
     );
     restoreSurfaceForState(store, store.currentState);
@@ -6556,7 +6560,7 @@ function onMessageDeleted(messageId) {
     captureBranchSurface(store, branchSurfaceKeyFromState(store.currentState));
     const previous = findLatestResultSnapshot(index);
     store.currentState = markPendingSync(
-        previous ? stateWithBranchOverride(previous.snapshot, store) : clone(store.initialState),
+        previous ? stateWithBranchOverride(previous.snapshot, store) : restoreRootBranchState(store),
         true,
     );
     restoreSurfaceForState(store, store.currentState);

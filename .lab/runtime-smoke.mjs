@@ -485,6 +485,17 @@ try {
         await onboardingDialog.locator('.popup-button-ok').click();
         await onboardingDialog.waitFor({ state: 'hidden', timeout: 5_000 });
     }
+    await page.waitForFunction(() => (
+        globalThis.localStorage?.getItem('world-backstage:mama-note:seen') === '1'
+        || Boolean(document.querySelector('#wb-mama-note-modal'))
+    ), null, { timeout: 5_000 });
+    const mamaNote = page.locator('#wb-mama-note-modal');
+    if (await mamaNote.isVisible()) {
+        const closeNote = mamaNote.locator('[data-wb-mama-note-close]');
+        await closeNote.waitFor({ state: 'visible', timeout: 3_000 });
+        await closeNote.click();
+        await mamaNote.waitFor({ state: 'hidden', timeout: 3_000 });
+    }
     await peopleNavAfterReload.click({ timeout: 5_000 });
     await page.waitForFunction(() => [...document.querySelectorAll(
         '.wb-root .wb-side-nav [data-wb-action="set-view"][data-view="people"]',

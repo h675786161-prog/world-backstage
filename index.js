@@ -12053,9 +12053,6 @@ async function refreshSocialMoments() {
 
 async function handleUiAction(action, payload = {}) {
     if (action === 'edit-relationship') {
-        // A pending analysis may have captured the pre-edit relationship state.
-        // Invalidate it before applying the manual event so a late response cannot overwrite this edit.
-        invalidateAsyncWorldContext();
         const store = getStore();
         const context = getContext();
         const people = Array.isArray(store.currentState?.people) ? store.currentState.people : [];
@@ -12080,6 +12077,8 @@ async function handleUiAction(action, payload = {}) {
                         : '这条有向关系无效，不能指向自己。');
         }
 
+        // Validation is complete. Invalidate older writers immediately before commit so they cannot overwrite this edit.
+        invalidateAsyncWorldContext();
         store.currentState = { ...store.currentState, relationships: result.state };
         const latest = latestAssistantEntry();
         const message = latest?.message;

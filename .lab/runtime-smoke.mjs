@@ -1455,6 +1455,11 @@ try {
             await context.saveChat();
         }, prepared.messageId);
     });
+    await runLateAffinityCase('stop', async () => {
+        const stop = page.locator('[data-wb-action="cancel-simulation"]:visible').last();
+        await stop.waitFor({ state: 'visible', timeout: 5_000 });
+        await stop.evaluate(element => element.click());
+    });
     const chatSwitchRace = await runLateAffinityCase('chat-switch', async () => {
         await page.evaluate(async name => {
             const context = globalThis.SillyTavern.getContext();
@@ -1502,11 +1507,6 @@ try {
         await context.openCharacterChat(name);
         await context.reloadCurrentChat();
     }, separateChats.a.name);
-    await runLateAffinityCase('stop', async () => {
-        const stop = page.locator('[data-wb-action="cancel-simulation"]:visible').last();
-        await stop.waitFor({ state: 'visible', timeout: 5_000 });
-        await stop.evaluate(element => element.click());
-    });
 
     if (chatSwitchRace.beforeRelease.chatId !== separateChats.nameB
         || !chatSwitchRace.noLateCommit

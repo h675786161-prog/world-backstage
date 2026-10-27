@@ -609,7 +609,32 @@ try {
     const committedSourceLifecycle = await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
         const store = context.chatMetadata.world_backstage_v1;
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        const affinity = await import('/scripts/extensions/third-party/world-backstage/affinity.js');
         const source = context.chat[0];
+        const futureText = 'LAB关系验证人物：删除点之后的已推演正文';
+        const futureKey = `1:0:${core.hashText(futureText)}`;
+        const futureState = structuredClone(store.currentState);
+        const futureEdit = affinity.applyManualRelationshipEdit(futureState.relationships, {
+            sourceId: 'lab_affinity_npc', targetId: '__wb_player__',
+            validPersonIds: ['lab_affinity_npc'], playerId: '__wb_player__',
+            values: { affection: 55, trust: 51, romance: null }, tags: [],
+        });
+        if (!futureEdit.applied) throw new Error('Could not prepare post-source snapshot');
+        futureState.relationships = futureEdit.state;
+        futureState.lastCommit = { messageId: 1, swipeId: 0, sourceKey: futureKey, at: 1 };
+        const futureRecord = {
+            sourceKey: futureKey, status: 'committed', stale: false,
+            result: core.createCompactSnapshot(futureState, {
+                messageId: 1, swipeId: 0, sourceKey: futureKey, kind: 'result',
+            }),
+        };
+        const futureMessage = context.chat[1];
+        futureMessage.name = context.name2;
+        futureMessage.is_user = false;
+        futureMessage.mes = futureText;
+        futureMessage.extra ||= {};
+        futureMessage.extra[core.SNAPSHOT_KEY] = futureRecord;
         const types = context.eventTypes || context.event_types;
         source.swipe_id = 0;
         source.mes = '编辑已提交的 swipe A';
@@ -635,8 +660,8 @@ try {
         await context.eventSource.emit(types.MESSAGE_DELETED, 0);
         return {
             afterEdit,
-            deletedRecordsStale: source.swipe_info.every(info =>
-                info.extra.world_backstage.stale === true),
+            deletedSourceRemoved: !context.chat.includes(source),
+            postSourceSnapshotStale: futureRecord.stale === true,
             afterDeleteAffection: store.currentState.relationships.relations.find(item =>
                 item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null,
             afterDeleteInjection: String(context.extensionPrompts.world_backstage_context_support?.value || '')
@@ -650,7 +675,8 @@ try {
         || committedSourceLifecycle.afterEdit.siblingRestore !== 40
         || committedSourceLifecycle.afterEdit.relationshipInjected
         || !committedSourceLifecycle.afterEdit.siblingInjectionRestored
-        || !committedSourceLifecycle.deletedRecordsStale
+        || !committedSourceLifecycle.deletedSourceRemoved
+        || !committedSourceLifecycle.postSourceSnapshotStale
         || committedSourceLifecycle.afterDeleteAffection !== null
         || committedSourceLifecycle.afterDeleteInjection) {
         throw new Error(`Committed swipe edit/delete rollback mismatch: ${JSON.stringify(committedSourceLifecycle)}`);

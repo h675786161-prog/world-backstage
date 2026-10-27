@@ -336,7 +336,11 @@ try {
         path: path.join(evidenceDir, 'world-backstage-affinity-relationship-desktop.png'),
         fullPage: true,
     });
-    const relationshipChatId = await page.evaluate(() => globalThis.SillyTavern.getContext().chatId);
+    const relationshipChat = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        return { chatId: context.chatId, chatFile: context.characters[0]?.chat };
+    });
+    console.log(`Pre-reload relationship chat: ${JSON.stringify(relationshipChat)}`);
     await page.evaluate(() => globalThis.SillyTavern.getContext().saveChat?.());
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForFunction(
@@ -357,7 +361,7 @@ try {
         context.characters[0].chat = chatId;
         const { getChat } = await import('/script.js');
         await getChat();
-    }, relationshipChatId);
+    }, relationshipChat.chatFile || relationshipChat.chatId);
     await page.waitForFunction(() => {
         const context = globalThis.SillyTavern?.getContext?.();
         return Boolean(context?.chat?.length && context?.chatMetadata?.world_backstage_v1);

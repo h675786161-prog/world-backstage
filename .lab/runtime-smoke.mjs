@@ -1410,7 +1410,11 @@ try {
                 sourcePresent: Boolean(context.chat[expected.messageId]),
             };
         }, prepared);
-        await page.evaluate(() => globalThis.__wbAffinityFixture.releaseHeldAffinity());
+        await page.evaluate(() => {
+            const fixture = globalThis.__wbAffinityFixture;
+            fixture.neutralUnheldAffinity = true;
+            fixture.releaseHeldAffinity();
+        });
         await page.waitForFunction(expected => {
             const task = globalThis.worldBackstageHost?.getRuntimeTaskStatus?.()?.lastTask;
             return task?.phase === 'cancelled' && task.stage === 'cancelled'

@@ -1124,7 +1124,7 @@ try {
     });
     await page.evaluate(() => globalThis.worldBackstageHost?.open?.());
     const memorySetting = page.locator('[data-wb-setting="memorySystemEnabled"]').first();
-    const settingsLayer = page.locator('.wb-root:visible .wb-settings-layer');
+    const settingsLayer = page.locator('.wb-root .wb-settings-layer');
     if (!(await settingsLayer.isVisible())) {
         const toggleSettings = page.locator('.wb-root button[data-wb-action="toggle-settings"][aria-label="全局设置"]').first();
         await toggleSettings.waitFor({ state: 'attached', timeout: 5_000 });

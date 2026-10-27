@@ -1122,9 +1122,29 @@ try {
         || separateChats.initialB.values?.trust !== 81) {
         throw new Error('Separate-chat setup failed: ' + JSON.stringify(separateChats));
     }
-    await page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]').first()
+    await page.evaluate(() => globalThis.worldBackstageHost?.refreshLauncher?.());
+    await page.locator('.wb-side-nav [data-wb-action="set-view"][data-view="people"]:visible').last()
         .evaluate(element => element.click());
-    const chatBCard = page.locator('.wb-affinity-manager .wb-affinity-relation-list .wb-affinity-relation-card')
+    const chatBDiagnostic = await page.evaluate(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const store = context.chatMetadata.world_backstage_v1;
+        return {
+            chatId: context.getCurrentChatId(),
+            personIds: store.currentState.people.map(person => person.id),
+            relations: store.currentState.relationships.relations.map(item => ({
+                sourceId: item.sourceId, targetId: item.targetId, values: item.values, tags: item.tags,
+            })),
+            rootOverride: Boolean(store.branchOverrides?.root),
+            currentView: document.querySelector('.wb-side-nav [data-view="people"]')?.getAttribute('aria-current'),
+            managerCount: document.querySelectorAll('.wb-affinity-manager').length,
+            managerText: document.querySelector('.wb-affinity-manager')?.innerText || '',
+            visibleCards: [...document.querySelectorAll('.wb-affinity-relation-card')].filter(node =>
+                Boolean(node.getClientRects().length)).map(node => node.innerText),
+        };
+    });
+    console.log('New chat relationship view before edit: ' + JSON.stringify(chatBDiagnostic));
+    await page.screenshot({ path: path.join(evidenceDir, 'world-backstage-chat-b-before-edit.png'), fullPage: true });
+    const chatBCard = page.locator('.wb-affinity-manager .wb-affinity-relation-list .wb-affinity-relation-card:visible')
         .filter({ hasText: 'LAB关系验证人物' }).first();
     await chatBCard.waitFor({ state: 'visible', timeout: 5_000 });
     await chatBCard.evaluate(card => {

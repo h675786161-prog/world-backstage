@@ -255,7 +255,7 @@ try {
         if (!state.people.some(person => person.id === 'lab_affinity_npc')) {
             state.people.push({
                 id: 'lab_affinity_npc', name: 'LAB关系验证人物', isUser: false,
-                knowledge: 'backstage', locked: true,
+                knowledge: 'known', locked: true,
             });
         }
         const seeded = affinity.applyRelationshipEvent(

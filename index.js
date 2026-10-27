@@ -13339,6 +13339,27 @@ function initialize() {
         open: options => runtime.ui?.open?.(options),
         openEvent: eventId => runtime.ui?.openEvent?.(eventId),
         close: () => runtime.ui?.close?.(),
+        getRuntimeTaskStatus: () => {
+            const trace = runtime.lastTaskTrace;
+            return {
+                activeTasks: activeBackgroundTaskLabels(),
+                lastTask: trace ? {
+                    taskKind: String(trace.taskKind || ''),
+                    phase: String(trace.phase || ''),
+                    stage: String(trace.stage || ''),
+                    commitOutcome: String(trace.commitOutcome || ''),
+                    finishedAt: String(trace.finishedAt || ''),
+                } : null,
+                recentRequestOutcomes: runtime.apiRequestTimeline
+                    .filter(item => item.chatToken === currentChatToken())
+                    .slice(-8)
+                    .map(item => ({
+                        taskKind: String(item.taskKind || ''),
+                        outcome: String(item.outcome || ''),
+                        finishedAt: String(item.finishedAt || ''),
+                    })),
+            };
+        },
         getLingqiMascotAsset: state => LINGQI_MASCOT_DATA_URLS[state] || LINGQI_MASCOT_DATA_URLS.idle || '',
         getLingqiConversation: () => normalizeLingqiState(getStore().lingqi || emptyLingqiState()).messages.map(message => ({ ...message })),
         chatWithLingqi: text => sendLingqiMessage(text),

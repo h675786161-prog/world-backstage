@@ -341,7 +341,10 @@ try {
         return { chatId: context.chatId, chatFile: context.characters[0]?.chat };
     });
     console.log(`Pre-reload relationship chat: ${JSON.stringify(relationshipChat)}`);
-    await page.evaluate(() => globalThis.SillyTavern.getContext().saveChat?.());
+    await page.evaluate(async () => {
+        const { saveMetadata } = await import('/script.js');
+        await saveMetadata();
+    });
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForFunction(
         () => Boolean(globalThis.__worldBackstageLoaded && globalThis.worldBackstageHost),

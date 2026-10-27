@@ -1102,13 +1102,18 @@ try {
             rootOverride: Boolean(storeA.branchOverrides?.root),
             branchOverrides: Object.keys(storeA.branchOverrides || {}).filter(key => key !== 'root'),
         };
+        const bState = core.createInitialState();
+        bState.people = structuredClone(storeA.currentState.people);
+        bState.relationships = structuredClone(storeA.currentState.relationships);
+        bState.lastCommit = null;
+        bState.pendingSync = false;
         const nameB = 'WB-affinity-isolation-' + Date.now();
         await context.openCharacterChat(nameB);
         context.chat.splice(0, context.chat.length,
             { name: context.name1, is_user: true, is_system: false, mes: 'CHAT_B_ONLY_MARKER：LAB关系验证人物，我在聊天B记下这段关系。', extra: {} },
             { name: context.name2, is_user: false, is_system: false, mes: 'LAB关系验证人物记住了聊天B。', extra: {} });
         await context.saveChat();
-        return { a, aState, nameB };
+        return { a, aState, bState, nameB };
     });
     if (!separateChats.a.name || !separateChats.nameB
         || separateChats.a.relation?.values?.affection !== 73
@@ -1131,7 +1136,7 @@ try {
         mimeType: 'application/json',
         buffer: Buffer.from(JSON.stringify({
             format: 'world-backstage-state', version: 26,
-            state: separateChats.aState,
+            state: separateChats.bState,
         })),
     });
     await page.waitForFunction(() => {

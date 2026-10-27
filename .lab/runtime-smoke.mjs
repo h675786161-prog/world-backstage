@@ -347,6 +347,32 @@ try {
         || rootOverrideAfterEdit.affection !== 67 || rootOverrideAfterEdit.trust !== 44) {
         throw new Error(`Manual edit has no recoverable root override: ${JSON.stringify(rootOverrideAfterEdit)}`);
     }
+    // Reproduce root-override semantics through SillyTavern's real swipe event
+    // before any swipe has a committed world snapshot.
+    const rootSwipeState = await page.evaluate(async () => {
+        const context = globalThis.SillyTavern.getContext();
+        const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
+        const store = context.chatMetadata[core.STATE_KEY];
+        context.chat.splice(0, context.chat.length, {
+            name: context.name2, is_user: false, is_system: false, mes: '根前 swipe A',
+            swipes: ['根前 swipe A', '根前 swipe B'], swipe_id: 0,
+            swipe_info: [{ extra: {} }, { extra: {} }], extra: {},
+        });
+        const types = context.eventTypes || context.event_types;
+        context.chat[0].swipe_id = 1;
+        context.chat[0].mes = context.chat[0].swipes[1];
+        await context.eventSource.emit(types.MESSAGE_SWIPED, 0);
+        return {
+            values: store.currentState.relationships.relations.find(item =>
+                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values || null,
+            rootOverride: Boolean(store.branchOverrides?.root),
+        };
+    });
+    console.log(`Root override after real pre-snapshot swipe: ${JSON.stringify(rootSwipeState)}`);
+    if (rootSwipeState.values?.affection !== 67 || rootSwipeState.values?.trust !== 44) {
+        throw new Error(`Chat-root manual relationship edit was lost on a pre-snapshot swipe: ${JSON.stringify(rootSwipeState)}`);
+    }
+
     const desktopManagerBox = await relationManager.boundingBox();
     await page.screenshot({
         path: path.join(evidenceDir, 'world-backstage-affinity-relationship-desktop.png'),

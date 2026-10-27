@@ -12,7 +12,24 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const pageErrors = [];
-page.on('pageerror', error => pageErrors.push(String(error?.stack || error)));
+const pageErrorContexts = [];
+const pageErrorContextTasks = [];
+page.on('pageerror', error => {
+    const record = { error: String(error?.stack || error), chatId: 'pending' };
+    pageErrorContexts.push(record);
+    pageErrors.push(record.error);
+    pageErrorContextTasks.push(page.evaluate(() => {
+        const context = globalThis.SillyTavern?.getContext?.();
+        const store = context?.chatMetadata?.world_backstage_v1;
+        return {
+            chatId: context?.getCurrentChatId?.() || '',
+            messageCount: context?.chat?.length || 0,
+            eventCount: store?.currentState?.relationships?.events?.length || 0,
+            archiveCount: store?.memorySummaryArchive?.length || 0,
+            summaryCount: store?.currentState?.storyMemory?.summaries?.length || 0,
+        };
+    }).then(details => Object.assign(record, details)).catch(() => undefined));
+});
 
 let report;
 try {
@@ -1766,8 +1783,10 @@ try {
         };
     });
 
+    await Promise.all(pageErrorContextTasks);
     report = {
         ...(report || {}),
+        pageErrorContexts,
         pluginLoaded: true,
         helper,
         runtime,

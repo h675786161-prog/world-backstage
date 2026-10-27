@@ -1230,6 +1230,11 @@ try {
         throw new Error('Chat A state did not restore after switching back: ' + JSON.stringify(switchedBackA));
     }
     await page.evaluate(async () => globalThis.SillyTavern.getContext().reloadCurrentChat());
+    await page.waitForFunction(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const prompt = context.extensionPrompts.world_backstage_context_support?.value || '';
+        return prompt.includes('朋友') && prompt.includes('戒备');
+    }, null, { timeout: 10_000 });
     const reloadedA = await page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();
         const store = context.chatMetadata.world_backstage_v1;
@@ -1251,6 +1256,11 @@ try {
         await context.openCharacterChat(name);
         await context.reloadCurrentChat();
     }, separateChats.nameB);
+    await page.waitForFunction(() => {
+        const context = globalThis.SillyTavern.getContext();
+        const prompt = context.extensionPrompts.world_backstage_context_support?.value || '';
+        return prompt.includes('B-only') && prompt.includes('B-history');
+    }, null, { timeout: 10_000 });
     const reloadedB = await page.evaluate(() => {
         const context = globalThis.SillyTavern.getContext();
         const store = context.chatMetadata.world_backstage_v1;
@@ -1286,6 +1296,7 @@ try {
         || reloadedA.values?.trust !== 44 || !reloadedA.historyHasA
         || !reloadedA.tags.includes('朋友') || !reloadedA.tags.includes('戒备')
         || !reloadedA.injection.includes('LAB关系验证人物')
+        || !reloadedA.injection.includes('朋友') || !reloadedA.injection.includes('戒备')
         || reloadedB.values?.affection !== 24 || reloadedB.values?.trust !== 76
         || !reloadedB.historyHasB || !reloadedB.tags.includes('B-history')
         || !reloadedB.hasRoot || reloadedA.historyHasB || reloadedB.historyHasA) {

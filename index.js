@@ -12077,27 +12077,18 @@ async function handleUiAction(action, payload = {}) {
                         : '这条有向关系无效，不能指向自己。');
         }
 
-        // Validation is complete. Invalidate older writers immediately before commit so they cannot overwrite this edit.
+        // Preserve the edit at the same anchor restoreLatestBranch will actually read.
+        // A newer message without a committed simulation must not hide the
+        // most recent committed branch, and an unanchored state uses root.
         invalidateAsyncWorldContext();
+        const latest = findLatestResultSnapshot();
+        const anchorKey = latest?.snapshot?.meta?.sourceKey || 'root';
         store.currentState = { ...store.currentState, relationships: result.state };
-        const latest = latestAssistantEntry();
-        const message = latest?.message;
-        if (latest && message) {
-            const swipeId = Number(message.swipe_id ?? 0);
-            const sourceKey = branchSourceKey(latest.index, message, swipeId);
-            const record = branchDataFromMessage(message, swipeId);
-            if (committedBranchMatchesSource(record, sourceKey)) {
-                record.result = createBranchSnapshot(store.currentState, {
-                    messageId: latest.index,
-                    swipeId,
-                    sourceKey,
-                    kind: 'result',
-                });
-                await context?.saveChat?.();
-            }
-        }
+        store.branchOverrides[anchorKey] = createBranchSnapshot(store.currentState, {
+            sourceKey: anchorKey,
+            kind: 'manual-relationship',
+        });
         await saveStore(store, { immediate: true });
-        await context?.saveChat?.();
         refreshInjection();
         runtime.ui?.render();
         return { ok: true, eventId: result.eventId };

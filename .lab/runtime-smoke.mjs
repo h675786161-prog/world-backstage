@@ -534,7 +534,7 @@ try {
         const core = await import('/scripts/extensions/third-party/world-backstage/core.js');
         const affinity = await import('/scripts/extensions/third-party/world-backstage/affinity.js');
         const store = context.chatMetadata[core.STATE_KEY];
-        const texts = ['LAB分支甲', 'LAB分支乙'];
+        const texts = ['LAB关系验证人物：LAB分支甲', 'LAB关系验证人物：LAB分支乙'];
         const keys = texts.map((text, swipe) => `0:${swipe}:${core.hashText(text)}`);
         function stateFor(value, key, swipe) {
             const state = structuredClone(store.currentState);
@@ -590,7 +590,7 @@ try {
             .find(item => item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__').values.affection;
     }, branchFixture.keys[1]);
     if (siblingBeforeSwitch !== 40) throw new Error('Manual edit changed the sibling branch');
-    for (const [swipe, expected] of [[1, 40], [0, 73]]) {
+    for (const [swipe, expected] of [[1, 40], [0, 73], [1, 40]]) {
         await page.evaluate(async index => {
             const context = globalThis.SillyTavern.getContext();
             context.chat[0].swipe_id = index;
@@ -621,12 +621,16 @@ try {
                 && source.swipe_info[1].extra.world_backstage.stale === false,
             currentAffection: store.currentState.relationships.relations.find(item =>
                 item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null,
+            relationshipInjected: String(context.extensionPrompts.world_backstage_context_support?.value || '')
+                .includes('LAB关系验证人物'),
         };
         source.swipe_id = 1;
         source.mes = source.swipes[1];
         await context.eventSource.emit(types.MESSAGE_SWIPED, 0);
         afterEdit.siblingRestore = store.currentState.relationships.relations.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null;
+        afterEdit.siblingInjectionRestored = String(context.extensionPrompts.world_backstage_context_support?.value || '')
+            .includes('LAB关系验证人物');
         context.chat.splice(0, 1);
         await context.eventSource.emit(types.MESSAGE_DELETED, 0);
         return {
@@ -635,6 +639,8 @@ try {
                 info.extra.world_backstage.stale === true),
             afterDeleteAffection: store.currentState.relationships.relations.find(item =>
                 item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null,
+            afterDeleteInjection: String(context.extensionPrompts.world_backstage_context_support?.value || '')
+                .includes('LAB关系验证人物'),
         };
     });
     console.log(`Committed source lifecycle: ${JSON.stringify(committedSourceLifecycle)}`);
@@ -642,8 +648,11 @@ try {
         || !committedSourceLifecycle.afterEdit.siblingBStillValid
         || committedSourceLifecycle.afterEdit.currentAffection !== null
         || committedSourceLifecycle.afterEdit.siblingRestore !== 40
+        || committedSourceLifecycle.afterEdit.relationshipInjected
+        || !committedSourceLifecycle.afterEdit.siblingInjectionRestored
         || !committedSourceLifecycle.deletedRecordsStale
-        || committedSourceLifecycle.afterDeleteAffection !== null) {
+        || committedSourceLifecycle.afterDeleteAffection !== null
+        || committedSourceLifecycle.afterDeleteInjection) {
         throw new Error(`Committed swipe edit/delete rollback mismatch: ${JSON.stringify(committedSourceLifecycle)}`);
     }
 

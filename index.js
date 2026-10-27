@@ -5983,6 +5983,18 @@ function scheduleAutoSync(messageId, type) {
         return;
     }
     const sourceKey = branchSourceKey(numericMessageId, message);
+    const existingBranch = branchDataFromMessage(message);
+    if (
+        existingBranch?.status === 'committed'
+        && existingBranch.result
+        && !existingBranch.stale
+        && branchRecordMatchesSource(existingBranch, sourceKey)
+    ) {
+        // MESSAGE_RECEIVED can be replayed by host integrations and tests.
+        // Do not mark an already committed source pending before its normal
+        // runSimulationForMessage guard can observe the committed result.
+        return;
+    }
     const chatToken = currentChatToken();
     const queueKey = `${chatToken}:${sourceKey}`;
     const duplicateTask = Boolean(

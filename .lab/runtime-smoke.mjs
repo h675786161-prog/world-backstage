@@ -296,7 +296,7 @@ try {
     await relationCard.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
     await page.waitForFunction(() => {
         const context = globalThis.SillyTavern.getContext();
-        const state = context.chatMetadata?.world_backstage?.currentState;
+        const state = context.chatMetadata?.world_backstage_v1?.currentState;
         const relation = state?.relationships?.relations?.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
         return relation?.values?.affection === 67 && relation?.values?.trust === 44
@@ -333,7 +333,7 @@ try {
     const resetConfirmationShown = dialog.type() === 'confirm';
     await dialog.accept();
     await page.waitForFunction(() => {
-        const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage?.currentState;
+        const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1?.currentState;
         const relation = state?.relationships?.relations?.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
         return relation?.values?.affection === null && relation?.values?.trust === null
@@ -346,7 +346,7 @@ try {
     await relationCardAfterReload.locator('[data-wb-action="save-relationship"]').evaluate(element => element.click());
     await page.waitForTimeout(200);
     const invalidInputRejected = await page.evaluate(() => {
-        const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage?.currentState;
+        const state = globalThis.SillyTavern.getContext().chatMetadata?.world_backstage_v1?.currentState;
         const relation = state?.relationships?.relations?.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
         return relation?.values?.affection === null;

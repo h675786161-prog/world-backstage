@@ -601,6 +601,9 @@ try {
         if (!store) throw new Error('Long-floor chat did not attach to World Backstage');
         store.currentState = state;
     });
+    if (!(await page.locator('[data-wb-setting="memorySystemEnabled"]').count())) {
+        await page.locator('[data-wb-action="toggle-settings"]').first().evaluate(element => element.click());
+    }
     await page.locator('[data-wb-setting="memorySystemEnabled"]').first().evaluate(el => {
         if (!el.checked) el.click();
     });

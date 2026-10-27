@@ -287,6 +287,7 @@ try {
     await relationCard.waitFor({ state: 'visible', timeout: 5_000 });
     const unknownBeforeEdit = await relationCard.locator('input[name="affection"]').inputValue() === ''
         && await relationCard.locator('input[name="romance"]').inputValue() === '';
+    await relationCard.locator('.wb-affinity-history summary').click();
     const historyBeforeEdit = await relationCard.locator('.wb-affinity-history').innerText();
     if (!historyBeforeEdit.includes('LAB 历史记录')) throw new Error('Relationship event history was not rendered');
     await relationCard.locator('input[name="affection"]').fill('67');
@@ -338,6 +339,7 @@ try {
         return relation?.values?.affection === null && relation?.values?.trust === null
             && relation?.values?.romance === null;
     }, null, { timeout: 5_000 });
+    await relationCardAfterReload.locator('.wb-affinity-history summary').click();
     const resetPreservedHistory = (await relationCardAfterReload.locator('.wb-affinity-history').innerText())
         .includes('用户手动重置');
     await relationCardAfterReload.locator('input[name="affection"]').fill('101');

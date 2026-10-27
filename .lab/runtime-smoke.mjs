@@ -749,16 +749,24 @@ try {
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null;
         afterEdit.siblingInjectionRestored = String(context.extensionPrompts.world_backstage_context_support?.value || '')
             .includes('LAB关系验证人物');
-        const futureText = '删除点之后的已推演正文';
+        const futureText = 'LAB关系验证人物：删除点之后，仍记得玩家救下我的经历。';
         const futureKey = `1:0:${core.hashText(futureText)}`;
         const futureState = structuredClone(store.currentState);
-        const futureEdit = affinity.applyManualRelationshipEdit(futureState.relationships, {
-            sourceId: 'lab_affinity_npc', targetId: '__wb_player__',
+        const futureAnalysis = affinity.applyAffinityAnalysisPayload(futureState.relationships, {
+            changes: [{
+                source_id: 'lab_affinity_npc', target_id: '__wb_player__',
+                affection_delta: 12, trust_delta: 9, romance_delta: 0,
+                relation_tag_suggestion: ['共同经历', '信任增加'],
+                reason: '来源删除回归：人物回应一次救援经历。',
+                memory_note: '来源删除回归的关系记忆标记：她记得玩家救下了她。',
+            }],
+        }, {
             validPersonIds: ['lab_affinity_npc'], playerId: '__wb_player__',
-            values: { affection: 55, trust: 51, romance: null }, tags: [],
+            sourceKey: futureKey, sourceMessageId: 1, sourceSwipeId: 0,
+            romanceEnabled: false,
         });
-        if (!futureEdit.applied) throw new Error('Could not prepare post-source snapshot');
-        futureState.relationships = futureEdit.state;
+        if (futureAnalysis.appliedCount !== 1) throw new Error('Could not prepare post-source AI relationship snapshot');
+        futureState.relationships = futureAnalysis.state;
         futureState.lastCommit = { messageId: 1, swipeId: 0, sourceKey: futureKey, at: 1 };
         const futureRecord = {
             sourceKey: futureKey, status: 'committed', stale: false,
@@ -782,6 +790,10 @@ try {
                 item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.values.affection ?? null,
             afterDeleteInjection: String(context.extensionPrompts.world_backstage_context_support?.value || '')
                 .includes('LAB关系验证人物'),
+            afterDeleteMemoryNoteInjected: String(context.extensionPrompts.world_backstage_context_support?.value || '')
+                .includes('来源删除回归的关系记忆标记'),
+            activeDeletedSourceEvents: store.currentState.relationships.events.filter(event =>
+                event.status === 'active' && event.sourceKey === futureKey).length,
         };
     });
     console.log(`Committed source lifecycle: ${JSON.stringify(committedSourceLifecycle)}`);
@@ -794,7 +806,9 @@ try {
         || !committedSourceLifecycle.deletedSourceRemoved
         || !committedSourceLifecycle.postSourceSnapshotStale
         || committedSourceLifecycle.afterDeleteAffection !== null
-        || committedSourceLifecycle.afterDeleteInjection) {
+        || committedSourceLifecycle.afterDeleteInjection
+        || committedSourceLifecycle.afterDeleteMemoryNoteInjected
+        || committedSourceLifecycle.activeDeletedSourceEvents !== 0) {
         throw new Error(`Committed swipe edit/delete rollback mismatch: ${JSON.stringify(committedSourceLifecycle)}`);
     }
 

@@ -7097,8 +7097,9 @@ export function createWorldBackstageUI({
         if (action === 'save-relationship' || action === 'reset-relationship') {
             const form = target.closest('[data-wb-relationship-form]');
             if (!form) return;
-            const sourceId = String(form.elements?.sourceId?.value || '').trim();
-            const targetId = String(form.elements?.targetId?.value || '').trim();
+            const readFormValue = name => form.elements?.namedItem?.(name)?.value ?? '';
+            const sourceId = String(readFormValue('sourceId') || '').trim();
+            const targetId = String(readFormValue('targetId') || '').trim();
             let values;
             let tags;
             if (action === 'reset-relationship') {
@@ -7108,7 +7109,7 @@ export function createWorldBackstageUI({
                 tags = [];
             } else {
                 const parseScore = name => {
-                    const raw = String(form.elements?.[name]?.value ?? '').trim();
+                    const raw = String(readFormValue(name) ?? '').trim();
                     if (!raw) return null;
                     const parsed = Number(raw);
                     if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
@@ -7126,7 +7127,7 @@ export function createWorldBackstageUI({
                     notify(String(error?.message || error), 'error');
                     return;
                 }
-                tags = String(form.elements?.tags?.value || '')
+                tags = String(readFormValue('tags') || '')
                     .split(/[,，、]/).map(item => item.trim()).filter(Boolean);
             }
             const result = await invokeAction('edit-relationship', {

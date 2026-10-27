@@ -7097,7 +7097,7 @@ export function createWorldBackstageUI({
         if (action === 'save-relationship' || action === 'reset-relationship') {
             const form = target.closest('[data-wb-relationship-form]');
             if (!form) return;
-            const editor = form.closest('.wb-affinity-relation-card') || form;
+            const editor = target.closest('.wb-affinity-relation-card') || form;
             const readFormValue = name => editor.querySelector(`[name="${name}"]`)?.value ?? '';
             const sourceId = String(readFormValue('sourceId') || '').trim();
             const targetId = String(readFormValue('targetId') || '').trim();

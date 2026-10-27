@@ -1199,10 +1199,30 @@ try {
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
         return relation?.values?.affection === 24 && relation?.values?.trust === 76;
     }, null, { timeout: 5_000 });
-    const bManualHistoryId = await page.evaluate(async () => {
+    await page.locator('.wb-toast').filter({ hasText: '关系已保存为手动记录。' })
+        .waitFor({ state: 'visible', timeout: 5_000 });
+    await page.waitForFunction(async () => {
         const context = globalThis.SillyTavern.getContext();
-        await context.saveChat();
-        const events = context.chatMetadata.world_backstage_v1.currentState.relationships.events;
+        const response = await fetch('/api/chats/get', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ch_name: context.name2, file_name: context.getCurrentChatId(),
+                avatar_url: context.characters?.[context.characterId]?.avatar,
+            }),
+        });
+        const payload = await response.json();
+        const diskStore = payload?.[0]?.chat_metadata?.world_backstage_v1;
+        const relation = diskStore?.currentState?.relationships?.relations?.find(item =>
+            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
+        return relation?.values?.affection === 24 && relation?.values?.trust === 76
+            && Boolean(diskStore.branchOverrides?.root)
+            && diskStore.currentState.relationships.events.some(item =>
+                item.origin === 'manual' && item.manualValues?.affection === 24);
+    }, null, { timeout: 10_000 });
+    const bManualHistoryId = await page.evaluate(() => {
+        const events = globalThis.SillyTavern.getContext()
+            .chatMetadata.world_backstage_v1.currentState.relationships.events;
         return [...events].reverse().find(item =>
             item.origin === 'manual' && item.manualValues?.affection === 24)?.id || '';
     });

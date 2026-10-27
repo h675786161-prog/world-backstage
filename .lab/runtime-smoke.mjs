@@ -1263,27 +1263,20 @@ try {
     }, null, { timeout: 10_000 });
     const reloadedB = await page.evaluate(async () => {
         const context = globalThis.SillyTavern.getContext();
-        const chatId = context.getCurrentChatId();
         const diskResponse = await fetch('/api/chats/get', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ch_name: context.name2, file_name: chatId, avatar_url: context.characterId }),
+            body: JSON.stringify({ ch_name: context.name2, file_name: context.getCurrentChatId() }),
         });
         const diskPayload = await diskResponse.json();
         const diskStore = diskPayload?.[0]?.chat_metadata?.world_backstage_v1;
         const store = context.chatMetadata.world_backstage_v1;
         const relation = store.currentState.relationships.relations.find(item =>
             item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
-        const context = globalThis.SillyTavern.getContext();
-        const store = context.chatMetadata.world_backstage_v1;
-        const relation = store.currentState.relationships.relations.find(item =>
-            item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__');
-        const diskResponsePromise = Promise.resolve(null);
         return {
             chatId: context.getCurrentChatId(),
             values: relation?.values || null,
-            tags: store.currentState.relationships.relations.find(item =>
-                item.sourceId === 'lab_affinity_npc' && item.targetId === '__wb_player__')?.tags || [],
+            tags: relation?.tags || [],
             historyHasB: store.currentState.relationships.events.some(item =>
                 item.origin === 'manual' && item.manualValues?.affection === 24),
             hasRoot: Boolean(store.branchOverrides?.root),

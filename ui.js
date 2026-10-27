@@ -7163,7 +7163,15 @@ export function createWorldBackstageUI({
                 tags,
                 reset: action === 'reset-relationship',
             });
-            if (result) notify(action === 'reset-relationship' ? '关系已重置，历史仍保留。' : '关系已保存为手动记录。', 'success');
+            if (result) {
+                for (const name of ['affection', 'trust', 'romance']) {
+                    const input = editor.querySelector(`[name="${name}"]`);
+                    if (input) input.value = values[name] === null ? '' : String(values[name]);
+                }
+                const tagsInput = editor.querySelector('[name="tags"]');
+                if (tagsInput) tagsInput.value = tags.join('，');
+                notify(action === 'reset-relationship' ? '关系已重置，历史仍保留。' : '关系已保存为手动记录。', 'success');
+            }
             render();
             return;
         }
